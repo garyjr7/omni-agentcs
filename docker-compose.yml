@@ -1,0 +1,118 @@
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  NEXUS PRO — docker-compose.yml                            ║
+# ║  Servicios: backend · frontend · chromadb                  ║
+# ╚══════════════════════════════════════════════════════════════╝
+version: "3.9"
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # ── Backend FastAPI + nexus_core ─────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: nexus-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NEXUS_DB_PATH=/nexus/data/nexus_pro.db
+      - NEXUS_DATA_DIR=/nexus/data
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8001
+      - UVICORN_WORKERS=2
+      - LOG_LEVEL=info
+    volumes:
+      # Datos persistentes — surviven rebuilds
+      - nexus_data:/nexus/data
+      # Hot-reload del código en desarrollo
+      # Comentar en producción:
+      # - ./nexus_api:/nexus/nexus_api
+      # - ./nexus_core:/nexus/nexus_core
+    ports:
+      - "${NEXUS_BACKEND_PORT:-8000}:8000"
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    logging: *default-logging
+    networks:
+      - nexus_net
+
+  # ── Frontend React → nginx ────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+        - VITE_WS_URL=${VITE_WS_URL:-ws://localhost:8000}
+    container_name: nexus-frontend
+    restart: unless-stopped
+    ports:
+      - "${NEXUS_FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    logging: *default-logging
+    networks:
+      - nexus_net
+
+  # ── ChromaDB — Vector Memory ──────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: nexus-chromadb
+    restart: unless-stopped
+    environment:
+      - CHROMA_SERVER_AUTH_CREDENTIALS_FILE=/chroma/auth
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/data
+      - ANONYMIZED_TELEMETRY=FALSE
+    volumes:
+      - chroma_data:/chroma/data
+    ports:
+      - "${CHROMA_PORT:-8001}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+    networks:
+      - nexus_net
+
+  # ── Watchtower — Auto-updates (opcional) ─────────────────────
+  # watchtower:
+  #   image: containrrr/watchtower
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   command: --interval 86400 nexus-backend nexus-frontend
+  #   restart: unless-stopped
+
+volumes:
+  nexus_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${NEXUS_DATA_BIND:-./data}
+  chroma_data:
+    driver: local
+
+networks:
+  nexus_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

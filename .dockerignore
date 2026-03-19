@@ -1,0 +1,27 @@
+# Python
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/venv
+**/.env
+**/*.egg-info
+
+# Node
+**/node_modules
+nexus_frontend/.env
+nexus_frontend/dist
+
+# Git y backups
+.git
+.backups
+**/*.bak
+**/*.save
+**/*.save.*
+
+# Datos locales (se montan como volumen)
+data/
+*.db
+
+# Dev
+*.sh
+.dockerignore

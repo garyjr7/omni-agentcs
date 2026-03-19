@@ -1,0 +1,58 @@
+# ── Stage 1: builder ──────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc libffi-dev libssl-dev git curl nmap \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copiar requirements de ambos módulos
+COPY nexus_api/requirements.txt  /build/req_api.txt
+COPY nexus_core/requirements.txt /build/req_core.txt
+
+# Instalar dependencias en venv limpio
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r /build/req_api.txt && \
+    pip install --no-cache-dir -r /build/req_core.txt && \
+    pip install --no-cache-dir \
+        bandit safety python-jose[cryptography] \
+        passlib[bcrypt] python-multipart slowapi
+
+# ── Stage 2: runtime ──────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nmap curl git sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar venv del builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /nexus
+
+# Copiar código fuente
+COPY nexus_api/  /nexus/nexus_api/
+COPY nexus_core/ /nexus/nexus_core/
+
+# Datos persistentes — se montan como volumen
+RUN mkdir -p /nexus/data/reports \
+             /nexus/data/pentest \
+             /nexus/data/junior_workspace \
+             /nexus/data/junior_memory_db \
+             /nexus/data/logs
+
+# Script de arranque
+COPY docker/entrypoint.sh /nexus/entrypoint.sh
+RUN chmod +x /nexus/entrypoint.sh
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+ENTRYPOINT ["/nexus/entrypoint.sh"]

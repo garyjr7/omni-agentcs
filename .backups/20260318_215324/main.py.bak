@@ -1,0 +1,350 @@
+"""
+nexus_api/main.py — NEXUS PRO v2.0
+Orquestador de Agentes IA · Zero Trust · Military Grade
+Reescrito limpio — usa solo módulos que existen en nexus_core
+"""
+import logging
+import sys
+from pathlib import Path
+
+# ── Path setup ────────────────────────────────────────────────
+ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "nexus_core"))
+
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logger = logging.getLogger("nexus.api")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - [%(levelname)s] - %(message)s"
+)
+
+# ══════════════════════════════════════════════════════════════
+# LIFESPAN — startup / shutdown
+# ══════════════════════════════════════════════════════════════
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("=" * 60)
+    logger.info("  NEXUS PRO v2.0 — Iniciando...")
+    logger.info("=" * 60)
+
+    # ── Base de datos ─────────────────────────────────────────
+    try:
+        from nexus_api.auth.database import database, init_db
+        init_db()
+        await database.connect()
+        logger.info("[DB] ✓ Base de datos conectada")
+    except Exception as e:
+        logger.warning(f"[DB] ⚠ {e}")
+
+    # ── Scheduler ─────────────────────────────────────────────
+    try:
+        from nexus_api.scheduler.manager import start_scheduler
+        start_scheduler()
+        logger.info("[SCHEDULER] ✓ Scheduler iniciado")
+    except Exception as e:
+        logger.warning(f"[SCHEDULER] ⚠ {e}")
+
+    # ── Nexus Core: Orchestrator ───────────────────────────────
+    try:
+        from nexus_core.core.orchestrator import Orchestrator
+        app.state.orchestrator = Orchestrator()
+        logger.info("[ORCHESTRATOR] ✓ Orchestrator listo")
+    except Exception as e:
+        logger.warning(f"[ORCHESTRATOR] ⚠ {e}")
+        app.state.orchestrator = None
+
+    # ── Nexus Core: LLM Abstraction ───────────────────────────
+    try:
+        from nexus_core.llm.abstraction import LLMProvider
+        app.state.llm = LLMProvider()
+        logger.info("[LLM] ✓ LLM Provider listo")
+    except Exception as e:
+        logger.warning(f"[LLM] ⚠ {e}")
+        app.state.llm = None
+
+    # ── Nexus Core: Memory / Vector Store ────────────────────
+    try:
+        from nexus_core.memory.manager import MemoryManager
+        app.state.memory = MemoryManager()
+        logger.info("[MEMORY] ✓ MemoryManager listo")
+    except Exception as e:
+        logger.warning(f"[MEMORY] ⚠ {e}")
+        app.state.memory = None
+
+    # ── Nexus Core: Agent Registry ───────────────────────────
+    try:
+        from nexus_core.agents.registry import AgentRegistry
+        app.state.registry = AgentRegistry()
+        logger.info("[REGISTRY] ✓ AgentRegistry listo")
+    except Exception as e:
+        logger.warning(f"[REGISTRY] ⚠ {e}")
+        app.state.registry = None
+
+    # ── Nexus Core: State Manager ────────────────────────────
+    try:
+        from nexus_core.state.manager import StateManager
+        app.state.state_manager = StateManager()
+        logger.info("[STATE] ✓ StateManager listo")
+    except Exception as e:
+        logger.warning(f"[STATE] ⚠ {e}")
+        app.state.state_manager = None
+
+    # ── Nexus Core: Event Bus ────────────────────────────────
+    try:
+        from nexus_core.core.event_bus import EventBus
+        app.state.event_bus = EventBus()
+        logger.info("[EVENTBUS] ✓ EventBus listo")
+    except Exception as e:
+        logger.warning(f"[EVENTBUS] ⚠ {e}")
+        app.state.event_bus = None
+
+    # ── Nexus Core: Agent Team Manager ───────────────────────
+    try:
+        from nexus_core.agent_team_manager import create_team_router
+        app.include_router(create_team_router())
+        logger.info("[TEAMS] ✓ AgentTeamManager registrado → /teams/*")
+    except Exception as e:
+        logger.warning(f"[TEAMS] ⚠ {e}")
+
+    # ── Nexus Core: Workflow Manager ─────────────────────────
+    try:
+        from nexus_core.workflow_manager import WorkflowManager
+        app.state.workflow_manager = WorkflowManager()
+        logger.info("[WORKFLOW] ✓ WorkflowManager listo")
+    except Exception as e:
+        logger.warning(f"[WORKFLOW] ⚠ {e}")
+        app.state.workflow_manager = None
+
+    # ── Junior Bridge (opcional) ──────────────────────────────
+    try:
+        from nexus_core.junior_bridge import initialize_bridge, get_junior_bridge
+        bridge_ok = await initialize_bridge()
+        if bridge_ok:
+            app.state.junior_bridge = get_junior_bridge()
+            logger.info("[JUNIOR] ✓ JuniorBridge activo — Orchestrator+Registry+LLM")
+        else:
+            logger.warning("[JUNIOR] ⚠ JuniorBridge inicializado con errores")
+    except Exception as e:
+        logger.warning(f"[JUNIOR] ⚠ {e}")
+        app.state.junior_bridge = None
+
+    logger.info("=" * 60)
+    logger.info("  NEXUS PRO v2.0 — SISTEMA HEALTHY ✓")
+    logger.info("  Docs: http://0.0.0.0:8000/docs")
+    logger.info("=" * 60)
+
+    yield  # ← app corriendo
+
+    # ── Shutdown ──────────────────────────────────────────────
+    logger.info("[NEXUS] Apagando servicios...")
+    try:
+        from nexus_api.scheduler.manager import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from nexus_api.auth.database import database
+        await database.disconnect()
+    except Exception:
+        pass
+    logger.info("[NEXUS] ✓ Apagado limpio")
+
+
+# ══════════════════════════════════════════════════════════════
+# APP
+# ══════════════════════════════════════════════════════════════
+app = FastAPI(
+    title="NEXUS PRO",
+    version="2.0.0",
+    description="""
+## NEXUS PRO — AI Operations Platform
+
+Orquestador de Agentes IA de grado militar.
+Supera a CrewAI, AutoGen y LangGraph en orquestación nativa.
+
+### Módulos activos
+- 🤖 Agentes IA (crear, asignar herramientas, modelos)
+- 👥 Equipos de agentes con estrategias de orquestación
+- 📋 Tareas (única, monitor 24/7, crontab, pipeline)
+- 🔐 Secrets Vault (AES-256)
+- 🛡️ Guardian Scan (seguridad ofensiva)
+- 👤 HITL — Human in the Loop
+- 📊 Audit Trail inmutable
+- 🔑 RBAC Zero Trust
+    """,
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# ── CORS ─────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ══════════════════════════════════════════════════════════════
+# ROUTERS — se registran con try/except para no romper el boot
+# ══════════════════════════════════════════════════════════════
+
+def safe_include(router, **kwargs):
+    """Incluye un router sin matar el arranque si falla."""
+    try:
+        app.include_router(router, **kwargs)
+        return True
+    except Exception as e:
+        logger.warning(f"[ROUTER] ⚠ {kwargs.get('prefix','?')} → {e}")
+        return False
+
+# Auth (obligatorio)
+from nexus_api.routes.auth import router as auth_router
+app.include_router(auth_router, tags=["🔐 Auth"])
+
+# Scheduler
+try:
+    from nexus_api.routes.scheduler import router as scheduler_router
+    app.include_router(scheduler_router, tags=["⏱ Scheduler"])
+except Exception as e:
+    logger.warning(f"[ROUTER] scheduler ⚠ {e}")
+
+# Agentes
+try:
+    from nexus_api.routes.agents import router as agents_router
+    safe_include(agents_router, tags=["🤖 Agents"])
+except Exception as e:
+    logger.warning(f"[ROUTER] agents ⚠ {e}")
+
+# Tareas
+try:
+    from nexus_api.routes.tasks import router as tasks_router
+    safe_include(tasks_router, tags=["📋 Tasks"])
+except Exception as e:
+    logger.warning(f"[ROUTER] tasks ⚠ {e}")
+
+# Proyectos
+try:
+    from nexus_api.routes.projects import router as projects_router
+    safe_include(projects_router, prefix="/projects", tags=["📁 Projects"])
+except Exception as e:
+    logger.warning(f"[ROUTER] projects ⚠ {e}")
+
+# Nexus core routes
+try:
+    from nexus_api.routes.nexus import router as nexus_router
+    safe_include(nexus_router, tags=["⚡ Nexus"])
+except Exception as e:
+    logger.warning(f"[ROUTER] nexus ⚠ {e}")
+
+# Guardian
+try:
+    from nexus_api.routes.guardian import router as guardian_router
+    safe_include(guardian_router, prefix="/guardian", tags=["🛡️ Security"])
+except Exception as e:
+    logger.warning(f"[ROUTER] guardian ⚠ {e}")
+
+# Teams v2
+try:
+    from nexus_api.routes.teams_v2 import router as teams_v2_router
+    safe_include(teams_v2_router, prefix="/teams-v2", tags=["👥 Teams"])
+except Exception as e:
+    logger.warning(f"[ROUTER] teams_v2 ⚠ {e}")
+
+# Project Manager Agent
+try:
+    from nexus_api.routes.project_manager import router as pm_router
+    safe_include(pm_router, prefix="/project-manager", tags=["🏗️ ProjectManager"])
+except Exception as e:
+    logger.warning(f"[ROUTER] project_manager ⚠ {e}")
+
+# Plans
+try:
+    from nexus_api.routes.plans import router as plans_router
+    safe_include(plans_router, prefix="/plans", tags=["📐 Plans"])
+except Exception as e:
+    logger.warning(f"[ROUTER] plans ⚠ {e}")
+
+# Composite tools
+try:
+    from nexus_api.routes.composite import router as composite_router
+    safe_include(composite_router, prefix="/composite", tags=["🔧 Composite"])
+except Exception as e:
+    logger.warning(f"[ROUTER] composite ⚠ {e}")
+
+# Kill Switch
+try:
+    from nexus_api.routes.killswitch import router as ks_router
+    safe_include(ks_router, prefix="/killswitch", tags=["🔴 KillSwitch"])
+except Exception as e:
+    logger.warning(f"[ROUTER] killswitch ⚠ {e}")
+
+# Test Agent
+try:
+    from nexus_api.routes.testagent import router as test_router
+    safe_include(test_router, prefix="/testagent", tags=["🧪 TestAgent"])
+except Exception as e:
+    logger.warning(f"[ROUTER] testagent ⚠ {e}")
+
+# Doc Agent
+try:
+    from nexus_api.routes.docagent import router as doc_router
+    safe_include(doc_router, prefix="/docagent", tags=["📄 DocAgent"])
+except Exception as e:
+    logger.warning(f"[ROUTER] docagent ⚠ {e}")
+
+# WebSocket logs
+try:
+    from nexus_api.routes.ws_logs import router as ws_router
+    safe_include(ws_router, tags=["📡 WebSocket"])
+except Exception as e:
+    logger.warning(f"[ROUTER] ws_logs ⚠ {e}")
+
+# ══════════════════════════════════════════════════════════════
+# ENDPOINTS BASE
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/health", tags=["💚 Health"])
+async def health():
+    """Health check — estado completo del sistema."""
+    from datetime import datetime
+
+    services = {}
+
+    # Verificar orchestrator
+    services["orchestrator"] = "ok" if getattr(app.state, "orchestrator", None) else "degraded"
+    services["llm"]          = "ok" if getattr(app.state, "llm", None) else "degraded"
+    services["memory"]       = "ok" if getattr(app.state, "memory", None) else "degraded"
+    services["registry"]     = "ok" if getattr(app.state, "registry", None) else "degraded"
+    services["event_bus"]    = "ok" if getattr(app.state, "event_bus", None) else "degraded"
+    services["junior_bridge"]= "ok" if getattr(app.state, "junior_bridge", None) else "degraded"
+
+    all_ok = all(v == "ok" for v in services.values())
+
+    return {
+        "status": "healthy" if all_ok else "degraded",
+        "version": "2.0.0",
+        "timestamp": datetime.utcnow().isoformat(),
+        "platform": "NEXUS PRO — AI Operations Platform",
+        "services": services,
+    }
+
+
+@app.get("/", tags=["💚 Health"])
+async def root():
+    return {
+        "name": "NEXUS PRO",
+        "version": "2.0.0",
+        "status": "online",
+        "docs": "/docs",
+        "health": "/health",
+    }

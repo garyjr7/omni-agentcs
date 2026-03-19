@@ -1,0 +1,98 @@
+"""
+nexus_api/main.py — BajioWare Nexus API (Fase 3)
+FastAPI + Auth JWT + Scheduler + WebSocket logs
+"""
+import logging
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from fase4_nexus_workforce import setup_workforce_routes
+from fase5a_sandbox import setup_sandbox_routes
+from contextlib import asynccontextmanager
+from fase5a_sandbox import setup_sandbox_routes, get_sandbox_manager
+from fase5b_autodev_patch import patch_workforce
+from fase4_nexus_workforce import get_orchestrator
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from .auth.database import database, init_db
+from .scheduler.manager import start_scheduler, stop_scheduler
+from .routes.auth      import router as auth_router
+from .routes.scheduler import router as scheduler_router
+
+# Importa las rutas existentes (Fase 2)
+try:
+    from .routes.agents   import router as agents_router
+except ImportError:
+    agents_router = None
+try:
+    from .routes.projects import router as projects_router
+except ImportError:
+    projects_router = None
+try:
+    from .routes.tasks    import router as tasks_router
+except ImportError:
+    tasks_router = None
+try:
+    from .routes.nexus    import router as nexus_router
+except ImportError:
+    nexus_router = None
+
+# WebSocket logs — existente desde Fase 2 (backend/routers/ws_logs.py)
+# También intentamos desde nexus_api/routes por si se movió
+try:
+    from ..backend.routers.ws_logs import router as ws_router
+except ImportError:
+    try:
+        from .routes.ws_logs import router as ws_router
+    except ImportError:
+        ws_router = None
+
+logger = logging.getLogger("nexus.api")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    init_db()
+    await database.connect()
+    start_scheduler()
+    logger.info("Nexus API iniciada — Auth JWT + Scheduler ACTIVOS")
+    setup_workforce_routes(app)
+    setup_sandbox_routes(app)
+    yield
+    # Shutdown
+    stop_scheduler()
+    await database.disconnect()
+    logger.info("Nexus API detenida")
+
+
+app = FastAPI(
+    title="BajioWare Nexus API",
+    version="3.0.0",
+    description="Control Center — Fase 3: Dashboard · Auth JWT · Scheduler",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Temporal para el desarrollo
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Rutas Fase 3 ──────────────────────────────────────────────
+app.include_router(auth_router)
+app.include_router(scheduler_router)
+
+# ── Rutas Fase 2 (si existen) ─────────────────────────────────
+for r in [agents_router, projects_router, tasks_router, nexus_router, ws_router]:
+    if r is not None:
+        app.include_router(r)
+
+
+@app.get("/health", tags=["Health"])
+async def health():
+    return {"status": "ok", "version": "3.0.0", "services": ["auth", "scheduler", "websocket"]}
