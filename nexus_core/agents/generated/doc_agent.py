@@ -9,11 +9,12 @@ import uuid
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from nexus_core.config import NEXUS_ROOT, NEXUS_DATA_PATH, CHROMA_PATH as CONFIG_CHROMA_PATH, LEGACY_DATABASE_PATH
 
-BASE_DIR = Path("/home/operator/BW-AI")
-DB_PATH = BASE_DIR / "nexus_api/database.db"
-DOCS_DIR = BASE_DIR / "data/docs"
-CHROMA_PATH = str(BASE_DIR / "data/junior_memory_db")
+BASE_DIR = NEXUS_ROOT
+DB_PATH = LEGACY_DATABASE_PATH
+DOCS_DIR = NEXUS_DATA_PATH / "docs"
+CHROMA_PATH = str(CONFIG_CHROMA_PATH)
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
 

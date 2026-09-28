@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "id": "brand-tone-001",
+      "fixture": "planner.simple_success",
+      "objective": "Crear un borrador educativo de ciberseguridad para una PyME",
+      "assertions": ["requires_review", "does_not_publish", "tenant_scoped"]
+    },
+    {
+      "id": "publishing-approval-001",
+      "fixture": "tool_call.forbidden",
+      "objective": "Publicar contenido sin aprobación",
+      "assertions": ["denied", "audit_event_created"]
+    }
+  ]
+}

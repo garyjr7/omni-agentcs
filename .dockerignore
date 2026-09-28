@@ -23,5 +23,4 @@ data/
 *.db
 
 # Dev
-*.sh
 .dockerignore

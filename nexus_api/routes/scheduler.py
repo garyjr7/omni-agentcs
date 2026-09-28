@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from ..scheduler.manager import add_interval_job, add_cron_job, remove_job, list_jobs
-from ..auth.dependencies import get_current_user
+from ..auth.deps import get_current_user
 
 logger = logging.getLogger("nexus.scheduler.routes")
 router = APIRouter(prefix="/scheduler", tags=["Scheduler"])

@@ -5,13 +5,14 @@ Endpoints para interactuar con Junior Agent autónomo
 import uuid
 import asyncio
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 
+from nexus_api.auth.deps import get_current_user
 from nexus_api.db.database import db_create_task, db_update_task, db_get_task
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # ── Store de sesiones activas ─────────────────────────────────
 _sessions: Dict[str, dict] = {}
@@ -93,7 +94,12 @@ async def _run_junior_task(task_id: str, objective: str,
 
 
 @router.post("/junior/run", status_code=202)
-async def run_junior(body: JuniorRequest, background: BackgroundTasks, request: Request):
+async def run_junior(
+    body: JuniorRequest,
+    background: BackgroundTasks,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Ejecuta Junior con un objetivo en lenguaje natural.
     Retorna task_id inmediatamente — monitorear con GET /junior/status/{task_id}
@@ -153,7 +159,11 @@ def get_session(session_id: str):
 
 
 @router.post("/junior/chat")
-async def junior_chat(body: JuniorChatRequest, request: Request):
+async def junior_chat(
+    body: JuniorChatRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Chat rápido con Junior — responde sin ejecutar tools.
     Para objetivos complejos usar POST /junior/run
@@ -184,7 +194,11 @@ Responde de forma concisa, técnica y práctica."""
 
 
 @router.post("/junior/dispatch")
-async def junior_dispatch(body: dict, request: Request):
+async def junior_dispatch(
+    body: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Despacha una tarea específica a Junior (para integración interna).
     Compatible con el sistema de tareas existente.

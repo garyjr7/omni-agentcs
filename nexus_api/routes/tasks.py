@@ -4,14 +4,15 @@ CRUD de tareas: única, monitor 24/7, crontab, pipeline, event-driven
 """
 import uuid
 import asyncio
-from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from nexus_api.auth.deps import get_current_user
 from nexus_api.db.database import (
     db_list_tasks, db_get_task, db_create_task, db_update_task
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 class CreateTaskRequest(BaseModel):
     name: str
@@ -71,6 +72,8 @@ async def _run_task_background(task_id: str, app):
             # Fallback: ejecutar bash directo si hay command
             db_update_task(task_id, progress=50)
             if 'command' in payload or payload.get('tool') == 'bash_exec':
+                from nexus_core.kernel.legacy import require_legacy_execution
+                require_legacy_execution()
                 import asyncio as _asyncio, os as _os
                 cmd = payload.get('command', 'echo NEXUS OK && date')
                 proc = await _asyncio.create_subprocess_shell(
@@ -108,7 +111,12 @@ def get_task(task_id: str):
     return task
 
 @router.post("/tasks", status_code=201)
-async def create_task(body: CreateTaskRequest, background: BackgroundTasks, request: Request):
+async def create_task(
+    body: CreateTaskRequest,
+    background: BackgroundTasks,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
     """Crea y opcionalmente ejecuta una tarea."""
     task_id = f"task_{uuid.uuid4().hex[:8]}"
     data = {"id": task_id, **body.model_dump()}
@@ -121,7 +129,12 @@ async def create_task(body: CreateTaskRequest, background: BackgroundTasks, requ
     return {"id": task_id, "message": f"Tarea '{body.name}' creada", **db_get_task(task_id)}
 
 @router.post("/tasks/{task_id}/run")
-async def run_task(task_id: str, background: BackgroundTasks, request: Request):
+async def run_task(
+    task_id: str,
+    background: BackgroundTasks,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
     """Ejecuta manualmente una tarea."""
     task = db_get_task(task_id)
     if not task:
@@ -130,12 +143,18 @@ async def run_task(task_id: str, background: BackgroundTasks, request: Request):
     return {"task_id": task_id, "message": "Tarea en ejecución"}
 
 @router.post("/tasks/{task_id}/cancel")
-def cancel_task(task_id: str):
+def cancel_task(
+    task_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     db_update_task(task_id, status="cancelled")
     return {"task_id": task_id, "status": "cancelled"}
 
 @router.delete("/tasks/{task_id}")
-def delete_task(task_id: str):
+def delete_task(
+    task_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     task = db_get_task(task_id)
     if not task:
         raise HTTPException(404)

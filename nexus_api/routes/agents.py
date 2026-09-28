@@ -3,15 +3,16 @@ NEXUS PRO — Agents API
 CRUD completo de agentes: crear, configurar modelo, asignar tools
 """
 import uuid
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from nexus_api.auth.deps import get_current_user, require_admin
 from nexus_api.db.database import (
     db_list_agents, db_get_agent, db_create_agent,
     db_update_agent, db_delete_agent
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 class CreateAgentRequest(BaseModel):
     name: str
@@ -70,7 +71,10 @@ def get_agent(agent_id: str):
     return agent
 
 @router.post("/agents", status_code=201)
-def create_agent(body: CreateAgentRequest):
+def create_agent(
+    body: CreateAgentRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Crea un nuevo agente con modelo y herramientas."""
     agent_id = f"agt_{uuid.uuid4().hex[:8]}"
     data = {"id": agent_id, **body.model_dump()}
@@ -78,7 +82,11 @@ def create_agent(body: CreateAgentRequest):
     return {"id": agent_id, "message": f"Agente '{body.name}' creado", **data}
 
 @router.put("/agents/{agent_id}")
-def update_agent(agent_id: str, body: UpdateAgentRequest):
+def update_agent(
+    agent_id: str,
+    body: UpdateAgentRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Actualiza configuración de un agente."""
     existing = db_get_agent(agent_id)
     if not existing:
@@ -88,7 +96,11 @@ def update_agent(agent_id: str, body: UpdateAgentRequest):
     return db_get_agent(agent_id)
 
 @router.post("/agents/{agent_id}/tools")
-def assign_tools(agent_id: str, body: AssignToolsRequest):
+def assign_tools(
+    agent_id: str,
+    body: AssignToolsRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Asigna herramientas a un agente."""
     existing = db_get_agent(agent_id)
     if not existing:
@@ -97,7 +109,10 @@ def assign_tools(agent_id: str, body: AssignToolsRequest):
     return {"agent_id": agent_id, "tools": body.tools, "message": "Herramientas asignadas"}
 
 @router.delete("/agents/{agent_id}")
-def delete_agent(agent_id: str):
+def delete_agent(
+    agent_id: str,
+    current_user: dict = Depends(require_admin),
+):
     db_delete_agent(agent_id)
     return {"deleted": agent_id}
 
@@ -110,7 +125,12 @@ class ChatRequest(BaseModel):
     system_override: Optional[str] = None
 
 @router.post("/agents/{agent_id}/chat")
-async def chat_with_agent(agent_id: str, body: ChatRequest, request: _Request):
+async def chat_with_agent(
+    agent_id: str,
+    body: ChatRequest,
+    request: _Request,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Chat directo con un agente — usa su LLM y system prompt configurado.
     """

@@ -3,15 +3,16 @@ NEXUS PRO — Teams API v2
 CRUD de equipos: crear, agregar/quitar agentes, estrategia de orquestación
 """
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 from nexus_api.db.database import (
     db_list_teams, db_get_team, db_create_team,
     db_update_team, db_delete_team, db_get_agent
 )
+from nexus_api.auth.deps import require_admin
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 class CreateTeamRequest(BaseModel):
     name: str

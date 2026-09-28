@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export const useNexusStore = create((set, get) => ({
+export const useNexusStore = create((set) => ({
   health:       null,
   systemStatus: 'connecting',
   agents:       [],

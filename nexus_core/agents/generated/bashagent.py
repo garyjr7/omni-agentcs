@@ -8,8 +8,9 @@ import asyncio
 import os
 import re
 from pathlib import Path
+from nexus_core.config import NEXUS_ROOT
 
-BASE_DIR = Path("/home/operator/BW-AI")
+BASE_DIR = NEXUS_ROOT
 
 HARD_BLOCKED = [
     r"rm\s+-rf\s+/\s*$",
@@ -25,13 +26,20 @@ class BashAgent(BaseAgent):
     
     Payload esperado:
     - command: comando bash a ejecutar
-    - cwd: directorio de trabajo (default: /home/operator/BW-AI)
+    - cwd: directorio de trabajo (default: NEXUS_ROOT)
     - timeout: segundos máximos (default: 60)
     - sudo: bool — usar sudo (default: False)
     """
     capability = AgentCapability.FILE_OPERATIONS
 
     async def execute(self, task_id: str, payload: dict) -> dict:
+        from nexus_core.kernel.legacy import legacy_execution_enabled
+        if not legacy_execution_enabled():
+            return {
+                "status": "failed",
+                "error": "Legacy BashAgent is disabled; use ToolGateway with an OCI sandbox",
+                "task_id": task_id,
+            }
         command = payload.get("command", "").strip()
         cwd     = payload.get("cwd", str(BASE_DIR))
         timeout = payload.get("timeout", 60)

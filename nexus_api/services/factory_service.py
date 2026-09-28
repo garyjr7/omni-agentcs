@@ -2,13 +2,12 @@ import os, json, sqlite3, uuid, logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from nexus_api.config import NEXUS_DATA_PATH, NEXUS_DB_PATH
 
 logger = logging.getLogger("nexus.factory")
 
 def _db():
-    p = os.getenv("NEXUS_DB_PATH",
-        str(Path(__file__).parent.parent.parent / "data" / "nexus_pro.db"))
-    conn = sqlite3.connect(p)
+    conn = sqlite3.connect(NEXUS_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -166,7 +165,7 @@ def generate_plan_maestro(requirements: dict, llm_analysis: str = None) -> dict:
         "num_fases":  num_fases,
         "fases":      fases,
         "estimacion": f"{num_fases * 2}-{num_fases * 4} horas de procesamiento",
-        "output_dir": f"/home/operator/NEXUS-PRO/data/factory/projects/{proyecto.get('nombre','proyecto').lower().replace(' ','_')}",
+        "output_dir": str(NEXUS_DATA_PATH / "factory" / "projects" / proyecto.get("nombre", "proyecto").lower().replace(" ", "_")),
         "llm_analysis": llm_analysis or "Pendiente de análisis LLM",
         "generated_at": datetime.utcnow().isoformat(),
     }

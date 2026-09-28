@@ -13,7 +13,6 @@ sys.path.insert(0, str(ROOT))
 
 # Crear logs dir
 (ROOT / "data/logs").mkdir(parents=True, exist_ok=True)
-(ROOT / "data/junior_updates").mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +27,6 @@ logger = logging.getLogger("junior")
 DB_PATH  = os.getenv("NEXUS_DB_PATH", str(ROOT / "data/nexus_pro.db"))
 API_URL  = "http://127.0.0.1:8000"
 INTERVAL = int(os.getenv("JUNIOR_INTERVAL", "120"))  # cada 2 minutos
-UPDATES_DB = str(ROOT / "data/junior_updates/updates.db")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -49,7 +47,7 @@ def init_tables():
         )""")
         conn.commit()
 
-    with get_conn(UPDATES_DB) as conn:
+    with get_conn() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS junior_updates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
@@ -93,7 +91,7 @@ def save_notification(msg, tipo="info", detail=""):
 def save_update(title, description, category, priority, impact, implementation):
     """Guardar una propuesta de mejora de Junior."""
     try:
-        with get_conn(UPDATES_DB) as conn:
+        with get_conn() as conn:
             conn.execute("""INSERT INTO junior_updates
                 (title,description,category,priority,impact,implementation)
                 VALUES (?,?,?,?,?,?)""",
@@ -348,7 +346,7 @@ def run_cycle():
 
     # 7. Guardar propuestas nuevas (evitar duplicados por título)
     try:
-        with get_conn(UPDATES_DB) as conn:
+        with get_conn() as conn:
             existing = {r["title"] for r in conn.execute(
                 "SELECT title FROM junior_updates WHERE status='pending'"
             ).fetchall()}

@@ -1,197 +1,84 @@
-# NEXUS PRO — AI Operations Platform
+# BAJIOWARE NEXUS
 
-> Orquesta equipos de agentes IA que ejecutan tareas reales en tu infraestructura.
-> Con supervisión humana, memoria persistente y reportes ejecutivos.
+> **NEXUS Sovereign 3.0:** la consola propia y el runtime durable son ahora el
+> camino principal. Consulte [la guía Sovereign](docs/NEXUS_SOVEREIGN.md).
 
----
+NEXUS es un kernel y directorio empresarial de agentes. REST, CLI, MCP y A2A son gateways del mismo control plane; ChatGPT, Claude u otro cliente pueden servir como interfaz sin convertirse en dependencia arquitectónica.
 
-## ¿Qué es NEXUS PRO?
+## Capacidades
 
-NEXUS PRO es una plataforma de operaciones con IA que permite a empresas:
+- AI Directory multi-tenant: organizaciones, departamentos, identidades, agentes, tools, recursos, ambientes y capacidades.
+- RBAC más decisiones ABAC/ReBAC centralizadas, aprobaciones durables y auditoría append-only encadenada por hash.
+- Tareas y workflows persistentes con idempotencia, leases, timeout, retry/backoff, DLQ, outbox, cancelación y compensaciones.
+- Tool Gateway con schema, política, cuota, sandbox, límites y auditoría.
+- Model Router intercambiable: Fake LLM, OpenAI, Google GenAI, OpenAI-compatible, y contratos preparados para Ollama/vLLM.
+- Memoria durable y privada con tenant, clasificación, retención y búsqueda offline. Un vector store es un índice opcional.
+- MCP 2.0, REST, CLI, A2A y Desktop Connector mTLS.
+- Evolution Lab gobernado: workspace aislado, evaluador independiente, aprobación humana, canary y rollback.
+- Marketing como primer departamento instalable, no como código especial del kernel.
 
-- **Automatizar tareas complejas** con agentes que encadenan herramientas reales
-- **Supervisar y aprobar** acciones críticas antes de ejecutarlas (HITL)
-- **Auditar** todo lo que los agentes hacen, con trazabilidad completa
-- **Ejecutar pentests** automatizados con reportes ejecutivos en minutos
-- **Desarrollar software** con un agente autónomo que escribe, prueba y despliega código
+## Desarrollo sin GPU, APIs ni tokens
 
----
+Requiere Python 3.12. Las dependencias reproducibles se instalan desde el lock con hashes:
 
-## Instalación en 3 minutos
-
-### Opción A — Docker (recomendado para producción)
 ```bash
-git clone https://github.com/tuempresa/nexus-pro
-cd nexus-pro
+python3.12 -m venv .venv
+.venv/bin/pip install --require-hashes -r requirements.lock
 cp .env.example .env
-# Editar .env con tus API keys
-nano .env
-./install.sh
 ```
 
-Accede en: `http://tu-servidor:3000`
+Configure un administrador explícito en `.env`; no existen credenciales predeterminadas. Mantenga `LLM_PROVIDER=fake` y ejecute:
 
-### Opción B — Desarrollo local
 ```bash
-git clone https://github.com/tuempresa/nexus-pro
-cd nexus-pro
+PATH=.venv/bin:$PATH make lint typecheck test test-api test-mcp
+.venv/bin/python nexus_cli.py fake-llm "hola" --scenario echo
+.venv/bin/python nexus_cli.py enqueue-debug "hola" --idempotency-key demo-1
+.venv/bin/python nexus_worker.py --once
+```
+
+Arranque local:
+
+```bash
+.venv/bin/uvicorn nexus_api.main:app --host 127.0.0.1 --port 8000
+.venv/bin/python -m nexus_mcp.server
+```
+
+MCP por `stdio` permite depurar desde clientes compatibles sin publicar un puerto. Una cuenta gratuita de una interfaz no garantiza que esa interfaz permita MCP remoto: eso depende del producto, plan y soporte vigentes. NEXUS siempre puede operarse por CLI/REST y probarse con Fake LLM.
+
+## Producción
+
+Producción requiere PostgreSQL, secretos explícitos, TLS, workers separados y un sandbox OCI. SQLite es solamente para desarrollo pequeño. El backend de Compose se publica únicamente en loopback; MCP remoto exige OIDC/OAuth y el Desktop Connector entra por un gateway mTLS.
+
+```bash
 cp .env.example .env
-nano .env
-python -m venv venv && source venv/bin/activate
-pip install -r nexus_api/requirements.txt
-pip install -r nexus_core/requirements.txt
-uvicorn nexus_api.main:app --host 0.0.0.0 --port 8000 &
-cd nexus_frontend && npm install && npm run dev
+# Definir POSTGRES_PASSWORD, JWT_SECRET_KEY, admin, CORS y URLs públicas.
+docker compose up -d backend worker frontend
+# Opcional: requiere PKI provisionado.
+docker compose --profile connector up -d connector-gateway
 ```
 
----
+No se instala Ollama ni se fuerza un proveedor cloud. Las rutas de datos confidenciales con `allow_cloud=false` se rechazan si no existe un proveedor privado disponible.
 
-## Credenciales por defecto
+## Gateways y operación
 
-| Campo    | Valor                  |
-|----------|------------------------|
-| Email    | admin@nexuspro.io      |
-| Password | synthetic-password       |
-| Rol      | admin                  |
+- API: `/health`, `/docs` solo en desarrollo y `/system/metrics` autenticado.
+- MCP: `python -m nexus_mcp.server`; Streamable HTTP requiere OIDC salvo loopback explícito.
+- CLI: `python nexus_cli.py --help`.
+- Worker: `python nexus_worker.py --help`.
+- Backup SQLite: `./nexus_backup.sh --database data/nexus_pro.db`.
+- Restore aislado: `./nexus_restore.sh ARCHIVO --database /ruta/nexus.db`.
 
-> **Cambiar en `.env` antes de exponer a internet.**
+Documentación clave:
 
----
-
-## Arquitectura
-```
-┌─────────────────────────────────────────────┐
-│              NEXUS PRO Dashboard             │
-│         React + Vite · Puerto 3000           │
-└──────────────────┬──────────────────────────┘
-                   │ HTTP/WS
-┌──────────────────▼──────────────────────────┐
-│            FastAPI Backend                   │
-│    50+ endpoints REST · WebSocket Live       │
-│         Puerto 8000                          │
-└──────┬──────────────┬───────────────────────┘
-       │              │
-┌──────▼──────┐ ┌─────▼──────────────────────┐
-│  nexus_core │ │     SQLite                  │
-│  Orquestador│ │  nexus_pro.db               │
-│  Agentes IA │ │  agents · tasks · memory    │
-│  LLM Bridge │ │  users · hitl · audit       │
-└──────┬──────┘ └─────────────────────────────┘
-       │
-┌──────▼──────────────────────────────────────┐
-│           LLM Providers                      │
-│   OpenAI GPT-4o  ·  Google Gemini Pro        │
-│   Anthropic Claude  ·  Local (Ollama)        │
-└─────────────────────────────────────────────┘
-```
-
----
-
-## Módulos principales
-
-### 🤖 Junior Agent — Agente Autónomo
-El agente estrella de NEXUS PRO. Recibe un objetivo en lenguaje natural
-y lo ejecuta paso a paso, encadenando herramientas reales.
-```
-Objetivo: "Crea una API REST para una tienda online con auth y catálogo"
-Junior → planifica → escribe código → prueba → genera documentación
-```
-
-**Tools disponibles:** bash_exec, file_read, file_write, code_exec,
-http_request, search_web, git_ops, docker_ops
-
-### ⚠️ HITL — Human in the Loop
-Antes de ejecutar acciones de alto riesgo, los agentes piden
-aprobación humana en tiempo real via WebSocket.
-
-Niveles de riesgo: `CRITICAL` · `HIGH` · `MEDIUM` · `LOW`
-
-### 🔴 Pentest Automatizado
-Pipeline completo de pentesting en 5 fases:
-1. Reconocimiento (nmap)
-2. SAST + dependencias (Bandit + Safety)
-3. Secrets scan
-4. STRIDE threat modeling (GPT-4o)
-5. Reporte ejecutivo Markdown
-
-### 🧠 Memoria Persistente
-Cada agente recuerda sus conversaciones anteriores.
-Búsqueda en historial, resúmenes automáticos, limpieza por sesión.
-
-### 👥 Multi-usuario con RBAC
-| Rol      | Descripción                              |
-|----------|------------------------------------------|
-| admin    | Acceso total, gestión de usuarios        |
-| operator | Operar agentes, aprobar HITL             |
-| viewer   | Solo lectura, ver reportes               |
-
----
-
-## API Reference
-
-La API completa está disponible en `/docs` (Swagger UI).
-
-### Endpoints principales
-
-| Método | Endpoint              | Descripción                    |
-|--------|-----------------------|--------------------------------|
-| POST   | /auth/login           | Login → JWT tokens             |
-| GET    | /health               | Estado del sistema             |
-| GET    | /agents               | Listar agentes                 |
-| POST   | /agents               | Crear agente                   |
-| POST   | /junior/run           | Ejecutar objetivo autónomo     |
-| POST   | /junior/chat          | Chat con Junior                |
-| POST   | /pentest/run          | Iniciar pentest completo       |
-| GET    | /hitl/pending         | Aprobaciones pendientes        |
-| POST   | /hitl/{id}/approve    | Aprobar acción                 |
-| GET    | /memory/agents        | Agentes con memoria            |
-
----
-
-## Variables de entorno
-
-Ver `.env.example` para la lista completa.
-
-Las más importantes:
-```bash
-OPENAI_API_KEY=sk-...          # Requerida para Junior + Pentest
-GEMINI_API_KEY=AIza...         # Fallback LLM
-JWT_SECRET_KEY=...             # Generada automáticamente por install.sh
-NEXUS_ADMIN_EMAIL=...          # Admin por defecto
-NEXUS_ADMIN_PASSWORD=...       # Cambiar antes de producción
-```
-
----
-
-## Requisitos del servidor
-
-| Componente | Mínimo          | Recomendado      |
-|------------|-----------------|------------------|
-| CPU        | 2 cores         | 4 cores          |
-| RAM        | 4 GB            | 8 GB             |
-| Disco      | 20 GB           | 50 GB            |
-| OS         | Ubuntu 22.04+   | Ubuntu 24.04     |
-| Docker     | 24+             | 27+              |
-| Python     | 3.11+           | 3.12             |
-
----
+- [Plan de implementación](PLAN_IMPLEMENTACION_NEXUS.md)
+- [Auditoría base](AUDITORIA_NEXUS_2026-08-04.md)
+- [Despliegue on-premise](docs/DEPLOYMENT_ON_PREM.md)
+- [Desarrollo offline](docs/runbooks/DEVELOPMENT_OFFLINE.md)
+- [Backup y restore](docs/runbooks/BACKUP_RESTORE.md)
+- [Connector mTLS](docs/runbooks/CONNECTOR_MTLS.md)
+- [SLO/SLI](docs/runbooks/SLO_SLI.md)
+- [Gobierno de datos](docs/runbooks/DATA_GOVERNANCE.md)
 
 ## Seguridad
 
-- **JWT HS256** con refresh tokens (8h acceso / 7d refresh)
-- **RBAC** con 3 niveles de permisos
-- **HITL** — agentes no ejecutan acciones críticas sin aprobación humana
-- **Audit trail** — trazabilidad completa de todas las acciones
-- **Zero Trust** — cada request verificado con token
-- **Rate limiting** — protección contra abuso de la API
-
----
-
-## Soporte y licencia
-
-**Desarrollado por:** Marcos — NEXUS PRO Team
-**Versión:** 2.0.0
-**Licencia:** Propietaria — uso permitido con licencia comercial
-
-Para soporte, consultoría o licencias enterprise:
-📧 contacto@nexuspro.io
+No exponga el API, MCP o conectores antes de configurar identidad, TLS y políticas. Las funciones heredadas de ejecución directa están deshabilitadas por defecto y siempre en producción. Un pentest independiente sigue siendo obligatorio antes de atender clientes o datos reales.

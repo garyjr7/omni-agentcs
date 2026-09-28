@@ -74,7 +74,7 @@ export default function Vault() {
             <div style={{ flex:1 }}>
               <div style={{ fontSize:13,fontWeight:600,color:'var(--text-bright)' }}>{s.name}</div>
               <div style={{ fontFamily:'var(--mono)',fontSize:12,color:'var(--text-dim)',marginTop:2,letterSpacing:2 }}>
-                {revealed.has(s.id) ? s.masked : s.masked.replace(/[^•\-]/g,'•')}
+                {revealed.has(s.id) ? s.masked : s.masked.replace(/[^•-]/g,'•')}
               </div>
               <div style={{ fontFamily:'var(--mono)',fontSize:9,color:'var(--text-dim)',marginTop:3 }}>
                 {s.type} · Actualizado: {s.updated} · Agentes: {s.agents.join(', ')}

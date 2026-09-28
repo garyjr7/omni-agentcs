@@ -1,5 +1,6 @@
 # Entorno virtual
 venv/
+.venv/
 .env/
 
 # Archivos de configuración locales
@@ -10,10 +11,22 @@ __pycache__/
 
 # Archivos de logs
 *.log
+*.pid
+*.bak
+*.save
+*.save.*
 
 # Archivos de base de datos o cache
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
+
+# Artefactos de ejecución y build
+data/logs/
+.backups/
+**/dist/
+**/.pytest_cache/
 
 # Configuración de IDEs
 .vscode/

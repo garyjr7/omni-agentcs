@@ -5,16 +5,19 @@ Notificaciones + Actualizaciones + Chat + Status + Control
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
-import sqlite3, json, os, subprocess
+import sqlite3, json, os
 from pathlib import Path
 from datetime import datetime
+from nexus_api.auth.deps import get_current_user
+from nexus_api.config import NEXUS_ROOT, NEXUS_DATA_PATH, NEXUS_DB_PATH
 
-router = APIRouter(prefix="/jarvis", tags=["Junior"])
+router = APIRouter(
+    prefix="/jarvis", tags=["Junior"], dependencies=[Depends(get_current_user)]
+)
 
-ROOT     = Path(__file__).parent.parent.parent
-DB_PATH  = os.getenv("NEXUS_DB_PATH", str(ROOT / "data/nexus_pro.db"))
-UPD_DB   = str(ROOT / "data/junior_updates/updates.db")
-LOG_PATH = ROOT / "data/logs/junior.log"
+ROOT     = NEXUS_ROOT
+DB_PATH  = str(NEXUS_DB_PATH)
+LOG_PATH = NEXUS_DATA_PATH / "logs" / "junior.log"
 
 
 def _db(path=None):
@@ -29,33 +32,6 @@ def _ensure():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             message TEXT, tipo TEXT, detail TEXT,
             created_at TEXT DEFAULT (datetime('now')), read INTEGER DEFAULT 0
-        )""")
-        conn.commit()
-    Path(ROOT / "data/junior_updates").mkdir(parents=True, exist_ok=True)
-    with _db(UPD_DB) as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS junior_updates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT, description TEXT,
-            category TEXT DEFAULT 'mejora',
-            priority TEXT DEFAULT 'media',
-            impact TEXT, implementation TEXT,
-            status TEXT DEFAULT 'pending',
-            approved_by TEXT, approved_at TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS junior_chats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT UNIQUE NOT NULL,
-            title TEXT DEFAULT 'Nueva conversación',
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS junior_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now'))
         )""")
         conn.commit()
 
@@ -97,14 +73,17 @@ async def get_notifications(limit: int = 50, unread_only: bool = False):
     }
 
 @router.post("/notifications/{nid}/read")
-async def mark_read(nid: int):
+async def mark_read(
+    nid: int,
+    current_user: dict = Depends(get_current_user),
+):
     with _db() as conn:
         conn.execute("UPDATE jarvis_notifications SET read=1 WHERE id=?", (nid,))
         conn.commit()
     return {"status": "ok"}
 
 @router.post("/notifications/read-all")
-async def mark_all_read():
+async def mark_all_read(current_user: dict = Depends(get_current_user)):
     with _db() as conn:
         conn.execute("UPDATE jarvis_notifications SET read=1")
         conn.commit()
@@ -116,7 +95,7 @@ async def mark_all_read():
 # ══════════════════════════════════════════════════════════════
 @router.get("/updates")
 async def get_updates(status: str = "pending"):
-    with _db(UPD_DB) as conn:
+    with _db() as conn:
         rows = conn.execute(
             "SELECT * FROM junior_updates WHERE status=? ORDER BY id DESC",
             (status,)
@@ -125,7 +104,7 @@ async def get_updates(status: str = "pending"):
 
 @router.get("/updates/all")
 async def get_all_updates():
-    with _db(UPD_DB) as conn:
+    with _db() as conn:
         rows = conn.execute(
             "SELECT * FROM junior_updates ORDER BY id DESC LIMIT 100"
         ).fetchall()
@@ -133,9 +112,10 @@ async def get_all_updates():
 
 @router.post("/updates/{uid}/approve")
 async def approve_update(uid: int, body: ApproveUpdate,
-                          background: BackgroundTasks, request: Request):
+                          background: BackgroundTasks, request: Request,
+                          current_user: dict = Depends(get_current_user)):
     """Aprobar una propuesta — Junior ordena a los agentes ejecutarla."""
-    with _db(UPD_DB) as conn:
+    with _db() as conn:
         row = conn.execute(
             "SELECT * FROM junior_updates WHERE id=?", (uid,)
         ).fetchone()
@@ -144,17 +124,30 @@ async def approve_update(uid: int, body: ApproveUpdate,
         update = dict(row)
         conn.execute(
             "UPDATE junior_updates SET status='approved',approved_by=?,approved_at=? WHERE id=?",
-            (body.approved_by, datetime.utcnow().isoformat(), uid)
+            (str(current_user["id"]), datetime.utcnow().isoformat(), uid)
         )
         conn.commit()
 
-    # Ejecutar via Junior Agent
-    background.add_task(_execute_update, update, request.app)
-    return {"status": "approved", "update": update}
+    from nexus_core.evolution import EvolutionLab
+    from nexus_core.kernel.store_factory import get_control_store
+    tenant_id = str(current_user.get("tenant_id", "system"))
+    proposal = EvolutionLab(get_control_store(NEXUS_DB_PATH)).propose(
+        tenant_id=tenant_id,
+        title=update["title"],
+        hypothesis=update.get("description") or "La mejora propuesta optimizará NEXUS de forma medible.",
+        evidence={"legacy_update_id": uid, "implementation": update.get("implementation", "")},
+        acceptance_criteria={"tests": "must_pass", "security_regressions": 0},
+        risk="medium", proposed_by=str(current_user["id"]), baseline_version="current",
+    )
+    return {"status": "migrated_to_evolution", "proposal": proposal}
 
 @router.post("/updates/{uid}/deny")
-async def deny_update(uid: int, body: DenyUpdate):
-    with _db(UPD_DB) as conn:
+async def deny_update(
+    uid: int,
+    body: DenyUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    with _db() as conn:
         conn.execute(
             "UPDATE junior_updates SET status='denied' WHERE id=?", (uid,)
         )
@@ -162,70 +155,14 @@ async def deny_update(uid: int, body: DenyUpdate):
     return {"status": "denied"}
 
 @router.delete("/updates/{uid}")
-async def delete_update(uid: int):
-    with _db(UPD_DB) as conn:
+async def delete_update(
+    uid: int,
+    current_user: dict = Depends(get_current_user),
+):
+    with _db() as conn:
         conn.execute("DELETE FROM junior_updates WHERE id=?", (uid,))
         conn.commit()
     return {"status": "deleted"}
-
-async def _execute_update(update: dict, app):
-    """Ejecutar la actualización via Junior Agent."""
-    import datetime as dt
-    from nexus_api.db.database import db_create_task, db_update_task
-    import uuid
-    task_id = f"junior_{uuid.uuid4().hex[:8]}"
-    objective = (
-        f"Ejecuta esta mejora aprobada para NEXUS PRO:\n"
-        f"Título: {update['title']}\n"
-        f"Descripción: {update['description']}\n"
-        f"Implementación sugerida: {update.get('implementation','')}\n"
-        f"Ejecuta los pasos necesarios y genera un reporte del resultado."
-    )
-    db_create_task({
-        "id": task_id,
-        "name": f"Update: {update['title'][:50]}",
-        "description": objective,
-        "task_type": "unique",
-        "priority": "alta",
-        "payload": {"objective": objective, "max_steps": 5},
-    })
-    try:
-        from nexus_api.db.database import db_update_task
-        db_update_task(task_id, status="running",
-            started_at=dt.datetime.utcnow().isoformat(), progress=10)
-        registry = getattr(app.state, 'registry', None)
-        llm = getattr(app.state, 'llm', None)
-        junior = None
-        if registry:
-            agents = await registry.get_all()
-            for ag in agents.values():
-                if ag.name == "Junior":
-                    junior = ag
-                    break
-        if not junior:
-            from nexus_core.agents.junior_agent import JuniorAgent
-            junior = JuniorAgent(llm=llm)
-        result = await junior.run(task_id, {
-            "objective": objective, "max_steps": 5,
-            "_task_name": update["title"]
-        })
-        inner = result.get("result", {})
-        db_update_task(task_id,
-            status="completed" if result.get("success") else "failed",
-            progress=100,
-            result=str(inner)[:2000],
-            completed_at=dt.datetime.utcnow().isoformat()
-        )
-        with _db() as conn:
-            conn.execute(
-                "INSERT INTO jarvis_notifications(message,tipo,detail) VALUES(?,?,?)",
-                (f"✓ Actualización ejecutada: {update['title']}", "success",
-                 f"Task: {task_id}")
-            )
-            conn.commit()
-    except Exception as e:
-        db_update_task(task_id, status="failed", error=str(e), progress=0)
-
 
 # ══════════════════════════════════════════════════════════════
 # CHAT CON HISTORIAL
@@ -233,18 +170,21 @@ async def _execute_update(update: dict, app):
 @router.get("/chats")
 async def list_chats():
     """Lista todas las sesiones de chat."""
-    with _db(UPD_DB) as conn:
+    with _db() as conn:
         rows = conn.execute(
             "SELECT * FROM junior_chats ORDER BY updated_at DESC LIMIT 50"
         ).fetchall()
     return {"chats": [dict(r) for r in rows]}
 
 @router.post("/chats")
-async def create_chat(body: NewSession):
+async def create_chat(
+    body: NewSession,
+    current_user: dict = Depends(get_current_user),
+):
     """Crear nueva sesión de chat."""
     import uuid
     sid = uuid.uuid4().hex[:12]
-    with _db(UPD_DB) as conn:
+    with _db() as conn:
         conn.execute(
             "INSERT INTO junior_chats(session_id,title) VALUES(?,?)",
             (sid, body.title)
@@ -255,7 +195,7 @@ async def create_chat(body: NewSession):
 @router.get("/chats/{session_id}/messages")
 async def get_messages(session_id: str):
     """Obtener mensajes de una sesión."""
-    with _db(UPD_DB) as conn:
+    with _db() as conn:
         rows = conn.execute(
             "SELECT * FROM junior_messages WHERE session_id=? ORDER BY id ASC",
             (session_id,)
@@ -263,10 +203,15 @@ async def get_messages(session_id: str):
     return {"messages": [dict(r) for r in rows]}
 
 @router.post("/chats/{session_id}/messages")
-async def send_message(session_id: str, body: ChatMessage, request: Request):
+async def send_message(
+    session_id: str,
+    body: ChatMessage,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
     """Enviar mensaje a Junior y obtener respuesta."""
     # Guardar mensaje del usuario
-    with _db(UPD_DB) as conn:
+    with _db() as conn:
         # Verificar sesión existe
         sess = conn.execute(
             "SELECT * FROM junior_chats WHERE session_id=?", (session_id,)
@@ -297,7 +242,7 @@ async def send_message(session_id: str, body: ChatMessage, request: Request):
         conn.commit()
 
     # Obtener historial para contexto
-    with _db(UPD_DB) as conn:
+    with _db() as conn:
         history = conn.execute(
             "SELECT role,content FROM junior_messages WHERE session_id=? ORDER BY id DESC LIMIT 10",
             (session_id,)
@@ -312,18 +257,19 @@ async def send_message(session_id: str, body: ChatMessage, request: Request):
     # ── Contexto real del sistema ────────────────────────────
     system_context = ""
     try:
-        import subprocess, psutil, sqlite3 as _sq
-        res = subprocess.run(
-            ["find", "/home/operator/NEXUS-PRO", "-maxdepth", "2",
-             "-not", "-path", "*/venv/*", "-not", "-path", "*/__pycache__/*",
-             "-not", "-path", "*/node_modules/*"],
-            capture_output=True, text=True, timeout=5
-        )
-        files = [l for l in res.stdout.strip().split("\n") if l]
+        import psutil, sqlite3 as _sq
+        excluded = {"venv", ".venv", "__pycache__", "node_modules", ".git"}
+        files = []
+        for item in NEXUS_ROOT.iterdir():
+            if item.name in excluded:
+                continue
+            files.append(str(item))
+            if item.is_dir():
+                files.extend(str(child) for child in item.iterdir() if child.name not in excluded)
         cpu   = psutil.cpu_percent(interval=0.5)
         ram   = psutil.virtual_memory()
         disk  = psutil.disk_usage("/")
-        conn2 = _sq.connect("/home/operator/NEXUS-PRO/data/nexus_pro.db")
+        conn2 = _sq.connect(NEXUS_DB_PATH)
         conn2.row_factory = _sq.Row
         recent = conn2.execute(
             "SELECT name,status FROM tasks ORDER BY created_at DESC LIMIT 5"
@@ -343,7 +289,7 @@ async def send_message(session_id: str, body: ChatMessage, request: Request):
     JUNIOR_SYSTEM = f"""Eres JUNIOR, el agente autónomo estrella de NEXUS PRO, creado por BAJIOWARE.
 
 Personalidad: directo, técnico, proactivo, siempre propones soluciones concretas.
-Tienes acceso completo al sistema NEXUS PRO en /home/operator/NEXUS-PRO.
+Tienes acceso completo al sistema NEXUS PRO en {NEXUS_ROOT}.
 
 DATOS REALES DEL SISTEMA (úsalos, nunca inventes):
 {{system_context}}
@@ -378,7 +324,7 @@ Responde siempre en el idioma del usuario. Sé conciso y técnico."""
         response = f"Error en LLM: {e}"
 
     # Guardar respuesta
-    with _db(UPD_DB) as conn:
+    with _db() as conn:
         conn.execute(
             "INSERT INTO junior_messages(session_id,role,content) VALUES(?,?,?)",
             (session_id, "assistant", response)
@@ -392,8 +338,11 @@ Responde siempre en el idioma del usuario. Sé conciso y técnico."""
     }
 
 @router.delete("/chats/{session_id}")
-async def delete_chat(session_id: str):
-    with _db(UPD_DB) as conn:
+async def delete_chat(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    with _db() as conn:
         conn.execute("DELETE FROM junior_chats WHERE session_id=?", (session_id,))
         conn.execute("DELETE FROM junior_messages WHERE session_id=?", (session_id,))
         conn.commit()
@@ -407,14 +356,6 @@ async def delete_chat(session_id: str):
 async def junior_status():
     """Estado completo de Junior."""
     running = False
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", "junior_jarvis"],
-            capture_output=True, text=True
-        )
-        running = bool(result.stdout.strip())
-    except Exception:
-        pass
 
     last_lines = []
     if LOG_PATH.exists():
@@ -435,7 +376,7 @@ async def junior_status():
         ).fetchone()["c"]
 
     try:
-        with _db(UPD_DB) as conn:
+        with _db() as conn:
             pending_updates = conn.execute(
                 "SELECT COUNT(*) as c FROM junior_updates WHERE status='pending'"
             ).fetchone()["c"]
@@ -451,29 +392,17 @@ async def junior_status():
     }
 
 @router.post("/start")
-async def start_junior(background: BackgroundTasks):
-    """Inicia el daemon de Junior."""
-    def _start():
-        subprocess.Popen(
-            ["python3", str(ROOT / "junior_jarvis.py")],
-            cwd=str(ROOT),
-            stdout=open(ROOT / "data/logs/junior_daemon.log", "a"),
-            stderr=subprocess.STDOUT,
-        )
-    background.add_task(_start)
-    return {"status": "starting", "message": "Junior iniciando en background"}
+async def start_junior(
+    background: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
+    """El daemon heredado fue reemplazado por el worker durable."""
+    raise HTTPException(410, "Junior directo fue retirado; use nexus_worker y Evolution Lab")
 
 @router.post("/stop")
-async def stop_junior():
-    """Detiene el daemon de Junior."""
-    try:
-        result = subprocess.run(
-            ["pkill", "-f", "junior_jarvis.py"],
-            capture_output=True
-        )
-        return {"status": "stopped" if result.returncode == 0 else "not_running"}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+async def stop_junior(current_user: dict = Depends(get_current_user)):
+    """El worker se administra fuera del proceso API."""
+    raise HTTPException(410, "El worker se detiene desde el supervisor de servicios")
 
 @router.get("/report")
 async def get_report():

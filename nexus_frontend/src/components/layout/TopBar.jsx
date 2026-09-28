@@ -24,7 +24,7 @@ export default function TopBar() {
   })
 
   const handleLogout = async () => {
-    try { await nexusApi.logout() } catch {}
+    try { await nexusApi.logout() } catch { /* local logout must still proceed */ }
     logout()
   }
 

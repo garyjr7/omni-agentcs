@@ -1,26 +1,44 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { nexusApi, api } from '../api/client'
+import { api } from '../api/client'
 import { Btn, Dot } from '../components/ui'
+import { useAuthStore } from '../store/authStore'
 
 // ── API helpers ───────────────────────────────────────────────
 const jApi = {
-  chats:       () => api.get('/jarvis/chats'),
-  newChat:     (title) => api.post('/jarvis/chats', { title }),
-  deleteChat:  (sid) => api.delete(`/jarvis/chats/${sid}`),
-  messages:    (sid) => api.get(`/jarvis/chats/${sid}/messages`),
-  send:        (sid, msg) => api.post(`/jarvis/chats/${sid}/messages`, { session_id: sid, message: msg }),
-  updates:     (status='pending') => api.get(`/jarvis/updates?status=${status}`),
+  chats:       (tenantId) => api.get('/api/v1/sovereign/conversations', { params:{ tenant_id:tenantId } }).then(r => {
+    r.data.chats = (r.data.conversations || []).map(c => ({ ...c, session_id:c.id }))
+    return r
+  }),
+  newChat:     (title, tenantId) => api.post('/api/v1/sovereign/conversations', {
+    tenant_id:tenantId, title, classification:'internal'
+  }).then(r => { r.data.session_id = r.data.id; return r }),
+  deleteChat:  (sid, tenantId) => api.delete(`/api/v1/sovereign/conversations/${sid}`, { params:{ tenant_id:tenantId } }),
+  messages:    (sid, tenantId) => api.get(`/api/v1/sovereign/conversations/${sid}/messages`, { params:{ tenant_id:tenantId } }),
+  send:        async (sid, msg, tenantId) => {
+    const queued = await api.post(`/api/v1/sovereign/conversations/${sid}/messages`, { content:msg })
+    const runId = queued.data.run.id
+    for (let attempt=0; attempt<120; attempt += 1) {
+      const current = await api.get(`/api/v1/sovereign/runs/${runId}`, { params:{ tenant_id:tenantId } })
+      if (['completed','failed','dead_letter','cancelled'].includes(current.data.status)) return current
+      await new Promise(resolve => setTimeout(resolve, 750))
+    }
+    throw new Error('La ejecución durable excedió el tiempo de espera de la interfaz')
+  },
+  updates:     () => Promise.resolve({ data:{ total:0, updates:[] } }),
   approveUpd:  (id) => api.post(`/jarvis/updates/${id}/approve`, { approved_by: 'marcos' }),
   denyUpd:     (id) => api.post(`/jarvis/updates/${id}/deny`, { reason: 'Descartado' }),
   deleteUpd:   (id) => api.delete(`/jarvis/updates/${id}`),
   notifs:      () => api.get('/jarvis/notifications?limit=20'),
   readAllNotifs:() => api.post('/jarvis/notifications/read-all'),
-  status:      () => api.get('/jarvis/status'),
-  start:       () => api.post('/jarvis/start'),
-  stop:        () => api.post('/jarvis/stop'),
-  runObjective:(obj, steps) => api.post('/junior/run', { objective: obj, max_steps: steps }),
-  taskStatus:  (id) => api.get(`/junior/status/${id}`),
+  status:      () => api.get('/api/v1/sovereign/capabilities'),
+  start:       () => Promise.resolve({ data:{ status:'managed-by-worker' } }),
+  stop:        () => Promise.resolve({ data:{ status:'managed-by-worker' } }),
+  runObjective:(obj, _steps, tenantId) => api.post('/api/v1/sovereign/runs', { tenant_id:tenantId, objective:obj, mode:'brain' }),
+  taskStatus:  (id, tenantId) => api.get(`/api/v1/sovereign/runs/${id}`, { params:{ tenant_id:tenantId } }).then(r => {
+    r.data.progress = r.data.status === 'completed' ? 100 : r.data.status === 'running' ? 50 : r.data.status === 'queued' ? 10 : 0
+    return r
+  }),
 }
 
 const PRIO_COLOR = { crítica:'var(--red)', alta:'var(--orange)', media:'var(--yellow)', baja:'var(--green)' }
@@ -57,7 +75,7 @@ function Message({ msg }) {
         <div style={{ fontFamily:'var(--mono)', fontSize:9,
           color: isUser ? 'rgba(0,0,0,.4)' : 'var(--text-dim)',
           marginTop:4 }}>
-          {new Date(msg.created_at || Date.now()).toLocaleTimeString()}
+          {msg.created_at ? new Date(msg.created_at).toLocaleTimeString() : ''}
         </div>
       </div>
       {isUser && (
@@ -268,6 +286,7 @@ function JuniorSidebar({ chats, activeChat, onSelect, onCreate, onDelete,
 // ── COMPONENTE PRINCIPAL ──────────────────────────────────────
 export default function Junior() {
   const qc = useQueryClient()
+  const tenantId = useAuthStore(s => s.user?.tenant_id || 'system')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [activeChat, setActiveChat]   = useState(null)
   const [input, setInput]             = useState('')
@@ -282,17 +301,17 @@ export default function Junior() {
   // Queries
   const { data: chatsData } = useQuery({
     queryKey: ['junior-chats'],
-    queryFn: () => jApi.chats().then(r => r.data.chats || []),
+    queryFn: () => jApi.chats(tenantId).then(r => r.data.chats || []),
     refetchInterval: 15000,
   })
   const chats = chatsData || []
 
   const { data: messagesData, refetch: refetchMessages } = useQuery({
     queryKey: ['junior-messages', activeChat],
-    queryFn: () => activeChat ? jApi.messages(activeChat).then(r => r.data.messages || []) : Promise.resolve([]),
+    queryFn: () => activeChat ? jApi.messages(activeChat, tenantId).then(r => r.data.messages || []) : Promise.resolve([]),
     enabled: !!activeChat,
   })
-  const messages = messagesData || []
+  const messages = useMemo(() => messagesData || [], [messagesData])
 
   const { data: statusData } = useQuery({
     queryKey: ['junior-status'],
@@ -309,9 +328,9 @@ export default function Junior() {
 
   const { data: taskData } = useQuery({
     queryKey: ['junior-task-status', activeTask],
-    queryFn: () => activeTask ? jApi.taskStatus(activeTask).then(r => r.data) : Promise.resolve(null),
+    queryFn: () => activeTask ? jApi.taskStatus(activeTask, tenantId).then(r => r.data) : Promise.resolve(null),
     enabled: !!activeTask,
-    refetchInterval: d => d?.status === 'running' ? 2000 : false,
+    refetchInterval: query => ['queued','running'].includes(query.state.data?.status) ? 2000 : false,
   })
 
   // Scroll al fondo
@@ -321,7 +340,7 @@ export default function Junior() {
 
   // Mutations
   const sendMut = useMutation({
-    mutationFn: ({ sid, msg }) => jApi.send(sid, msg),
+    mutationFn: ({ sid, msg }) => jApi.send(sid, msg, tenantId),
     onSuccess: () => {
       refetchMessages()
       qc.invalidateQueries(['junior-chats'])
@@ -329,7 +348,7 @@ export default function Junior() {
   })
 
   const newChatMut = useMutation({
-    mutationFn: (title) => jApi.newChat(title),
+    mutationFn: (title) => jApi.newChat(title, tenantId),
     onSuccess: (data) => {
       setActiveChat(data.data.session_id)
       qc.invalidateQueries(['junior-chats'])
@@ -337,7 +356,7 @@ export default function Junior() {
   })
 
   const deleteChatMut = useMutation({
-    mutationFn: (sid) => jApi.deleteChat(sid),
+    mutationFn: (sid) => jApi.deleteChat(sid, tenantId),
     onSuccess: (_, sid) => {
       if (activeChat === sid) setActiveChat(null)
       qc.invalidateQueries(['junior-chats'])
@@ -345,8 +364,8 @@ export default function Junior() {
   })
 
   const runMut = useMutation({
-    mutationFn: ({ obj, steps }) => jApi.runObjective(obj, steps),
-    onSuccess: (data) => setActiveTask(data.data.task_id),
+    mutationFn: ({ obj, steps }) => jApi.runObjective(obj, steps, tenantId),
+    onSuccess: (data) => setActiveTask(data.data.id),
   })
 
   const startMut = useMutation({ mutationFn: jApi.start })

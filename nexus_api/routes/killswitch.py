@@ -1,11 +1,13 @@
 """Kill Switch API — Control de seguridad crítica BajioWare."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-router = APIRouter()
+from nexus_api.auth.deps import require_admin
+
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 class OperationRequest(BaseModel):
     operation_type: str

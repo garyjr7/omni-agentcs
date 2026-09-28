@@ -1,7 +1,7 @@
 import axios from 'axios'
 
-export const API_URL = import.meta.env.VITE_API_URL || 'http://192.168.220.134:8000'
-export const WS_URL  = import.meta.env.VITE_WS_URL  || 'ws://192.168.220.134:8000'
+export const API_URL = import.meta.env.VITE_API_URL || window.location.origin
+export const WS_URL  = import.meta.env.VITE_WS_URL || API_URL.replace(/^http/, 'ws')
 
 export const api = axios.create({
   baseURL: API_URL,
@@ -11,6 +11,10 @@ export const api = axios.create({
 
 // ── Interceptor request — inyecta el token ────────────────────
 api.interceptors.request.use((config) => {
+  if (config.url?.startsWith('/') && !config.url.startsWith('/api/v1') &&
+      !config.url.startsWith('/health')) {
+    config.url = `/api/v1${config.url}`
+  }
   try {
     const raw = localStorage.getItem('nexus-auth')
     if (raw) {
@@ -48,7 +52,7 @@ api.interceptors.response.use(
         const refreshToken = state?.state?.refreshToken
         if (!refreshToken) throw new Error('No refresh token')
 
-        const { data } = await axios.post(`${API_URL}/auth/refresh`, { refresh_token: refreshToken })
+        const { data } = await axios.post(`${API_URL}/api/v1/auth/refresh`, { refresh_token: refreshToken })
         // Actualizar store
         const nexusState = JSON.parse(localStorage.getItem('nexus-auth') || '{}')
         nexusState.state = { ...nexusState.state, accessToken: data.access_token, refreshToken: data.refresh_token }
@@ -171,4 +175,14 @@ export const nexusApi = {
   guardianSecrets: () => api.post('/guardian/scan/secrets'),
   guardianBandit:  () => api.post('/guardian/scan/bandit'),
   guardianIncidents:() => api.get('/guardian/incidents'),
+
+  // Kernel control plane
+  directoryAgents:(tenantId) => api.get('/directory/agents', { params:{ tenant_id:tenantId } }),
+  directoryTools: (tenantId) => api.get('/directory/tools',  { params:{ tenant_id:tenantId } }),
+  packages:       (tenantId) => api.get('/packages',         { params:{ tenant_id:tenantId } }),
+  installPackage: (data)     => api.post('/packages/install', data),
+  evolution:      (tenantId) => api.get('/evolution/proposals', { params:{ tenant_id:tenantId } }),
+  operationsSummary:(tenantId) => api.get('/sovereign/operations/summary', { params:{ tenant_id:tenantId } }),
+  auditLogs:      (tenantId) => api.get('/audit/logs', { params:{ tenant_id:tenantId } }),
+  auditVerify:    () => api.get('/audit/verify'),
 }

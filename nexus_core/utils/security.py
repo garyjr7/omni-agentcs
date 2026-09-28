@@ -10,6 +10,10 @@ import json
 import time
 import functools
 import logging
+import ipaddress
+import socket
+import urllib.parse
+import uuid
 from typing import List, Optional, Dict, Any
 
 class SecurityLevel(str, enum.Enum):
@@ -40,6 +44,10 @@ class SecurityPolicy:
     def permissive(cls) -> "SecurityPolicy":
         return cls(level=SecurityLevel.LOW, allow_file_write=True, allow_file_read=True, allow_network=True, allow_subprocess=True)
 
+    @classmethod
+    def medium(cls) -> "SecurityPolicy":
+        return cls(level=SecurityLevel.MEDIUM)
+
 class SecurityViolationError(Exception):
     def __init__(self, violation_type: str, details: str, agent_id: str = "unknown"):
         super().__init__(f"Security Violation: {violation_type} - {details} (Agent: {agent_id})")
@@ -48,9 +56,11 @@ class InputValidator:
     @staticmethod
     def validate_file_path(path: str, policy: SecurityPolicy) -> str:
         normalized_path = os.path.realpath(path)
-        if any(blocked in normalized_path for blocked in policy.blocked_paths) or ".." in normalized_path or "\x00" in normalized_path:
+        blocked_paths = [os.path.realpath(os.path.expanduser(item)) for item in policy.blocked_paths]
+        allowed_paths = [os.path.realpath(os.path.expanduser(item)) for item in policy.allowed_paths]
+        if "\x00" in path or any(os.path.commonpath([normalized_path, blocked]) == blocked for blocked in blocked_paths):
             raise SecurityViolationError("File Path Violation", f"Blocked path: {normalized_path}")
-        if not any(normalized_path.startswith(allowed) for allowed in policy.allowed_paths):
+        if not any(os.path.commonpath([normalized_path, allowed]) == allowed for allowed in allowed_paths):
             raise SecurityViolationError("File Path Violation", f"Path not allowed: {normalized_path}")
         return normalized_path
 
@@ -58,7 +68,7 @@ class InputValidator:
     def validate_content(content: str, policy: SecurityPolicy) -> str:
         if len(content) > policy.max_file_size_mb * 1024 * 1024:
             raise SecurityViolationError("Content Violation", "Content size exceeds limit")
-        if policy.level >= SecurityLevel.HIGH:
+        if policy.level in {SecurityLevel.HIGH, SecurityLevel.CRITICAL}:
             dangerous_patterns = ["eval(", "exec(", "__import__(", "subprocess.call", "os.system"]
             if any(pattern in content for pattern in dangerous_patterns):
                 raise SecurityViolationError("Content Violation", "Dangerous patterns detected")
@@ -68,11 +78,21 @@ class InputValidator:
     def validate_url(url: str, policy: SecurityPolicy) -> str:
         if not policy.allow_network:
             raise SecurityViolationError("Network Violation", "Network access not allowed")
-        private_ip_patterns = [r"^10\.\d+\.\d+\.\d+$", r"^192\.168\.\d+\.\d+$", r"^172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+$", r"^127\.\d+\.\d+\.\d+$", r"^0\.0\.0\.0$"]
-        if any(re.match(pattern, url) for pattern in private_ip_patterns):
-            raise SecurityViolationError("Network Violation", "Private IP address blocked")
-        if policy.allowed_domains and not any(url.endswith(domain) for domain in policy.allowed_domains):
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise SecurityViolationError("Network Violation", "Only HTTP(S) URLs are allowed")
+        hostname = parsed.hostname.rstrip(".").lower()
+        if policy.allowed_domains and not any(
+            hostname == domain.lower() or hostname.endswith("." + domain.lower())
+            for domain in policy.allowed_domains
+        ):
             raise SecurityViolationError("Network Violation", "Domain not allowed")
+        try:
+            addresses = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
+        except socket.gaierror as exc:
+            raise SecurityViolationError("Network Violation", "Host cannot be resolved") from exc
+        if any(not ipaddress.ip_address(address).is_global for address in addresses):
+            raise SecurityViolationError("Network Violation", "Private or reserved address blocked")
         return url
 
     @staticmethod
@@ -86,14 +106,16 @@ class InputValidator:
 
 @dataclasses.dataclass
 class AuditEntry:
-    entry_id: str = dataclasses.field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.utcnow)
     agent_id: str
     tool_name: str
     args: dict
     blocked: bool
     violation: Optional[str] = None
     duration_ms: float = 0.0
+    entry_id: str = dataclasses.field(default_factory=lambda: str(uuid.uuid4())[:8])
+    timestamp: datetime.datetime = dataclasses.field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc)
+    )
 
 class SecurityMiddleware:
     def __init__(self, policy: SecurityPolicy = None, logger=None, event_bus=None):
@@ -130,11 +152,20 @@ class SecurityMiddleware:
             violation = str(e)
             self._blocked_count += 1
             if self._event_bus:
-                self._event_bus.publish("security.violation", {
-                    "agent_id": agent_id,
-                    "tool_name": tool_name,
-                    "violation": violation
-                })
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._event_bus.publish("security.violation", {
+                        "agent_id": agent_id,
+                        "tool_name": tool_name,
+                        "violation": violation
+                    }, source="SecurityInterceptor"))
+                except RuntimeError:
+                    self._logger.warning("Security event could not be scheduled outside an event loop")
+            duration_ms = (time.time() - start_time) * 1000
+            self._audit_trail.append(AuditEntry(
+                agent_id=agent_id, tool_name=tool_name, args=dict(tool_args),
+                blocked=True, violation=violation, duration_ms=duration_ms
+            ))
             raise
         else:
             self._allowed_count += 1

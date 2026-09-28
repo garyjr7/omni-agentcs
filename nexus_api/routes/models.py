@@ -5,12 +5,14 @@ Agrega API keys → detecta modelos disponibles automáticamente
 import uuid
 import httpx
 import asyncio
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from nexus_api.auth.deps import get_current_user, require_admin
 from nexus_api.db.database import db_list_keys, db_create_key, db_update_key, db_delete_key
+from nexus_api.config import NEXUS_DB_PATH
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Modelos conocidos por provider
 PROVIDER_MODELS = {
@@ -106,7 +108,11 @@ def available_models():
     return {"models": all_models, "total": len(all_models)}
 
 @router.post("/models/keys", status_code=201)
-async def add_key(body: AddKeyRequest, background: BackgroundTasks):
+async def add_key(
+    body: AddKeyRequest,
+    background: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
     """Agrega una API key y detecta modelos disponibles en background."""
     key_id = f"key_{uuid.uuid4().hex[:8]}"
 
@@ -135,7 +141,11 @@ async def add_key(body: AddKeyRequest, background: BackgroundTasks):
     return {"id": key_id, "message": f"API key de {body.provider} agregada — detectando modelos...", **data}
 
 @router.post("/models/keys/{key_id}/detect")
-async def redetect_models(key_id: str, background: BackgroundTasks):
+async def redetect_models(
+    key_id: str,
+    background: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
     """Re-detecta modelos para una key existente."""
     keys = db_list_keys()
     key = next((k for k in keys if k['id'] == key_id), None)
@@ -145,7 +155,7 @@ async def redetect_models(key_id: str, background: BackgroundTasks):
     # Necesitamos la key real de la DB
     import sqlite3
     from pathlib import Path
-    conn = sqlite3.connect("/home/operator/NEXUS-PRO/data/nexus_pro.db")
+    conn = sqlite3.connect(NEXUS_DB_PATH)
     row = conn.execute("SELECT key_value FROM api_keys WHERE id=?", (key_id,)).fetchone()
     conn.close()
     if row:
@@ -154,7 +164,10 @@ async def redetect_models(key_id: str, background: BackgroundTasks):
     return {"message": "Detección iniciada", "key_id": key_id}
 
 @router.delete("/models/keys/{key_id}")
-def delete_key(key_id: str):
+def delete_key(
+    key_id: str,
+    current_user: dict = Depends(require_admin),
+):
     db_delete_key(key_id)
     return {"deleted": key_id}
 

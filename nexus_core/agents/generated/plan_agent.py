@@ -9,9 +9,10 @@ import asyncio
 import httpx
 from datetime import datetime
 from pathlib import Path
+from nexus_core.config import NEXUS_ROOT, LEGACY_DATABASE_PATH
 
-BASE_DIR = Path("/home/operator/BW-AI")
-DB_PATH = BASE_DIR / "nexus_api/database.db"
+BASE_DIR = NEXUS_ROOT
+DB_PATH = LEGACY_DATABASE_PATH
 
 
 def create_plan(title: str, objective: str, steps: list,

@@ -1,11 +1,13 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 import sqlite3, sys, os
 from pathlib import Path
+from nexus_api.config import NEXUS_DATA_PATH
+from nexus_api.auth.deps import require_operator
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-router = APIRouter()
-DB = Path("/home/operator/BW-AI/nexus_api/database.db")
+router = APIRouter(dependencies=[Depends(require_operator)])
+DB = NEXUS_DATA_PATH / "database.db"
 
 class ProjectRequest(BaseModel):
     name: str

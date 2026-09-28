@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 import json, os, asyncio, logging
 from nexus_api.auth.deps import get_current_user, require_operator
+from nexus_api.config import NEXUS_ROOT, NEXUS_DATA_PATH, NEXUS_DB_PATH
 from nexus_api.services.factory_service import (
     init_factory_tables, parse_requirements_md, generate_plan_maestro,
     create_project, save_plan, approve_project, get_project, list_projects,
@@ -31,9 +32,9 @@ class PentestAnalyzeRequest(BaseModel):
 @router.get("/templates")
 async def get_templates(user=Depends(get_current_user)):
     """Devuelve los templates MD para descargar."""
-    templates_dir = "/home/operator/NEXUS-PRO/data/factory/templates"
-    sw_path = f"{templates_dir}/software_requirements.md"
-    pt_path = f"{templates_dir}/pentest_scope.md"
+    templates_dir = NEXUS_DATA_PATH / "factory" / "templates"
+    sw_path = templates_dir / "software_requirements.md"
+    pt_path = templates_dir / "pentest_scope.md"
     result = {}
     if os.path.exists(sw_path):
         with open(sw_path) as f:
@@ -137,7 +138,7 @@ async def _execute_factory(project_id: str):
 
     plan = json.loads(project.get("plan_maestro","{}"))
     phases = get_phases(project_id)
-    output_dir = plan.get("output_dir", f"/home/operator/NEXUS-PRO/data/factory/projects/{project_id}")
+    output_dir = plan.get("output_dir", str(NEXUS_DATA_PATH / "factory" / "projects" / project_id))
     os.makedirs(output_dir, exist_ok=True)
 
     stack = plan.get("stack", {})
@@ -356,7 +357,7 @@ async def _execute_pentest(engage_id: str):
                 headers={"Authorization": f"Bearer {token}"},
                 json={
                     "target": "localhost:8000",
-                    "target_path": "/home/operator/NEXUS-PRO",
+                    "target_path": str(NEXUS_ROOT),
                     "target_name": nombre,
                     "scope": "full"
                 })

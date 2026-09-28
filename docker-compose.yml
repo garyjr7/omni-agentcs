@@ -23,9 +23,8 @@ services:
     environment:
       - NEXUS_DB_PATH=/nexus/data/nexus_pro.db
       - NEXUS_DATA_DIR=/nexus/data
-      - CHROMA_HOST=chromadb
-      - CHROMA_PORT=8001
-      - UVICORN_WORKERS=2
+      - DATABASE_URL=postgresql://nexus:${POSTGRES_PASSWORD}@postgres:5432/nexus
+      - NEXUS_ENV=production
       - LOG_LEVEL=info
     volumes:
       # Datos persistentes — surviven rebuilds
@@ -35,9 +34,9 @@ services:
       # - ./nexus_api:/nexus/nexus_api
       # - ./nexus_core:/nexus/nexus_core
     ports:
-      - "${NEXUS_BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${NEXUS_BACKEND_PORT:-8000}:8000"
     depends_on:
-      chromadb:
+      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -48,6 +47,12 @@ services:
     logging: *default-logging
     networks:
       - nexus_net
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
 
   # ── Frontend React → nginx ────────────────────────────────────
   frontend:
@@ -68,26 +73,159 @@ services:
     networks:
       - nexus_net
 
-  # ── ChromaDB — Vector Memory ──────────────────────────────────
-  chromadb:
-    image: chromadb/chroma:latest
-    container_name: nexus-chromadb
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NEXUS_DB_PATH=/nexus/data/nexus_pro.db
+      - NEXUS_DATA_DIR=/nexus/data
+      - DATABASE_URL=postgresql://nexus:${POSTGRES_PASSWORD}@postgres:5432/nexus
+      - NEXUS_ENV=production
+    entrypoint: ["python", "/nexus/nexus_worker.py"]
+    volumes:
+      - nexus_data:/nexus/data
+    depends_on:
+      backend:
+        condition: service_healthy
+    logging: *default-logging
+    networks:
+      - nexus_net
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    profiles: ["mcp-local"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NEXUS_ENV=development
+      - NEXUS_DB_PATH=/nexus/data/nexus_pro.db
+      - NEXUS_MCP_TRANSPORT=streamable-http
+      - NEXUS_MCP_HOST=0.0.0.0
+      - NEXUS_MCP_PORT=8000
+      - NEXUS_MCP_PUBLIC_URL=${NEXUS_MCP_PUBLIC_URL:-}
+      # Safe only because the published host port below is bound to 127.0.0.1.
+      - NEXUS_MCP_TRUST_LOCAL_CONTAINER=true
+      - DATABASE_URL=postgresql://nexus:${POSTGRES_PASSWORD}@postgres:5432/nexus
+    entrypoint: ["python", "-m", "nexus_mcp.server"]
+    volumes:
+      - nexus_data:/nexus/data
+    ports:
+      - "127.0.0.1:${NEXUS_MCP_PORT:-8002}:8000"
+    logging: *default-logging
+    networks:
+      - nexus_net
+
+  # MCP público: sin puertos directos y con OAuth/OIDC obligatorio.
+  mcp-remote:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    profiles: ["mcp-remote"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NEXUS_ENV=production
+      - NEXUS_DB_PATH=/nexus/data/nexus_pro.db
+      - NEXUS_MCP_TRANSPORT=streamable-http
+      - NEXUS_MCP_HOST=0.0.0.0
+      - NEXUS_MCP_PORT=8000
+      - NEXUS_MCP_PUBLIC_URL=${NEXUS_MCP_PUBLIC_URL:?HTTPS public MCP URL is required}
+      - OIDC_ISSUER=${OIDC_ISSUER:?OIDC issuer is required}
+      - OIDC_AUDIENCE=${OIDC_AUDIENCE:?OIDC audience is required}
+      - NEXUS_MCP_ENABLE_WRITE_TOOLS=${NEXUS_MCP_ENABLE_WRITE_TOOLS:-false}
+      - DATABASE_URL=postgresql://nexus:${POSTGRES_PASSWORD}@postgres:5432/nexus
+    entrypoint: ["python", "-m", "nexus_mcp.server"]
+    volumes:
+      - nexus_data:/nexus/data
+    expose: ["8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+    networks:
+      - nexus_net
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+
+  mcp-gateway:
+    image: nginx:1.27-alpine
+    profiles: ["mcp-remote"]
+    restart: unless-stopped
+    ports:
+      - "${NEXUS_MCP_TLS_PORT:-8444}:8443"
+    volumes:
+      - ./docker/mcp-remote.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${NEXUS_MCP_TLS_DIR:?NEXUS_MCP_TLS_DIR is required}:/etc/nexus/tls:ro
+    environment:
+      - NEXUS_MCP_SERVER_NAME=${NEXUS_MCP_SERVER_NAME:?MCP domain is required}
+    depends_on:
+      - mcp-remote
+    networks:
+      - nexus_net
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m
+      - /var/run:rw,noexec,nosuid,size=4m
+      - /tmp:rw,noexec,nosuid,size=4m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+
+  connector-gateway:
+    image: nginx:1.27-alpine
+    profiles: ["connector"]
+    restart: unless-stopped
+    ports:
+      - "${NEXUS_CONNECTOR_TLS_PORT:-8443}:8443"
+    volumes:
+      - ./docker/connector-mtls.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${NEXUS_CONNECTOR_PKI_DIR:?NEXUS_CONNECTOR_PKI_DIR is required}:/etc/nexus/pki:ro
+    environment:
+      - NEXUS_CONNECTOR_PROXY_SECRET=${NEXUS_CONNECTOR_PROXY_SECRET:?NEXUS_CONNECTOR_PROXY_SECRET is required}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - nexus_net
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m
+      - /var/run:rw,noexec,nosuid,size=4m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+
+  postgres:
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      - CHROMA_SERVER_AUTH_CREDENTIALS_FILE=/chroma/auth
-      - IS_PERSISTENT=TRUE
-      - PERSIST_DIRECTORY=/chroma/data
-      - ANONYMIZED_TELEMETRY=FALSE
+      POSTGRES_DB: nexus
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
-      - chroma_data:/chroma/data
-    ports:
-      - "${CHROMA_PORT:-8001}:8000"
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 20s
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus"]
+      interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 20s
+      retries: 10
     logging: *default-logging
     networks:
       - nexus_net
@@ -103,11 +241,7 @@ services:
 volumes:
   nexus_data:
     driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${NEXUS_DATA_BIND:-./data}
-  chroma_data:
+  postgres_data:
     driver: local
 
 networks:

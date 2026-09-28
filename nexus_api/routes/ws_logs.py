@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import List
+from nexus_api.auth.deps import authenticate_websocket
 
 router = APIRouter()
 
@@ -94,6 +95,8 @@ logging.getLogger().addHandler(_ws_handler)
 @router.websocket("/ws/logs")
 async def websocket_global(ws: WebSocket):
     """Canal global de logs del sistema."""
+    if not await authenticate_websocket(ws):
+        return
     await log_manager.connect(ws)
     await log_manager.send_log("SUCCESS", "nexus-ws", "Dashboard conectado — NEXUS PRO v2.0")
 
@@ -123,6 +126,8 @@ async def websocket_global(ws: WebSocket):
 @router.websocket("/ws/logs/{channel}")
 async def websocket_channel(ws: WebSocket, channel: str):
     """Canal específico por agente o componente."""
+    if not await authenticate_websocket(ws):
+        return
     await log_manager.connect(ws)
     await log_manager.send_log("INFO", "nexus-ws", f"Canal '{channel}' conectado")
     try:

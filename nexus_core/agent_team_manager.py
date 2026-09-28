@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Callable
+from nexus_core.config import PROJECTS_DIR
 
 logger = logging.getLogger("nexus.agent_team_manager")
 
@@ -299,7 +300,7 @@ class AgentTeamManager:
 
                     # Materializar archivos en disco
                     if code_result.success and code_result.output:
-                        pdir = f"/home/operator/BW-AI/projects/{execution.project_name}/backend"
+                        pdir = str(PROJECTS_DIR / execution.project_name / "backend")
                         mat = await self._materialize_code(execution, code_result.output, pdir)
                         logger.info(f"[{execution.execution_id}] Materializados: {mat['files_written']} archivos")
 

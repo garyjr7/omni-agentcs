@@ -26,10 +26,11 @@ from typing import Any, Dict, List, Optional
 
 from nexus_core.agents.base import BaseAgent, AgentMetadata, AgentCapability
 from nexus_core.agents.dynamic_agent import ToolExecutor
+from nexus_core.config import NEXUS_ROOT, JUNIOR_WORKSPACE
 
 logger = logging.getLogger("nexus.junior")
 
-WORKSPACE = Path("/home/operator/NEXUS-PRO/data/junior_workspace")
+WORKSPACE = JUNIOR_WORKSPACE
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 
 
@@ -87,8 +88,8 @@ RESPONDE ÚNICAMENTE con JSON válido:
 
         user_msg = f"""Objetivo: {objective}{ctx}
 
-Workspace de Junior: /home/operator/NEXUS-PRO/data/junior_workspace/
-Proyecto NEXUS en: /home/operator/NEXUS-PRO/
+Workspace de Junior: {WORKSPACE}
+Proyecto NEXUS en: {NEXUS_ROOT}
 
 Genera el plan de pasos para completar este objetivo."""
 
@@ -116,7 +117,7 @@ Genera el plan de pasos para completar este objetivo."""
                         "step": 1,
                         "name": "Explorar proyecto",
                         "tool": "file_list",
-                        "params": {"path": "/home/operator/NEXUS-PRO"},
+                        "params": {"path": str(NEXUS_ROOT)},
                         "description": "Listar estructura del proyecto",
                         "depends_on_prev": False
                     },

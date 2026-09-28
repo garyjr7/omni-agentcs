@@ -6,6 +6,7 @@ Junior lo usa para escribir, leer, editar y borrar archivos reales.
 from nexus_core.agents.base import BaseAgent, AgentMetadata, AgentCapability
 import asyncio
 from pathlib import Path
+from nexus_core.config import NEXUS_ROOT
 
 
 class FileAgent(BaseAgent):
@@ -21,6 +22,8 @@ class FileAgent(BaseAgent):
     capability = AgentCapability.FILE_OPERATIONS
 
     async def execute(self, task_id: str, payload: dict) -> dict:
+        from nexus_core.kernel.legacy import require_legacy_execution
+        require_legacy_execution()
         action   = payload.get("action", "write")
         filepath = payload.get("filepath", "")
         content  = payload.get("content", "")
@@ -30,7 +33,7 @@ class FileAgent(BaseAgent):
             return {"status": "failed", "error": "filepath requerido", "task_id": task_id}
 
         try:
-            path = Path(filepath) if Path(filepath).is_absolute() else Path("/home/operator/BW-AI") / filepath
+            path = Path(filepath) if Path(filepath).is_absolute() else NEXUS_ROOT / filepath
 
             if action == "write":
                 path.parent.mkdir(parents=True, exist_ok=True)

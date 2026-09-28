@@ -1,0 +1,26 @@
+{
+  "default": {
+    "content": "Respuesta determinista de NEXUS Fake LLM."
+  },
+  "planner.simple_success": {
+    "content": "{\"goal\":\"fixture\",\"steps\":[{\"id\":\"step-1\",\"tool\":\"echo\",\"arguments\":{\"text\":\"ok\"}}]}"
+  },
+  "planner.invalid_json": {
+    "content": "esto no es JSON"
+  },
+  "tool_call.safe": {
+    "content": "{\"tool\":\"file_read\",\"arguments\":{\"path\":\"README.md\"}}"
+  },
+  "tool_call.forbidden": {
+    "content": "{\"tool\":\"shell\",\"arguments\":{\"command\":\"forbidden\"}}"
+  },
+  "provider.timeout": {
+    "error": "simulated provider timeout"
+  },
+  "provider.rate_limited": {
+    "error": "simulated provider rate limit"
+  },
+  "echo": {
+    "echo_last_message": true
+  }
+}

@@ -1,11 +1,13 @@
 """DocAgent API — Memoria Técnica BajioWare."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional, List
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-router = APIRouter()
+from nexus_api.auth.deps import require_operator
+
+router = APIRouter(dependencies=[Depends(require_operator)])
 
 class IncidentDocRequest(BaseModel):
     incident_id: str

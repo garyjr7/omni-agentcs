@@ -7,8 +7,9 @@ import asyncio
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Depends
 from pydantic import BaseModel, Field
+from nexus_api.auth.deps import get_current_user, require_operator, authenticate_websocket
 
 router = APIRouter()
 
@@ -104,7 +105,7 @@ async def _run_pipeline(project_id: str, prompt: str):
 
 # ── Endpoints ─────────────────────────────────────────────────
 @router.post("/", response_model=ProjectResponse, status_code=202)
-async def create_project(body: CreateProjectRequest, background_tasks: BackgroundTasks):
+async def create_project(body: CreateProjectRequest, background_tasks: BackgroundTasks, _: dict = Depends(require_operator)):
     proj = _new_project(body)
     _projects[proj["id"]] = proj
     background_tasks.add_task(_run_pipeline, proj["id"], body.prompt)
@@ -121,7 +122,7 @@ async def create_project(body: CreateProjectRequest, background_tasks: Backgroun
 
 
 @router.get("/", response_model=List[dict])
-async def list_projects():
+async def list_projects(_: dict = Depends(get_current_user)):
     return [
         {k: v for k, v in p.items() if k != "files"}
         for p in _projects.values()
@@ -129,7 +130,7 @@ async def list_projects():
 
 
 @router.get("/{project_id}")
-async def get_project(project_id: str):
+async def get_project(project_id: str, _: dict = Depends(get_current_user)):
     proj = _projects.get(project_id)
     if not proj:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -137,7 +138,7 @@ async def get_project(project_id: str):
 
 
 @router.delete("/{project_id}")
-async def delete_project(project_id: str):
+async def delete_project(project_id: str, _: dict = Depends(require_operator)):
     proj = _projects.pop(project_id, None)
     if not proj:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
@@ -148,6 +149,8 @@ async def delete_project(project_id: str):
 
 @router.websocket("/ws/{project_id}")
 async def project_ws(websocket: WebSocket, project_id: str):
+    if not await authenticate_websocket(websocket):
+        return
     await websocket.accept()
     proj = _projects.get(project_id)
     if not proj:

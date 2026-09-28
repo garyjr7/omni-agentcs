@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import pathlib
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Dict, List
@@ -32,7 +32,7 @@ class TaskState:
     retries: int = 0
     max_retries: int = 3
     priority: int = 5
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     checkpoint_data: Optional[dict] = None
@@ -81,8 +81,8 @@ class SystemState:
     phase: int = 0
     tasks: Dict[str, dict] = field(default_factory=dict)
     agents_registered: List[str] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     state_checksum: Optional[str] = None
 
 class StateManager:
@@ -107,33 +107,53 @@ class StateManager:
 
     async def save(self) -> None:
         async with self._lock:
-            self._state.updated_at = datetime.utcnow()
-            state_dict = dataclasses.asdict(self._state)
-            def _json_serial(obj):
-                if hasattr(obj, 'isoformat'):
-                    return obj.isoformat()
-                raise TypeError(f'Type {type(obj)} not serializable')
-            state_json = json.dumps(state_dict, indent=2, default=_json_serial)
-            checksum = hashlib.sha256(state_json.encode()).hexdigest()
-            self._state.state_checksum = checksum
-            with open(self._tmp, "w") as f:
-                f.write(state_json)
-            os.replace(self._tmp, self._file)
+            self._save_unlocked()
+
+    @staticmethod
+    def _json_serial(obj):
+        if hasattr(obj, "isoformat"):
+            return obj.isoformat()
+        raise TypeError(f"Type {type(obj)} not serializable")
+
+    @classmethod
+    def _checksum(cls, state_dict: dict) -> str:
+        payload = dict(state_dict)
+        payload["state_checksum"] = None
+        canonical = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), default=cls._json_serial
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _save_unlocked(self) -> None:
+        self._state.updated_at = datetime.now(timezone.utc)
+        state_dict = dataclasses.asdict(self._state)
+        checksum = self._checksum(state_dict)
+        self._state.state_checksum = checksum
+        state_dict["state_checksum"] = checksum
+        state_json = json.dumps(state_dict, indent=2, default=self._json_serial)
+        self._file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._tmp, "w", encoding="utf-8") as state_file:
+            state_file.write(state_json)
+            state_file.flush()
+            os.fsync(state_file.fileno())
+        os.replace(self._tmp, self._file)
 
     async def load(self) -> SystemState:
         async with self._lock:
-            with open(self._file, "r") as f:
+            with open(self._file, "r", encoding="utf-8") as f:
                 state_dict = json.load(f)
-            checksum = hashlib.sha256(json.dumps(state_dict, indent=2).encode()).hexdigest()
-            if checksum != state_dict.get("state_checksum"):
+            expected = state_dict.get("state_checksum")
+            if self._checksum(state_dict) != expected:
                 raise RuntimeError("State file corrupted")
+            state_dict["created_at"] = datetime.fromisoformat(state_dict["created_at"])
+            state_dict["updated_at"] = datetime.fromisoformat(state_dict["updated_at"])
             self._state = SystemState(**state_dict)
             return self._state
 
     async def create_task(self, task: TaskState) -> None:
         async with self._lock:
             self._state.tasks[task.task_id] = task.to_dict()
-            await self.save()
+            self._save_unlocked()
 
     async def update_task(self, task_id: str, **kwargs) -> TaskState:
         async with self._lock:
@@ -143,9 +163,8 @@ class StateManager:
             task = TaskState.from_dict(task_data)
             for key, value in kwargs.items():
                 setattr(task, key, value)
-            task.updated_at = datetime.utcnow()
             self._state.tasks[task_id] = task.to_dict()
-            await self.save()
+            self._save_unlocked()
             return task
 
     async def get_task(self, task_id: str) -> Optional[TaskState]:
@@ -160,7 +179,7 @@ class StateManager:
     async def get_pending_tasks(self) -> List[TaskState]:
         async with self._lock:
             tasks = [TaskState.from_dict(task) for task in self._state.tasks.values() if task["status"] == TaskStatus.PENDING]
-            return sorted(tasks, key=lambda t: t.priority)
+            return sorted(tasks, key=lambda t: t.priority, reverse=True)
 
     async def get_failed_tasks(self) -> List[TaskState]:
         async with self._lock:
@@ -174,7 +193,7 @@ class StateManager:
             task = TaskState.from_dict(task_data)
             task.checkpoint_data = data
             self._state.tasks[task_id] = task.to_dict()
-            await self.save()
+            self._save_unlocked()
 
     async def restore_from_checkpoint(self, task_id: str) -> Optional[dict]:
         async with self._lock:
@@ -187,13 +206,13 @@ class StateManager:
     async def advance_phase(self, new_phase: int) -> None:
         async with self._lock:
             self._state.phase = new_phase
-            await self.save()
+            self._save_unlocked()
 
     async def register_agent(self, agent_id: str) -> None:
         async with self._lock:
             if agent_id not in self._state.agents_registered:
                 self._state.agents_registered.append(agent_id)
-                await self.save()
+                self._save_unlocked()
 
     def get_stats(self) -> dict:
         return {

@@ -10,10 +10,11 @@ import uuid
 import shutil
 from datetime import datetime
 from pathlib import Path
+from nexus_core.config import NEXUS_ROOT, NEXUS_DATA_PATH, LEGACY_DATABASE_PATH
 
-BASE_DIR = Path("/home/operator/BW-AI")
-DB_PATH = BASE_DIR / "nexus_api/database.db"
-SANDBOX_DIR = BASE_DIR / "data/test_sandbox"
+BASE_DIR = NEXUS_ROOT
+DB_PATH = LEGACY_DATABASE_PATH
+SANDBOX_DIR = NEXUS_DATA_PATH / "test_sandbox"
 
 
 def _init_db():

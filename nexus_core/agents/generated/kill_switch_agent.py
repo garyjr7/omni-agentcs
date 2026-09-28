@@ -7,9 +7,10 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
+from nexus_core.config import NEXUS_ROOT, LEGACY_DATABASE_PATH
 
-BASE_DIR = Path("/home/operator/BW-AI")
-DB_PATH = BASE_DIR / "nexus_api/database.db"
+BASE_DIR = NEXUS_ROOT
+DB_PATH = LEGACY_DATABASE_PATH
 
 # Operaciones que SIEMPRE requieren aprobación humana
 CRITICAL_OPERATIONS = {

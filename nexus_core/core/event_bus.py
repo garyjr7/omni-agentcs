@@ -1,13 +1,14 @@
 import asyncio
-import dataclasses
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Awaitable, Optional, Dict, List
 import uuid
 import datetime
 import logging
+from contextlib import suppress
 
 class EventType(str, Enum):
+    TASK_RECEIVED = "task.received"
     TASK_DISPATCHED = "task.dispatched"
     TASK_STARTED = "task.started"
     TASK_COMPLETED = "task.completed"
@@ -21,6 +22,10 @@ class EventType(str, Enum):
     SYSTEM_STARTED = "system.started"
     SYSTEM_SHUTDOWN = "system.shutdown"
     HEALTH_CHECK = "system.health_check"
+    AGENT_TASK_STARTED = "agent.task.started"
+    AGENT_TASK_COMPLETED = "agent.task.completed"
+    AGENT_TASK_FAILED = "agent.task.failed"
+    SECURITY_VIOLATION = "security.violation"
 
 @dataclass
 class Event:
@@ -40,6 +45,10 @@ class EventBus:
         self._stats: Dict[str, int] = {event_type: 0 for event_type in EventType}
         self._logger: logging.Logger = logging.getLogger("EventBus")
 
+    @property
+    def running(self) -> bool:
+        return self._running
+
     async def subscribe(self, event_type: EventType, handler: Callable[[Event], Awaitable[None]]) -> None:
         if event_type not in self._subscribers:
             self._subscribers[event_type] = []
@@ -49,7 +58,14 @@ class EventBus:
         if event_type in self._subscribers:
             self._subscribers[event_type].remove(handler)
 
-    async def publish(self, event: Event) -> None:
+    async def publish(
+        self,
+        event: Event | EventType | str,
+        payload: Optional[dict] = None,
+        source: str = "unknown",
+    ) -> None:
+        if not isinstance(event, Event):
+            event = Event(type=EventType(event), payload=payload or {}, source=source)
         await self._queue.put(event)
         self._stats[event.type] += 1
         if event.correlation_id:
@@ -58,9 +74,14 @@ class EventBus:
     async def _dispatch_loop(self) -> None:
         while self._running:
             event = await self._queue.get()
-            handlers = self._subscribers.get(event.type, [])
-            for handler in handlers:
-                asyncio.create_task(self._handle_event(handler, event))
+            try:
+                handlers = self._subscribers.get(event.type, [])
+                if handlers:
+                    await asyncio.gather(
+                        *(self._handle_event(handler, event) for handler in handlers)
+                    )
+            finally:
+                self._queue.task_done()
 
     async def _handle_event(self, handler: Callable[[Event], Awaitable[None]], event: Event) -> None:
         try:
@@ -69,16 +90,22 @@ class EventBus:
             self._logger.error(f"Error handling event {event.type}: {e}", exc_info=True)
 
     async def start(self) -> None:
+        if self._running:
+            return
         self._running = True
         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
         await self.publish(Event(type=EventType.SYSTEM_STARTED, payload={}, source="EventBus"))
 
     async def stop(self) -> None:
+        if not self._running:
+            return
+        await self.publish(Event(type=EventType.SYSTEM_SHUTDOWN, payload={}, source="EventBus"))
         await asyncio.wait_for(self._queue.join(), timeout=5)
         self._running = False
         if self._dispatch_task:
             self._dispatch_task.cancel()
-        await self.publish(Event(type=EventType.SYSTEM_SHUTDOWN, payload={}, source="EventBus"))
+            with suppress(asyncio.CancelledError):
+                await self._dispatch_task
 
     def get_stats(self) -> dict:
         return self._stats.copy()
@@ -94,6 +121,7 @@ def get_event_bus() -> EventBus:
         _BUS_INSTANCE = EventBus()
     return _BUS_INSTANCE
 
-def reset_event_bus() -> None:
+def reset_event_bus() -> EventBus:
     global _BUS_INSTANCE
-    _BUS_INSTANCE = None
+    _BUS_INSTANCE = EventBus()
+    return _BUS_INSTANCE

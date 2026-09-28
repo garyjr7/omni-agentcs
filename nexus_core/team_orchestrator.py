@@ -6,13 +6,15 @@ import asyncio
 import json
 import sqlite3
 import subprocess
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from nexus_core.config import NEXUS_ROOT, LEGACY_DATABASE_PATH
 
-BASE_DIR = Path("/home/operator/BW-AI")
-DB_PATH = BASE_DIR / "nexus_api/database.db"
+BASE_DIR = NEXUS_ROOT
+DB_PATH = LEGACY_DATABASE_PATH
 TEMPLATE_PATH = BASE_DIR / ".nexus/production_team_template.json"
 
 
@@ -191,8 +193,10 @@ class TeamOrchestrator:
         ).fetchall()
         for (cid,) in containers:
             if cid:
-                subprocess.run(f"docker stop {cid} 2>/dev/null", shell=True)
-                subprocess.run(f"docker rm {cid} 2>/dev/null", shell=True)
+                if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,128}", cid):
+                    raise ValueError("Invalid container identifier")
+                subprocess.run(["docker", "stop", cid], capture_output=True, check=False)
+                subprocess.run(["docker", "rm", cid], capture_output=True, check=False)
 
         conn.execute("UPDATE teams SET status='destroyed' WHERE team_id=?", (team_id,))
         conn.execute("UPDATE team_agents SET status='stopped' WHERE team_id=?", (team_id,))

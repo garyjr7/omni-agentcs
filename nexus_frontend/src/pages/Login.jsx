@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuthStore } from '../store/authStore'
 import { nexusApi } from '../api/client'
 
@@ -9,7 +9,7 @@ export default function Login() {
   const [error,    setError]    = useState('')
   const [loading,  setLoading]  = useState(false)
 
-  const submit = async (e) => {
+  const submit = useCallback(async (e) => {
     e?.preventDefault()
     if (!email || !password) { setError('Completa los campos'); return }
     setLoading(true); setError('')
@@ -21,14 +21,14 @@ export default function Login() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [email, password, setTokens])
 
   // Enter para submit
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Enter') submit() }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [email, password])
+  }, [submit])
 
   return (
     <div style={{ minHeight:'100vh', background:'var(--bg-base)',

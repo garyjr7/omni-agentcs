@@ -8,8 +8,9 @@ import asyncio
 import ast
 import os
 from pathlib import Path
+from nexus_core.config import NEXUS_ROOT
 
-BASE_DIR = Path("/home/operator/BW-AI")
+BASE_DIR = NEXUS_ROOT
 
 
 class CodeAgent(BaseAgent):
@@ -28,6 +29,8 @@ class CodeAgent(BaseAgent):
     capability = AgentCapability.CODE_GENERATION
 
     async def execute(self, task_id: str, payload: dict) -> dict:
+        from nexus_core.kernel.legacy import require_legacy_execution
+        require_legacy_execution()
         action   = payload.get("action", "validate")
         filepath = payload.get("filepath", "")
         code     = payload.get("code", "")

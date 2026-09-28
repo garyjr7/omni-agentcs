@@ -7,8 +7,9 @@ import json
 import os
 from pathlib import Path
 from datetime import datetime
+from nexus_api.config import NEXUS_DB_PATH
 
-DB_PATH = Path("/home/operator/NEXUS-PRO/data/nexus_pro.db")
+DB_PATH = NEXUS_DB_PATH
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -92,6 +93,36 @@ def init_nexus_db():
         models      TEXT DEFAULT '[]',
         status      TEXT DEFAULT 'detecting',
         created_at  TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS junior_updates (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        title          TEXT NOT NULL,
+        description    TEXT,
+        category       TEXT DEFAULT 'mejora',
+        priority       TEXT DEFAULT 'media',
+        impact         TEXT,
+        implementation TEXT,
+        status         TEXT DEFAULT 'pending',
+        approved_by    TEXT,
+        approved_at    TEXT,
+        created_at     TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS junior_chats (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT UNIQUE NOT NULL,
+        title      TEXT DEFAULT 'Nueva conversación',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS junior_messages (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        role       TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
     );
     """)
     conn.commit()

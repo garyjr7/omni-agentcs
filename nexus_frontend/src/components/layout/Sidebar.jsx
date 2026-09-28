@@ -3,6 +3,7 @@ import { useNexusStore } from '../../store/nexusStore'
 const NAV = [
   { section:'Centro de Mando', items:[
     { id:'overview', icon:'◈', label:'Overview' },
+    { id:'control', icon:'⬢', label:'Control Plane', highlight:true },
   ]},
   { section:'Orquestación', items:[
     { id:'agents',  icon:'⬡', label:'Agentes IA',    badgeKey:'agents' },
@@ -30,6 +31,14 @@ const NAV = [
   ]},
 ]
 
+const SOVEREIGN_PAGES = new Set([
+  'overview', 'control', 'junior', 'memory', 'users', 'rbac', 'audit', 'settings'
+])
+const VISIBLE_NAV = import.meta.env.VITE_ENABLE_LEGACY_UI === 'true'
+  ? NAV
+  : NAV.map(group => ({ ...group, items:group.items.filter(item => SOVEREIGN_PAGES.has(item.id)) }))
+      .filter(group => group.items.length)
+
 export default function Sidebar() {
   const { activePage, setActivePage, agents, tasks, hitlCount } = useNexusStore()
   const counts = { agents:agents.length, tasks:tasks.length, hitl:hitlCount }
@@ -39,7 +48,7 @@ export default function Sidebar() {
       borderRight:'1px solid var(--border)',overflowY:'auto',overflowX:'hidden',
       padding:'16px 0',display:'flex',flexDirection:'column' }}>
       <div style={{ flex:1 }}>
-        {NAV.map(({ section, items }) => (
+        {VISIBLE_NAV.map(({ section, items }) => (
           <div key={section} style={{ marginBottom:20 }}>
             <div style={{ fontFamily:'var(--mono)',fontSize:9,color:'#2a5060',
               letterSpacing:2,padding:'0 16px 6px',textTransform:'uppercase' }}>{section}</div>

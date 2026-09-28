@@ -6,8 +6,9 @@ import subprocess
 import json
 import asyncio
 from pathlib import Path
+from nexus_core.config import NEXUS_ROOT
 
-BASE_DIR = Path("/home/operator/BW-AI")
+BASE_DIR = NEXUS_ROOT
 
 
 async def explore_filesystem(query: str, base_path: str = None,

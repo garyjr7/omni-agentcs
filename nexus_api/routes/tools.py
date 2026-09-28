@@ -3,12 +3,13 @@ NEXUS PRO — Tools API
 Catálogo de herramientas disponibles para los agentes
 """
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
+from nexus_api.auth.deps import get_current_user
 from nexus_api.db.database import db_list_tools, db_create_tool, db_delete_tool
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 class CreateToolRequest(BaseModel):
     name: str
@@ -37,7 +38,10 @@ def list_categories():
     return cats
 
 @router.post("/tools", status_code=201)
-def create_tool(body: CreateToolRequest):
+def create_tool(
+    body: CreateToolRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Crea una herramienta personalizada."""
     tool_id = f"tool_{uuid.uuid4().hex[:8]}"
     data = {"id": tool_id, **body.model_dump()}
@@ -45,7 +49,10 @@ def create_tool(body: CreateToolRequest):
     return {"id": tool_id, "message": f"Herramienta '{body.name}' creada", **data}
 
 @router.delete("/tools/{tool_id}")
-def delete_tool(tool_id: str):
+def delete_tool(
+    tool_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """Elimina una herramienta personalizada (no built-in)."""
     db_delete_tool(tool_id)
     return {"deleted": tool_id}

@@ -1,32 +1,27 @@
 # ── Stage 1: builder ──────────────────────────────────────────
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc libffi-dev libssl-dev git curl nmap \
+    build-essential gcc libffi-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-# Copiar requirements de ambos módulos
-COPY nexus_api/requirements.txt  /build/req_api.txt
-COPY nexus_core/requirements.txt /build/req_core.txt
+# Lock de producción con versiones y hashes reproducibles.
+COPY requirements-prod.lock /build/requirements-prod.lock
 
 # Instalar dependencias en venv limpio
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r /build/req_api.txt && \
-    pip install --no-cache-dir -r /build/req_core.txt && \
-    pip install --no-cache-dir \
-        bandit safety python-jose[cryptography] \
-        passlib[bcrypt] python-multipart slowapi
+    pip install --no-cache-dir --require-hashes -r /build/requirements-prod.lock
 
 # ── Stage 2: runtime ──────────────────────────────────────────
-FROM python:3.11-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nmap curl git sqlite3 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copiar venv del builder
@@ -38,6 +33,10 @@ WORKDIR /nexus
 # Copiar código fuente
 COPY nexus_api/  /nexus/nexus_api/
 COPY nexus_core/ /nexus/nexus_core/
+COPY nexus_mcp/  /nexus/nexus_mcp/
+COPY nexus_cli.py nexus_worker.py /nexus/
+
+RUN useradd --system --uid 10001 --home /nexus nexus
 
 # Datos persistentes — se montan como volumen
 RUN mkdir -p /nexus/data/reports \
@@ -45,6 +44,7 @@ RUN mkdir -p /nexus/data/reports \
              /nexus/data/junior_workspace \
              /nexus/data/junior_memory_db \
              /nexus/data/logs
+RUN chown -R nexus:nogroup /nexus
 
 # Script de arranque
 COPY docker/entrypoint.sh /nexus/entrypoint.sh
@@ -55,4 +55,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD curl -f http://localhost:8000/health || exit 1
 
+USER nexus
 ENTRYPOINT ["/nexus/entrypoint.sh"]

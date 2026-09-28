@@ -1,15 +1,18 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from typing import Optional
 from nexus_api.auth.deps import get_current_user, require_operator
-from nexus_api.services.memory_service import (
-    init_memory_table, list_agents_with_memory, get_context,
-    get_agent_stats, clear_agent_memory, search_memory,
-    save_message, save_summary, get_summary
-)
+from nexus_api.config import NEXUS_DB_PATH
+from nexus_core.kernel.memory import MemoryStore
+from nexus_core.kernel.store_factory import get_control_store
 
 router = APIRouter(prefix="/memory", tags=["memory"])
-init_memory_table()
+store = get_control_store(NEXUS_DB_PATH)
+memory = MemoryStore(store)
+
+
+def tenant_for(user: dict) -> str:
+    return user.get("tenant_id", "system")
 
 class SaveMessageRequest(BaseModel):
     agent_id:   str
@@ -17,6 +20,8 @@ class SaveMessageRequest(BaseModel):
     role:       str
     content:    str
     session_id: Optional[str] = None
+    classification: str = "internal"
+    retention_days: Optional[int] = None
 
 class SaveSummaryRequest(BaseModel):
     agent_id:   str
@@ -27,7 +32,7 @@ class SaveSummaryRequest(BaseModel):
 @router.get("/agents")
 async def list_agents(user=Depends(get_current_user)):
     """Lista todos los agentes que tienen memoria almacenada."""
-    agents = list_agents_with_memory()
+    agents = memory.agents(tenant_for(user))
     return {"agents": agents, "total": len(agents)}
 
 @router.get("/agents/{agent_id}")
@@ -38,9 +43,10 @@ async def agent_memory(
     user=Depends(get_current_user)
 ):
     """Obtiene el historial de memoria de un agente."""
-    ctx   = get_context(agent_id, session_id, limit)
-    stats = get_agent_stats(agent_id)
-    summ  = get_summary(agent_id, session_id)
+    tenant_id = tenant_for(user)
+    ctx = memory.context(tenant_id, agent_id, session_id, limit)
+    stats = memory.stats(tenant_id, agent_id)
+    summ = memory.summary(tenant_id, agent_id, session_id)
     return {
         "agent_id":   agent_id,
         "session_id": session_id,
@@ -51,7 +57,7 @@ async def agent_memory(
 
 @router.get("/agents/{agent_id}/stats")
 async def agent_stats(agent_id: str, user=Depends(get_current_user)):
-    return get_agent_stats(agent_id)
+    return memory.stats(tenant_for(user), agent_id)
 
 @router.get("/agents/{agent_id}/search")
 async def search(
@@ -60,21 +66,24 @@ async def search(
     limit: int = Query(10, le=50),
     user=Depends(get_current_user)
 ):
-    results = search_memory(agent_id, q, limit)
+    results = memory.search(tenant_for(user), agent_id, q, limit)
     return {"results": results, "total": len(results), "query": q}
 
 @router.post("/messages")
 async def add_message(body: SaveMessageRequest, user=Depends(require_operator)):
-    msg_id = save_message(
-        body.agent_id, body.agent_name,
-        body.role, body.content, body.session_id
+    msg_id = memory.save_message(
+        tenant_for(user), body.agent_id, body.agent_name,
+        body.role, body.content, body.session_id,
+        body.classification, body.retention_days,
     )
     return {"id": msg_id, "status": "saved"}
 
 @router.post("/summaries")
 async def add_summary(body: SaveSummaryRequest, user=Depends(require_operator)):
-    save_summary(body.agent_id, body.summary, body.session_id, body.msg_count)
-    return {"status": "saved"}
+    summary_id = memory.save_summary(
+        tenant_for(user), body.agent_id, body.summary, body.session_id, body.msg_count,
+    )
+    return {"id": summary_id, "status": "saved"}
 
 @router.delete("/agents/{agent_id}")
 async def clear_memory(
@@ -82,5 +91,5 @@ async def clear_memory(
     session_id: Optional[str] = Query(None),
     user=Depends(require_operator)
 ):
-    deleted = clear_agent_memory(agent_id, session_id)
+    deleted = memory.clear(tenant_for(user), agent_id, session_id)
     return {"deleted": deleted, "agent_id": agent_id}

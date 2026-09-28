@@ -34,6 +34,12 @@ export default function RBAC() {
         </div>
         <Btn variant="primary" onClick={()=>setShowModal(true)}>+ NUEVO ROL</Btn>
       </div>
+      {showModal && (
+        <Card style={{ marginBottom:12 }}>
+          <span>La creación de roles personalizados requiere una policy versionada.</span>
+          <Btn onClick={()=>setShowModal(false)} style={{ marginLeft:12 }}>Cerrar</Btn>
+        </Card>
+      )}
 
       {/* Role cards */}
       <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:20 }}>

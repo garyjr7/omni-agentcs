@@ -4,9 +4,10 @@ GuardianAgent v1.0 — Seguridad continua BajioWare
 import subprocess, sqlite3, json, os, re, uuid
 from datetime import datetime
 from pathlib import Path
+from nexus_core.config import NEXUS_ROOT, LEGACY_DATABASE_PATH
 
-BASE_DIR = Path("/home/operator/BW-AI")
-DB_PATH = BASE_DIR / "nexus_api/database.db"
+BASE_DIR = NEXUS_ROOT
+DB_PATH = LEGACY_DATABASE_PATH
 
 HARDCODED_PATTERNS = [
     (r"password\s*=\s*['\"][^'\"]{4,}['\"]", "Hardcoded password"),

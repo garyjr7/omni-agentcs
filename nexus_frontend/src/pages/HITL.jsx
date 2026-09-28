@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNexusStore } from '../store/nexusStore'
 import { useHITLWebSocket } from '../hooks/useWebSocket'
@@ -10,8 +10,8 @@ const RISK_BG    = { CRITICAL:'#ff386015', HIGH:'#ff6b3515', MEDIUM:'#ffc10715',
 
 export default function HITL() {
   const qc = useQueryClient()
-  const { hitlItems, hitlCount, wsHITL } = useNexusStore()
-  const { sendCommand } = useHITLWebSocket()
+  const { hitlItems, wsHITL } = useNexusStore()
+  useHITLWebSocket()
   const [resolved, setResolved] = useState({})
   const [reasoning, setReasoning] = useState({})
 

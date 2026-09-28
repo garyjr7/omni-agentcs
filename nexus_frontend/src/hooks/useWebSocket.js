@@ -1,15 +1,25 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useNexusStore } from '../store/nexusStore'
 import { WS_URL } from '../api/client'
+import { useAuthStore } from '../store/authStore'
+
+function authenticatedWsUrl(path) {
+  const token = useAuthStore.getState().accessToken
+  if (!token) return null
+  return { url: `${WS_URL}${path}`, protocols: ['nexus-auth', token] }
+}
 
 export function useNexusWebSocket() {
   const wsRef   = useRef(null)
+  const connectRef = useRef(null)
   const retryRef = useRef(0)
-  const { addLog, setWsConnected, addNotification } = useNexusStore()
+  const { addLog, setWsConnected } = useNexusStore()
 
   const connect = useCallback(() => {
     try {
-      const ws = new WebSocket(`${WS_URL}/ws/logs`)
+      const url = authenticatedWsUrl('/ws/logs')
+      if (!url) return
+      const ws = new WebSocket(url.url, url.protocols)
       wsRef.current = ws
       ws.onopen  = () => { retryRef.current = 0; setWsConnected(true) }
       ws.onmessage = (evt) => {
@@ -25,22 +35,29 @@ export function useNexusWebSocket() {
       ws.onerror  = () => setWsConnected(false)
       ws.onclose  = () => {
         setWsConnected(false)
-        setTimeout(connect, Math.min(1000 * 2 ** retryRef.current++, 15000))
+        setTimeout(() => connectRef.current?.(), Math.min(1000 * 2 ** retryRef.current++, 15000))
       }
     } catch(e) { console.error('WS logs error:', e) }
-  }, [])
+  }, [addLog, setWsConnected])
 
-  useEffect(() => { connect(); return () => wsRef.current?.close() }, [connect])
+  useEffect(() => {
+    connectRef.current = connect
+    connect()
+    return () => wsRef.current?.close()
+  }, [connect])
 }
 
 export function useHITLWebSocket() {
   const wsRef   = useRef(null)
+  const connectRef = useRef(null)
   const retryRef = useRef(0)
   const { addHITL, resolveHITL, setWsHITL, addNotification, setHITL } = useNexusStore()
 
   const connect = useCallback(() => {
     try {
-      const ws = new WebSocket(`${WS_URL}/ws/hitl`)
+      const url = authenticatedWsUrl('/ws/hitl')
+      if (!url) return
+      const ws = new WebSocket(url.url, url.protocols)
       wsRef.current = ws
       ws.onopen  = () => { retryRef.current = 0; setWsHITL(true) }
       ws.onmessage = (evt) => {
@@ -66,12 +83,16 @@ export function useHITLWebSocket() {
       ws.onerror  = () => setWsHITL(false)
       ws.onclose  = () => {
         setWsHITL(false)
-        setTimeout(connect, Math.min(1000 * 2 ** retryRef.current++, 15000))
+        setTimeout(() => connectRef.current?.(), Math.min(1000 * 2 ** retryRef.current++, 15000))
       }
     } catch(e) { console.error('WS HITL error:', e) }
-  }, [])
+  }, [addHITL, addNotification, resolveHITL, setHITL, setWsHITL])
 
-  useEffect(() => { connect(); return () => wsRef.current?.close() }, [connect])
+  useEffect(() => {
+    connectRef.current = connect
+    connect()
+    return () => wsRef.current?.close()
+  }, [connect])
 
   const sendCommand = useCallback((cmd) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

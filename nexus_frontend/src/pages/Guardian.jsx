@@ -43,7 +43,7 @@ export default function Guardian() {
     setScanning(true)
     setScore(0)
     setScanLogs([])
-    try { await nexusApi.guardianScan() } catch {}
+    try { await nexusApi.guardianScan() } catch (error) { console.error('Guardian scan failed:', error) }
     let i = 0
     const iv = setInterval(() => {
       if (i >= SCAN_STEPS.length) { clearInterval(iv); setScanning(false); setScore(94); return }

@@ -1,10 +1,15 @@
 """
-nexus_api/main.py — NEXUS PRO v2.0
+nexus_api/main.py — NEXUS Sovereign 3.0
 Orquestador de Agentes IA · Zero Trust · Military Grade
 """
+import asyncio
 import logging
 import sys
+import time
+import uuid
 import warnings
+from collections import defaultdict, deque
+
 logging.getLogger('passlib').setLevel(logging.ERROR)
 warnings.filterwarnings('ignore', message='.*bcrypt.*')
 from pathlib import Path
@@ -13,36 +18,116 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "nexus_core"))
 
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-# ── Security Headers Middleware ────────────────────────────────
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        response.headers["X-Frame-Options"]           = "DENY"
-        response.headers["X-Content-Type-Options"]    = "nosniff"
-        response.headers["X-XSS-Protection"]          = "1; mode=block"
-        response.headers["Referrer-Policy"]           = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"]        = "geolocation=(), microphone=(), camera=()"
-        response.headers["Content-Security-Policy"]   = (
-            "default-src 'self'; "
-            "connect-src 'self' ws: wss: http://192.168.220.134:8000 ws://192.168.220.134:8000; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-            "style-src 'self' 'unsafe-inline';"
-        )
-        # Solo HSTS en producción con HTTPS
-        if request.url.scheme == "https":
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        return response
-
-
+# Load process-level settings before importing auth/provider modules that use
+# os.getenv at import time. Pydantic's env_file does not populate os.environ.
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(ROOT / ".env")
+
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# ── Security Headers Middleware ────────────────────────────────
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.responses import JSONResponse
+
+
+class SecurityHeadersMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["X-Frame-Options"] = "DENY"
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+                headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+                headers["Content-Security-Policy"] = (
+                    "default-src 'self'; connect-src 'self' ws: wss:; "
+                    "script-src 'self'; style-src 'self'; object-src 'none'; "
+                    "base-uri 'self'; frame-ancestors 'none';"
+                )
+                if scope.get("scheme") == "https":
+                    headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+class RequestContextMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        supplied = Headers(scope=scope).get("X-Request-ID", "")
+        try:
+            trace_id = str(uuid.UUID(supplied)) if supplied else str(uuid.uuid4())
+        except ValueError:
+            trace_id = str(uuid.uuid4())
+        scope.setdefault("state", {})["trace_id"] = trace_id
+        started = time.monotonic()
+        status_code = 500
+
+        async def send_with_id(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+                MutableHeaders(scope=message)["X-Request-ID"] = trace_id
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_id)
+        finally:
+            from nexus_core.kernel.telemetry import metrics
+
+            labels = {
+                "method": scope.get("method", ""),
+                "path": scope.get("route", {}).path
+                if getattr(scope.get("route"), "path", None) else scope.get("path", ""),
+                "status": str(status_code),
+            }
+            metrics.increment("nexus_http_requests_total", **labels)
+            metrics.increment(
+                "nexus_http_duration_ms_total", (time.monotonic() - started) * 1000,
+                **labels,
+            )
+
+
+class RateLimitMiddleware:
+    def __init__(self, app, requests_per_minute: int, burst: int):
+        self.app = app
+        self.limit = max(1, requests_per_minute + burst)
+        self.requests = defaultdict(deque)
+        self.lock = asyncio.Lock()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") == "/health":
+            return await self.app(scope, receive, send)
+        client = scope.get("client")
+        client_ip = client[0] if client else "unknown"
+        now = time.monotonic()
+        async with self.lock:
+            history = self.requests[client_ip]
+            while history and now - history[0] >= 60:
+                history.popleft()
+            if len(history) >= self.limit:
+                response = JSONResponse(
+                    {"detail": "rate limit exceeded"}, status_code=429,
+                    headers={"Retry-After": "60"},
+                )
+                return await response(scope, receive, send)
+            history.append(now)
+        await self.app(scope, receive, send)
+
+
+from nexus_api.auth.deps import require_admin
+from nexus_api.config import settings
 
 logger = logging.getLogger("nexus.api")
 logging.basicConfig(
@@ -56,25 +141,48 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=" * 60)
-    logger.info("  NEXUS PRO v2.0 — Iniciando...")
+
+    from nexus_core.kernel.telemetry import configure_telemetry
+    app.state.telemetry_enabled = configure_telemetry()
+    logger.info("  NEXUS Sovereign 3.0 — Iniciando...")
     logger.info("=" * 60)
 
-    # ── DB ────────────────────────────────────────────────────
-    try:
-        from nexus_api.auth.database import database, init_db
-        init_db()
-        await database.connect()
-        logger.info("[DB] ✓ Conectada")
-    except Exception as e:
-        logger.warning(f"[DB] ⚠ {e}")
+    import os
+    if int(os.getenv("WEB_CONCURRENCY", "1")) > 1:
+        import logging
+        logging.getLogger("nexus").warning(
+            "WARNING: Multiple workers detected. In-memory state (AgentRegistry, HITLManager, StateManager) is NOT shared between workers. Set WEB_CONCURRENCY=1 until Redis is integrated."
+        )
 
     # ── NEXUS PRO DB ──────────────────────────────────────────
     try:
-        from nexus_api.db.database import init_nexus_db
-        init_nexus_db()
-        logger.info("[NEXUS-DB] ✓ Base de datos PRO inicializada")
+        from nexus_api.config import NEXUS_DB_PATH
+        from nexus_core.kernel.store_factory import get_control_store
+        app.state.control_store = get_control_store(NEXUS_DB_PATH)
+        app.state.control_store.initialize()
+        if not settings.is_production:
+            from nexus_api.db.database import init_nexus_db
+            init_nexus_db()
+        logger.info("[NEXUS-DB] ✓ Control plane inicializado")
     except Exception as e:
-        logger.warning(f"[NEXUS-DB] ⚠ {e}")
+        logger.error(f"[NEXUS-DB] ✗ {e}")
+        raise
+
+    # Production runs only the durable control plane. Legacy in-memory agents,
+    # schedulers and orchestrators are development compatibility components.
+    if settings.is_production or not settings.NEXUS_ENABLE_LEGACY_RUNTIME:
+        app.state.orchestrator = None
+        app.state.event_bus = None
+        app.state.state_manager = None
+        app.state.registry = None
+        app.state.llm = None
+        app.state.memory = None
+        app.state.workflow_manager = None
+        app.state.junior_bridge = None
+        logger.info("[NEXUS] Control plane durable listo; workers son servicios separados")
+        yield
+        logger.info("[NEXUS] Control plane detenido")
+        return
 
     # ── Scheduler ─────────────────────────────────────────────
     try:
@@ -192,7 +300,8 @@ async def lifespan(app: FastAPI):
     # ── Registrar agentes — FIX: metadata explícita ──────────
     try:
         import importlib
-        from nexus_core.agents.base import AgentMetadata, AgentCapability
+
+        from nexus_core.agents.base import AgentCapability, AgentMetadata
         _agents_with_meta = [
             ("nexus_core.agents.generated.bashagent", "BashAgent",
              AgentMetadata(name="BashAgent", capabilities=[AgentCapability.FILE_OPERATIONS])),
@@ -264,7 +373,7 @@ async def lifespan(app: FastAPI):
 
     # ── JuniorBridge — FIX: módulo no existe, warning limpio ──
     try:
-        from nexus_core.junior_bridge import initialize_bridge, get_junior_bridge
+        from nexus_core.junior_bridge import get_junior_bridge, initialize_bridge
         bridge_ok = await initialize_bridge()
         app.state.junior_bridge = get_junior_bridge() if bridge_ok else None
         logger.info(f"[JUNIOR] {'✓ Activo' if bridge_ok else '⚠ Degradado'}")
@@ -276,7 +385,7 @@ async def lifespan(app: FastAPI):
         app.state.junior_bridge = None
 
     logger.info("=" * 60)
-    logger.info("  NEXUS PRO v2.0 — SISTEMA HEALTHY ✓")
+    logger.info("  NEXUS Sovereign 3.0 — SISTEMA HEALTHY ✓")
     logger.info("  API Docs → http://0.0.0.0:8000/docs")
     logger.info("=" * 60)
 
@@ -294,11 +403,6 @@ async def lifespan(app: FastAPI):
         stop_scheduler()
     except Exception:
         pass
-    try:
-        from nexus_api.auth.database import database
-        await database.disconnect()
-    except Exception:
-        pass
     logger.info("[NEXUS] ✓ Apagado limpio")
 
 
@@ -306,45 +410,48 @@ async def lifespan(app: FastAPI):
 # APP
 # ══════════════════════════════════════════════════════════════
 app = FastAPI(
-    title="NEXUS PRO",
-    version="2.0.0",
-    description="AI Operations Platform — Orquestador de Agentes IA · Zero Trust",
+    title="NEXUS Sovereign",
+    version="3.0.0",
+    description="Plataforma soberana de ejecución durable de agentes",
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+)
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestContextMiddleware)
+app.add_middleware(
+    RateLimitMiddleware,
+    requests_per_minute=settings.RATE_LIMIT_PER_MINUTE,
+    burst=settings.RATE_LIMIT_BURST,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
 )
 
 # ══════════════════════════════════════════════════════════════
 # ROUTERS
 # ══════════════════════════════════════════════════════════════
-def safe_include(router, **kwargs):
-    try:
-        app.include_router(router, **kwargs)
-        return True
-    except Exception as e:
-        logger.warning(f"[ROUTER] {kwargs.get('prefix', '?')} ⚠ {e}")
-        return False
-
 # Auth — obligatorio
-from nexus_api.routes.auth   import router as auth_router
-from nexus_api.routes.memory  import router as memory_router
+from nexus_api.routes.auth import router as auth_router
 from nexus_api.routes.factory import router as factory_router
-from nexus_api.routes.jarvis  import router as jarvis_router
-app.include_router(auth_router,   tags=["Auth"])
-app.include_router(memory_router)
-app.include_router(factory_router)
-app.include_router(jarvis_router)
+from nexus_api.routes.jarvis import router as jarvis_router
+from nexus_api.routes.memory import router as memory_router
 
-# Todos los demás — tolerantes a fallos
+app.include_router(auth_router, prefix="/api/v1", tags=["Auth v1"])
+app.include_router(memory_router, prefix="/api/v1")
+if settings.NEXUS_ENABLE_LEGACY_RUNTIME and not settings.is_production:
+    app.include_router(factory_router, prefix="/api/v1")
+    app.include_router(jarvis_router, prefix="/api/v1")
+
+# Los routers del producto son obligatorios: un import roto debe impedir el arranque.
 import importlib
+
 _routes = [
     ("nexus_api.routes.scheduler",       {},                              ["Scheduler"]),
     ("nexus_api.routes.agents",          {},                              ["Agents"]),
@@ -365,14 +472,40 @@ _routes = [
     ("nexus_api.routes.junior",          {},                              ["Junior"]),
     ("nexus_api.routes.pentest",         {},                              ["Pentest"]),
     ("nexus_api.routes.hitl",            {},                              ["HITL"]),
+    ("nexus_api.routes.directory",       {},                              ["Directory"]),
+    ("nexus_api.routes.evolution",       {},                              ["Evolution"]),
+    ("nexus_api.routes.connectors",      {},                              ["Connectors"]),
+    ("nexus_api.routes.packages",        {},                              ["Packages"]),
+    ("nexus_api.routes.a2a",             {},                              ["A2A"]),
+    ("nexus_api.routes.approvals",       {},                              ["Approvals"]),
+    ("nexus_api.routes.policies",        {},                              ["Policies"]),
+    ("nexus_api.routes.workflows",       {},                              ["Workflows"]),
+    ("nexus_api.routes.audit",           {},                              ["Audit"]),
+    ("nexus_api.routes.sovereign",       {},                              ["Sovereign"]),
 ]
 
+_legacy_route_modules = {
+    "nexus_api.routes.scheduler", "nexus_api.routes.agents",
+    "nexus_api.routes.tasks", "nexus_api.routes.nexus",
+    "nexus_api.routes.guardian", "nexus_api.routes.teams_v2",
+    "nexus_api.routes.project_manager", "nexus_api.routes.plans",
+    "nexus_api.routes.composite", "nexus_api.routes.killswitch",
+    "nexus_api.routes.testagent", "nexus_api.routes.docagent",
+    "nexus_api.routes.ws_logs", "nexus_api.routes.projects",
+    "nexus_api.routes.tools", "nexus_api.routes.models",
+    "nexus_api.routes.junior", "nexus_api.routes.pentest",
+    "nexus_api.routes.hitl",
+}
+
 for module_path, kwargs, tags in _routes:
-    try:
-        mod = importlib.import_module(module_path)
-        safe_include(mod.router, tags=tags, **kwargs)
-    except Exception as e:
-        logger.warning(f"[ROUTER] {module_path.split('.')[-1]} ⚠ {e}")
+    if module_path in _legacy_route_modules and (
+        settings.is_production or not settings.NEXUS_ENABLE_LEGACY_RUNTIME
+    ):
+        continue
+    mod = importlib.import_module(module_path)
+    alias_kwargs = dict(kwargs)
+    alias_kwargs["prefix"] = "/api/v1" + alias_kwargs.get("prefix", "")
+    app.include_router(mod.router, tags=[f"{tag} v1" for tag in tags], **alias_kwargs)
 
 # ══════════════════════════════════════════════════════════════
 # ENDPOINTS BASE
@@ -397,15 +530,19 @@ async def health():
         "event_bus", "junior_bridge", "workflow_manager", "state_manager"
     ]}
 
-    # Core mínimo: event_bus + state + registry
-    core_ok = all(services[k] == "ok" for k in ["event_bus", "state_manager", "registry"])
+    durable_ready = getattr(app.state, "control_store", None) is not None
+    core_ok = durable_ready and (
+        settings.is_production or not settings.NEXUS_ENABLE_LEGACY_RUNTIME or
+        all(services[k] == "ok" for k in ["event_bus", "state_manager", "registry"])
+    )
 
     return {
         "status": "healthy" if core_ok else "degraded",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "timestamp": datetime.utcnow().isoformat(),
-        "platform": "NEXUS PRO — AI Operations Platform",
+        "platform": "NEXUS Sovereign — Durable Agent Platform",
         "services": services,
+        "durable_control_plane": "ok" if durable_ready else "degraded",
         "hitl_pending": hitl_count,
     }
 
@@ -413,9 +550,16 @@ async def health():
 @app.get("/", tags=["Health"])
 async def root():
     return {
-        "name": "NEXUS PRO",
-        "version": "2.0.0",
+        "name": "NEXUS Sovereign",
+        "version": "3.0.0",
         "status": "online",
         "docs": "/docs",
         "health": "/health",
     }
+
+
+@app.get("/system/metrics", tags=["System"])
+async def system_metrics(_=Depends(require_admin)):
+    from nexus_core.kernel.telemetry import metrics
+
+    return {"metrics": metrics.snapshot()}

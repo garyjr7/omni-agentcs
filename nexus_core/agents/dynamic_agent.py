@@ -14,6 +14,8 @@ import os
 import logging
 from pathlib import Path
 from nexus_core.agents.base import BaseAgent, AgentMetadata, AgentCapability
+from nexus_core.config import NEXUS_ROOT, REPORTS_DIR
+from nexus_core.kernel.legacy import legacy_execution_enabled
 
 logger = logging.getLogger("nexus.dynamic_agent")
 
@@ -40,7 +42,7 @@ class ToolExecutor:
     @staticmethod
     async def bash_exec(payload: dict) -> dict:
         cmd = payload.get("command", payload.get("cmd", "echo hello"))
-        cwd = payload.get("cwd", "/home/operator/NEXUS-PRO")
+        cwd = payload.get("cwd", str(NEXUS_ROOT))
         timeout = int(payload.get("timeout", 60))
         blocked = ["rm -rf /", "mkfs", "dd if=", ":(){", "fork bomb"]
         if any(b in cmd for b in blocked):
@@ -90,7 +92,7 @@ class ToolExecutor:
 
     @staticmethod
     async def file_list(payload: dict) -> dict:
-        path = payload.get("path", "/home/operator/NEXUS-PRO")
+        path = payload.get("path", str(NEXUS_ROOT))
         try:
             items = [
                 {"name": f.name, "type": "dir" if f.is_dir() else "file",
@@ -170,7 +172,7 @@ class ToolExecutor:
         agent_name = payload.get("agent", "NEXUS")
         ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
         output_path = payload.get("output",
-            f"/home/operator/NEXUS-PRO/data/reports/{title.replace(' ','_').replace('/','_')}.md")
+            str(REPORTS_DIR / f"{title.replace(' ','_').replace('/','_')}.md"))
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         report = f"""# {title}
 
@@ -208,7 +210,7 @@ class ToolExecutor:
     @staticmethod
     async def git_ops(payload: dict) -> dict:
         git_cmd = payload.get("git_cmd", "status")
-        cwd = payload.get("cwd", "/home/operator/NEXUS-PRO")
+        cwd = payload.get("cwd", str(NEXUS_ROOT))
         return await ToolExecutor.bash_exec({"command": f"git {git_cmd}", "cwd": cwd})
 
     @staticmethod
@@ -286,6 +288,12 @@ class ToolExecutor:
     @classmethod
     async def execute_tool(cls, tool_name: str, payload: dict, llm=None) -> dict:
         """Dispatcher central de herramientas."""
+        if not legacy_execution_enabled():
+            return {
+                "status": "error",
+                "error": "Legacy ToolExecutor is disabled; use the policy-enforced ToolGateway",
+                "tool": tool_name,
+            }
         tool_map = {
             "bash_exec":    lambda p: cls.bash_exec(p),
             "file_read":    lambda p: cls.file_read(p),

@@ -18,7 +18,6 @@ export default function Factory() {
   const { user } = useAuthStore()
   const [tab, setTab]             = useState('projects')
   const [mdContent, setMdContent] = useState('')
-  const [analyzing, setAnalyzing] = useState(false)
   const [plan, setPlan]           = useState(null)
   const [selectedProject, setSelectedProject] = useState(null)
   const [error, setError]         = useState('')
@@ -28,7 +27,7 @@ export default function Factory() {
     queryFn: () => nexusApi.factoryTemplates().then(r => r.data),
   })
 
-  const { data: projectsData, refetch: refetchProjects } = useQuery({
+  const { data: projectsData } = useQuery({
     queryKey: ['factory-projects'],
     queryFn: () => nexusApi.factoryProjects().then(r => r.data),
     refetchInterval: 5000,

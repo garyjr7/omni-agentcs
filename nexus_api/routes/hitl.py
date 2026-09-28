@@ -5,9 +5,10 @@ Human In The Loop — endpoints completos + WebSocket tiempo real
 import asyncio
 import json
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, Depends
 from pydantic import BaseModel
 from typing import Optional
+from nexus_api.auth.deps import get_current_user, require_operator, authenticate_websocket
 
 router = APIRouter()
 
@@ -30,7 +31,7 @@ class DenyRequest(BaseModel):
 # ── Endpoints REST ────────────────────────────────────────────
 
 @router.get("/hitl/pending")
-def get_pending():
+def get_pending(_: dict = Depends(get_current_user)):
     """Lista todas las solicitudes HITL pendientes."""
     hitl = get_hitl()
     pending = hitl.get_pending()
@@ -41,7 +42,7 @@ def get_pending():
     }
 
 @router.get("/hitl/history")
-def get_history(limit: int = 20):
+def get_history(limit: int = 20, _: dict = Depends(get_current_user)):
     """Historial de decisiones HITL."""
     hitl = get_hitl()
     return {
@@ -50,13 +51,13 @@ def get_history(limit: int = 20):
     }
 
 @router.get("/hitl/count")
-def get_count():
+def get_count(_: dict = Depends(get_current_user)):
     """Número de HITL pendientes — para el topbar del dashboard."""
     hitl = get_hitl()
     return {"count": hitl.count_pending()}
 
 @router.post("/hitl/{hitl_id}/approve")
-async def approve(hitl_id: str, body: ApproveRequest):
+async def approve(hitl_id: str, body: ApproveRequest, _: dict = Depends(require_operator)):
     """Aprueba una solicitud HITL — el agente continúa."""
     hitl = get_hitl()
     result = await hitl.approve(hitl_id, body.approved_by, body.reason)
@@ -65,7 +66,7 @@ async def approve(hitl_id: str, body: ApproveRequest):
     return result
 
 @router.post("/hitl/{hitl_id}/deny")
-async def deny(hitl_id: str, body: DenyRequest):
+async def deny(hitl_id: str, body: DenyRequest, _: dict = Depends(require_operator)):
     """Deniega una solicitud HITL — el agente cancela la acción."""
     hitl = get_hitl()
     result = await hitl.deny(hitl_id, body.denied_by, body.reason)
@@ -74,13 +75,13 @@ async def deny(hitl_id: str, body: DenyRequest):
     return result
 
 @router.post("/hitl/approve-all")
-async def approve_all(body: ApproveRequest):
+async def approve_all(body: ApproveRequest, _: dict = Depends(require_operator)):
     """Aprueba todas las solicitudes pendientes."""
     hitl = get_hitl()
     return await hitl.approve_all(body.approved_by)
 
 @router.post("/hitl/deny-all")
-async def deny_all(body: DenyRequest):
+async def deny_all(body: DenyRequest, _: dict = Depends(require_operator)):
     """Deniega todas las solicitudes pendientes."""
     hitl = get_hitl()
     return await hitl.deny_all(body.denied_by)
@@ -94,6 +95,8 @@ async def hitl_websocket(ws: WebSocket):
     El dashboard se suscribe y recibe notificaciones instantáneas
     cuando un agente pide aprobación.
     """
+    if not await authenticate_websocket(ws):
+        return
     await ws.accept()
     hitl = get_hitl()
 

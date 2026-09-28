@@ -1,0 +1,2 @@
+-r nexus_api/requirements.txt
+-r nexus_core/requirements.txt

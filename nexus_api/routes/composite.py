@@ -1,11 +1,13 @@
 """Composite Tools API — Capacidades de alto nivel para Junior."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-router = APIRouter()
+from nexus_api.auth.deps import require_operator
+
+router = APIRouter(dependencies=[Depends(require_operator)])
 
 class ExploreRequest(BaseModel):
     query: str

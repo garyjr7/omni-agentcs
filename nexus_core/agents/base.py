@@ -226,6 +226,14 @@ class BaseAgent(abc.ABC):
                 self.execute(task_id, payload),
                 timeout=self.metadata.timeout_seconds
             )
+            # Legacy agents often encode tool failures in a result dictionary
+            # instead of raising.  Treating those values as success lets an
+            # orchestrator persist a false claim of completion.
+            if isinstance(result, dict) and result.get("status") in {
+                "error", "failed", "hitl_denied", "completed_with_errors",
+            }:
+                raise RuntimeError(result.get("error") or result.get("message") or
+                                   f"agent returned status={result['status']}")
             
             duration_ms = (time.perf_counter() - start_time) * 1000
             await self._post_execute(task_id, result, duration_ms)

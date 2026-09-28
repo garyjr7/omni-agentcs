@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuthStore } from '../store/authStore'
 import { Card, Btn, Dot } from '../components/ui'
@@ -6,7 +5,6 @@ import { nexusApi } from '../api/client'
 
 export default function Settings() {
   const { user, logout } = useAuthStore()
-  const [saved, setSaved] = useState(false)
 
   const { data: healthData } = useQuery({
     queryKey: ['health'],
@@ -19,11 +17,6 @@ export default function Settings() {
   })
 
   const svc = healthData?.services || {}
-
-  const handleSave = () => {
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
-  }
 
   return (
     <div style={{ padding:24, height:'100%', overflowY:'auto' }}>

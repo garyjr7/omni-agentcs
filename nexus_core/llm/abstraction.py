@@ -21,9 +21,15 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import httpx
+try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    httpx = None
+    HTTPX_AVAILABLE = False
 
 # Conditional imports for provider-specific libraries
 try:
@@ -35,10 +41,8 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 try:
-    import warnings
-    warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
-    import google.generativeai as genai
-    from google.generativeai.types import GenerateContentResponse
+    from google import genai
+    from google.genai import types as genai_types
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
@@ -73,6 +77,9 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     GEMINI = "gemini"
     OLLAMA = "ollama"
+    FAKE = "fake"
+    GROQ = "groq"
+    OPENAI_COMPATIBLE = "openai_compatible"
 
 @dataclass
 class LLMConfig:
@@ -191,10 +198,13 @@ class OpenAIClient(BaseLLMClient):
         if not self.config.api_key:
             raise ValueError("OpenAI API key is required for OpenAIClient.")
         
-        self.client = AsyncOpenAI(
-            api_key=self.config.api_key,
-            timeout=self.config.timeout
-        )
+        client_options = {
+            "api_key": self.config.api_key,
+            "timeout": self.config.timeout,
+        }
+        if self.config.base_url:
+            client_options["base_url"] = self.config.base_url
+        self.client = AsyncOpenAI(**client_options)
 
     def is_available(self) -> bool:
         return bool(self.config.api_key)
@@ -255,15 +265,11 @@ class GeminiClient(BaseLLMClient):
     def __init__(self, config: LLMConfig):
         super().__init__(config)
         if not GEMINI_AVAILABLE:
-            raise ImportError("The 'google-generativeai' library is not installed. Please install it with 'pip install google-generativeai'.")
+            raise ImportError("The 'google-genai' library is required for GeminiClient")
         if not self.config.api_key:
             raise ValueError("Gemini API key is required for GeminiClient.")
         
-        genai.configure(api_key=self.config.api_key)
-        self.model = genai.GenerativeModel(
-            self.config.model,
-            system_instruction=self.config.system_prompt
-        )
+        self.client = genai.Client(api_key=self.config.api_key)
 
     def is_available(self) -> bool:
         return bool(self.config.api_key)
@@ -273,41 +279,36 @@ class GeminiClient(BaseLLMClient):
     ) -> LLMResponse:
         start_time = time.perf_counter()
         
-        # Convert messages to Gemini format (history + last message)
-        # Gemini uses 'model' for assistant role
-        gemini_history = []
-        for msg in messages:
-            role = "model" if msg.role == "assistant" else msg.role
-            gemini_history.append({'role': role, 'parts': [msg.content]})
-        
-        # The last message is sent as the main content
-        last_message = gemini_history.pop()
-
-        generation_config = {
-            "temperature": kwargs.get("temperature", self.config.temperature),
-            "max_output_tokens": kwargs.get("max_tokens", self.config.max_tokens),
-        }
+        system_messages = [msg.content for msg in messages if msg.role == "system"]
+        contents = [
+            genai_types.Content(
+                role="model" if msg.role == "assistant" else "user",
+                parts=[genai_types.Part.from_text(text=msg.content)],
+            )
+            for msg in messages if msg.role != "system"
+        ]
+        config = genai_types.GenerateContentConfig(
+            temperature=kwargs.get("temperature", self.config.temperature),
+            max_output_tokens=kwargs.get("max_tokens", self.config.max_tokens),
+            system_instruction="\n".join(filter(None, [self.config.system_prompt, *system_messages])) or None,
+        )
 
         try:
-            response: GenerateContentResponse = await self.model.generate_content_async(
-                contents=gemini_history + [last_message],
-                generation_config=generation_config
+            response = await self.client.aio.models.generate_content(
+                model=self.config.model, contents=contents, config=config,
             )
             duration_ms = (time.perf_counter() - start_time) * 1000
             
-            # Gemini does not provide token counts in the same way
-            # This is an approximation; for exact counts, an API call is needed
-            input_tokens = await genai.count_tokens_async(contents=gemini_history + [last_message], model=self.config.model)
-            output_tokens = await genai.count_tokens_async(contents=response.text, model=self.config.model)
+            usage = response.usage_metadata
 
             return LLMResponse(
-                content=response.text,
+                content=response.text or "",
                 model=self.config.model,
                 provider=self.config.provider,
-                tokens_input=input_tokens.total_tokens,
-                tokens_output=output_tokens.total_tokens,
+                tokens_input=getattr(usage, "prompt_token_count", 0) or 0,
+                tokens_output=getattr(usage, "candidates_token_count", 0) or 0,
                 duration_ms=duration_ms,
-                raw_response={"prompt_feedback": str(response.prompt_feedback)},
+                raw_response=response.model_dump(mode="json", exclude_none=True),
             )
         except Exception as e:
             self._logger.error(f"Gemini API error: {e}")
@@ -319,6 +320,8 @@ class OllamaClient(BaseLLMClient):
 
     def __init__(self, config: LLMConfig):
         super().__init__(config)
+        if not HTTPX_AVAILABLE:
+            raise ImportError("The 'httpx' library is required for OllamaClient")
         self.base_url = self.config.base_url or "http://localhost:11434"
         self.client = httpx.AsyncClient(base_url=self.base_url, timeout=self.config.timeout)
 
@@ -370,6 +373,64 @@ class OllamaClient(BaseLLMClient):
             self._logger.error(f"Ollama API error: {e.response.status_code} - {e.response.text}")
             raise NexusLLMError(f"Ollama API error: {e.response.status_code}") from e
 
+
+class FakeLLMClient(BaseLLMClient):
+    """Deterministic provider for development, CI and offline evaluation."""
+
+    def __init__(self, config: LLMConfig):
+        super().__init__(config)
+        fixture_path = config.base_url or os.getenv(
+            "NEXUS_LLM_FIXTURES",
+            str(Path(__file__).with_name("fixtures") / "responses.json"),
+        )
+        self.fixture_path = Path(fixture_path)
+        self._fixtures = self._load_fixtures()
+
+    def _load_fixtures(self) -> Dict[str, Any]:
+        if not self.fixture_path.exists():
+            return {"default": {"content": "Fake LLM response"}}
+        with self.fixture_path.open("r", encoding="utf-8") as fixture_file:
+            data = json.load(fixture_file)
+        if not isinstance(data, dict):
+            raise ValueError("Fake LLM fixture file must contain a JSON object")
+        return data
+
+    def is_available(self) -> bool:
+        return True
+
+    async def complete(
+        self, messages: List[LLMMessage], **kwargs: Any
+    ) -> LLMResponse:
+        started = time.perf_counter()
+        scenario = str(kwargs.get("scenario", "default"))
+        fixture = self._fixtures.get(scenario, self._fixtures.get("default", {}))
+        if not isinstance(fixture, dict):
+            raise NexusLLMError(f"Invalid fake fixture for scenario '{scenario}'")
+
+        delay_ms = int(fixture.get("delay_ms", 0))
+        if delay_ms:
+            await asyncio.sleep(delay_ms / 1000)
+
+        error = fixture.get("error")
+        if error:
+            raise NexusLLMError(str(error))
+
+        content = fixture.get("content", "Fake LLM response")
+        if fixture.get("echo_last_message") and messages:
+            content = messages[-1].content
+
+        input_tokens = sum(max(1, len(message.content.split())) for message in messages)
+        output_tokens = max(1, len(str(content).split()))
+        return LLMResponse(
+            content=str(content),
+            model=self.config.model,
+            provider=LLMProvider.FAKE,
+            tokens_input=input_tokens,
+            tokens_output=output_tokens,
+            duration_ms=(time.perf_counter() - started) * 1000,
+            raw_response={"scenario": scenario, "fixture": True},
+        )
+
 # --- Factory and High-Level Wrapper ---
 
 class LLMFactory:
@@ -393,6 +454,9 @@ class LLMFactory:
             LLMProvider.OPENAI: OpenAIClient,
             LLMProvider.GEMINI: GeminiClient,
             LLMProvider.OLLAMA: OllamaClient,
+            LLMProvider.FAKE: FakeLLMClient,
+            LLMProvider.GROQ: OpenAIClient,
+            LLMProvider.OPENAI_COMPATIBLE: OpenAIClient,
         }
         client_class = provider_map.get(config.provider)
         if not client_class:
@@ -409,6 +473,13 @@ class LLMFactory:
         """
         clients: Dict[str, BaseLLMClient] = {}
         logger = get_logger("LLMFactory")
+
+        fake_config = LLMConfig(
+            provider=LLMProvider.FAKE,
+            model=os.getenv("FAKE_LLM_MODEL", "nexus-fake-v1"),
+            base_url=os.getenv("NEXUS_LLM_FIXTURES"),
+        )
+        clients["fake"] = FakeLLMClient(fake_config)
 
         # OpenAI
         if os.getenv("OPENAI_API_KEY"):
@@ -435,6 +506,20 @@ class LLMFactory:
                 logger.info("Gemini client created from environment variables.")
             except Exception as e:
                 logger.warning(f"Failed to create Gemini client from env: {e}")
+
+        # Groq / OpenAI-compatible endpoint
+        if os.getenv("GROQ_API_KEY"):
+            try:
+                config = LLMConfig(
+                    provider=LLMProvider.GROQ,
+                    model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                    api_key=os.getenv("GROQ_API_KEY"),
+                    base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+                )
+                clients["groq"] = OpenAIClient(config)
+                logger.info("Groq client created from environment variables.")
+            except Exception as e:
+                logger.warning(f"Failed to create Groq client from env: {e}")
 
         # Ollama
         if os.getenv("OLLAMA_BASE_URL"):

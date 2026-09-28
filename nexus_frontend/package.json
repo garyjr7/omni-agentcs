@@ -2,6 +2,7 @@
   "name": "nexus_frontend",
   "private": true,
   "version": "0.0.0",
+  "engines": { "node": ">=22" },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,7 +17,6 @@
     "lucide-react": "^0.577.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-router-dom": "^7.13.1",
     "recharts": "^3.8.0",
     "zustand": "^5.0.12"
   },
