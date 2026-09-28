@@ -27,7 +27,5 @@ NEXUS_DB_PATH = _resolve_env_path(
 
 REPORTS_DIR = NEXUS_DATA_PATH / "reports"
 PENTEST_DIR = NEXUS_DATA_PATH / "pentest"
-JUNIOR_WORKSPACE = NEXUS_DATA_PATH / "junior_workspace"
 CHROMA_PATH = NEXUS_DATA_PATH / "junior_memory_db"
 LEGACY_DATABASE_PATH = NEXUS_DATA_PATH / "database.db"
-PROJECTS_DIR = NEXUS_DATA_PATH / "factory" / "projects"

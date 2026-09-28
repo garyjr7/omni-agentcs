@@ -109,3 +109,51 @@ nexus_core/tests/unit/test_state_manager.py::test_checksum_corruption_is_detecte
 ```text
 All checks passed!
 ```
+
+---
+
+# RE-VERIFICACIÓN (HEAD 57205a7)
+
+Re-ejecutado en el entorno actual con `.venv/bin/python`.
+
+```text
+import nexus_api.main           -> OK
+import nexus_core.kernel.runtime -> OK
+import nexus_worker              -> OK
+import nexus_mcp.server          -> OK
+pytest nexus_core/tests/unit -q       -> 43 passed
+pytest .../test_kernel_offline.py -q  -> 27 passed
+pytest nexus_mcp/tests -q             -> 4 passed
+grep "NEXUS_ENABLE_LEGACY_RUNTIME|NEXUS_ENABLE_LEGACY_EXECUTION" --include=*.py -> sin resultados
+nexus_core/kernel/ -> sin referencias a dynamic_agent|pentest_agent|composite_tools|hitl.manager|bashagent|codeagent|nmap_scan|nuclei_scan
+```
+
+Todos los CRITERIOS DE ÉXITO literales de la misión se cumplen. No se realizaron
+más cambios de código.
+
+## Residuales fuera del kernel — REQUIERE REFACTOR
+
+Archivos NO legados-listados que aún referencian módulos eliminados. Ninguno es
+importado por la app al arrancar (`nexus_api`, `nexus_worker`, `nexus_mcp`), por lo
+que no rompen el arranque, pero contradicen "eliminar el runtime legado por completo".
+
+| Archivo | Detalle | Estado |
+|---|---|---|
+| `nexus_core/agents/junior_agent.py:28` | `from nexus_core.agents.dynamic_agent import ToolExecutor` | **ROTO** (`ModuleNotFoundError` al importar) |
+| `nexus_core/main.py:29-33` | importa `nexus_core.skills.*` (eliminados) | **ROTO** (`ModuleNotFoundError` al importar) |
+| `nexus_core/junior_bridge.py:141-145` | import perezoso de `bashagent`/`codeagent`/`fileagent` (eliminados) | referencia muerta (capturada por `try/except`) |
+| `nexus_core/agent_team_manager.py:515` | import perezoso de `nexus_core.agents.junior_agent` | referencia muerta en runtime |
+| `nexus_core/workflow_manager.py:258` | import perezoso de `nexus_core.agents.junior_agent` | referencia muerta en runtime |
+| `nexus_api/services/nexus_service.py:28-36` | import perezoso del stack `core.orchestrator` legado desde la ruta **superviviente** `nexus_api/routes/nexus.py` | **REQUIERE REFACTOR** (degrada a `offline` por `try/except`) |
+
+### Otros hallazgos
+
+- `nexus_api/config.py` y `.env.example` ya sin `NEXUS_ENABLE_LEGACY_RUNTIME`/`NEXUS_ENABLE_LEGACY_EXECUTION`. Queda `VITE_ENABLE_LEGACY_UI` en `.env.example` (frontend, fuera de alcance).
+- `nexus_core/tests/unit/test_kernel_offline.py` fue modificado en la purga (commit anterior) para eliminar el import y el test del gate legado eliminado (`kernel/legacy.py`). Justificado: el módulo referenciado ya no existe.
+- `.env` permanece sin trackear (`?? .env`) y no fue tocado.
+
+## Decisión de alcance
+
+Por indicación explícita, se deja el árbol como está (los criterios literales pasan)
+y solo se documentan los residuales de arriba. No se eliminaron archivos fuera de la
+lista de la FASE 2 ni se modificó código en esta re-verificación.

@@ -190,7 +190,6 @@ _routes = [
     ("nexus_api.routes.memory", {}, ["Memory"]),
     ("nexus_api.routes.agents", {}, ["Agents"]),
     ("nexus_api.routes.tasks", {}, ["Tasks"]),
-    ("nexus_api.routes.nexus", {}, ["Nexus"]),
     ("nexus_api.routes.projects", {"prefix": "/projects"}, ["Projects"]),
     ("nexus_api.routes.tools", {}, ["Tools"]),
     ("nexus_api.routes.models", {}, ["Models"]),

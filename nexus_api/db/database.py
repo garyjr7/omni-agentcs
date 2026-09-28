@@ -135,8 +135,6 @@ def init_nexus_db():
         ("tool_file_d",   "file_delete",     "filesystem","Elimina archivos del sistema",                          1),
         ("tool_file_ls",  "file_list",       "filesystem","Lista directorios y archivos",                          1),
         ("tool_http",     "http_request",    "network",   "Realiza peticiones HTTP/HTTPS",                         1),
-        ("tool_nmap",     "nmap_scan",       "security",  "Escaneo de puertos y servicios con Nmap",               1),
-        ("tool_nuclei",   "nuclei_scan",     "security",  "Escaneo de vulnerabilidades con Nuclei",                1),
         ("tool_git",      "git_ops",         "devops",    "Operaciones Git: clone, pull, commit, push",            1),
         ("tool_docker",   "docker_ops",      "devops",    "Gestión de contenedores Docker",                        1),
         ("tool_sql",      "sql_query",       "data",      "Ejecuta queries SQL en bases de datos",                 1),
