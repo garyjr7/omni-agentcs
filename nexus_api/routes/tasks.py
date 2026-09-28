@@ -69,31 +69,11 @@ async def _run_task_background(task_id: str, app):
                 completed_at=datetime.datetime.utcnow().isoformat()
             )
         else:
-            # Fallback: ejecutar bash directo si hay command
-            db_update_task(task_id, progress=50)
-            if 'command' in payload or payload.get('tool') == 'bash_exec':
-                from nexus_core.kernel.legacy import require_legacy_execution
-                require_legacy_execution()
-                import asyncio as _asyncio, os as _os
-                cmd = payload.get('command', 'echo NEXUS OK && date')
-                proc = await _asyncio.create_subprocess_shell(
-                    cmd, stdout=_asyncio.subprocess.PIPE,
-                    stderr=_asyncio.subprocess.PIPE,
-                    env={**_os.environ}
-                )
-                stdout, stderr = await _asyncio.wait_for(proc.communicate(), timeout=60)
-                output = stdout.decode('utf-8', errors='replace').strip()
-                db_update_task(task_id,
-                    status="completed" if proc.returncode == 0 else "failed",
-                    progress=100,
-                    result=output[:2000],
-                    completed_at=datetime.datetime.utcnow().isoformat()
-                )
-            else:
-                await asyncio.sleep(1)
-                db_update_task(task_id, status="completed", progress=100,
-                    result=f"Tarea ejecutada — agente no encontrado en Registry, payload: {str(payload)[:200]}",
-                    completed_at=datetime.datetime.utcnow().isoformat())
+            db_update_task(
+                task_id, status="failed", progress=0,
+                error="No durable executor is registered for this task",
+                completed_at=datetime.datetime.utcnow().isoformat(),
+            )
     except Exception as e:
         import traceback
         db_update_task(task_id, status="failed",

@@ -26,7 +26,6 @@ from nexus_core.kernel.model_router import ModelRouter, RoutePolicy
 from nexus_core.kernel.connectors import ConnectorRegistry
 from nexus_core.kernel.store_factory import get_control_store
 from nexus_core.kernel.sandbox import OCISandbox
-from nexus_core.kernel.legacy import legacy_execution_enabled
 from nexus_core.kernel.packages import PackageManager
 from nexus_core.evolution import EvolutionWorkspace
 from nexus_core.kernel.approvals import ApprovalService
@@ -407,14 +406,6 @@ class OfflineKernelTests(unittest.TestCase):
             self.assertIn("--user 65532:65532", joined)
             with self.assertRaises(PermissionError):
                 sandbox.build_argv("untrusted:latest", ["true"])
-
-    def test_legacy_execution_is_disabled_by_default(self):
-        previous = os.environ.pop("NEXUS_ENABLE_LEGACY_EXECUTION", None)
-        try:
-            self.assertFalse(legacy_execution_enabled())
-        finally:
-            if previous is not None:
-                os.environ["NEXUS_ENABLE_LEGACY_EXECUTION"] = previous
 
     def test_marketing_package_installs_without_kernel_changes(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -33,10 +33,6 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
     DEBUG: bool = False
     NEXUS_ENV: str = "development"
-    # Compatibility runtime for the original in-memory agents. The durable
-    # control plane is the default in every environment; opt in explicitly
-    # while migrating old installations.
-    NEXUS_ENABLE_LEGACY_RUNTIME: bool = False
     RATE_LIMIT_PER_MINUTE: int = 60
     RATE_LIMIT_BURST: int = 10
     # Workspace
