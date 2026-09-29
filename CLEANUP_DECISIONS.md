@@ -230,3 +230,56 @@ La memoria durable es kernel/memory.py; memory/ y vector/ son implementaciones a
 | `nexus_core/tests/unit/test_sovereign_runtime.py` | editar | quitar dos asignaciones F841 conservando llamadas y efectos; conservar la asignación usada en línea 14 | ruff líneas 38/78 e inspección de los tres casos |
 | `nexus_core/utils/logger.py` | editar | retirar import muerto contextlib | ruff F401; llm.abstraction conserva get_logger |
 | `nexus_core/utils/security.py` | editar | retirar imports muertos typing/re/pathlib/json/functools | ruff F401; test_security conserva contratos |
+| `AUDITORIA_NEXUS_2026-08-04.md` | mover a docs/missions/AUDITORIA_NEXUS_2026-08-04.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `CLEANUP_AUDIT.md` | mover a docs/missions/CLEANUP_AUDIT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `CLEANUP_RECON_V2.md` | mover a docs/missions/CLEANUP_RECON_V2.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `CLEANUP_RESULT.md` | mover a docs/missions/CLEANUP_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `CLEANUP_RESULT_V2.md` | mover a docs/missions/CLEANUP_RESULT_V2.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `CLI_RECON.md` | mover a docs/missions/CLI_RECON.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `CLI_RESULT.md` | mover a docs/missions/CLI_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `CODEBASE_MAP.md` | mover a docs/missions/CODEBASE_MAP.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `FIX_SANDBOX_RECON.md` | mover a docs/missions/FIX_SANDBOX_RECON.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `FIX_SANDBOX_RESULT.md` | mover a docs/missions/FIX_SANDBOX_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `INFORME_ARQUITECTONICO_NEXUS_2026-08-08.md` | mover a docs/missions/INFORME_ARQUITECTONICO_NEXUS_2026-08-08.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `MSF_DAEMON_DIAG.md` | mover a docs/missions/MSF_DAEMON_DIAG.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `MSF_DAEMON_RESULT.md` | mover a docs/missions/MSF_DAEMON_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `MSF_RESULT.md` | mover a docs/missions/MSF_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `NMAP_RECON.md` | mover a docs/missions/NMAP_RECON.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `NMAP_RESULT.md` | mover a docs/missions/NMAP_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `OMNIAGENT_CONTEXT.md` | mover a docs/missions/OMNIAGENT_CONTEXT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `ONBOARDING_RECON.md` | mover a docs/missions/ONBOARDING_RECON.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `ONBOARDING_RESULT.md` | mover a docs/missions/ONBOARDING_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `PLAN_IMPLEMENTACION_NEXUS.md` | mover a docs/missions/PLAN_IMPLEMENTACION_NEXUS.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `PLAN_MAESTRO_BAJIOWARE.md` | mover a docs/missions/PLAN_MAESTRO_BAJIOWARE.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `PRICING.md` | mover a docs/missions/PRICING.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `PURGE_RECON.md` | mover a docs/missions/PURGE_RECON.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `PURGE_RESULT.md` | mover a docs/missions/PURGE_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `REACT_RECON.md` | mover a docs/missions/REACT_RECON.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `REACT_RESULT.md` | mover a docs/missions/REACT_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `REPORTE_IMPLEMENTACION_NEXUS_2026-08-04.md` | mover a docs/missions/REPORTE_IMPLEMENTACION_NEXUS_2026-08-04.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `RESIDUALS_DIAG.md` | mover a docs/missions/RESIDUALS_DIAG.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `RESIDUALS_RESULT.md` | mover a docs/missions/RESIDUALS_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `SCOPE_RECON.md` | mover a docs/missions/SCOPE_RECON.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `SCOPE_RESULT.md` | mover a docs/missions/SCOPE_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `SCOPE_WIRE_RESULT.md` | mover a docs/missions/SCOPE_WIRE_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `TOOLKIT_RECON.md` | mover a docs/missions/TOOLKIT_RECON.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `TOOLKIT_RESULT.md` | mover a docs/missions/TOOLKIT_RESULT.md | reporte histórico; despejar raíz sin perder historia | git ls-files y clasificación por misión |
+| `docs/CLEANUP_2026-08-04.md` | archivar en docs/missions/platform/CLEANUP_2026-08-04.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/DEPLOYMENT_ON_PREM.md` | archivar en docs/missions/platform/DEPLOYMENT_ON_PREM.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/NEXUS_SOVEREIGN.md` | archivar en docs/missions/platform/NEXUS_SOVEREIGN.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/SCIM_PROVISIONING.md` | archivar en docs/missions/platform/SCIM_PROVISIONING.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/adr/ADR-001-kernel-gateways.md` | archivar en docs/missions/platform/adr/ADR-001-kernel-gateways.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/adr/ADR-002-zero-trust-execution.md` | archivar en docs/missions/platform/adr/ADR-002-zero-trust-execution.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/adr/ADR-003-governed-evolution.md` | archivar en docs/missions/platform/adr/ADR-003-governed-evolution.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/runbooks/BACKUP_RESTORE.md` | archivar en docs/missions/platform/runbooks/BACKUP_RESTORE.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/runbooks/CLAUDE_MCP.md` | archivar en docs/missions/platform/runbooks/CLAUDE_MCP.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/runbooks/CONNECTOR_MTLS.md` | archivar en docs/missions/platform/runbooks/CONNECTOR_MTLS.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/runbooks/DATA_GOVERNANCE.md` | archivar en docs/missions/platform/runbooks/DATA_GOVERNANCE.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/runbooks/DEVELOPMENT_OFFLINE.md` | archivar en docs/missions/platform/runbooks/DEVELOPMENT_OFFLINE.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/runbooks/INCIDENT_RESPONSE.md` | archivar en docs/missions/platform/runbooks/INCIDENT_RESPONSE.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `docs/runbooks/SLO_SLI.md` | archivar en docs/missions/platform/runbooks/SLO_SLI.md | documentación NEXUS platform; conserva ADRs e historia fuera de guías vigentes | títulos y comandos API/MCP/Compose |
+| `nexus_core/plan_maestro.md` | archivar en docs/missions/platform/plan_maestro_core.md | plan/guía/lock conjunto de plataforma retirada; no anunciarlo como instalación CLI | referencias a main.py inexistente y dependencias FastAPI/MCP/React; manifiestos CLI se ajustan en fase de build |
+| `nexus_core/README.md` | archivar en docs/missions/platform/README_core.md | plan/guía/lock conjunto de plataforma retirada; no anunciarlo como instalación CLI | referencias a main.py inexistente y dependencias FastAPI/MCP/React; manifiestos CLI se ajustan en fase de build |
+| `requirements.lock` | archivar en docs/missions/platform/requirements.lock | plan/guía/lock conjunto de plataforma retirada; no anunciarlo como instalación CLI | referencias a main.py inexistente y dependencias FastAPI/MCP/React; manifiestos CLI se ajustan en fase de build |
+| `requirements-prod.lock` | archivar en docs/missions/platform/requirements-prod.lock | plan/guía/lock conjunto de plataforma retirada; no anunciarlo como instalación CLI | referencias a main.py inexistente y dependencias FastAPI/MCP/React; manifiestos CLI se ajustan en fase de build |
+| `CHANGELOG.txt` | borrar | duplicado byte a byte de CHANGELOG.md | comparación binaria de ambos archivos |
