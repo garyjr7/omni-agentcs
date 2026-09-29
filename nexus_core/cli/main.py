@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the ``omni`` argument parser."""
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
-        description="CLI interactivo de OmniAgent (NEXUS Sovereign): bucle ReAct con scope y aprobación humana.",
+        description="CLI interactivo de OmniAgentCS-CLI: bucle ReAct con scope y aprobación humana.",
     )
     parser.add_argument("--engagement", metavar="ID", help="engagement activo (scope firmado)")
     parser.add_argument(
