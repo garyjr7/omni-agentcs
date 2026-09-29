@@ -461,6 +461,7 @@ async def test_execute_react_requires_objective(harness):
 async def test_execute_react_runs_through_the_registry(harness, monkeypatch):
     """The durable executor resolves a provider and returns the loop contract."""
     _, context = harness
+    monkeypatch.setenv("NEXUS_LLM_DEFAULT_PROVIDER", "fake")
     monkeypatch.setenv("NEXUS_LLM_FIXTURES", str(FIXTURES / "fake_llm_responses.json"))
 
     result = await runtime_module.execute_react(

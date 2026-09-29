@@ -26,7 +26,8 @@ ENTRY_POINT = ROOT / "omni.py"
 try:  # keep the E2E opt-in but self-contained when a .env exists
     from dotenv import load_dotenv
 
-    load_dotenv(ROOT / ".env", override=False)
+    if os.getenv("NEXUS_E2E") == "1":
+        load_dotenv(ROOT / ".env", override=False)
 except Exception:  # noqa: BLE001 - dotenv is optional here
     pass
 
