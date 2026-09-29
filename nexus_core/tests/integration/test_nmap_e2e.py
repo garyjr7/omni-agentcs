@@ -46,7 +46,7 @@ def _scanme_scope() -> EngagementScope:
         valid_from=_iso(-timedelta(days=1)),
         valid_until=_iso(timedelta(days=1)),
         cidrs=(f"{SCANME_IPV4}/32", f"{SCANME_IPV6}/128"),
-        domains=(),
+        domains=("scanme.nmap.org",),
         urls=(),
         exclusions=(),
         created_at=_iso(timedelta(0)),
