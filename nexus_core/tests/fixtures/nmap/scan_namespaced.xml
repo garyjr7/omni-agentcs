@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun xmlns="http://nmap.org/ns/1.0" scanner="nmap" args="nmap -sV -oX - 203.0.113.10" start="1700000500" startstr="Tue Nov 14 20:21:40 2023" version="7.94" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="1" services="443"/>
+<host starttime="1700000500" endtime="1700000510">
+<status state="up" reason="syn-ack" reason_ttl="52"/>
+<address addr="203.0.113.10" addrtype="ipv4"/>
+<hostnames>
+<hostname name="secure.example" type="PTR"/>
+</hostnames>
+<ports>
+<extraports state="closed" count="999"/>
+<port protocol="tcp" portid="443">
+<state state="open" reason="syn-ack" reason_ttl="52"/>
+<service name="https" product="nginx" version="1.18.0"/>
+</port>
+</ports>
+</host>
+<runstats>
+<finished time="1700000510" timestr="Tue Nov 14 20:21:50 2023" elapsed="10.01" summary="Nmap done" exit="success"/>
+<hosts up="1" down="0" total="1"/>
+</runstats>
+</nmaprun>

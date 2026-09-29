@@ -137,6 +137,10 @@ class RunContext:
     budget_tokens: int = 0
     budget_usd: float = 0.0
     scope: "EngagementScope | None" = None
+    # Execution dependencies used by durable tool handlers. Kept out of the
+    # dataclass comparison/repr because they hold live resources.
+    store: Any = field(default=None, repr=False, compare=False)
+    worker_id: str = ""
 
 
 @dataclass(frozen=True)

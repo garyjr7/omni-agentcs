@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///usr/bin/../share/nmap/nmap.xsl" type="text/xsl"?>
+<nmaprun scanner="nmap" args="nmap -sV -Pn -p 22,80 -oX - 203.0.113.10" start="1700000000" startstr="Tue Nov 14 20:13:20 2023" version="7.94" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="2" services="22,80"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<host starttime="1700000000" endtime="1700000010">
+<status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="203.0.113.10" addrtype="ipv4"/>
+<hostnames>
+<hostname name="scanme.example" type="PTR"/>
+</hostnames>
+<ports>
+<extraports state="closed" count="998">
+<extrareasons reason="resets" count="998"/>
+</extraports>
+<port protocol="tcp" portid="22">
+<state state="open" reason="syn-ack" reason_ttl="64"/>
+<service name="ssh" product="OpenSSH" version="8.2p1" extrainfo="Ubuntu Linux; protocol 2.0" method="probed" conf="10"/>
+</port>
+<port protocol="tcp" portid="80">
+<state state="open" reason="syn-ack" reason_ttl="64"/>
+<service name="http" product="Apache httpd" version="2.4.41" method="probed" conf="10"/>
+</port>
+</ports>
+<times srtt="1234" rttvar="567" to="100000"/>
+</host>
+<runstats>
+<finished time="1700000010" timestr="Tue Nov 14 20:13:30 2023" elapsed="10.12" summary="Nmap done at Tue Nov 14 20:13:30 2023" exit="success"/>
+<hosts up="1" down="0" total="1"/>
+</runstats>
+</nmaprun>

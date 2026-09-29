@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sn -oX - 198.51.100.0/24" start="1700000200" startstr="Tue Nov 14 20:16:40 2023" version="7.94" xmloutputversion="1.05">
+<scaninfo type="ping" protocol="ip" numservices="0" services=""/>
+<runstats>
+<finished time="1700000201" timestr="Tue Nov 14 20:16:41 2023" elapsed="1.03" summary="Nmap done" exit="success"/>
+<hosts up="0" down="0" total="0"/>
+</runstats>
+</nmaprun>

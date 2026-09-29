@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sn -oX - 203.0.113.0/30" start="1700000100" startstr="Tue Nov 14 20:15:00 2023" version="7.94" xmloutputversion="1.05">
+<scaninfo type="ping" protocol="ip" numservices="0" services=""/>
+<host starttime="1700000100" endtime="1700000101">
+<status state="up" reason="echo-reply" reason_ttl="54"/>
+<address addr="203.0.113.10" addrtype="ipv4"/>
+<hostnames>
+<hostname name="alpha.example" type="PTR"/>
+</hostnames>
+<ports>
+<extraports state="closed" count="1000"/>
+</ports>
+</host>
+<host starttime="1700000100" endtime="1700000101">
+<status state="down" reason="no-response" reason_ttl="0"/>
+<address addr="203.0.113.11" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<ports>
+</ports>
+</host>
+<runstats>
+<finished time="1700000102" timestr="Tue Nov 14 20:15:02 2023" elapsed="2.05" summary="Nmap done" exit="success"/>
+<hosts up="1" down="1" total="2"/>
+</runstats>
+</nmaprun>

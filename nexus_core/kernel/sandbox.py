@@ -149,7 +149,10 @@ class OCISandbox:
         )
 
 
-def sandbox_for_environment(workspace_root: str | Path):
+def sandbox_for_environment(
+    workspace_root: str | Path,
+    allowed_programs: Iterable[str] | None = None,
+):
     environment = os.getenv("NEXUS_ENV", "development").lower()
     if environment == "production":
         images = [item.strip() for item in os.getenv(
@@ -158,4 +161,6 @@ def sandbox_for_environment(workspace_root: str | Path):
         return OCISandbox(
             workspace_root, images, runtime=os.getenv("NEXUS_OCI_RUNTIME", "docker")
         )
-    return LocalSandbox(workspace_root)
+    if allowed_programs is None:
+        return LocalSandbox(workspace_root)
+    return LocalSandbox(workspace_root, allowed_programs)

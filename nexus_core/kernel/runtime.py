@@ -176,12 +176,12 @@ async def execute_evaluation(payload: dict, context: ExecutionContext) -> dict:
 async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
     """Invoke only first-party tools through the policy-enforced gateway."""
     from nexus_core.scope import make_scope_validator
+    from nexus_core.tools.registry import durable_tool_definitions
 
     from .approvals import ApprovalService
     from .audit import AuditWriter
-    from .models import Identity, RiskLevel, RunContext, ToolDefinition, ToolResult
+    from .models import Identity, RunContext
     from .policy import PolicyEngine
-    from .sandbox import sandbox_for_environment
     from .scope_loader import load_engagement_scope, scope_signing_secret
     from .tool_gateway import ToolGateway
 
@@ -200,7 +200,8 @@ async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
     run_context = RunContext(tenant_id=context.tenant_id, identity=identity,
                              run_id=context.run_id,
                              trace_id=str(payload.get("trace_id") or context.run_id),
-                             scope=scope)
+                             scope=scope, store=context.store,
+                             worker_id=context.worker_id)
     gateway = ToolGateway(
         PolicyEngine(context.store),
         AuditWriter(context.store),
@@ -208,54 +209,10 @@ async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
         scope_validator=make_scope_validator(signing_secret=scope_signing_secret()),
     )
 
-    async def system_status(_arguments: dict, _run_context: RunContext) -> ToolResult:
-        with context.store.connect() as conn:
-            queued = conn.execute(
-                "SELECT COUNT(*) AS value FROM kernel_tasks WHERE tenant_id=? AND status='queued'",
-                (context.tenant_id,),
-            ).fetchone()["value"]
-        output = {"status": "healthy", "queued_tasks": queued,
-                  "worker_id": context.worker_id}
-        return ToolResult(
-            output=output,
-            verified=True,
-            verification_method="control_store_query",
-            evidence={"queued_tasks": queued, "worker_id": context.worker_id},
-        )
-
-    async def workspace_search(tool_arguments: dict, _run_context: RunContext) -> ToolResult:
-        query = str(tool_arguments["query"])
-        sandbox = sandbox_for_environment(os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd()))
-        result = await sandbox.run(["rg", "-n", "--max-count", "100", "--", query, "."],
-                                   timeout_seconds=20)
-        return ToolResult(
-            output={"matches": result.stdout},
-            verified=result.exit_code in {0, 1} and not result.timed_out,
-            verification_method="sandbox_exit_code",
-            evidence={"query": query, "exit_code": result.exit_code,
-                      "timed_out": result.timed_out},
-            exit_code=result.exit_code,
-            accepted_exit_codes=(0, 1),  # rg uses 1 for a verified empty result
-            stdout=result.stdout,
-            stderr=result.stderr,
-            timed_out=result.timed_out,
-        )
-
-    definitions = {
-        "nexus.system.status": (ToolDefinition(
-            tool_id="nexus.system.status", name="System status", tenant_id=context.tenant_id,
-            input_schema={"type": "object", "additionalProperties": False},
-            risk=RiskLevel.READ_ONLY, required_permissions=["execute:tool"]), system_status),
-        "nexus.workspace.search": (ToolDefinition(
-            tool_id="nexus.workspace.search", name="Workspace search",
-            tenant_id=context.tenant_id,
-            input_schema={"type": "object", "properties": {"query": {"type": "string"}},
-                          "required": ["query"], "additionalProperties": False},
-            risk=RiskLevel.READ_ONLY, required_permissions=["execute:tool"]), workspace_search),
-    }
-    if tool_id not in definitions:
+    catalog = durable_tool_definitions(context.tenant_id)
+    if tool_id not in catalog:
         raise ValueError("tool is not in the first-party runtime catalog")
-    definition, handler = definitions[tool_id]
+    definition, handler = catalog[tool_id]
     gateway.register(definition, handler)
     result = await gateway.invoke(tool_id, arguments, run_context,
                                   permissions=tuple(payload.get("permissions") or ()),
