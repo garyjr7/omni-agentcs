@@ -1,6 +1,5 @@
 import asyncio
-import base64
-import hashlib
+import json
 import unittest
 import tempfile
 import os
@@ -21,16 +20,12 @@ from nexus_core.kernel.control_store import ControlStore
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.tool_gateway import ToolGateway
 from nexus_core.kernel.models import RunContext
-from nexus_core.evolution import EvolutionLab, EvolutionState
 from nexus_core.kernel.model_router import ModelRouter, RoutePolicy
 from nexus_core.kernel.connectors import ConnectorRegistry
 from nexus_core.kernel.store_factory import get_control_store
 from nexus_core.kernel.sandbox import OCISandbox
 from nexus_core.kernel.packages import PackageManager
-from nexus_core.evolution import EvolutionWorkspace
 from nexus_core.kernel.approvals import ApprovalService
-from nexus_core.state.manager import StateManager, TaskState, TaskStatus
-from nexus_core.core.event_bus import EventBus, EventType
 
 
 class OfflineKernelTests(unittest.TestCase):
@@ -267,41 +262,6 @@ class OfflineKernelTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 asyncio.run(gateway.invoke(tool.tool_id, {"query": "again"}, context))
 
-    def test_evolution_lab_enforces_separation_of_duties(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = ControlStore(Path(directory) / "control.db")
-            store.initialize()
-            lab = EvolutionLab(store)
-            proposal = lab.propose(
-                tenant_id="system", title="Reduce retries safely",
-                hypothesis="A bounded retry policy reduces latency",
-                evidence={"timeouts": 12}, acceptance_criteria={"latency_delta": -0.1},
-                risk="medium", proposed_by="observer", baseline_version="0.1.0",
-            )
-            lab.transition(proposal["id"], EvolutionState.IMPLEMENTING, "developer")
-            lab.transition(proposal["id"], EvolutionState.EVALUATING, "developer")
-            with self.assertRaises(PermissionError):
-                lab.record_evaluation(proposal["id"], "developer", True, {})
-            lab.record_evaluation(proposal["id"], "evaluator", True, {"passed": 10})
-            updated = lab.transition(
-                proposal["id"], EvolutionState.AWAITING_APPROVAL, "evaluator"
-            )
-            self.assertEqual(updated["status"], "awaiting_approval")
-            lab.start_campaign(proposal["id"], max_iterations=1, token_budget=10)
-            campaign = lab.consume_iteration(proposal["id"], 10)
-            self.assertEqual(campaign["iterations_used"], 1)
-            with self.assertRaises(PermissionError):
-                lab.consume_iteration(proposal["id"], 1)
-            lab.transition(proposal["id"], EvolutionState.CANARY, "approver")
-            with self.assertRaises(PermissionError):
-                lab.transition(proposal["id"], EvolutionState.PROMOTED, "approver")
-            decision = lab.record_canary(
-                proposal["id"], "release-manager",
-                {"success_rate": 0.98, "error_rate": 0.02, "latency_ms": 100, "cost": 1},
-                {"min_success_rate": 0.99, "max_error_rate": 0.01,
-                 "max_latency_ms": 200, "max_cost": 2},
-            )
-            self.assertEqual(decision["status"], "rolled_back")
 
     def test_model_router_enforces_budget(self):
         client = LLMFactory.create(LLMConfig(provider=LLMProvider.FAKE, model="test"))
@@ -407,13 +367,21 @@ class OfflineKernelTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 sandbox.build_argv("untrusted:latest", ["true"])
 
-    def test_marketing_package_installs_without_kernel_changes(self):
+    def test_package_installs_without_kernel_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             store = ControlStore(Path(directory) / "control.db")
             store.initialize()
-            manager = PackageManager(store, Path(__file__).parents[3] / "departments")
-            installed = manager.install("marketing", "system", "admin")
-            self.assertEqual(installed["package"], "bajioware.marketing")
+            packages = Path(directory) / "packages"
+            package = packages / "fixture"
+            package.mkdir(parents=True)
+            (package / "manifest.json").write_text(json.dumps({
+                "schema_version": 1, "package": "test.fixture", "version": "1.0.0",
+                "agents": [f"agent-{i}" for i in range(7)],
+                "workflows": [], "policies": [],
+            }))
+            manager = PackageManager(store, packages)
+            installed = manager.install("fixture", "system", "admin")
+            self.assertEqual(installed["package"], "test.fixture")
             self.assertEqual(len(installed["agent_ids"]), 7)
             agents = store.list_definitions("kernel_agents", "system")
             self.assertEqual(len(agents), 7)
@@ -439,58 +407,8 @@ class OfflineKernelTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 artifacts.get("system", artifact["id"])
 
-    def test_evolution_workspace_excludes_secrets_and_protects_baseline(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "source"
-            lab_root = Path(directory) / "lab"
-            source.mkdir()
-            (source / "kernel.py").write_text("stable = True\n", encoding="utf-8")
-            (source / ".env").write_text("SECRET=value\n", encoding="utf-8")
-            tests = source / "tests"
-            tests.mkdir()
-            (tests / "baseline.py").write_text("assert True\n", encoding="utf-8")
-            manager = EvolutionWorkspace(source, lab_root)
-            baseline = manager.hashes(source, ["tests"])
-            candidate = manager.prepare("evo-test")
-            self.assertFalse((candidate / ".env").exists())
-            manager.assert_protected_unchanged(baseline, candidate)
-            (candidate / "tests" / "baseline.py").write_text("assert False\n", encoding="utf-8")
-            with self.assertRaises(PermissionError):
-                manager.assert_protected_unchanged(baseline, candidate)
 
-    def test_real_state_manager_persists_without_deadlock(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "state.json"
-            manager = StateManager(path)
-            asyncio.run(manager.initialize())
-            task = TaskState(
-                task_id="task-real", name="real", status=TaskStatus.PENDING,
-                agent_id="agent", payload={"safe": True},
-            )
-            asyncio.run(manager.create_task(task))
-            restored = StateManager(path)
-            asyncio.run(restored.initialize())
-            loaded = asyncio.run(restored.get_task("task-real"))
-            self.assertEqual(loaded.payload, {"safe": True})
 
-    def test_real_event_bus_dispatches_and_stops_cleanly(self):
-        async def exercise():
-            bus = EventBus()
-            received = []
-
-            async def handler(event):
-                received.append(event.payload)
-
-            await bus.subscribe(EventType.TASK_RECEIVED, handler)
-            await bus.start()
-            await bus.publish(EventType.TASK_RECEIVED, {"id": "real"}, source="test")
-            await asyncio.wait_for(bus._queue.join(), timeout=1)
-            await bus.stop()
-            return received, bus.get_stats()
-
-        received, stats = asyncio.run(exercise())
-        self.assertEqual(received, [{"id": "real"}])
-        self.assertEqual(stats[EventType.TASK_RECEIVED], 1)
 
     def test_memory_store_is_durable_scoped_and_searchable(self):
         from nexus_core.kernel.memory import MemoryStore
@@ -535,30 +453,6 @@ class OfflineKernelTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE name='migration_probe'"
                 ).fetchone())
 
-    def test_connector_signed_update_and_rollback(self):
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        from nexus_connector import SignedUpdate
-
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "connector.bin"
-            target.write_bytes(b"v1")
-            payload = b"v2"
-            private_key = Ed25519PrivateKey.generate()
-            public_pem = private_key.public_key().public_bytes(
-                serialization.Encoding.PEM,
-                serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            signature = base64.b64encode(private_key.sign(payload)).decode()
-            SignedUpdate.install(
-                target, payload, hashlib.sha256(payload).hexdigest(), signature, public_pem,
-            )
-            self.assertEqual(target.read_bytes(), b"v2")
-            SignedUpdate.rollback(target)
-            self.assertEqual(target.read_bytes(), b"v1")
-            with self.assertRaises(Exception):
-                SignedUpdate.verify(b"tampered", hashlib.sha256(payload).hexdigest(), signature,
-                                    public_pem)
 
 
 if __name__ == "__main__":

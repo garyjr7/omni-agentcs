@@ -35,7 +35,7 @@ def test_runtime_rejects_unknown_executor(tmp_path):
     store = ControlStore(tmp_path / "sovereign.db")
     store.initialize()
     run = store.create_run("system", {})
-    task = store.enqueue_task(tenant_id="system", run_id=run["id"],
+    store.enqueue_task(tenant_id="system", run_id=run["id"],
                               task_type="unknown.execute", payload={})
     claimed = store.claim_task("worker-test")
     try:
@@ -75,7 +75,7 @@ def test_brain_advances_only_after_a_verified_tool_observation(tmp_path, monkeyp
     store = ControlStore(tmp_path / "sovereign.db")
     store.initialize()
     run = store.create_run("system", {"kind": "agent"})
-    task = store.enqueue_task(
+    store.enqueue_task(
         tenant_id="system", run_id=run["id"], task_type="brain.run",
         payload={
             "objective": "estado del sistema",
