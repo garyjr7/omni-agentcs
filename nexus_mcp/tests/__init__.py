@@ -1,1 +1,0 @@
-"""MCP gateway integration tests."""
