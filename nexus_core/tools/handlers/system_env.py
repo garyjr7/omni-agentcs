@@ -1,0 +1,55 @@
+"""Read-only provisioning inventory."""
+
+import asyncio
+from dataclasses import asdict
+
+from nexus_core.kernel.models import RiskLevel, ToolDefinition, ToolResult
+from nexus_core.kernel.schema_validation import validate
+from nexus_core.provisioner.detector import check_all_tools, check_tool, detect_managers, detect_os
+
+
+def check_env_definition(tenant_id="system"):
+    return ToolDefinition(
+        tool_id="nexus.system.check_env",
+        name="Check system environment",
+        tenant_id=tenant_id,
+        description="Report OS, package managers and tool availability without installing anything.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "tools": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 64},
+                    "maxItems": 50,
+                },
+            },
+            "additionalProperties": False,
+        },
+        risk=RiskLevel.READ_ONLY,
+        required_permissions=["execute:tool:nexus.system.check_env"],
+        timeout_seconds=30,
+        max_output_bytes=500_000,
+    )
+
+
+async def check_env_handler(arguments, context):
+    validate(arguments, check_env_definition().input_schema)
+    names = arguments.get("tools")
+    if names is not None and len(names) > 50:
+        raise ValueError("at most 50 tools")
+    if names is None:
+        tools = await asyncio.to_thread(check_all_tools)
+    else:
+        names = list(dict.fromkeys(names))
+        statuses = await asyncio.gather(*(asyncio.to_thread(check_tool, name) for name in names))
+        tools = dict(zip(names, statuses))
+    return ToolResult(
+        output={
+            "os": asdict(detect_os()),
+            "managers": list(detect_managers()),
+            "tools": {name: asdict(status) for name, status in tools.items()},
+        },
+        verified=True,
+        verification_method="environment_inventory",
+        evidence={"tools_checked": len(tools)},
+    )

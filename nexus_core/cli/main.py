@@ -6,7 +6,6 @@ import argparse
 import sys
 from typing import Any, Callable, Iterable, Sequence
 
-from nexus_core.config import NEXUS_DB_PATH
 from nexus_core.kernel.store_factory import get_control_store
 from nexus_core.scope import EngagementStore
 
@@ -48,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-engagements", action="store_true", help="lista los engagements del tenant y sale"
     )
     parser.add_argument("--version", action="version", version=f"{PROGRAM} {PROGRAM_VERSION}")
+    for flag, help_text in (
+        ("doctor", "diagnóstico del sistema"), ("json", "salida JSON para --doctor"),
+        ("config", "editar config global"), ("config-path", "imprimir ruta de config"),
+        ("no-wizard", "omitir onboarding interactivo"), ("reset-config", "respaldar config y reiniciar onboarding"),
+    ):
+        parser.add_argument("--" + flag, action="store_true", help=help_text)
     return parser
 
 
@@ -108,12 +113,16 @@ def _list_engagements(scopes: list[Any]) -> None:
         )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     """Run the ``omni`` CLI; returns the process exit code."""
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     render.configure_color(no_color=args.no_color)
 
-    store = get_control_store(NEXUS_DB_PATH)
+    from nexus_core.config.loader import effective_db_path, load_config
+    from nexus_core.config.xdg import resolve_xdg_paths
+    paths = paths or resolve_xdg_paths()
+    config = config or load_config(paths)
+    store = get_control_store(effective_db_path(config, paths))
     store.initialize()
     engagements = list(EngagementStore(store).list_for_tenant(args.tenant))
 

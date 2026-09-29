@@ -26,9 +26,10 @@ def get_control_store(
     if url.startswith("sqlite:///"):
         sqlite_path = url.removeprefix("sqlite:///")
     if sqlite_path is None:
-        from nexus_core.config import NEXUS_DB_PATH
-
-        sqlite_path = NEXUS_DB_PATH
+        from nexus_core.config.loader import effective_db_path, load_config
+        from nexus_core.config.xdg import resolve_xdg_paths
+        paths = resolve_xdg_paths()
+        sqlite_path = effective_db_path(load_config(paths), paths)
     environment = os.getenv("NEXUS_ENV", "development").lower()
     if environment == "production" and not os.getenv("NEXUS_ALLOW_SQLITE_PRODUCTION"):
         raise RuntimeError("PostgreSQL DATABASE_URL is required in production")

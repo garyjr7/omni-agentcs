@@ -127,6 +127,16 @@ def make_approval_callback(
         action = f"execute:tool:{tool_id}"
         reader = session.input_reader
         for _ in range(MAX_PROMPT_ATTEMPTS):
+            if tool_id == "nexus.system.install_tool":
+                from nexus_core.provisioner.installer import approval_action, format_plan, plan_install
+                from nexus_core.kernel.schema_validation import validate
+                try:
+                    validate(arguments, _tool_definition(tenant_id, tool_id).input_schema)
+                    plan = plan_install(arguments["tool_name"], arguments.get("manager"))
+                    action = approval_action(plan, dry_run=arguments.get("dry_run", False))
+                    print("Comando exacto de instalación:\n" + format_plan(plan))
+                except (ValueError, KeyError):
+                    return ApprovalDecision(approved=False, reason="no valid install plan")
             try:
                 answer = render.render_approval_prompt(
                     tool_id, arguments, decision, reader=reader
@@ -143,7 +153,7 @@ def make_approval_callback(
                         approved=False, reason="durable approval could not be registered"
                     )
                 render.render_status(f"aprobado por {session.operator_id} ({approval_id})")
-                return ApprovalDecision(approved=True, approval_id=approval_id)
+                return ApprovalDecision(approved=True, approval_id=approval_id, edited_arguments=arguments if tool_id == "nexus.system.install_tool" else None)
 
             if choice in DENY_WORDS:
                 render.render_status("rechazado por el operador")
@@ -152,6 +162,9 @@ def make_approval_callback(
             if choice == "e":
                 edited = edit_arguments(arguments, reader or input)
                 if edited is None:
+                    continue
+                if tool_id == "nexus.system.install_tool":
+                    arguments = edited
                     continue
                 approval_id = _register_approval(session, service, tenant_id, run_id, action)
                 if approval_id is None:

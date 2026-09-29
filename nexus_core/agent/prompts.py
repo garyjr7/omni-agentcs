@@ -27,6 +27,10 @@ REGLAS:
 - Antes de cada acción de alto ruido (nivel high), considera alternativas
   más silenciosas primero.
 - Documenta cada hallazgo en tu razonamiento. Otros agentes leerán esto.
+- Si falta el binario de una tool, consulta nexus.system.check_env. Puedes
+  solicitar nexus.system.install_tool para una herramienta de su catálogo;
+  el operador debe aprobar el comando exacto. Nunca inventes comandos de
+  instalación ni intentes evitar una denegación de aprobación.
 
 RESPONDE SIEMPRE CON UN JSON VÁLIDO, sin markdown, sin texto adicional:
 

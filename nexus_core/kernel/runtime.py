@@ -85,6 +85,10 @@ def select_llm_client():
     if not clients:
         raise RuntimeError("no LLM provider configured")
     providers = [name for name in clients if name != "fake"] or ["fake"]
+    selected = os.getenv("NEXUS_LLM_DEFAULT_PROVIDER")
+    if selected:
+        # Missing keys use offline fake, never silently choose a different cloud.
+        providers = [selected] if selected in clients else ["fake"]
     return NexusLLM(
         primary=clients[providers[0]],
         fallback=clients[providers[1]] if len(providers) > 1 else None,

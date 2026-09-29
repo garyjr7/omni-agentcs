@@ -80,6 +80,7 @@ class LLMProvider(str, Enum):
     FAKE = "fake"
     GROQ = "groq"
     OPENAI_COMPATIBLE = "openai_compatible"
+    ANTHROPIC = "anthropic"
 
 @dataclass
 class LLMConfig:
@@ -450,7 +451,9 @@ class LLMFactory:
         Raises:
             ValueError: If an unsupported provider is specified.
         """
+        from .anthropic_client import AnthropicClient
         provider_map = {
+            LLMProvider.ANTHROPIC: AnthropicClient,
             LLMProvider.OPENAI: OpenAIClient,
             LLMProvider.GEMINI: GeminiClient,
             LLMProvider.OLLAMA: OllamaClient,
@@ -520,6 +523,13 @@ class LLMFactory:
                 logger.info("Groq client created from environment variables.")
             except Exception as e:
                 logger.warning(f"Failed to create Groq client from env: {e}")
+
+        if os.getenv("ANTHROPIC_API_KEY"):
+            clients["anthropic"] = LLMFactory.create(LLMConfig(
+                provider=LLMProvider.ANTHROPIC,
+                model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+                api_key=os.getenv("ANTHROPIC_API_KEY"),
+            ))
 
         # Ollama
         if os.getenv("OLLAMA_BASE_URL"):

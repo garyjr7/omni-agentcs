@@ -42,7 +42,10 @@ def _install_readline() -> Path | None:
     except ImportError:  # pragma: no cover - Windows without pyreadline
         return None
     try:
-        history_path = Path.home() / ".omni_history"
+        from nexus_core.config.xdg import resolve_xdg_paths
+        paths = resolve_xdg_paths()
+        paths.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        history_path = paths.state_dir / "history"
         if history_path.exists():
             readline.read_history_file(str(history_path))
         readline.set_history_length(1000)
@@ -60,6 +63,7 @@ def _save_readline_history(history_path: Path | None) -> None:
         return
     try:
         readline.write_history_file(str(history_path))
+        history_path.chmod(0o600)
     except OSError:  # pragma: no cover - unwritable home directory
         pass
 

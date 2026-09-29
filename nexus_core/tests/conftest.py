@@ -5,6 +5,7 @@ import pytest_asyncio
 
 from nexus_core.core.event_bus import EventBus
 from nexus_core.state.manager import StateManager
+from nexus_core.tests.onboarding_support import onboarding_env  # noqa: F401 - pytest fixture
 
 
 @pytest.fixture

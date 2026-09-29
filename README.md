@@ -17,6 +17,152 @@ NEXUS es un kernel y directorio empresarial de agentes. REST, CLI, MCP y A2A son
 - Evolution Lab gobernado: workspace aislado, evaluador independiente, aprobación humana, canary y rollback.
 - Marketing como primer departamento instalable, no como código especial del kernel.
 
+## Instalación
+
+### Requisitos
+
+- Python 3.12+ y un entorno virtual.
+- Linux (Ubuntu/Debian/Fedora/Arch) o macOS. Las recetas disponibles dependen
+  del gestor y sus repositorios; no todas las herramientas tienen receta en cada sistema.
+- API key del proveedor elegido para usar un LLM cloud. Fake permite probar
+  sin claves; Ollama requiere un servidor y modelo local ya disponibles.
+
+### Instalación de desarrollo
+
+```bash
+git clone https://github.com/bajioware/omni-agentcs
+cd omni-agentcs
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-prod.in
+mkdir -p ~/.local/bin
+ln -s "$PWD/omni.py" ~/.local/bin/omni
+export PATH="$HOME/.local/bin:$PATH"
+omni
+```
+
+Activa el venv en cada terminal: el ejecutable usa el Python de `PATH`.
+Para instalaciones reproducibles, usa `pip install --require-hashes -r
+requirements-prod.lock`. No necesitas copiar `.env` para el onboarding.
+
+### Distribución futura
+
+Los comandos previstos son `pip install omni-agentcs` y
+`npm i -g @bajioware/omni-agentcs`. Esta entrega todavía no publica esos
+paquetes: utiliza la instalación desde el repositorio descrita arriba.
+
+### Primera ejecución
+
+`omni` abre el wizard si falta la configuración y hay una terminal interactiva:
+
+1. Detecta sistema, gestores y las diez herramientas del catálogo.
+2. Ofrece revisar las herramientas ausentes y solicita aprobación por comando.
+3. Configura Groq, OpenAI, Anthropic, Gemini, Ollama o Fake y el modelo.
+4. Opcionalmente crea un engagement firmado con dominios/CIDRs autorizados,
+   una instantánea DNS y validez de 24 horas. Muestra su ID para usarlo con
+   `omni --engagement ID --objective "..."`.
+5. Guarda la configuración de forma atómica. Ctrl+C cancela el guardado;
+   las instalaciones ya aprobadas y completadas permanecen en el sistema.
+
+No se hacen llamadas pagadas para validar claves en el wizard. Si ya existe
+configuración, el wizard no se repite. En CI, tests, sin TTY o con
+`--no-wizard`, se usan la configuración existente y los defaults.
+
+### Configuración global
+
+| Contenido | Ruta predeterminada | Variable XDG |
+|---|---|---|
+| Configuración TOML | `~/.config/omni/config.toml` | `XDG_CONFIG_HOME` |
+| SQLite por defecto | `~/.local/share/omni/control.db` | `XDG_DATA_HOME` |
+| Historial del CLI | `~/.local/state/omni/history` | `XDG_STATE_HOME` |
+| Caché | `~/.cache/omni/` | `XDG_CACHE_HOME` |
+
+Se ignoran variables XDG vacías o relativas, según la
+[especificación XDG](https://specifications.freedesktop.org/basedir/0.8/).
+Los directorios se crean con permisos `700`; config y sus respaldos, con `600`.
+Las claves se guardan en texto plano protegido por esos permisos.
+Integración con keyring: pendiente para una entrega posterior.
+
+Precedencia: entorno del proceso, `.env` del checkout, configuración global,
+defaults. `DATABASE_URL` conserva la selección del backend; `NEXUS_DB_PATH`
+conserva la DB explícita. No se migra una DB existente silenciosamente.
+Si `.env` contiene `LLM_PROVIDER=fake`, seguirá teniendo prioridad sobre el
+proveedor del wizard; edita esa variable para usar otro proveedor.
+
+```toml
+schema_version = 1
+[llm]
+default_provider = "groq"
+default_model = "openai/gpt-oss-20b"
+[provisioning]
+auto_install = false
+prefer_user_install = true
+install_dir = "~/.local/bin"
+```
+
+`auto_install` nunca omite aprobaciones. Un config corrupto se conserva como
+`config.toml.bak` (con sufijo único si ya existe) y se regenera con defaults.
+Si no hay permisos para recuperarlo, se avisa y se usan defaults en memoria.
+
+### Comandos útiles
+
+```bash
+omni --doctor --no-wizard       # diagnóstico local
+omni --doctor --json            # JSON sin claves ni tokens
+omni --config                  # editar en $EDITOR (nano por defecto)
+omni --config-path              # imprimir la ruta efectiva
+omni --reset-config            # respaldar config y repetir wizard si hay TTY
+omni --no-wizard                # ejecución sin onboarding
+```
+
+Doctor informa versiones, gestores, rutas, DB SQLite, últimos cinco eventos
+de auditoría y estado local de msfrpcd. La comprobación de su puerto no
+autentica RPC. Una versión puede aparecer vacía si el binario tarda más de
+tres segundos. Las bases PostgreSQL se identifican sin consultar el servidor.
+
+## Auto-provisioning
+
+| Meta-tool durable | Riesgo | Scope | Aprobación |
+|---|---|---|---|
+| `nexus.system.check_env` | READ_ONLY | No | No |
+| `nexus.system.install_tool` | HIGH | No | Siempre, ligada al plan exacto |
+
+```mermaid
+flowchart TD
+    A[Agente necesita una herramienta] --> B[check_env: inventario local]
+    B --> C[install_tool: plan desde catálogo]
+    C --> D[Mostrar comando, PATH y notas]
+    D --> E{Aprobación humana}
+    E -->|Sí| F[Validar aprobación durable y ejecutar argv]
+    E -->|No| G[Continuar sin instalar]
+    F --> H[Verificar binario y devolver evidencia]
+```
+
+El LLM puede elegir herramienta y gestor del catálogo, nunca proporcionar
+un comando. La aprobación vincula herramienta, gestor, argumentos resueltos
+y modo dry-run. Si cambia el plan, se requiere una nueva aprobación.
+`dry_run=true` devuelve el plan sin instalar y también requiere aprobación
+cuando pasa por el gateway HIGH. Se ejecuta sin shell, con timeout de diez
+minutos y verificación posterior; no hay fallback de gestor automático.
+
+Se prefieren instalaciones de usuario (`go`, `pipx`, `brew`) cuando existe
+receta. Go usa `GOBIN=~/.local/bin` o el `install_dir` configurado. Tras una
+instalación verificada, se añade su directorio al PATH de `.bashrc` o `.zshrc`
+de forma idempotente y al proceso actual. Los comandos administrativos usan
+`sudo -n`: si faltan privilegios, fallan con evidencia; el CLI no captura ni
+almacena la contraseña de sudo. El operador puede ejecutar manualmente el
+comando mostrado o preparar los privilegios antes de volver a aprobarlo.
+
+El catálogo no añade repositorios del sistema. Metasploit necesita un
+repositorio que publique `metasploit-framework`; su daemon se configura
+por separado con [el instalador systemd](scripts/install_msfrpcd_service.sh).
+Los templates de nuclei también se provisionan por separado. Se distingue
+el binario [httpx de ProjectDiscovery](https://docs.projectdiscovery.io/opensource/httpx/install)
+del paquete Python del mismo nombre. Las recetas Go siguen las instrucciones
+de [subfinder](https://docs.projectdiscovery.io/opensource/subfinder/install),
+[nuclei](https://docs.projectdiscovery.io/opensource/nuclei/install),
+[ffuf](https://github.com/ffuf/ffuf) y [gobuster](https://github.com/OJ/gobuster).
+
 ## Desarrollo sin GPU, APIs ni tokens
 
 Requiere Python 3.12. Las dependencias reproducibles se instalan desde el lock con hashes:

@@ -7,6 +7,7 @@ import inspect
 import json
 import os
 import time
+from dataclasses import replace
 from typing import Any, Awaitable, Callable, Dict
 
 from .approvals import ApprovalService
@@ -113,11 +114,21 @@ class ToolGateway:
             if not decision.allowed:
                 raise PermissionError(decision.reason)
             action = f"execute:tool:{tool_id}"
+            install_plan = None
+            if tool_id == "nexus.system.install_tool":
+                from nexus_core.provisioner.installer import approval_action, plan_install
+                install_plan = plan_install(arguments["tool_name"], arguments.get("manager"))
+                action = approval_action(install_plan, dry_run=arguments.get("dry_run", False))
             if decision.requires_approval:
                 if not self.approvals or not approval_id:
                     raise PermissionError("durable human approval is required")
                 if not self.approvals.verify(approval_id, context, action):
                     raise PermissionError("approval does not authorize this tool invocation")
+
+            if install_plan is not None:
+                if not self.approvals or not approval_id or not self.approvals.verify(approval_id, context, action):
+                    raise PermissionError("exact install plan requires durable human approval")
+                context = replace(context, approved_install_plan=install_plan)
 
             store = self.audit.store
             store.record_usage(

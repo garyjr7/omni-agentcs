@@ -1,9 +1,10 @@
 """Shared filesystem configuration for NEXUS Core."""
+
 import os
 from pathlib import Path
 
 
-DEFAULT_NEXUS_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_NEXUS_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _resolve_env_path(name: str, default: str | Path, base: Path) -> Path:

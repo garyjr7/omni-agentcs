@@ -28,9 +28,13 @@ def durable_tool_definitions(
     from .handlers.nuclei import nuclei_definition, nuclei_handler
     from .handlers.subfinder import subfinder_definition, subfinder_handler
     from .handlers.system import system_status_definition, system_status_handler
+    from .handlers.system_env import check_env_definition, check_env_handler
+    from .handlers.system_install import install_tool_definition, install_tool_handler
     from .handlers.workspace import workspace_search_definition, workspace_search_handler
 
     catalog = {
+        "nexus.system.check_env": (check_env_definition(tenant_id), check_env_handler),
+        "nexus.system.install_tool": (install_tool_definition(tenant_id), install_tool_handler),
         "nexus.system.status": (system_status_definition(tenant_id), system_status_handler),
         "nexus.workspace.search": (
             workspace_search_definition(tenant_id),

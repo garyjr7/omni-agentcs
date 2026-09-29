@@ -141,6 +141,8 @@ class RunContext:
     # dataclass comparison/repr because they hold live resources.
     store: Any = field(default=None, repr=False, compare=False)
     worker_id: str = ""
+    # Only ToolGateway populates this after exact-plan durable approval.
+    approved_install_plan: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

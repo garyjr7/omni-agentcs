@@ -1,0 +1,89 @@
+{
+  "nmap": {
+    "description": "Port scanner", "purpose": "Puertos y servicios",
+    "verify": ["nmap", "--version"],
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "nmap"], "sudo": true},
+      "dnf": {"command": ["dnf", "install", "-y", "nmap"], "sudo": true},
+      "yum": {"command": ["yum", "install", "-y", "nmap"], "sudo": true},
+      "pacman": {"command": ["pacman", "-S", "--noconfirm", "nmap"], "sudo": true},
+      "zypper": {"command": ["zypper", "--non-interactive", "install", "nmap"], "sudo": true},
+      "brew": {"command": ["brew", "install", "nmap"], "sudo": false},
+      "port": {"command": ["port", "install", "nmap"], "sudo": true}
+    }
+  },
+  "subfinder": {
+    "description": "Subdomain enumeration", "purpose": "Recon pasivo OSINT",
+    "verify": ["subfinder", "-version"],
+    "recipes": {
+      "go": {"command": ["go", "install", "-v", "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"], "sudo": false, "installs_to": "~/go/bin/subfinder"},
+      "brew": {"command": ["brew", "install", "subfinder"], "sudo": false}
+    }
+  },
+  "httpx": {
+    "description": "ProjectDiscovery HTTP toolkit (no es el paquete Python)", "purpose": "Sondeo HTTP",
+    "verify": ["httpx", "-version"],
+    "recipes": {
+      "go": {"command": ["go", "install", "-v", "github.com/projectdiscovery/httpx/cmd/httpx@latest"], "sudo": false, "installs_to": "~/go/bin/httpx"},
+      "brew": {"command": ["brew", "install", "httpx"], "sudo": false}
+    }
+  },
+  "nuclei": {
+    "description": "Template vulnerability scanner", "purpose": "Comprobaciones web",
+    "verify": ["nuclei", "-version"],
+    "post_install_notes": "Los templates requieren configuración aparte: nuclei -update-templates y NEXUS_NUCLEI_TEMPLATES. No se descargan automáticamente.",
+    "recipes": {
+      "go": {"command": ["go", "install", "-v", "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"], "sudo": false, "installs_to": "~/go/bin/nuclei"},
+      "brew": {"command": ["brew", "install", "nuclei"], "sudo": false}
+    }
+  },
+  "ffuf": {
+    "description": "Web fuzzer", "purpose": "Descubrimiento web",
+    "verify": ["ffuf", "-V"],
+    "recipes": {
+      "go": {"command": ["go", "install", "github.com/ffuf/ffuf/v2@latest"], "sudo": false, "installs_to": "~/go/bin/ffuf"},
+      "apt": {"command": ["apt", "install", "-y", "ffuf"], "sudo": true},
+      "brew": {"command": ["brew", "install", "ffuf"], "sudo": false}
+    }
+  },
+  "amass": {
+    "description": "Attack surface discovery", "purpose": "Inventario de dominios",
+    "verify": ["amass", "-version"],
+    "recipes": {
+      "brew": {"command": ["brew", "install", "amass"], "sudo": false},
+      "apt": {"command": ["apt", "install", "-y", "amass"], "sudo": true, "distros": ["kali", "parrot"]}
+    }
+  },
+  "msfconsole": {
+    "description": "Metasploit Framework", "purpose": "Módulos de seguridad",
+    "verify": ["msfconsole", "--version"],
+    "recipes": {"apt": {"command": ["apt", "install", "-y", "metasploit-framework"], "sudo": true}},
+    "post_install_notes": "Requiere un repositorio que ofrezca metasploit-framework (Kali/Rapid7). El provisioner no añade repositorios. Configura el secreto y ejecuta scripts/install_msfrpcd_service.sh por separado."
+  },
+  "sqlmap": {
+    "description": "SQL injection testing", "purpose": "Auditoría SQL",
+    "verify": ["sqlmap", "--version"],
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "sqlmap"], "sudo": true},
+      "brew": {"command": ["brew", "install", "sqlmap"], "sudo": false},
+      "pipx": {"command": ["pipx", "install", "sqlmap"], "sudo": false, "installs_to": "~/.local/bin/sqlmap"}
+    }
+  },
+  "gobuster": {
+    "description": "Content discovery", "purpose": "Enumeración web y DNS",
+    "verify": ["gobuster", "version"],
+    "recipes": {
+      "go": {"command": ["go", "install", "github.com/OJ/gobuster/v3@latest"], "sudo": false, "installs_to": "~/go/bin/gobuster"},
+      "apt": {"command": ["apt", "install", "-y", "gobuster"], "sudo": true},
+      "brew": {"command": ["brew", "install", "gobuster"], "sudo": false}
+    }
+  },
+  "impacket": {
+    "description": "Python network protocols toolkit", "purpose": "Auditoría de protocolos",
+    "verify": ["impacket-smbclient", "-h"],
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "impacket-scripts"], "sudo": true},
+      "pipx": {"command": ["pipx", "install", "impacket"], "sudo": false, "installs_to": "~/.local/bin/smbclient.py", "verify": ["smbclient.py", "-h"]}
+    }
+  }
+}
