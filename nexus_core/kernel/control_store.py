@@ -281,6 +281,26 @@ CREATE TABLE IF NOT EXISTS kernel_connectors (
     last_seen_at TEXT, revoked_at TEXT, created_at TEXT NOT NULL,
     UNIQUE(tenant_id, device_id)
 );
+CREATE TABLE IF NOT EXISTS kernel_engagements (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    client TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    valid_from TEXT NOT NULL,
+    valid_until TEXT NOT NULL,
+    cidrs TEXT NOT NULL,
+    domains TEXT NOT NULL,
+    urls TEXT NOT NULL,
+    exclusions TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    signature TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(tenant_id, name),
+    FOREIGN KEY(tenant_id) REFERENCES kernel_tenants(id)
+);
+CREATE INDEX IF NOT EXISTS idx_engagements_tenant_time
+    ON kernel_engagements(tenant_id, valid_from, valid_until);
 """
 
 

@@ -25,10 +25,13 @@ class ToolGateway:
         policy: PolicyEngine,
         audit: AuditWriter,
         approvals: ApprovalService | None = None,
+        scope_validator: Callable[[RunContext, ToolDefinition, Dict[str, Any]], None]
+        | None = None,
     ):
         self.policy = policy
         self.audit = audit
         self.approvals = approvals
+        self.scope_validator = scope_validator
         self._definitions: Dict[str, ToolDefinition] = {}
         self._handlers: Dict[str, ToolHandler] = {}
 
@@ -58,6 +61,38 @@ class ToolGateway:
             if not definition or not definition.enabled:
                 raise KeyError("tool is unavailable")
             validate(arguments, definition.input_schema or {"type": "object"})
+            if definition.scope_required or definition.scope_target_field:
+                if context.scope is None:
+                    if definition.scope_required:
+                        self.audit.append(
+                            tenant_id=context.tenant_id,
+                            trace_id=context.trace_id,
+                            actor_id=context.identity.subject_id,
+                            action="scope.denied",
+                            resource_type="tool",
+                            resource_id=tool_id,
+                            payload={"reason": "no_scope"},
+                            decision="deny",
+                        )
+                        raise PermissionError("scope is required but not provided")
+                elif self.scope_validator is not None:
+                    try:
+                        self.scope_validator(context, definition, arguments)
+                    except Exception as exc:
+                        self.audit.append(
+                            tenant_id=context.tenant_id,
+                            trace_id=context.trace_id,
+                            actor_id=context.identity.subject_id,
+                            action="scope.denied",
+                            resource_type="tool",
+                            resource_id=tool_id,
+                            payload={
+                                "target_keys": [definition.scope_target_field],
+                                "reason": str(exc)[:500],
+                            },
+                            decision="deny",
+                        )
+                        raise
             decision = self.policy.decide(
                 context.identity,
                 "execute:tool",

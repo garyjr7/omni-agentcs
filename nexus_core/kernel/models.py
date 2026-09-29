@@ -5,8 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from nexus_core.scope.models import EngagementScope
 
 
 def utc_now() -> str:
@@ -77,6 +80,8 @@ class ToolDefinition:
     scopes: List[str] = field(default_factory=list)
     enabled: bool = True
     created_at: str = field(default_factory=utc_now)
+    scope_target_field: str | None = None
+    scope_required: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -131,6 +136,7 @@ class RunContext:
     environment: str = "development"
     budget_tokens: int = 0
     budget_usd: float = 0.0
+    scope: "EngagementScope | None" = None
 
 
 @dataclass(frozen=True)
