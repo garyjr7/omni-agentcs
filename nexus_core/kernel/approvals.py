@@ -25,6 +25,16 @@ class ApprovalService:
             )
         return self.get(approval_id, context.tenant_id)
 
+    def list_pending(self, tenant_id: str) -> list[Dict[str, Any]]:
+        """Return the tenant's pending approvals, oldest first."""
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM kernel_approvals
+                WHERE tenant_id=? AND status='pending' ORDER BY created_at""",
+                (tenant_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get(self, approval_id: str, tenant_id: str) -> Dict[str, Any]:
         with self.store.connect() as conn:
             row = conn.execute(

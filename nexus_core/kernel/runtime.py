@@ -5,12 +5,15 @@ from __future__ import annotations
 import inspect
 import os
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict
 
 from nexus_core.llm.abstraction import LLMFactory, LLMMessage
 
 from .models import utc_now
 from .telemetry import metrics, telemetry
+
+if TYPE_CHECKING:
+    from .models import RunContext
 
 Executor = Callable[[dict, "ExecutionContext"], dict | Awaitable[dict]]
 
@@ -66,6 +69,57 @@ class ExecutorRegistry:
         metrics.increment("nexus_runtime_tasks_total", tenant_id=context.tenant_id,
                           task_type=task["task_type"], status="completed")
         return result
+
+
+def select_llm_client():
+    """Build the resilient LLM client used by agentic executors.
+
+    ``LLMFactory.create_from_env()`` always yields the deterministic ``fake``
+    provider; real providers therefore take precedence and ``fake`` stays as the
+    last-resort fallback. Shared by ``execute_react`` and the ``omni`` CLI so a
+    human-driven session runs on exactly the same provider resolution.
+    """
+    from nexus_core.llm.abstraction import NexusLLM
+
+    clients = LLMFactory.create_from_env()
+    if not clients:
+        raise RuntimeError("no LLM provider configured")
+    providers = [name for name in clients if name != "fake"] or ["fake"]
+    return NexusLLM(
+        primary=clients[providers[0]],
+        fallback=clients[providers[1]] if len(providers) > 1 else None,
+    )
+
+
+def _build_run_context(payload: dict, context: ExecutionContext) -> RunContext:
+    """Build the governed RunContext of one tool invocation.
+
+    Shared by ``execute_tool`` and the ReAct approval gate so both authorize
+    with exactly the same identity, engagement scope, trace and store. This is
+    an internal helper: the executor signatures are unchanged.
+    """
+    from .models import Identity, RunContext
+    from .scope_loader import load_engagement_scope
+
+    actor = payload.get("identity") or {}
+    identity = Identity(
+        subject_id=str(actor.get("subject_id") or "nexus-worker"),
+        tenant_id=context.tenant_id,
+        kind=str(actor.get("kind") or "workload"),
+        roles=tuple(actor.get("roles") or ("operator",)),
+    )
+    scope = load_engagement_scope(
+        context.store, context.tenant_id, payload.get("engagement_id")
+    )
+    return RunContext(
+        tenant_id=context.tenant_id,
+        identity=identity,
+        run_id=context.run_id,
+        trace_id=str(payload.get("trace_id") or context.run_id),
+        scope=scope,
+        store=context.store,
+        worker_id=context.worker_id,
+    )
 
 
 def _select_client(route: str | None = None):
@@ -180,28 +234,13 @@ async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
 
     from .approvals import ApprovalService
     from .audit import AuditWriter
-    from .models import Identity, RunContext
     from .policy import PolicyEngine
-    from .scope_loader import load_engagement_scope, scope_signing_secret
+    from .scope_loader import scope_signing_secret
     from .tool_gateway import ToolGateway
 
     tool_id = str(payload.get("tool_id") or "")
     arguments = payload.get("arguments") or {}
-    actor = payload.get("identity") or {}
-    identity = Identity(
-        subject_id=str(actor.get("subject_id") or "nexus-worker"),
-        tenant_id=context.tenant_id,
-        kind=str(actor.get("kind") or "workload"),
-        roles=tuple(actor.get("roles") or ("operator",)),
-    )
-    engagement_id = payload.get("engagement_id")
-    scope = load_engagement_scope(context.store, context.tenant_id, engagement_id)
-
-    run_context = RunContext(tenant_id=context.tenant_id, identity=identity,
-                             run_id=context.run_id,
-                             trace_id=str(payload.get("trace_id") or context.run_id),
-                             scope=scope, store=context.store,
-                             worker_id=context.worker_id)
+    run_context = _build_run_context(payload, context)
     gateway = ToolGateway(
         PolicyEngine(context.store),
         AuditWriter(context.store),
@@ -301,22 +340,12 @@ async def execute_react(payload: dict, context: ExecutionContext) -> dict:
     ``identity``/``permissions``/``approval_id`` forwarded to every tool call.
     """
     from nexus_core.agent.react import ReActConfig, run_react_loop
-    from nexus_core.llm.abstraction import LLMFactory, NexusLLM
 
     objective = str(payload.get("objective") or "").strip()
     if not objective:
         raise ValueError("objective is required")
 
-    clients = LLMFactory.create_from_env()
-    if not clients:
-        raise RuntimeError("no LLM provider configured")
-    # ``create_from_env`` always yields the deterministic "fake" provider, so
-    # real providers take precedence when configured; fake stays as fallback.
-    providers = [name for name in clients if name != "fake"] or ["fake"]
-    llm = NexusLLM(
-        primary=clients[providers[0]],
-        fallback=clients[providers[1]] if len(providers) > 1 else None,
-    )
+    llm = select_llm_client()
     config = ReActConfig(max_iterations=max(1, int(payload.get("max_iterations") or 12)))
     result = await run_react_loop(
         context=context,

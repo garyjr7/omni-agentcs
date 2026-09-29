@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.llm.abstraction import LLMMessage
@@ -52,6 +52,21 @@ STATUS_SCOPE_VIOLATION = "scope_violation_aborted"
 
 
 @dataclass(frozen=True)
+class ApprovalDecision:
+    """Answer of a human operator to one high-risk tool request.
+
+    ``edited_arguments`` lets the operator amend the target or the flags before
+    the call is authorized; the amended call still goes through policy, scope
+    and sandbox, so an operator cannot widen an engagement.
+    """
+
+    approved: bool
+    approval_id: str | None = None
+    edited_arguments: dict[str, Any] | None = None
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class ReActConfig:
     """Tunables of one ReAct run."""
 
@@ -59,6 +74,13 @@ class ReActConfig:
     timeout_per_tool_seconds: int = 600
     enable_summarization: bool = True
     max_history_messages: int = 40
+    #: Interactive approval hook. When set, the loop asks policy *before* every
+    #: tool invocation and, if the decision requires human approval, calls this
+    #: callback with ``(tool_id, arguments, decision)``. Returning ``None`` or a
+    #: denying :class:`ApprovalDecision` injects a ``denied_by_operator``
+    #: observation and continues (a human refusal is not a tool failure). Without
+    #: a callback, the gateway fails the call with ``PermissionError`` as before.
+    on_approval_needed: Callable[[str, dict[str, Any], Any], ApprovalDecision | None] | None = None
 
 
 @dataclass
@@ -178,6 +200,60 @@ def _action_entry(
     }
     entry.update(extra)
     return entry
+
+
+def _operator_approval_gate(
+    *,
+    config: ReActConfig,
+    context: Any,
+    definition: Any,
+    tool_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Run the pre-invocation approval handshake for one tool call.
+
+    Reuses the very same :class:`PolicyEngine` and RunContext that
+    ``execute_tool`` will use, so the loop never diverges from the gateway.
+    Returns a denial observation when the operator refuses, or ``None`` after
+    annotating ``tool_payload`` with the approved ``approval_id`` and any
+    operator-edited arguments.
+    """
+    from nexus_core.kernel.models import Resource
+    from nexus_core.kernel.policy import PolicyEngine
+    from nexus_core.kernel.runtime import _build_run_context
+
+    tool_id = str(tool_payload["tool_id"])
+    run_context = _build_run_context(tool_payload, context)
+    decision = PolicyEngine(context.store).decide(
+        run_context.identity,
+        "execute:tool",
+        Resource(tool_id, definition.tenant_id, "tool"),
+        tuple(tool_payload.get("permissions") or ()),
+        definition,
+    )
+    if not decision.requires_approval or config.on_approval_needed is None:
+        return None
+
+    answer = config.on_approval_needed(tool_id, dict(tool_payload["arguments"]), decision)
+    if answer is None or not answer.approved:
+        reason = (answer.reason if answer is not None else "") or "operator did not authorize"
+        return {
+            "success": False,
+            "status": "denied_by_operator",
+            "tool_id": tool_id,
+            "reason": str(reason)[:500],
+        }
+    if answer.edited_arguments is not None:
+        if not isinstance(answer.edited_arguments, dict):
+            return {
+                "success": False,
+                "status": "denied_by_operator",
+                "tool_id": tool_id,
+                "reason": "operator returned invalid edited arguments",
+            }
+        tool_payload["arguments"] = dict(answer.edited_arguments)
+    if answer.approval_id:
+        tool_payload["approval_id"] = answer.approval_id
+    return None
 
 
 def _observation_payload(invocation: dict[str, Any]) -> dict[str, Any]:
@@ -489,15 +565,42 @@ async def run_react_loop(
                 break
             continue
 
+        resolved = catalog[action.tool_id]
+        definition = resolved[0] if isinstance(resolved, tuple) else resolved
         tool_payload = {
             "tool_id": action.tool_id,
-            "arguments": action.arguments or {},
+            "arguments": dict(action.arguments or {}),
             "identity": payload.get("identity") or {},
             "engagement_id": engagement_id,
             "permissions": tuple(payload.get("permissions") or ()),
             "approval_id": payload.get("approval_id"),
             "trace_id": run_id,
         }
+        if config.on_approval_needed is not None:
+            denial = _operator_approval_gate(
+                config=config, context=context, definition=definition, tool_payload=tool_payload
+            )
+            if denial is not None:
+                # A human refusal is not a tool failure: the loop keeps its
+                # failure budget and lets the model pick another strategy.
+                entry["tool_result"] = denial
+                actions.append(entry)
+                _inject_observation(
+                    store, tenant_id, conversation_id, run_id, iteration, action, denial
+                )
+                _audit_step(
+                    audit,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    agent_id=agent_id,
+                    iteration=iteration,
+                    action=action.action,
+                    decision="deny",
+                    tool_id=action.tool_id,
+                    reason="denied_by_operator",
+                    operator_reason=denial["reason"],
+                )
+                continue
         try:
             invocation = await asyncio.wait_for(
                 runtime_module.execute_tool(tool_payload, context),
