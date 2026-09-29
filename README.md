@@ -204,10 +204,107 @@ Ejemplos en el REPL:
 └─$ Busca directorios comunes en http://scanme.nmap.org/FUZZ con el wordlist /workspace/words.txt, 5 threads
 ```
 
+## Metasploit RPC
+
+El catálogo durable incluye nueve tools. Metasploit Framework se ejecuta como
+servicio systemd separado; NEXUS se comunica exclusivamente por RPC. No se
+añaden dependencias: utiliza `httpx` y `msgpack` del entorno existente.
+
+La instalación local verificada usa **MessagePack en `/api/`**, escuchando en
+`127.0.0.1:55552`. Ver [diagnóstico](MSF_DAEMON_DIAG.md) y
+[resultado del servicio](MSF_DAEMON_RESULT.md). Con el archivo de credenciales
+`/etc/default/msfrpcd` ya creado por el operador (variable `MSFRPC_PASSWORD`,
+permisos `600`, propietario `root:root`), instalar o reparar la unidad:
+
+```bash
+sudo bash scripts/install_msfrpcd_service.sh
+systemctl status msfrpcd --no-pager
+sudo journalctl -u msfrpcd -n 50 --no-pager
+```
+
+El script guarda la unidad anterior y comprueba login y versión mediante curl
+sin imprimir credenciales ni tokens. El servicio habilitado arranca sin sudo
+interactivo. `scripts/msf_verify.py` permite repetir el chequeo con la contraseña
+en `MSF_RPC_PASSWORD` o `MSFRPC_PASSWORD` del entorno.
+
+Configurar `.env` (la contraseña debe coincidir con la del servicio):
+
+```dotenv
+MSF_RPC_URL=http://127.0.0.1:55552
+MSF_RPC_USER=msf
+MSF_RPC_PASSWORD=
+MSF_RPC_TRANSPORT=msgpack
+```
+
+`omni.py` carga este archivo; los workers desplegados deben recibir las mismas
+variables de entorno. `MSF_RPC_URL` es el origen HTTP, sin ruta ni credenciales.
+No se usan proxies del entorno ni se siguen redirecciones HTTP del daemon.
+
+| Tool | Riesgo | Scope |
+| --- | --- | --- |
+| `nexus.exploit.msf_search` | READ_ONLY | No requerido |
+| `nexus.exploit.msf_auxiliary` | MEDIUM | Obligatorio, campo `target` |
+
+En el REPL:
+
+```text
+/tools
+Busca módulos MSF para MS17-010, máximo 10 resultados.
+Ejecuta auxiliary/scanner/smb/smb_version contra scanme.nmap.org con THREADS=1 y RPORT=445 dentro del engagement activo.
+```
+
+También puede consultarse el catálogo con:
+
+```bash
+./.venv/bin/python omni.py --engagement eng-scanme \
+  --objective "Busca módulos MSF para MS17-010"
+```
+
+La búsqueda acepta `query`, `module_type`, `platform`, `cve` (`CVE-AAAA-NNNN`)
+y `limit` (1–100). Auxiliary acepta `module`, un único host `target`,
+`options` y `timeout_seconds` (1–300, default 60). `THREADS` es 1 por defecto
+y como máximo 32; `RPORT` debe estar entre 1 y 65535.
+
+ScopeValidator valida el target y sus direcciones; se envía una IP autorizada
+al daemon, prefiriendo IPv4. Las opciones no pueden sustituir RHOST/RHOSTS,
+introducir proxies, listeners, sesiones, comandos o archivos locales mediante
+las opciones bloqueadas por el handler. Se rechazan valores compuestos y
+metacaracteres. La salida normalizada incluye SHA-256 del resultado RPC.
+
+El polling usa `module.results` cada dos segundos. Solo `completed` produce un
+resultado verificado; completar un módulo no afirma que el host sea vulnerable
+ni que el puerto esté abierto. Si vence el timeout, se solicita `job.stop`
+(hasta cinco segundos adicionales) y el resultado sigue siendo no verificado.
+Si el daemon falla no hay reintento; un job remoto puede continuar cuando no
+se logra contactar al daemon. Las respuestas no incluyen el secreto RPC ni
+los tokens; los tokens temporales expiran según la configuración del daemon.
+
+La alternativa `MSF_RPC_TRANSPORT=json` utiliza `/api/v1/json-rpc` y autenticación
+HTTP Bearer: en ese caso `MSF_RPC_PASSWORD` debe contener el **token de API**
+del servicio JSON, no una contraseña de `auth.login`. La build usa `-j` para
+ese servidor y exige un token configurado o usuarios con token en la base de
+datos. JSON está cubierto con MockTransport; el transporte probado en vivo es
+MessagePack.
+
+Tests opt-in (los tests unitarios no requieren daemon):
+
+```bash
+.venv/bin/python -m pytest nexus_core/tests/unit -q
+NEXUS_E2E=1 .venv/bin/python -m pytest \
+  nexus_core/tests/integration/test_metasploit_e2e.py -v
+```
+
+Los E2E comprueban búsqueda, ejecución de `smb_version` contra scanme y
+denegación fuera de scope con auditoría; se omiten sin opt-in, credenciales o
+daemon disponible. Los errores de autenticación configurada hacen fallar la
+prueba.
+
 ## Sandbox
 
-Ninguna tool ejecuta binarios por su cuenta: todo pasa por
-`sandbox_for_environment(...)`.
+Las tools que ejecutan binarios locales pasan por `sandbox_for_environment(...)`.
+Las tools Metasploit usan HTTP RPC hacia el daemon administrado por systemd;
+sus módulos se ejecutan con los permisos de ese servicio, fuera del sandbox
+de procesos de NEXUS. El gateway aplica identidad, políticas, scope y auditoría.
 
 - **`LocalSandbox` (desarrollo)** lanza cada proceso con un entorno mínimo
   (`PATH`, `LANG`, `LC_ALL`, `TZ`, `NEXUS_SANDBOX=1`) y un **HOME efímero dentro

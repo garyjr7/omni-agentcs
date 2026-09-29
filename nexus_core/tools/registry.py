@@ -23,6 +23,8 @@ def durable_tool_definitions(
     from .handlers.ffuf import ffuf_definition, ffuf_handler
     from .handlers.httpx import httpx_definition, httpx_handler
     from .handlers.nmap import nmap_definition, nmap_handler
+    from .handlers.msf_search import msf_search_definition, msf_search_handler
+    from .handlers.msf_auxiliary import msf_auxiliary_definition, msf_auxiliary_handler
     from .handlers.nuclei import nuclei_definition, nuclei_handler
     from .handlers.subfinder import subfinder_definition, subfinder_handler
     from .handlers.system import system_status_definition, system_status_handler
@@ -39,6 +41,8 @@ def durable_tool_definitions(
         "nexus.recon.httpx": (httpx_definition(tenant_id), httpx_handler),
         "nexus.web.nuclei": (nuclei_definition(tenant_id), nuclei_handler),
         "nexus.web.ffuf": (ffuf_definition(tenant_id), ffuf_handler),
+        "nexus.exploit.msf_search": (msf_search_definition(tenant_id), msf_search_handler),
+        "nexus.exploit.msf_auxiliary": (msf_auxiliary_definition(tenant_id), msf_auxiliary_handler),
     }
     return catalog
 
