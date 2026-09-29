@@ -1,0 +1,73 @@
+"""``nexus.session.kill``: audited session termination by UUID."""
+
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import patch
+
+import pytest
+
+from nexus_core.integrations.metasploit.client import MetasploitUnavailable
+from nexus_core.tests.msf_support import context, fake_client, gateway
+from nexus_core.tools.handlers import msf_session_kill as module
+
+ARGS = {"session_uuid": "sess-1"}
+
+
+def execute(args=None):
+    return asyncio.run(module.msf_session_kill_handler(args or ARGS, context()))
+
+
+def test_session_kill_success(monkeypatch):
+    client = fake_client(monkeypatch, module)
+    result = execute()
+    assert result.success and result.verified
+    assert result.verification_method == "msf_session_kill_rpc"
+    assert result.output == {"session_uuid": "sess-1", "result": "success"}
+    client.stop_session.assert_awaited_once_with("sess-1")
+
+
+@pytest.mark.parametrize("uuid", ["bad uuid", "x" * 65, "sess;drop", ""])
+def test_session_kill_invalid_uuid(monkeypatch, uuid):
+    client = fake_client(monkeypatch, module)
+    with pytest.raises(ValueError):
+        execute({"session_uuid": uuid})
+    client.stop_session.assert_not_awaited()
+
+
+def test_session_kill_daemon_unavailable(monkeypatch):
+    client = fake_client(monkeypatch, module)
+    client.stop_session.side_effect = MetasploitUnavailable("daemon down")
+    result = execute()
+    assert not result.success
+    assert result.verification_method == "msf_rpc_failed"
+    assert result.evidence["error_type"] == "MetasploitUnavailable"
+
+
+def test_session_kill_not_verified_when_rpc_reports_error(monkeypatch):
+    client = fake_client(monkeypatch, module)
+    client.stop_session.return_value = {"result": "error"}
+    result = execute()
+    assert not result.success
+    assert result.verification_method == "msf_session_kill_rpc"
+
+
+def test_session_kill_never_executes_shell(monkeypatch):
+    fake_client(monkeypatch, module)
+    with (
+        patch("subprocess.Popen", side_effect=AssertionError("no subprocess")),
+        patch("asyncio.create_subprocess_exec", side_effect=AssertionError("no process")),
+    ):
+        assert execute().success
+
+
+def test_session_kill_audit_event(tmp_path, monkeypatch):
+    fake_client(monkeypatch, module)
+    gw, audit = gateway(tmp_path)
+    result = asyncio.run(gw.invoke("nexus.session.kill", ARGS, context()))
+    assert result["success"] is True
+    events = [e for e in audit.export("system") if e["resource_id"] == "nexus.session.kill"]
+    actions = {event["action"] for event in events}
+    assert {"tool.invoke", "tool.complete"} <= actions
+    assert all(event["decision"] == "allow" for event in events)
+    assert module.msf_session_kill_definition().risk.value == "medium"

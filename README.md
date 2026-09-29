@@ -69,6 +69,7 @@ omni --config                             # editar con $EDITOR
 omni --config-path                        # ruta del config
 omni --list-engagements
 omni --engagement eng-scanme --objective "Busca módulos MSF para MS17-010"
+omni --engagement eng-scanme --trust-mode --objective "Explota el host autorizado"
 omni --no-wizard                          # modo sin onboarding
 python nexus_worker.py --once             # reclamar como máximo una tarea
 python nexus_worker.py                    # worker durable
@@ -77,7 +78,7 @@ python nexus_worker.py                    # worker durable
 Usa un ID listado por `--list-engagements`. Un checkout nuevo no incluye
 engagements ni credenciales: créalos en el wizard con tu alcance autorizado.
 En el REPL, `/help` muestra comandos; `/scope`, `/tools`, `/history`,
-`/approvals` y `/exit` permiten inspeccionar la sesión.
+`/approvals`, `/trust` y `/exit` permiten inspeccionar la sesión.
 
 Doctor muestra sistema, herramientas, gestores, rutas, SQLite, últimos eventos
 de auditoría y puerto/systemd de msfrpcd. El sondeo del puerto no autentica RPC.
@@ -86,12 +87,13 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **11 herramientas**:
+El catálogo durable contiene **14 herramientas**:
 
 - `nexus.system.status`, `nexus.workspace.search`.
 - `nexus.recon.nmap`, `nexus.recon.subfinder`, `nexus.recon.httpx`.
 - `nexus.web.nuclei`, `nexus.web.ffuf`.
-- `nexus.exploit.msf_search`, `nexus.exploit.msf_auxiliary`.
+- `nexus.exploit.msf_search`, `nexus.exploit.msf_auxiliary`, `nexus.exploit.msf_exploit`.
+- `nexus.session.list`, `nexus.session.kill`.
 - `nexus.system.check_env`, `nexus.system.install_tool`.
 
 `check_env` es de solo lectura. `install_tool` es HIGH y siempre requiere
@@ -135,6 +137,31 @@ Usa `MSF_RPC_URL`, `MSF_RPC_USER`, `MSF_RPC_PASSWORD` y
 del daemon. `msf_search` no requiere scope; `msf_auxiliary` sí lo requiere.
 Los resultados y diagnóstico históricos están en
 [docs/missions/MSF_DAEMON_RESULT.md](docs/missions/MSF_DAEMON_RESULT.md).
+
+### Explotación y sesiones
+
+`nexus.exploit.msf_exploit` es **HIGH**: siempre exige aprobación humana
+`y/n/e/?` (o `--trust-mode`) antes de ejecutar nada, y hace scope gating sobre
+`target`. Puede abrir una sesión Meterpreter/shell; **un exploit puede tumbar
+servicios del objetivo**, así que úsalo solo dentro del alcance autorizado.
+
+El modelo nunca elige la dirección de callback: `LHOST`/`LPORT` se toman de
+`MSF_LHOST`/`MSF_LPORT`, y `PROXIES`/`RHOSTS`/`LHOST`/`LPORT` se rechazan dentro
+de `options`. Si el modelo omite `RPORT`, se usa el default declarado por el
+módulo (`module.options`), no uno inventado. Un exploit que corre sin abrir
+sesión devuelve `status=timeout` con `verified=true` (la ejecución se verificó).
+
+Las sesiones se gestionan con `nexus.session.list` (solo lectura, filtra por
+tipo) y `nexus.session.kill` (MEDIUM, cleanup por UUID). Ambas van por el
+gateway y quedan auditadas; ningún handler abre un shell.
+
+### Trust mode
+
+`--trust-mode` (o `/trust on` en el REPL) auto-aprueba las tools de alto riesgo
+del engagement sin pausar, salvo las de riesgo `DESTRUCTIVE`, que siguen
+pidiendo confirmación. Cada auto-aprobación crea igualmente una aprobación
+durable y escribe auditoría con `trust_mode=true` y `trusted_by=<usuario>`, para
+distinguirla en el reporte. Úsalo solo en laboratorios controlados.
 
 ## Estructura
 

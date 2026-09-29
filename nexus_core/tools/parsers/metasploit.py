@@ -41,6 +41,140 @@ class MetasploitSearchResult:
         }
 
 
+def _pick(record: dict, *names: str, default: Any = "") -> Any:
+    """Read the first present key, tolerating the daemon's casing."""
+    for name in names:
+        for candidate in (name, name.upper(), name.lower()):
+            if candidate in record and record[candidate] is not None:
+                return record[candidate]
+    return default
+
+
+def _port(value: Any) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return port if 0 <= port <= 65535 else 0
+
+
+@dataclass(frozen=True)
+class MetasploitSession:
+    uuid: str
+    type: str = ""
+    tunnel_local: str = ""
+    tunnel_peer: str = ""
+    via_exploit: str = ""
+    via_payload: str = ""
+    session_host: str = ""
+    session_port: int = 0
+    target_host: str = ""
+    username: str = ""
+    info: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class MetasploitSessionList:
+    sessions: tuple[MetasploitSession, ...]
+    count: int
+    raw_sha256: str
+
+    def to_dict(self) -> dict:
+        return {
+            "sessions": [asdict(x) for x in self.sessions],
+            "count": self.count,
+            "raw_sha256": self.raw_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class MetasploitExploitResult:
+    module: str
+    target: str
+    status: str
+    session: MetasploitSession | None
+    job_uuid: str | None
+    raw_sha256: str
+    duration_seconds: float
+
+    def to_dict(self) -> dict:
+        return {
+            "module": self.module,
+            "target": self.target,
+            "status": self.status,
+            "session": self.session.to_dict() if self.session else None,
+            "job_uuid": self.job_uuid,
+            "raw_sha256": self.raw_sha256,
+            "duration_seconds": self.duration_seconds,
+        }
+
+
+def parse_msf_session(record: dict, fallback_uuid: str = "") -> MetasploitSession:
+    """Build one session record; every field is optional but the uuid."""
+    if not isinstance(record, dict):
+        raise ValueError("session record must be an object")
+    uuid = str(_pick(record, "uuid", default=fallback_uuid) or fallback_uuid)
+    if not uuid:
+        raise ValueError("session record has no uuid")
+    return MetasploitSession(
+        uuid=uuid,
+        type=str(_pick(record, "type")),
+        tunnel_local=str(_pick(record, "tunnel_local")),
+        tunnel_peer=str(_pick(record, "tunnel_peer")),
+        via_exploit=str(_pick(record, "via_exploit")),
+        via_payload=str(_pick(record, "via_payload")),
+        session_host=str(_pick(record, "session_host")),
+        session_port=_port(_pick(record, "session_port", default=0)),
+        target_host=str(_pick(record, "target_host")),
+        username=str(_pick(record, "username")),
+        info=str(_pick(record, "info", "desc")),
+    )
+
+
+def parse_msf_sessions(raw_dict: dict) -> MetasploitSessionList:
+    """Parse a ``session.list`` payload into an ordered, hash-stamped list."""
+    if not isinstance(raw_dict, dict):
+        raise ValueError("session.list must return an object")
+    if any(not isinstance(value, dict) for value in raw_dict.values()):
+        raise ValueError("session.list contains a malformed session")
+    sessions = tuple(
+        parse_msf_session(record, fallback_uuid=str(key))
+        for key, record in sorted(raw_dict.items(), key=lambda item: str(item[0]))
+    )
+    return MetasploitSessionList(sessions, len(sessions), _sha(raw_dict))
+
+
+def parse_msf_exploit(raw_dict: dict, module: str, target: str) -> MetasploitExploitResult:
+    """Parse the outcome of one exploit run (session opened, timeout, failed)."""
+    if not isinstance(raw_dict, dict):
+        raise ValueError("exploit result must be an object")
+    status = raw_dict.get("status")
+    if status not in {"session_opened", "timeout", "failed", "no_session"}:
+        raise ValueError("unknown exploit status")
+    record = raw_dict.get("session")
+    session = None
+    if isinstance(record, dict):
+        session = parse_msf_session(record, fallback_uuid=str(raw_dict.get("session_uuid") or ""))
+    elif status == "session_opened":
+        raise ValueError("session_opened without a session record")
+    try:
+        duration = round(float(raw_dict.get("duration_seconds") or 0.0), 3)
+    except (TypeError, ValueError):
+        raise ValueError("invalid duration_seconds") from None
+    return MetasploitExploitResult(
+        module=str(module),
+        target=str(target),
+        status=str(status),
+        session=session,
+        job_uuid=str(raw_dict.get("job_uuid") or "") or None,
+        raw_sha256=_sha(raw_dict),
+        duration_seconds=duration,
+    )
+
+
 @dataclass(frozen=True)
 class MetasploitAuxiliaryResult:
     module: str

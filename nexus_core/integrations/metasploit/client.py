@@ -7,9 +7,11 @@ Neither transport retries a failed call or starts external processes.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -251,6 +253,99 @@ class MetasploitClient:
 
     async def stop_job(self, job_id: int) -> None:
         await self._rpc("job.stop", [str(job_id)])
+
+    async def get_module_options(self, fullname: str) -> dict:
+        """Declared datastore options of a module (``module.options``).
+
+        Used to honour a module's *own* defaults (for example ``RPORT``) instead
+        of inventing values in a handler. An unavailable/odd response degrades to
+        an empty dict: the caller keeps its explicit options and lets msfrpcd
+        apply the module default.
+        """
+        self._module_type(fullname)
+        module_type, module_name = fullname.split("/", 1)
+        result = await self._rpc("module.options", [module_type, module_name])
+        return result if isinstance(result, dict) else {}
+
+    async def list_sessions(self) -> dict[str, dict]:
+        """Active sessions keyed by session UUID (``session.list``).
+
+        ``session.list`` takes no parameters, so the RPC argument list is empty;
+        passing a dict there would raise before reaching the daemon.
+        """
+        result = await self._rpc("session.list", [])
+        if result is None:
+            return {}
+        if not isinstance(result, dict):
+            raise MetasploitError("invalid session.list response")
+        if not all(isinstance(value, dict) for value in result.values()):
+            raise MetasploitError("session.list contains a malformed session")
+        return result
+
+    async def stop_session(self, session_uuid: str) -> dict:
+        """Terminate one session (``session.stop``); ``{"result": "success"}``."""
+        if not isinstance(session_uuid, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,64}", session_uuid
+        ):
+            raise ValueError("invalid session uuid")
+        result = await self._rpc("session.stop", [session_uuid])
+        return result if isinstance(result, dict) else {"result": result}
+
+    async def execute_exploit(
+        self,
+        module_fullname: str,
+        options: dict,
+        *,
+        wait_for_session_seconds: int = 120,
+        poll_interval_seconds: float = 2.0,
+    ) -> dict:
+        """Run an exploit and wait for a *new* session to appear.
+
+        Returns one of ``status in {"session_opened", "timeout", "failed"}``
+        together with ``job_id``/``job_uuid``/``duration_seconds``. The loop is
+        bounded by both a monotonic deadline and an attempt budget, so it always
+        terminates and stays cancellable through ``asyncio`` timeouts.
+        """
+        if type(wait_for_session_seconds) is not int or not 1 <= wait_for_session_seconds <= 3600:
+            raise ValueError("wait_for_session_seconds must be between 1 and 3600")
+        if (
+            not isinstance(poll_interval_seconds, (int, float))
+            or isinstance(poll_interval_seconds, bool)
+            or not math.isfinite(poll_interval_seconds)
+            or not 0.1 <= poll_interval_seconds <= 60
+        ):
+            raise ValueError("poll_interval_seconds must be between 0.1 and 60")
+        started = time.monotonic()
+        before = set(await self.list_sessions())
+        execution = await self.execute_module(module_fullname, options)
+        job_id = execution.get("job_id") if type(execution.get("job_id")) is int else None
+        job_uuid = str(execution["uuid"])
+        attempts = max(1, math.ceil(wait_for_session_seconds / poll_interval_seconds))
+        deadline = started + wait_for_session_seconds
+
+        def outcome(status: str, **extra: Any) -> dict:
+            return {
+                "status": status,
+                "module": module_fullname,
+                "job_id": job_id,
+                "job_uuid": job_uuid,
+                "duration_seconds": round(time.monotonic() - started, 3),
+                **extra,
+            }
+
+        for _ in range(attempts):
+            sessions = await self.list_sessions()
+            opened = sorted(set(sessions) - before)
+            if opened:
+                return outcome("session_opened", session_uuid=opened[0], session=sessions[opened[0]])
+            results = await self.get_module_results(job_uuid)
+            status = results.get("status")
+            if status in {"errored", "failed"}:
+                return outcome("failed", error=str(results.get("error") or status)[:500])
+            if status == "completed" or time.monotonic() >= deadline:
+                return outcome("timeout")
+            await asyncio.sleep(poll_interval_seconds)
+        return outcome("timeout")
 
     def redact(self, value: Any, extra_secrets: tuple[str, ...] = ()) -> Any:
         if isinstance(value, str):

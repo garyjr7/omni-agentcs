@@ -85,6 +85,7 @@ class OmniSession:
         stream_interval: float = STREAM_INTERVAL_SECONDS,
         export_dir: Any = None,
         run_id: str | None = None,
+        trust_mode: bool = False,
     ) -> None:
         self.store = store
         self.tenant_id = tenant_id
@@ -99,6 +100,8 @@ class OmniSession:
         self.input_reader = input_reader
         self.stream_interval = max(0.05, float(stream_interval))
         self.export_dir = Path(export_dir) if export_dir else None
+        #: ``--trust-mode``: auto-authorize high-risk (never destructive) tools.
+        self.trust_mode = bool(trust_mode)
         self.worker_id = f"cli:{self.operator_id}"
         self.history: list[str] = []
         self.run_id = run_id
@@ -165,7 +168,8 @@ class OmniSession:
     @property
     def prompt(self) -> str:
         name = getattr(self.engagement, "name", None) or "(sin engagement)"
-        return f"┌──(OmniAgentCS)─[{name}]\n└─$ "
+        trust = "─[TRUST MODE]" if self.trust_mode else ""
+        return f"┌──(OmniAgentCS)─[{name}]{trust}\n└─$ "
 
     # ------------------------------------------------------------------ run
     def run_objective(self, objective: str) -> Any:
@@ -205,7 +209,9 @@ class OmniSession:
         context = ExecutionContext(self.store, task, self.worker_id)
         config = ReActConfig(
             max_iterations=self.max_iterations,
-            on_approval_needed=make_approval_callback(self, self.store, self.tenant_id, run_id),
+            on_approval_needed=make_approval_callback(
+                self, self.store, self.tenant_id, run_id, trust_mode=self.trust_mode
+            ),
         )
         stop_event = threading.Event()
         streamer = threading.Thread(

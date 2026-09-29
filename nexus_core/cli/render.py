@@ -150,6 +150,19 @@ def render_approval_prompt(
     return reader(question)
 
 
+def render_trust_mode(tool_id: str, arguments: dict[str, Any], operator: str) -> None:
+    """Announce an automatic high-risk authorization made under ``--trust-mode``."""
+    print()
+    print(paint("⚠️  TRUST MODE · AUTO-APROBACIÓN DE ALTO RIESGO", YELLOW, BOLD))
+    print(f"   tool:     {tool_id}")
+    print(f"   operador: {operator}")
+    for key in ("target", "targets", "module", "payload", "url", "domain"):
+        if isinstance(arguments, dict) and key in arguments:
+            print(f"   {key + ':':<9}{arguments[key]}")
+    print(paint("   args:     " + json.dumps(arguments or {}, ensure_ascii=False, default=str), DIM))
+    print(paint("   se ejecuta sin pausa; la aprobación durable queda auditada", RED))
+
+
 def _box_line(text: str, width: int) -> str:
     return "│ " + str(text)[: width - 2].ljust(width - 2) + " │"
 

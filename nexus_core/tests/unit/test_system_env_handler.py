@@ -43,5 +43,11 @@ def test_check_env_never_executes_shell(onboarding_env):
 
 
 def test_check_env_registered_in_catalog():
-    assert "nexus.system.check_env" in durable_tool_definitions()
-    assert len(durable_tool_definitions()) == 11
+    catalog = durable_tool_definitions()
+    assert "nexus.system.check_env" in catalog
+    assert {
+        "nexus.exploit.msf_exploit",
+        "nexus.session.list",
+        "nexus.session.kill",
+    } <= set(catalog)
+    assert len(catalog) == 14

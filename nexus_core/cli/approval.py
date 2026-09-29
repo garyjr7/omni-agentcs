@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from nexus_core.agent.react import ApprovalDecision
 from nexus_core.kernel.approvals import ApprovalService
+from nexus_core.kernel.audit import AuditWriter
 
 from . import render
 
@@ -26,14 +27,32 @@ DENY_WORDS = frozenset({"n", "no", "reject", "rechazar"})
 MAX_PROMPT_ATTEMPTS = 5
 EDITABLE_SEPARATOR = re.compile(r"[,\s]+")
 
+#: Risk levels ``--trust-mode`` must never authorize on its own.
+NEVER_TRUSTED_RISKS = frozenset({"destructive"})
+TRUST_MODE_ACTION = "tool.trust_mode_approved"
+
+
+def os_user() -> str:
+    """Operating-system user at the keyboard (never the agent identity)."""
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - headless environments without a user db
+        return "operator"
+
 
 def default_operator_id() -> str:
     """Identity of the human at the keyboard (never the agent identity)."""
-    try:
-        user = getpass.getuser()
-    except Exception:  # noqa: BLE001 - headless environments without a user db
-        user = "operator"
-    return f"operator:{user}"
+    return f"operator:{os_user()}"
+
+
+def _risk_of(tenant_id: str, tool_id: str) -> str:
+    """Declared risk of a tool, or ``""`` when it cannot be resolved."""
+    definition = _tool_definition(tenant_id, tool_id)
+    if definition is None:
+        return ""
+    return str(
+        getattr(definition.risk, "value", getattr(definition, "risk", "")) or ""
+    ).lower()
 
 
 def _tool_definition(tenant_id: str, tool_id: str) -> Any:
@@ -114,18 +133,81 @@ def _register_approval(
     return str(approval["id"])
 
 
+def _audit_trust_mode(
+    session: "OmniSession",
+    tenant_id: str,
+    run_id: str,
+    tool_id: str,
+    arguments: dict[str, Any],
+    approval_id: str,
+) -> None:
+    """Record why an automatic authorization happened (reportable evidence)."""
+    AuditWriter(session.store).append(
+        tenant_id=tenant_id,
+        trace_id=run_id,
+        actor_id=session.operator_id,
+        action=TRUST_MODE_ACTION,
+        resource_type="tool",
+        resource_id=tool_id,
+        payload={
+            "trust_mode": True,
+            "trusted_by": os_user(),
+            "operator_id": session.operator_id,
+            "tool_id": tool_id,
+            "run_id": run_id,
+            "approval_id": approval_id,
+            "argument_keys": sorted(arguments or {}),
+        },
+        decision="allow",
+    )
+
+
+def _trust_authorization(
+    session: "OmniSession",
+    service: ApprovalService,
+    tenant_id: str,
+    run_id: str,
+    tool_id: str,
+    arguments: dict[str, Any],
+    action: str,
+) -> ApprovalDecision:
+    """Auto-authorize one high-risk call, still durably approved and audited."""
+    render.render_trust_mode(tool_id, arguments, session.operator_id)
+    approval_id = _register_approval(session, service, tenant_id, run_id, action)
+    if approval_id is None:
+        return ApprovalDecision(
+            approved=False, reason="durable approval could not be registered (trust mode)"
+        )
+    _audit_trust_mode(session, tenant_id, run_id, tool_id, arguments, approval_id)
+    render.render_status(
+        f"trust mode: aprobado automáticamente por {session.operator_id} ({approval_id})"
+    )
+    return ApprovalDecision(approved=True, approval_id=approval_id, reason="trust_mode")
+
+
 def make_approval_callback(
     session: "OmniSession",
     store: Any,
     tenant_id: str,
     run_id: str,
+    *,
+    trust_mode: bool = False,
 ) -> Callable[[str, dict[str, Any], Any], ApprovalDecision | None]:
-    """Build the callback installed as ``ReActConfig.on_approval_needed``."""
+    """Build the callback installed as ``ReActConfig.on_approval_needed``.
+
+    With ``trust_mode`` the callback authorizes high-risk tools without asking,
+    but it never auto-approves ``DESTRUCTIVE`` tools: those keep the interactive
+    ``y/n/e/?`` prompt.
+    """
     service = ApprovalService(store)
 
     def callback(tool_id: str, arguments: dict[str, Any], decision: Any) -> ApprovalDecision:
         action = f"execute:tool:{tool_id}"
         reader = session.input_reader
+        if trust_mode and _risk_of(tenant_id, tool_id) not in NEVER_TRUSTED_RISKS:
+            return _trust_authorization(
+                session, service, tenant_id, run_id, tool_id, arguments, action
+            )
         for _ in range(MAX_PROMPT_ATTEMPTS):
             if tool_id == "nexus.system.install_tool":
                 from nexus_core.provisioner.installer import approval_action, format_plan, plan_install

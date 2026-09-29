@@ -41,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-color", action="store_true", help="desactiva la salida ANSI")
     parser.add_argument(
+        "--trust-mode",
+        action="store_true",
+        help=(
+            "auto-aprueba las tools de alto riesgo del engagement (nunca las "
+            "destructivas); cada autorización queda auditada con trust_mode=true"
+        ),
+    )
+    parser.add_argument(
         "--resume", metavar="RUN_ID", help="retoma un run previo (reanuda su conversación durable)"
     )
     parser.add_argument(
@@ -150,6 +158,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         llm_client=llm_client,
         max_iterations=args.max_iterations,
         run_id=args.resume,
+        trust_mode=args.trust_mode,
     )
     if args.objective:
         result = session.run_objective(args.objective)

@@ -25,6 +25,15 @@ def durable_tool_definitions(
     from .handlers.nmap import nmap_definition, nmap_handler
     from .handlers.msf_search import msf_search_definition, msf_search_handler
     from .handlers.msf_auxiliary import msf_auxiliary_definition, msf_auxiliary_handler
+    from .handlers.msf_exploit import msf_exploit_definition, msf_exploit_handler
+    from .handlers.msf_session_list import (
+        msf_session_list_definition,
+        msf_session_list_handler,
+    )
+    from .handlers.msf_session_kill import (
+        msf_session_kill_definition,
+        msf_session_kill_handler,
+    )
     from .handlers.nuclei import nuclei_definition, nuclei_handler
     from .handlers.subfinder import subfinder_definition, subfinder_handler
     from .handlers.system import system_status_definition, system_status_handler
@@ -47,6 +56,9 @@ def durable_tool_definitions(
         "nexus.web.ffuf": (ffuf_definition(tenant_id), ffuf_handler),
         "nexus.exploit.msf_search": (msf_search_definition(tenant_id), msf_search_handler),
         "nexus.exploit.msf_auxiliary": (msf_auxiliary_definition(tenant_id), msf_auxiliary_handler),
+        "nexus.exploit.msf_exploit": (msf_exploit_definition(tenant_id), msf_exploit_handler),
+        "nexus.session.list": (msf_session_list_definition(tenant_id), msf_session_list_handler),
+        "nexus.session.kill": (msf_session_kill_definition(tenant_id), msf_session_kill_handler),
     }
     return catalog
 

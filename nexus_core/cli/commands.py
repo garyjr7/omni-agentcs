@@ -164,6 +164,26 @@ def cmd_approvals(session: "OmniSession", args: list[str]) -> None:
         )
 
 
+def cmd_trust(session: "OmniSession", args: list[str]) -> None:
+    """Muestra o cambia trust mode (on/off) sin reiniciar el REPL."""
+    if not args:
+        print(f"trust mode: {'ON' if session.trust_mode else 'OFF'}")
+        print("  (on: auto-aprueba tools de alto riesgo; nunca las destructivas)")
+        return
+    value = str(args[0]).strip().lower()
+    if value in {"on", "1", "true", "yes", "si", "sí"}:
+        session.trust_mode = True
+    elif value in {"off", "0", "false", "no"}:
+        session.trust_mode = False
+    else:
+        render.render_error(f"valor inválido para /trust: {args[0]!r} (usa on u off)")
+        return
+    print(
+        f"trust mode: {'ON' if session.trust_mode else 'OFF'}"
+        " (se aplica al siguiente objetivo)"
+    )
+
+
 def cmd_help(session: "OmniSession", args: list[str]) -> None:
     """Muestra esta ayuda."""
     print(render.paint("Comandos disponibles:", render.BOLD))
@@ -186,6 +206,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/clear": cmd_clear,
     "/export": cmd_export,
     "/approvals": cmd_approvals,
+    "/trust": cmd_trust,
     "/help": cmd_help,
     "/exit": cmd_exit,
     "/quit": cmd_exit,
@@ -229,6 +250,7 @@ __all__ = [
     "cmd_history",
     "cmd_scope",
     "cmd_tools",
+    "cmd_trust",
     "command_names",
     "parse_command",
     "run_command",

@@ -65,6 +65,18 @@ class FakeClient:
         self.execute_module = AsyncMock(return_value={"job_id": 42, "uuid": "fixture-uuid"})
         self.get_module_results = AsyncMock(return_value={"status": "completed", "result": {}})
         self.stop_job = AsyncMock()
+        self.get_module_options = AsyncMock(return_value={})
+        self.list_sessions = AsyncMock(return_value={})
+        self.stop_session = AsyncMock(return_value={"result": "success"})
+        self.execute_exploit = AsyncMock(
+            return_value={
+                "status": "timeout",
+                "module": "exploit/multi/handler",
+                "job_id": 42,
+                "job_uuid": "fixture-uuid",
+                "duration_seconds": 0.5,
+            }
+        )
 
     async def __aenter__(self):
         await self.authenticate()
