@@ -319,3 +319,5 @@ La memoria durable es kernel/memory.py; memory/ y vector/ son implementaciones a
 | `data/nexus_pro.db-wal` | mover a .backups/nexus_pro.db.pre-xdg-wal | conservar sidecars junto al original; WAL de cero bytes tras backup consistente | stat e integrity_check del backup; sin procesos usando el origen |
 | `data/nexus_pro.db-shm` | mover a .backups/nexus_pro.db.pre-xdg-shm | conservar sidecars junto al original; WAL de cero bytes tras backup consistente | stat e integrity_check del backup; sin procesos usando el origen |
 | `data/, tests/manual/, docs/{adr,runbooks}/ vacíos` | retirar directorios locales vacíos | contenido vigente en XDG, nexus_core/tests y docs/missions; no borrar logs u otros datos si existen | rmdir solo si vacío |
+| `docs/missions/CLEANUP_RESULT_V3.md` | crear | evidencia de tests, DB, imports, lint, raíz e historial; incluye incidencia de aislamiento corregida | salidas reales /tmp/cleanup-final-* y AST de tests en commit base |
+| `CLEANUP_DECISIONS.md` | mantener en raíz | registro por archivo requerido por el operador; se actualiza con cada fase | git diff y commits atómicos |
