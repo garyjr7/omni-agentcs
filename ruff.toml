@@ -1,5 +1,2 @@
 target-version = "py312"
 line-length = 100
-
-[lint.per-file-ignores]
-"nexus_api/main.py" = ["E402"]
