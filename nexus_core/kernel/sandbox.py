@@ -8,10 +8,23 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
 from uuid import uuid4
+
+
+#: Directory (inside the workspace) that hosts the ephemeral sandbox HOME.
+SANDBOX_HOME_DIRNAME = ".sandbox_home"
+
+#: Minimal environment of sandboxed children, before the ephemeral HOME is added.
+SANDBOX_BASE_ENV: dict[str, str] = {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "NEXUS_SANDBOX": "1",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "TZ": "UTC",
+}
 
 
 @dataclass(frozen=True)
@@ -33,11 +46,52 @@ class LocalSandbox:
         self.allowed_programs = frozenset(allowed_programs)
         self.max_output_bytes = max_output_bytes
 
+    @property
+    def sandbox_home(self) -> Path:
+        """Ephemeral HOME of this workspace (created on first ``run``)."""
+        return self.workspace_root / SANDBOX_HOME_DIRNAME
+
+    def _is_within_sandbox_home(self, candidate: Path) -> bool:
+        home = self.sandbox_home
+        return candidate == home or home in candidate.parents
+
     def resolve_workspace(self, relative: str = ".") -> Path:
         candidate = (self.workspace_root / relative).resolve()
         if candidate != self.workspace_root and self.workspace_root not in candidate.parents:
             raise PermissionError("sandbox path escapes workspace")
+        if self._is_within_sandbox_home(candidate):
+            # The ephemeral HOME is sandbox plumbing, not agent-visible data.
+            raise PermissionError("sandbox path points at the ephemeral HOME")
         return candidate
+
+    def _sandbox_env(self, home_dir: str | Path | None = None) -> dict[str, str]:
+        """Build the child environment with an ephemeral HOME.
+
+        Hardened CLI tools (ProjectDiscovery among them) resolve ``HOME`` via
+        ``/etc/passwd`` when it is unset and then dump config/caches into their
+        cwd, i.e. into the agent workspace. Pointing ``HOME`` and the XDG
+        directories at a workspace-local, git-ignored directory keeps the real
+        user home untouched and the workspace clean. ``home_dir`` only exists to
+        override the location (tests, isolated evaluations).
+        """
+        resolved_home = (
+            Path(home_dir).expanduser().resolve()
+            if home_dir is not None
+            else self.sandbox_home
+        )
+        env = dict(SANDBOX_BASE_ENV)
+        env["HOME"] = str(resolved_home)
+        env["XDG_CONFIG_HOME"] = str(resolved_home / ".config")
+        env["XDG_CACHE_HOME"] = str(resolved_home / ".cache")
+        env["XDG_DATA_HOME"] = str(resolved_home / ".local" / "share")
+        for path in (
+            resolved_home,
+            Path(env["XDG_CONFIG_HOME"]),
+            Path(env["XDG_CACHE_HOME"]),
+            Path(env["XDG_DATA_HOME"]),
+        ):
+            path.mkdir(parents=True, exist_ok=True)
+        return env
 
     async def run(
         self,
@@ -45,6 +99,7 @@ class LocalSandbox:
         *,
         cwd: str = ".",
         timeout_seconds: float = 30,
+        home_dir: str | Path | None = None,
     ) -> SandboxResult:
         if not argv or argv[0] not in self.allowed_programs:
             raise PermissionError("program is not allowed in this sandbox")
@@ -55,7 +110,7 @@ class LocalSandbox:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={"PATH": "/usr/local/bin:/usr/bin:/bin", "NEXUS_SANDBOX": "1"},
+            env=self._sandbox_env(home_dir),
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -112,6 +167,17 @@ class OCISandbox:
             "--cpus", self.cpus,
             "--user", "65532:65532",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            # Ephemeral HOME: keeps tool config/caches off the bind-mounted
+            # workspace. Trade-off: a tmpfs is writable by the unprivileged
+            # --user only with mode=1777 (sticky, like /tmp), and unlike a real
+            # home it is thrown away with the container -- nothing persists, so
+            # tools that need a warm cache (nuclei templates) must ship it in
+            # the image or get it mounted read-only.
+            "--tmpfs", "/home/sandbox:rw,nosuid,nodev,mode=1777,size=32m",
+            "--env", "HOME=/home/sandbox",
+            "--env", "XDG_CONFIG_HOME=/home/sandbox/.config",
+            "--env", "XDG_CACHE_HOME=/home/sandbox/.cache",
+            "--env", "XDG_DATA_HOME=/home/sandbox/.local/share",
             "--mount", f"type=bind,src={self.workspace_root},dst=/workspace,rw",
             "--workdir", "/workspace",
             image,

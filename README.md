@@ -59,6 +59,28 @@ docker compose --profile connector up -d connector-gateway
 
 No se instala Ollama ni se fuerza un proveedor cloud. Las rutas de datos confidenciales con `allow_cloud=false` se rechazan si no existe un proveedor privado disponible.
 
+## Requisitos del sistema
+
+- Python 3.12 y `.venv` del repo para todo lo demás.
+- Los binarios de las tools que se vayan a usar, en `PATH`: `nmap`,
+  `subfinder`, `httpx`, `nuclei`, `ffuf`.
+- **Templates de nuclei en `/opt/nuclei-templates`** (o donde apunte
+  `NEXUS_NUCLEI_TEMPLATES`). `nexus.web.nuclei` falla cerrado
+  (`nuclei_templates_missing`) si el directorio no existe: nunca se queda
+  descargando templates hasta agotar el timeout del sandbox.
+
+```bash
+# Instalar los templates una sola vez
+nuclei -update-templates
+sudo ln -s "$HOME/nuclei-templates" /opt/nuclei-templates   # o exporta NEXUS_NUCLEI_TEMPLATES
+# Selección puntual por si el directorio vive en otro sitio:
+#   NEXUS_NUCLEI_TEMPLATES=/srv/nuclei-templates
+```
+
+Nota: `nuclei` **no sigue un directorio symlinkeado**, por lo que el handler
+pasa siempre la ruta canónica (`Path(...).resolve()`) aunque el default
+configurado sea `/opt/nuclei-templates`.
+
 ## Gateways y operación
 
 - API: `/health`, `/docs` solo en desarrollo y `/system/metrics` autenticado.
@@ -181,6 +203,25 @@ Ejemplos en el REPL:
 └─$ Haz fingerprint HTTP de http://scanme.nmap.org e intenta detectar tecnologías
 └─$ Busca directorios comunes en http://scanme.nmap.org/FUZZ con el wordlist /workspace/words.txt, 5 threads
 ```
+
+## Sandbox
+
+Ninguna tool ejecuta binarios por su cuenta: todo pasa por
+`sandbox_for_environment(...)`.
+
+- **`LocalSandbox` (desarrollo)** lanza cada proceso con un entorno mínimo
+  (`PATH`, `LANG`, `LC_ALL`, `TZ`, `NEXUS_SANDBOX=1`) y un **HOME efímero dentro
+  del workspace**: `<workspace>/.sandbox_home`, con `XDG_CONFIG_HOME`,
+  `XDG_CACHE_HOME` y `XDG_DATA_HOME` apuntando dentro. Así las CLIs que resuelven
+  su configuración desde `$HOME` (httpx, subfinder, nuclei…) no ensucian el repo
+  ni el home real del usuario. El directorio está en `.gitignore` y
+  `resolve_workspace` bloquea su navegación: es fontanería del sandbox, no datos
+  del agente.
+- **`OCISandbox` (producción)** mantiene `--network none`, `--read-only`,
+  `--cap-drop ALL`, `no-new-privileges` y `--user 65532:65532`, y añade un tmpfs
+  efímero en `/home/sandbox` (`mode=1777`) con `HOME`/XDG apuntando ahí. Si el
+  binario necesita una caché caliente (templates de nuclei) debe venir en la
+  imagen o montarse de solo lectura.
 
 ## Seguridad
 

@@ -28,6 +28,24 @@ def _read(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def hermetic_templates(tmp_path, monkeypatch):
+    """Point the handler at a real, temporary templates directory.
+
+    The handler fails closed when no templates directory exists, so the suite
+    must not depend on ``/opt/nuclei-templates`` being installed on the host.
+    """
+    root = tmp_path / "nuclei-templates"
+    (root / "http" / "technologies").mkdir(parents=True)
+    (root / "http" / "technologies" / "tech-detect.yaml").write_text(
+        "id: tech-detect\ninfo:\n  name: Tech Detect\n  severity: info\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("NEXUS_NUCLEI_TEMPLATES", raising=False)
+    monkeypatch.setattr(nuclei_module, "DEFAULT_NUCLEI_TEMPLATES", str(root))
+    return root
+
+
 class FakeSandbox:
     def __init__(self, result: SandboxResult):
         self.result = result

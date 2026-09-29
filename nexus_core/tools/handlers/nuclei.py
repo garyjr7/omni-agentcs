@@ -8,6 +8,8 @@ DAST mode, headless templates and code templates are disabled by default.
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import sandbox_for_environment
@@ -24,6 +26,18 @@ from ._exec import (
 NUCLEI_ALLOWED_PROGRAMS = RECON_ALLOWED_PROGRAMS
 NUCLEI_DEFAULT_TIMEOUT_SECONDS = 120
 NUCLEI_MAX_TIMEOUT_SECONDS = 1800
+
+#: Template directory used when the model does not select templates.
+#: Overridable with ``NEXUS_NUCLEI_TEMPLATES``.
+DEFAULT_NUCLEI_TEMPLATES = "/opt/nuclei-templates"
+
+#: Caps for the explicit selections accepted from the model.
+NUCLEI_MAX_EXPLICIT_TEMPLATES = 10
+NUCLEI_MAX_TAGS = 10
+
+#: Tags must start with an alphanumeric/underscore so they can never be
+#: smuggled into the argv as if they were a flag.
+_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
 
 #: Flags the model may add, mapped to ``(baseline_noise, requires_value)``.
 NUCLEI_ALLOWED_FLAGS: dict[str, tuple[str, bool]] = {
@@ -120,7 +134,16 @@ NUCLEI_FORBIDDEN_FLAGS: set[str] = {
 }
 
 #: Flags the handler always sets itself; user copies are dropped as no-ops.
-NUCLEI_MANAGED_ARGV: tuple[str, ...] = ("-jsonl", "-silent", "-nc", "-no-interactsh")
+#: ``-duc`` disables the automatic nuclei/templates update check: a sandboxed
+#: run must not reach out to the network on its own, and the check is pure
+#: latency when templates are already installed.
+NUCLEI_MANAGED_ARGV: tuple[str, ...] = (
+    "-jsonl",
+    "-silent",
+    "-nc",
+    "-no-interactsh",
+    "-duc",
+)
 NUCLEI_MANAGED_FLAGS: set[str] = {
     "-jsonl",
     "-j",
@@ -142,6 +165,68 @@ NUCLEI_DEFAULT_SEVERITIES = ("low", "medium")
 
 NOISE_LEVELS = {"low": 0, "medium": 1, "high": 2}
 NOISE_NAMES = ("low", "medium", "high")
+
+
+def _nuclei_templates_dir() -> str:
+    """Return the configured nuclei templates directory.
+
+    ``NEXUS_NUCLEI_TEMPLATES`` overrides the packaged default
+    :data:`DEFAULT_NUCLEI_TEMPLATES`.
+    """
+    return os.getenv("NEXUS_NUCLEI_TEMPLATES", DEFAULT_NUCLEI_TEMPLATES)
+
+
+#: Public alias: the resolver is part of the handler contract now.
+nuclei_templates_dir = _nuclei_templates_dir
+
+
+def validate_template_paths(templates: list[str] | None, base_dir: str) -> list[str]:
+    """Resolve explicit template selections and keep them inside ``base_dir``.
+
+    The model may narrow a scan to concrete templates, but pointing nuclei at
+    arbitrary local files would turn it into an arbitrary-file reader, so every
+    entry must live inside the configured templates directory. Raises
+    ``ValueError`` for empty, out-of-tree, missing or over-limit selections.
+    """
+    if not templates:
+        return []
+    if len(templates) > NUCLEI_MAX_EXPLICIT_TEMPLATES:
+        raise ValueError(
+            f"too many nuclei templates: {len(templates)} > {NUCLEI_MAX_EXPLICIT_TEMPLATES}"
+        )
+    root = Path(base_dir).resolve()
+    resolved: list[str] = []
+    for entry in templates:
+        text = str(entry).strip()
+        if not text:
+            raise ValueError("empty nuclei template path is not allowed")
+        candidate = Path(text)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve()
+        if candidate != root and root not in candidate.parents:
+            raise ValueError(f"nuclei template must live inside {base_dir}: {text!r}")
+        if not candidate.exists():
+            raise ValueError(f"nuclei template does not exist: {text!r}")
+        if str(candidate) not in resolved:
+            resolved.append(str(candidate))
+    return resolved
+
+
+def validate_tags(tags: list[str] | None) -> list[str]:
+    """Validate and de-duplicate template tags requested by the model."""
+    if not tags:
+        return []
+    if len(tags) > NUCLEI_MAX_TAGS:
+        raise ValueError(f"too many nuclei tags: {len(tags)} > {NUCLEI_MAX_TAGS}")
+    cleaned: list[str] = []
+    for tag in tags:
+        text = str(tag).strip()
+        if not _TAG_RE.match(text):
+            raise ValueError(f"invalid nuclei tag: {tag!r}")
+        if text not in cleaned:
+            cleaned.append(text)
+    return cleaned
 
 
 def nuclei_noise_level(severities: list[str] | tuple[str, ...]) -> str:
@@ -226,7 +311,7 @@ def nuclei_definition(tenant_id: str = "system") -> ToolDefinition:
         tenant_id=tenant_id,
         description=(
             "Escaneo de vulnerabilidades con templates de nuclei "
-            "(sin interactsh, sin dast, sin headless)."
+            f"({DEFAULT_NUCLEI_TEMPLATES}; sin interactsh, sin dast, sin headless)."
         ),
         input_schema={
             "type": "object",
@@ -241,6 +326,21 @@ def nuclei_definition(tenant_id: str = "system") -> ToolDefinition:
                     "type": "array",
                     "items": {"type": "string", "maxLength": 128},
                     "maxItems": 20,
+                },
+                "templates": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 1024},
+                    "maxItems": NUCLEI_MAX_EXPLICIT_TEMPLATES,
+                    "description": (
+                        "Subset de templates a usar. Default: todos los de "
+                        f"{DEFAULT_NUCLEI_TEMPLATES}."
+                    ),
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 64},
+                    "maxItems": NUCLEI_MAX_TAGS,
+                    "description": "Filtra templates por tag (tech, cve, misconfig...).",
                 },
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 1800},
             },
@@ -262,6 +362,24 @@ async def nuclei_handler(arguments: dict, context: RunContext) -> ToolResult:
     flags, flag_noise, warnings = validate_and_canonicalize_nuclei_flags(
         list(arguments.get("flags") or [])
     )
+
+    # Fail closed: without a template directory nuclei would try to download
+    # templates and hang until the sandbox timeout kills it.
+    templates_dir = _nuclei_templates_dir()
+    if not Path(templates_dir).is_dir():
+        return ToolResult(
+            output={
+                "error": "nuclei templates directory not found",
+                "templates_dir": templates_dir,
+            },
+            verified=False,
+            verification_method="nuclei_templates_missing",
+        )
+    # nuclei does not follow a symlinked template *directory*, so the run gets
+    # the canonical path (``/opt/nuclei-templates -> /…`` on this host).
+    resolved_templates_dir = str(Path(templates_dir).resolve())
+    selected_templates = validate_template_paths(arguments.get("templates"), templates_dir)
+    tags = validate_tags(arguments.get("tags"))
     requested_timeout = arguments.get("timeout_seconds")
     timeout_seconds = min(
         NUCLEI_MAX_TIMEOUT_SECONDS,
@@ -285,10 +403,19 @@ async def nuclei_handler(arguments: dict, context: RunContext) -> ToolResult:
         user_flags = ["-severity", ",".join(NUCLEI_DEFAULT_SEVERITIES), *user_flags]
     if not any(token in {"-exclude-tags", "-etags"} for token in user_flags):
         user_flags = [*user_flags, "-exclude-tags", NUCLEI_DEFAULT_EXCLUDE_TAGS]
+    if tags and "-tags" not in user_flags:
+        user_flags = ["-tags", ",".join(tags), *user_flags]
     if "-timeout" not in user_flags:
         user_flags = ["-timeout", str(NUCLEI_REQUEST_TIMEOUT_SECONDS), *user_flags]
 
-    effective_flags = [*NUCLEI_MANAGED_ARGV, *user_flags]
+    # ``-t`` is always present: the stable directory by default, the explicit
+    # selection when the model narrowed the scan.
+    template_targets = selected_templates or [resolved_templates_dir]
+    template_flags: list[str] = []
+    for template in template_targets:
+        template_flags.extend(["-t", template])
+
+    effective_flags = [*NUCLEI_MANAGED_ARGV, *template_flags, *user_flags]
     argv = ["nuclei", *effective_flags]
     argv.extend(append_repeated("-u", targets))
 
@@ -309,6 +436,9 @@ async def nuclei_handler(arguments: dict, context: RunContext) -> ToolResult:
         "targets_requested": len(targets),
         "timeout_seconds": timeout_seconds,
         "interactsh": False,
+        "templates_dir": resolved_templates_dir,
+        "templates": list(template_targets),
+        "tags": list(tags),
         "flags": list(effective_flags),
         "warnings": sorted(warnings),
     }

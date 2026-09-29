@@ -10,7 +10,7 @@ from unittest import mock
 import pytest
 
 from nexus_core.kernel.models import Identity, RiskLevel, RunContext
-from nexus_core.kernel.sandbox import SandboxResult
+from nexus_core.kernel.sandbox import SANDBOX_HOME_DIRNAME, SandboxResult
 from nexus_core.tools.handlers import ffuf as ffuf_module
 from nexus_core.tools.handlers._exec import RECON_ALLOWED_PROGRAMS
 from nexus_core.tools.handlers.ffuf import (
@@ -141,6 +141,19 @@ def test_handler_rejects_wordlist_outside_the_workspace(wordlist):
     with _fake_sandbox(SandboxResult(0, _read("ndjson.jsonl"), "")):
         with pytest.raises(ValueError):
             _run({"url": "https://scanme.example/FUZZ", "wordlist": "/etc/passwd"})
+
+
+def test_handler_rejects_wordlist_inside_the_sandbox_home(tmp_path, monkeypatch):
+    """The ephemeral sandbox HOME lives in the workspace but is off-limits."""
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", str(tmp_path))
+    config_dir = tmp_path / SANDBOX_HOME_DIRNAME / ".config"
+    config_dir.mkdir(parents=True)
+    wordlist = config_dir / "config.yaml"
+    wordlist.write_text("secret\n", encoding="utf-8")
+
+    with _fake_sandbox(SandboxResult(0, _read("ndjson.jsonl"), "")):
+        with pytest.raises(ValueError):
+            _run({"url": "https://scanme.example/FUZZ", "wordlist": str(wordlist)})
 
 
 def test_handler_rejects_method_outside_the_allowlist(wordlist):

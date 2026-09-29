@@ -1,8 +1,9 @@
 """End-to-end tests for the recon/web toolkit. Opt-in via NEXUS_E2E=1.
 
 Every test needs live network access and its own binary, so each one carries a
-``skipif``. The nuclei test is additionally skipped when no template directory
-is installed (``nuclei -update-templates``).
+``skipif``. The nuclei test is additionally skipped when the stable template
+directory is not installed (``/opt/nuclei-templates`` or
+``NEXUS_NUCLEI_TEMPLATES``).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.control_store import ControlStore
 from nexus_core.kernel.runtime import ExecutionContext, build_default_registry
 from nexus_core.scope import EngagementScope, EngagementStore, ScopeViolation
+from nexus_core.tools.handlers.nuclei import nuclei_templates_dir
 
 E2E_ENABLED = os.getenv("NEXUS_E2E") == "1"
 SKIP_UNLESS_E2E = pytest.mark.skipif(
@@ -34,27 +36,27 @@ def _requires(binary: str):
 
 
 def _nuclei_templates_present() -> bool:
-    """True only when a template directory with at least one template exists.
+    """True when the stable template directory exists with at least one template.
 
-    nuclei creates an empty ``~/nuclei-templates`` even when it then fails to
-    download anything, so an existence check is not enough.
+    This mirrors the handler resolution (``NEXUS_NUCLEI_TEMPLATES`` or
+    ``/opt/nuclei-templates``); an empty directory does not count.
     """
-    override = os.getenv("NEXUS_NUCLEI_TEMPLATES")
-    candidates = [Path.home() / "nuclei-templates", Path.home() / ".local" / "nuclei-templates"]
-    if override:
-        candidates.insert(0, Path(override))
-    for path in candidates:
-        if not path.is_dir():
-            continue
-        if next(iter(path.rglob("*.yaml")), None) is not None:
-            return True
-    return False
+    path = Path(nuclei_templates_dir())
+    if not path.is_dir():
+        return False
+    return next(iter(path.rglob("*.yaml")), None) is not None
 
 
 SKIP_WITHOUT_NUCLEI_TEMPLATES = pytest.mark.skipif(
     not _nuclei_templates_present(),
-    reason="nuclei templates are not installed (run 'nuclei -update-templates')",
+    reason=(
+        "nuclei templates are not installed "
+        "(install them in /opt/nuclei-templates or set NEXUS_NUCLEI_TEMPLATES)"
+    ),
 )
+
+#: A single, non-intrusive template keeps the E2E fast and deterministic.
+NUCLEI_TECH_TEMPLATE = "http/technologies/tech-detect.yaml"
 
 SCANME_HOST = "scanme.nmap.org"
 SCANME_IPV4 = "45.33.32.156"
@@ -185,7 +187,10 @@ def test_e2e_nuclei_against_scanme_in_scope(tmp_path, monkeypatch):
             "tool_id": "nexus.web.nuclei",
             "arguments": {
                 "targets": [SCANME_HTTP_URL],
-                "flags": ["-severity", "info"],
+                # One safe, non-intrusive template from the stable directory.
+                "templates": [NUCLEI_TECH_TEMPLATE],
+                "tags": ["tech"],
+                "flags": ["-severity", "low"],
                 "timeout_seconds": 180,
             },
             "engagement_id": "eng-scanme",
@@ -199,6 +204,11 @@ def test_e2e_nuclei_against_scanme_in_scope(tmp_path, monkeypatch):
     assert output["evidence"]["noise_level"] == "low"
     assert output["evidence"]["interactsh"] is False
     assert "-no-interactsh" in output["evidence"]["flags"]
+    assert "-duc" in output["evidence"]["flags"]
+    assert output["evidence"]["tags"] == ["tech"]
+    assert output["evidence"]["templates"][0].endswith(NUCLEI_TECH_TEMPLATE)
+    assert output["evidence"]["templates_dir"] == str(Path(nuclei_templates_dir()).resolve())
+    assert output["output"]["count"] >= 0
 
 
 @SKIP_UNLESS_E2E

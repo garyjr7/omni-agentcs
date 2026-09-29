@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
-from nexus_core.kernel.sandbox import sandbox_for_environment
+from nexus_core.kernel.sandbox import SANDBOX_HOME_DIRNAME, sandbox_for_environment
 from nexus_core.tools.parsers.ffuf import parse_ffuf_output
 
 from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox
@@ -175,7 +175,9 @@ def resolve_wordlist(workspace_root: str | Path, wordlist: str) -> str:
     """Resolve a wordlist path and require it to live inside the workspace.
 
     The wordlist is attacker-influenced data (it comes from the model), so a
-    path traversal would turn ffuf into an arbitrary-file reader.
+    path traversal would turn ffuf into an arbitrary-file reader. The ephemeral
+    sandbox HOME lives inside the workspace but is sandbox plumbing, so it is
+    off-limits too.
     """
     root = Path(workspace_root).resolve()
     candidate = Path(str(wordlist).strip())
@@ -184,6 +186,9 @@ def resolve_wordlist(workspace_root: str | Path, wordlist: str) -> str:
     candidate = candidate.resolve()
     if candidate != root and root not in candidate.parents:
         raise ValueError("ffuf wordlist must live inside the workspace")
+    sandbox_home = root / SANDBOX_HOME_DIRNAME
+    if candidate == sandbox_home or sandbox_home in candidate.parents:
+        raise ValueError("ffuf wordlist must not live in the sandbox HOME")
     if not candidate.is_file():
         raise ValueError(f"ffuf wordlist does not exist: {candidate}")
     return str(candidate)
