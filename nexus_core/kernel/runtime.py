@@ -175,11 +175,14 @@ async def execute_evaluation(payload: dict, context: ExecutionContext) -> dict:
 
 async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
     """Invoke only first-party tools through the policy-enforced gateway."""
+    from nexus_core.scope import make_scope_validator
+
     from .approvals import ApprovalService
     from .audit import AuditWriter
     from .models import Identity, RiskLevel, RunContext, ToolDefinition, ToolResult
     from .policy import PolicyEngine
     from .sandbox import sandbox_for_environment
+    from .scope_loader import load_engagement_scope, scope_signing_secret
     from .tool_gateway import ToolGateway
 
     tool_id = str(payload.get("tool_id") or "")
@@ -191,11 +194,19 @@ async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
         kind=str(actor.get("kind") or "workload"),
         roles=tuple(actor.get("roles") or ("operator",)),
     )
+    engagement_id = payload.get("engagement_id")
+    scope = load_engagement_scope(context.store, context.tenant_id, engagement_id)
+
     run_context = RunContext(tenant_id=context.tenant_id, identity=identity,
                              run_id=context.run_id,
-                             trace_id=str(payload.get("trace_id") or context.run_id))
-    gateway = ToolGateway(PolicyEngine(context.store), AuditWriter(context.store),
-                          ApprovalService(context.store))
+                             trace_id=str(payload.get("trace_id") or context.run_id),
+                             scope=scope)
+    gateway = ToolGateway(
+        PolicyEngine(context.store),
+        AuditWriter(context.store),
+        ApprovalService(context.store),
+        scope_validator=make_scope_validator(signing_secret=scope_signing_secret()),
+    )
 
     async def system_status(_arguments: dict, _run_context: RunContext) -> ToolResult:
         with context.store.connect() as conn:
@@ -291,6 +302,7 @@ async def execute_brain(payload: dict, context: ExecutionContext) -> dict:
             "permissions": payload.get("permissions", ()),
             "approval_id": step.get("approval_id"),
             "trace_id": payload.get("trace_id"),
+            "engagement_id": payload.get("engagement_id"),
         }, context)
         evidence = invocation["output"]
         if not evidence.get("success") or not evidence.get("verified"):
