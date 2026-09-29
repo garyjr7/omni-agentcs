@@ -1,4 +1,4 @@
-"""Durable NEXUS Sovereign worker."""
+"""Durable OmniAgentCS worker sharing the CLI's global configuration."""
 
 from __future__ import annotations
 
@@ -7,20 +7,29 @@ import asyncio
 import os
 import socket
 import time
+from pathlib import Path
 
-from nexus_core.config import NEXUS_DB_PATH
 from nexus_core.kernel.runtime import ExecutionContext, build_default_registry
 from nexus_core.kernel.store_factory import get_control_store
 from nexus_core.kernel.workflows import DurableWorkflowEngine
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="NEXUS durable worker")
+    parser = argparse.ArgumentParser(description="OmniAgentCS durable worker")
     parser.add_argument("--once", action="store_true", help="Claim at most one task")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     args = parser.parse_args()
+    from dotenv import load_dotenv
+    from nexus_core.config.loader import apply_environment, load_config
+    from nexus_core.config.xdg import resolve_xdg_paths
+
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+    paths = resolve_xdg_paths()
+    config = load_config(paths)
+    apply_environment(config, paths)
+    os.environ.setdefault("NEXUS_LLM_DEFAULT_PROVIDER", os.environ["LLM_PROVIDER"])
     worker_id = os.getenv("NEXUS_WORKER_ID", f"{socket.gethostname()}-{os.getpid()}")
-    store = get_control_store(NEXUS_DB_PATH)
+    store = get_control_store()
     store.initialize()
     registry = build_default_registry()
 

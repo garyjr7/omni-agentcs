@@ -79,3 +79,30 @@ def test_anthropic_uses_existing_httpx(monkeypatch):
         )
     )
     assert result.content == "done" and result.total_tokens == 3
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_worker_uses_global_db_config(onboarding_env, monkeypatch, explicit):
+    from unittest.mock import MagicMock, patch
+    import os
+    import nexus_worker
+    from nexus_core.config.loader import save_config
+    from nexus_core.config.schema import OmniConfig
+
+    config = OmniConfig()
+    config.db.path = str(onboarding_env.paths.data_dir / 'worker.db')
+    config.llm.default_provider = 'fake'
+    config.llm.default_model = 'nexus-fake-v1'
+    save_config(config, onboarding_env.paths)
+    expected = config.db.path
+    if explicit:
+        expected = str(onboarding_env.paths.data_dir / 'explicit.db')
+        monkeypatch.setenv('NEXUS_DB_PATH', expected)
+    monkeypatch.setattr('sys.argv', ['nexus_worker.py', '--once'])
+    store = MagicMock()
+    store.claim_task.return_value = None
+    with patch('dotenv.load_dotenv'), patch.object(nexus_worker, 'get_control_store', return_value=store) as factory:
+        nexus_worker.main()
+    factory.assert_called_once_with()
+    assert os.environ['NEXUS_DB_PATH'] == expected
+    store.initialize.assert_called_once_with()
+    store.complete_task.assert_not_called()

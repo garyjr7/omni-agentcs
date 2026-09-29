@@ -299,3 +299,8 @@ La memoria durable es kernel/memory.py; memory/ y vector/ son implementaciones a
 | `nexus_core/workforce/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
 | `nexus_core/skills/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
 | `nexus_frontend/{node_modules,dist}/` | borrar local | build y dependencias del frontend retirado | inventario local tras git rm: solo node_modules y dist |
+| `data/nexus_pro.db` | migrar a /home/operator/.local/share/omni/control.db | backup SQLite consistente y dump idéntico; eng-scanme leído desde XDG; original en .backups/nexus_pro.db.pre-xdg | integrity_check, comparación de iterdump, doctor JSON y list-engagements antes de retirar origen |
+| `.env (ignorado)` | editar solo NEXUS_DB_PATH | precedencia dotenv invalidaría la migración si mantiene data/nexus_pro.db; respaldo privado previo | dotenv_values sin mostrar claves; doctor tras migración |
+| `/home/operator/.config/omni/config.toml` | crear config XDG 600 | ruta SQLite explícita; config anterior inexistente; sin copiar secretos de .env | load_config/save_config y stat; db_file XDG resuelto |
+| `nexus_worker.py` | editar | usar config XDG y precedencia dotenv como CLI; evita recrear data/nexus_pro.db tras migración | import estático NEXUS_DB_PATH anterior; pruebas con DB global/override |
+| `nexus_core/tests/unit/test_onboarding_cli.py` | añadir dos casos | worker respeta DB global y override; --once simulado sin trabajos reales | 7 tests del archivo pasan; store y dotenv simulados |
