@@ -283,3 +283,19 @@ La memoria durable es kernel/memory.py; memory/ y vector/ son implementaciones a
 | `requirements.lock` | archivar en docs/missions/platform/requirements.lock | plan/guía/lock conjunto de plataforma retirada; no anunciarlo como instalación CLI | referencias a main.py inexistente y dependencias FastAPI/MCP/React; manifiestos CLI se ajustan en fase de build |
 | `requirements-prod.lock` | archivar en docs/missions/platform/requirements-prod.lock | plan/guía/lock conjunto de plataforma retirada; no anunciarlo como instalación CLI | referencias a main.py inexistente y dependencias FastAPI/MCP/React; manifiestos CLI se ajustan en fase de build |
 | `CHANGELOG.txt` | borrar | duplicado byte a byte de CHANGELOG.md | comparación binaria de ambos archivos |
+| `react_e2e_manual.py` | mover a scripts/ y ajustar raíz | herramienta manual actual; debe resolver checkout tras moverla | lectura de imports, carga dotenv y rutas |
+| `list_models.sh` | mover a scripts/ y ajustar raíz | herramienta manual actual; debe resolver checkout tras moverla | lectura de imports, carga dotenv y rutas |
+| `.gitignore` | editar | ignorar caches, configuración local y sidecars SQLite sin versionar secretos | git status y patrones requeridos |
+| `nexus_api/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_mcp/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/agents/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/core/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/state/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/planner/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/evolution/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/hitl/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/vector/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/memory/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/workforce/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_core/skills/**/__pycache__/` | borrar local | solo bytecode de módulos legacy ya eliminados; no datos | inventario de archivos no-cache vacío |
+| `nexus_frontend/{node_modules,dist}/` | borrar local | build y dependencias del frontend retirado | inventario local tras git rm: solo node_modules y dist |

@@ -1,9 +1,13 @@
 import asyncio
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv
 
 # override=True porque el shell puede tener vars stale
-load_dotenv(Path.home() / "NEXUS" / ".env", override=True)
+load_dotenv(ROOT / ".env", override=True)
 
 from nexus_core.kernel.control_store import ControlStore
 from nexus_core.kernel.runtime import build_default_registry, ExecutionContext

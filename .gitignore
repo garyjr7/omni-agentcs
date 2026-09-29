@@ -38,3 +38,12 @@ data/logs/
 .DS_Store
 Thumbs.db
 .sandbox_home/
+
+.uncover-config/
+.agents/
+.codex/
+.freebuff/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.db-journal
