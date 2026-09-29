@@ -6,7 +6,6 @@ import time
 import datetime
 import pathlib
 from typing import Optional, Dict
-import contextlib
 
 # ANSI color codes
 RESET = '\033[0m'
