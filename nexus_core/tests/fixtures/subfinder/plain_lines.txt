@@ -1,0 +1,3 @@
+www.scanme.example
+api.scanme.example
+mail.scanme.example

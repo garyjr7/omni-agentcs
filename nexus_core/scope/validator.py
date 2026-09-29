@@ -358,6 +358,11 @@ def make_scope_validator(
     The returned callable extracts the target from
     ``arguments[definition.scope_target_field]``, validates it against
     ``context.scope`` and raises a :class:`ScopeViolation` on failure.
+
+    The field may hold a single target or a **list** of targets (tools such as
+    ``nexus.recon.httpx`` and ``nexus.web.nuclei`` take a batch). A list passes
+    only when every element is in scope; the first violation aborts the whole
+    call. An empty list is rejected.
     """
 
     def _validator(context: Any, definition: Any, arguments: dict[str, Any]) -> None:
@@ -366,8 +371,14 @@ def make_scope_validator(
         field = definition.scope_target_field
         if not field or field not in arguments:
             raise ValueError(f"scope_target_field '{field}' missing in arguments")
-        target = str(arguments[field])
+        value = arguments[field]
         validator = ScopeValidator(context.scope, signing_secret=signing_secret)
-        validator.validate(target)
+        if isinstance(value, (list, tuple)):
+            if not value:
+                raise ValueError(f"scope_target_field '{field}' is empty")
+            for target in value:
+                validator.validate(str(target))
+            return
+        validator.validate(str(value))
 
     return _validator

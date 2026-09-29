@@ -1,0 +1,19 @@
+{
+  "commandline": "ffuf -u https://scanme.example/FUZZ -w words.txt -of json -o out.json",
+  "time": "2026-01-01T00:00:00Z",
+  "results": [
+    {
+      "input": {"FUZZ": "admin"},
+      "position": 1,
+      "status": 200,
+      "length": 1234,
+      "words": 56,
+      "lines": 10,
+      "content-type": "text/html",
+      "redirectlocation": "",
+      "duration": 12345678,
+      "url": "https://scanme.example/admin",
+      "host": "scanme.example"
+    }
+  ]
+}

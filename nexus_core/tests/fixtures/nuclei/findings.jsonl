@@ -1,0 +1,3 @@
+{"template-id":"http-missing-security-headers","info":{"name":"HTTP Missing Security Headers","severity":"info","tags":["http","misconfig","headers"]},"type":"http","host":"scanme.example","matched-at":"https://scanme.example/","matcher-name":"x-frame-options","extracted-results":["X-Frame-Options"]}
+{"template-id":"tech-detect","info":{"name":"Wappalyzer Technology Detection","severity":"info","tags":["tech"]},"type":"http","host":"scanme.example","matched-at":"https://scanme.example/"}
+{"template-id":"CVE-2021-41773","info":{"name":"Apache Path Traversal","severity":"high","tags":["cve","apache"]},"type":"http","host":"scanme.example","matched-at":"https://scanme.example/cgi-bin/.%2e/","matcher-name":"word","extracted-results":["root:x:0:0"]}

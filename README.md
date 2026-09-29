@@ -142,6 +142,46 @@ piden aprobación explícita (`y` aprobar, `n` rechazar, `e` editar argumentos,
 durable en `kernel_approvals`, con separación de deberes entre el agente que
 pide y el humano que aprueba.
 
+## Tools durables
+
+Todas se registran en `nexus_core/tools/registry.py::durable_tool_definitions()`,
+se ejecutan dentro del sandbox (nunca `subprocess` directo) a través del Tool
+Gateway y declaran `scope_target_field` + `scope_required` cuando tocan un
+target. El `engagement_id` del run se propaga a cada llamada, así que el scope
+se valida siempre, incluso cuando el LLM encadena varias tools.
+
+| Tool | Riesgo | Ruido | Campo de scope | Descripción |
+| --- | --- | --- | --- | --- |
+| `nexus.system.status` | read_only | — (interno) | — | estado del kernel, cuotas y worker |
+| `nexus.workspace.search` | read_only | — (local) | — | búsqueda en el workspace vía sandbox |
+| `nexus.recon.nmap` | medium | calculado por flags (low→high) | `target` | escaneo de puertos/servicios con XML parseado |
+| `nexus.recon.subfinder` | read_only | low (pasivo, sin tráfico al target) | `domain` | enumeración pasiva de subdominios (OSINT) |
+| `nexus.recon.httpx` | low | low ≤20 targets · medium ≤100 · high >100 | `targets` (lista) | fingerprinting HTTP: status, título, tecnologías |
+| `nexus.web.nuclei` | medium | según severidad: info/low→low · medium→medium · high/critical→high | `targets` (lista) | escaneo de vulnerabilidades con templates |
+| `nexus.web.ffuf` | medium | threads ≤2→low · ≤5→medium · >5→high (default 10 = high) | `url` | fuzzing de rutas/directorios con wordlist |
+
+Notas de seguridad de las tools nuevas:
+
+- `nuclei` corre con `-no-interactsh -silent -nc -jsonl` por defecto y prohíbe
+  interactsh/OAST, `-dast`, `-headless`, `-code` y cualquier flag que fije el
+  target o redirija la salida. Las severidades por defecto son `low,medium` y se
+  excluyen los tags `intrusive,fuzz,fuzzing,dos,brute-force`.
+- `ffuf` **siempre** aplica `-rate` (default 50 req/s; ffuf por defecto es
+  ilimitado) y exige que el wordlist viva dentro del workspace.
+- `httpx` y `nuclei` reciben lotes de targets: el validador de scope exige que
+  **todos** los elementos de la lista pasen; si uno falla, se deniega el lote
+  completo.
+- `subfinder` es pasivo (no genera tráfico al target) y por eso su ruido es
+  siempre `low`.
+
+Ejemplos en el REPL:
+
+```text
+└─$ Descubre subdominios de nmap.org y luego haz fingerprint HTTP de los que respondan
+└─$ Haz fingerprint HTTP de http://scanme.nmap.org e intenta detectar tecnologías
+└─$ Busca directorios comunes en http://scanme.nmap.org/FUZZ con el wordlist /workspace/words.txt, 5 threads
+```
+
 ## Seguridad
 
 No exponga el API, MCP o conectores antes de configurar identidad, TLS y políticas. Las funciones heredadas de ejecución directa están deshabilitadas por defecto y siempre en producción. Un pentest independiente sigue siendo obligatorio antes de atender clientes o datos reales.

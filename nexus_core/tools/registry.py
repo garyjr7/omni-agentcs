@@ -20,7 +20,11 @@ def durable_tool_definitions(
     tools en tiempo de import. ``tenant_id`` fija el tenant dueño de las
     definiciones (el runtime pasa el tenant de la task).
     """
+    from .handlers.ffuf import ffuf_definition, ffuf_handler
+    from .handlers.httpx import httpx_definition, httpx_handler
     from .handlers.nmap import nmap_definition, nmap_handler
+    from .handlers.nuclei import nuclei_definition, nuclei_handler
+    from .handlers.subfinder import subfinder_definition, subfinder_handler
     from .handlers.system import system_status_definition, system_status_handler
     from .handlers.workspace import workspace_search_definition, workspace_search_handler
 
@@ -31,6 +35,10 @@ def durable_tool_definitions(
             workspace_search_handler,
         ),
         "nexus.recon.nmap": (nmap_definition(tenant_id), nmap_handler),
+        "nexus.recon.subfinder": (subfinder_definition(tenant_id), subfinder_handler),
+        "nexus.recon.httpx": (httpx_definition(tenant_id), httpx_handler),
+        "nexus.web.nuclei": (nuclei_definition(tenant_id), nuclei_handler),
+        "nexus.web.ffuf": (ffuf_definition(tenant_id), ffuf_handler),
     }
     return catalog
 

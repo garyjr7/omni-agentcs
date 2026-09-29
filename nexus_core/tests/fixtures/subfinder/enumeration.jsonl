@@ -1,0 +1,4 @@
+{"host":"www.scanme.example","input":"scanme.example","source":"crtsh","sources":["crtsh","github"]}
+{"host":"api.scanme.example","input":"scanme.example","source":"github","sources":["github"]}
+{"host":"mail.scanme.example","input":"scanme.example","source":"dnsdumpster","sources":["dnsdumpster"]}
+{"host":"www.scanme.example","input":"scanme.example","source":"crtsh","sources":["crtsh"]}

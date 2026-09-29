@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from nexus_core.kernel import Identity, PolicyEngine, RunContext, ToolDefinition, ToolResult
@@ -254,6 +255,20 @@ def make_gateway(store, scope):
     )
 
 
+def make_list_scan_tool(field: str = "targets"):
+    return ToolDefinition(
+        "scan-batch",
+        "system",
+        {
+            "type": "object",
+            "required": [field],
+            "properties": {field: {"type": "array", "items": {"type": "string"}}},
+        },
+        scope_target_field=field,
+        scope_required=True,
+    )
+
+
 def make_scan_tool():
     return ToolDefinition(
         "scan",
@@ -343,6 +358,43 @@ class ScopeGatewayIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(result["success"])
             self.assertEqual(result["output"]["target"], "203.0.113.10")
+
+
+class ScopeValidatorBatchTargetTests(unittest.TestCase):
+    """Batch tools (httpx/nuclei) declare a *list* as scope target field."""
+
+    def test_validator_accepts_list_of_in_scope_targets(self):
+        validator = make_scope_validator()
+        context = SimpleNamespace(scope=make_scope())
+        definition = make_list_scan_tool()
+        validator(
+            context,
+            definition,
+            {"targets": ["203.0.113.10", "203.0.113.11", "203.0.113.0/25"]},
+        )
+
+    def test_validator_denies_list_with_one_out_of_scope(self):
+        validator = make_scope_validator()
+        context = SimpleNamespace(scope=make_scope())
+        definition = make_list_scan_tool()
+        with self.assertRaises(ScopeViolation):
+            validator(
+                context,
+                definition,
+                {"targets": ["203.0.113.10", OUT_OF_SCOPE_IP]},
+            )
+
+    def test_validator_denies_empty_list(self):
+        validator = make_scope_validator()
+        context = SimpleNamespace(scope=make_scope())
+        definition = make_list_scan_tool()
+        with self.assertRaises(ValueError):
+            validator(context, definition, {"targets": []})
+
+    def test_validator_still_accepts_a_single_string_target(self):
+        validator = make_scope_validator()
+        context = SimpleNamespace(scope=make_scope())
+        validator(context, make_scan_tool(), {"target": "203.0.113.10"})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,3 @@
+{"url":"https://scanme.example","input":"scanme.example","scheme":"https","status_code":200,"title":"Scanme","tech":["Nginx","PHP"],"content_length":1256,"webserver":"nginx","host":"203.0.113.10","cname":["scanme.example"],"cdn_name":""}
+{"url":"http://scanme.example","input":"scanme.example","scheme":"http","status_code":301,"title":"","tech":[],"content_length":0,"webserver":"nginx","host":"203.0.113.10","cname":[]}
+{"url":"https://api.scanme.example","input":"api.scanme.example","scheme":"https","status_code":403,"title":"Forbidden","tech":["Nginx","Cloudflare"],"content_length":153,"webserver":"cloudflare","host":"203.0.113.11","cname":["api.scanme.example"]}

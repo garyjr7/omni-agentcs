@@ -1,0 +1,2 @@
+{"input":{"FUZZ":"admin"},"position":1,"status":200,"length":1234,"words":56,"lines":10,"content-type":"text/html","redirectlocation":"","duration":12345678,"url":"https://scanme.example/admin","host":"scanme.example"}
+{"input":{"FUZZ":"login"},"position":2,"status":302,"length":0,"words":0,"lines":0,"content-type":"text/html; charset=utf-8","redirectlocation":"https://scanme.example/login/","duration":9999999,"url":"https://scanme.example/login","host":"scanme.example"}
