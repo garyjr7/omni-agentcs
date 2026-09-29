@@ -1,0 +1,208 @@
+"""Durable history for the ReAct loop, backed by kernel_conversations/messages.
+
+No new tables: the loop reuses the conversation APIs of the control store.
+Because ``kernel_messages`` is append-only, history compaction is *logical*:
+the compaction writes a ``react.history_summary`` marker and
+:func:`load_history` collapses everything the marker supersedes while keeping
+the leading system prompt and the most recent messages intact.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from nexus_core.llm.abstraction import LLMMessage
+
+from .prompts import render_summary_prompt
+
+REACT_CONVERSATION_PREFIX = "react:"
+SYSTEM_MESSAGE_KIND = "react.system"
+HISTORY_SUMMARY_KIND = "react.history_summary"
+
+#: Message kinds that only carry prompt scaffolding, never conversation turns.
+COMPACTION_KINDS = frozenset({SYSTEM_MESSAGE_KIND, HISTORY_SUMMARY_KIND})
+
+#: Number of trailing messages that compaction never touches.
+PRESERVED_TAIL_MESSAGES = 10
+
+_ALLOWED_ROLES = {"system", "user", "assistant", "tool"}
+
+
+def react_conversation_title(run_id: str) -> str:
+    """Deterministic conversation title, so a retried loop finds its history."""
+    return f"{REACT_CONVERSATION_PREFIX}{run_id}"
+
+
+def message_kind(message: dict[str, Any]) -> str:
+    """Return the ``metadata.kind`` marker of a persisted message."""
+    metadata = message.get("metadata") or {}
+    if isinstance(metadata, dict):
+        return str(metadata.get("kind") or "")
+    return ""
+
+
+def _leading_system_messages(messages: list[dict[str, Any]]) -> int:
+    count = 0
+    for message in messages:
+        if message_kind(message) == SYSTEM_MESSAGE_KIND:
+            count += 1
+        else:
+            break
+    return count
+
+
+def _last_summary_index(messages: list[dict[str, Any]]) -> int | None:
+    index: int | None = None
+    for position, message in enumerate(messages):
+        if message_kind(message) == HISTORY_SUMMARY_KIND:
+            index = position
+    return index
+
+
+def _collapse_summaries(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop messages superseded by the newest compaction marker.
+
+    The marker records how many body messages it replaced, so the leading
+    system prompt and the preserved tail survive the collapse.
+    """
+    last = _last_summary_index(messages)
+    if last is None:
+        return list(messages)
+    marker = messages[last]
+    metadata = marker.get("metadata") or {}
+    try:
+        covered = max(0, int(metadata.get("covers") or 0))
+    except (TypeError, ValueError):
+        covered = 0
+    head = _leading_system_messages(messages[:last])
+    covered = min(covered, last - head)
+    return messages[:head] + [marker] + messages[head + covered :]
+
+
+def latest_summary(messages: list[dict[str, Any]]) -> str:
+    """Return the newest compaction summary text, if any."""
+    index = _last_summary_index(messages)
+    if index is None:
+        return ""
+    return str(messages[index].get("content") or "")
+
+
+def estimate_tokens(messages: list[dict[str, Any]]) -> int:
+    """Cheap, provider-independent token estimate (≈4 characters per token)."""
+    total = 0
+    for message in messages:
+        content = str(message.get("content") or "")
+        total += 4 + max(1, len(content) // 4)
+    return total
+
+
+def ensure_conversation(store: Any, tenant_id: str, run_id: str, owner_id: str) -> str:
+    """Create (or recover) the ReAct conversation bound to ``run_id``.
+
+    Recovery relies on the deterministic title ``react:<run_id>`` so a worker
+    that dies mid-loop finds the partial history instead of starting over.
+    """
+    title = react_conversation_title(run_id)
+    for conversation in store.list_conversations(tenant_id, owner_id):
+        if conversation.get("title") == title:
+            return str(conversation["id"])
+    created = store.create_conversation(tenant_id, owner_id, title, agent_id=owner_id)
+    return str(created["id"])
+
+
+def append_step(
+    store: Any,
+    tenant_id: str,
+    conversation_id: str,
+    role: str,
+    content: str,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """Append one message to the ReAct history and return its id."""
+    if role not in _ALLOWED_ROLES:
+        raise ValueError(f"unsupported ReAct message role: {role}")
+    metadata = dict(metadata or {})
+    run_id = metadata.pop("run_id", None)
+    message = store.append_message(
+        tenant_id,
+        conversation_id,
+        role,
+        content,
+        run_id=str(run_id) if run_id else None,
+        metadata=metadata,
+    )
+    return str(message["id"])
+
+
+def load_history(
+    store: Any,
+    tenant_id: str,
+    conversation_id: str,
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    """Return the latest ``limit`` messages in chronological order.
+
+    Messages already superseded by the newest compaction marker are removed,
+    except the leading system prompt.
+    """
+    messages = store.list_messages(tenant_id, conversation_id, limit=max(1, int(limit)))
+    return _collapse_summaries(messages)
+
+
+async def summarize_history_if_large(
+    store: Any,
+    tenant_id: str,
+    conversation_id: str,
+    client: Any,
+    max_tokens: int = 8000,
+    force: bool = False,
+) -> str:
+    """Compact the history with one LLM call when it grows too large.
+
+    Returns the summary text (and persists it as a compaction marker), or an
+    empty string when no compaction was needed. The system prompt and the
+    trailing :data:`PRESERVED_TAIL_MESSAGES` messages are never summarized.
+    """
+    messages = _collapse_summaries(
+        store.list_messages(tenant_id, conversation_id, limit=500)
+    )
+    if not force and estimate_tokens(messages) <= max_tokens:
+        return ""
+
+    head = _leading_system_messages(messages)
+    body = messages[head:]
+    tail = body[-PRESERVED_TAIL_MESSAGES:]
+    middle = body[: len(body) - PRESERVED_TAIL_MESSAGES]
+
+    # One existing summary marker plus nothing new is not worth a model call.
+    if len(middle) < 2 and not force:
+        return ""
+    if not middle:
+        return ""
+
+    history_text = "\n".join(
+        f"[{message.get('role')}] {str(message.get('content') or '')[:2000]}"
+        for message in middle
+    )
+    response = await client.complete(
+        [
+            LLMMessage(role="system", content="Eres un compresor de contexto preciso."),
+            LLMMessage(role="user", content=render_summary_prompt(history_text)),
+        ]
+    )
+    summary = str(getattr(response, "content", "") or "").strip()
+    if not summary:
+        return ""
+    append_step(
+        store,
+        tenant_id,
+        conversation_id,
+        "system",
+        summary,
+        {
+            "kind": HISTORY_SUMMARY_KIND,
+            "covers": len(middle),
+            "preserved_tail": len(tail),
+        },
+    )
+    return summary

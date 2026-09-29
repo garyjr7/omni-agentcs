@@ -1,0 +1,4 @@
+Claro, voy a escanear el objetivo ahora mismo.
+
+Pensándolo bien, creo que {el mejor enfoque es nmap} pero todavía no estoy seguro,
+así que no voy a devolver JSON válido en esta respuesta.

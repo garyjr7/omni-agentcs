@@ -1,0 +1,17 @@
+{
+  "thought": "El escaneo confirmó los puertos 22 y 80 abiertos; no hace falta más ruido en el engagement.",
+  "action": "task_complete",
+  "summary": "El objetivo 10.0.0.5 expone SSH en el puerto 22 y HTTP en el 80.",
+  "findings": [
+    {
+      "severity": "high",
+      "title": "SSH expuesto en el puerto 22",
+      "evidence": "nmap: 22/tcp open ssh"
+    },
+    {
+      "severity": "medium",
+      "title": "HTTP sin TLS en el puerto 80",
+      "evidence": "nmap: 80/tcp open http"
+    }
+  ]
+}

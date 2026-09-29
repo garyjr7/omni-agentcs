@@ -1,0 +1,10 @@
+{
+  "thought": "Empiezo con un escaneo silencioso de los puertos web del objetivo autorizado.",
+  "action": "tool_call",
+  "tool_id": "nexus.recon.nmap",
+  "arguments": {
+    "target": "10.0.0.5",
+    "flags": ["-Pn", "-p", "22,80"]
+  },
+  "expected_outcome": "Lista de puertos abiertos con su estado y servicio detectado."
+}

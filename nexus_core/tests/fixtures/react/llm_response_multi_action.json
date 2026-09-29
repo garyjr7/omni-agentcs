@@ -1,0 +1,2 @@
+{"thought": "Primero escaneo los puertos web.", "action": "tool_call", "tool_id": "nexus.recon.nmap", "arguments": {"target": "10.0.0.5", "flags": ["-Pn"]}, "expected_outcome": "puertos abiertos"}
+{"thought": "Y después ya cierro la tarea.", "action": "task_complete", "summary": "Escaneo lanzado.", "findings": []}

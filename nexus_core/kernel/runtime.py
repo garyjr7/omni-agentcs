@@ -293,6 +293,49 @@ async def execute_brain(payload: dict, context: ExecutionContext) -> dict:
             "observations": observations, "evaluation": evaluation}
 
 
+async def execute_react(payload: dict, context: ExecutionContext) -> dict:
+    """Durable ReAct loop: the model decides one governed step per iteration.
+
+    Expected payload: ``objective`` (required), ``engagement_id``,
+    ``max_iterations`` (default 12), ``agent_id`` (default ``"omni"``), plus the
+    ``identity``/``permissions``/``approval_id`` forwarded to every tool call.
+    """
+    from nexus_core.agent.react import ReActConfig, run_react_loop
+    from nexus_core.llm.abstraction import LLMFactory, NexusLLM
+
+    objective = str(payload.get("objective") or "").strip()
+    if not objective:
+        raise ValueError("objective is required")
+
+    clients = LLMFactory.create_from_env()
+    if not clients:
+        raise RuntimeError("no LLM provider configured")
+    # ``create_from_env`` always yields the deterministic "fake" provider, so
+    # real providers take precedence when configured; fake stays as fallback.
+    providers = [name for name in clients if name != "fake"] or ["fake"]
+    llm = NexusLLM(
+        primary=clients[providers[0]],
+        fallback=clients[providers[1]] if len(providers) > 1 else None,
+    )
+    config = ReActConfig(max_iterations=max(1, int(payload.get("max_iterations") or 12)))
+    result = await run_react_loop(
+        context=context,
+        objective=objective,
+        engagement_id=payload.get("engagement_id"),
+        llm_client=llm,
+        config=config,
+    )
+    return {
+        "status": result.status,
+        "iterations": result.iterations,
+        "summary": result.final_summary,
+        "findings": result.findings,
+        "conversation_id": result.conversation_id,
+        "actions": result.actions,
+        "question": result.question,
+    }
+
+
 def build_default_registry() -> ExecutorRegistry:
     registry = ExecutorRegistry()
     registry.register("debug.fake_llm", execute_llm)
@@ -301,6 +344,7 @@ def build_default_registry() -> ExecutorRegistry:
     registry.register("conversation.respond", execute_chat)
     registry.register("tool.invoke", execute_tool)
     registry.register("brain.run", execute_brain)
+    registry.register("react.run", execute_react)
     registry.register("memory.index", execute_memory)
     registry.register("evaluation.run", execute_evaluation)
     return registry

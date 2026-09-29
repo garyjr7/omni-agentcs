@@ -1,0 +1,5 @@
+{
+  "default": {
+    "content": "{\"thought\": \"El objetivo es un reconocimiento sin herramientas concretas; cierro con lo observado.\", \"action\": \"task_complete\", \"summary\": \"No se requirió ninguna herramienta para este objetivo.\", \"findings\": [{\"severity\": \"info\", \"title\": \"Sin acciones ejecutadas\", \"evidence\": \"ninguna herramienta fue necesaria\"}]}"
+  }
+}

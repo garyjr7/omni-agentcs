@@ -1,0 +1,5 @@
+{
+  "thought": "El objetivo no indica si debo usar un escaneo SYN agresivo o uno silencioso; el ruido importa.",
+  "action": "request_clarification",
+  "question": "¿Puedo usar un escaneo de alto ruido (-sS -T4) o debo mantenerme en perfil silencioso?"
+}
