@@ -11,8 +11,14 @@ pytestmark = pytest.mark.usefixtures("onboarding_env")
 
 def test_load_recipes_valid_json():
     recipes = load_recipes()
-    assert len(recipes) == 10
+    assert len(recipes) == 13
+    assert {"whatweb", "searchsploit", "dalfox"} <= set(recipes)
     assert all({"description", "purpose", "verify", "recipes"} <= set(r) for r in recipes.values())
+
+
+def test_searchsploit_verify_uses_help_flag():
+    """searchsploit does not accept --version on the installed build."""
+    assert find_tool_recipe("searchsploit")["verify"] == ["searchsploit", "-h"]
 
 
 def test_find_tool_recipe_returns_dict():

@@ -23,6 +23,11 @@ def durable_tool_definitions(
     from .handlers.ffuf import ffuf_definition, ffuf_handler
     from .handlers.httpx import httpx_definition, httpx_handler
     from .handlers.nmap import nmap_definition, nmap_handler
+    from .handlers.sqlmap import sqlmap_definition, sqlmap_handler
+    from .handlers.gobuster import gobuster_definition, gobuster_handler
+    from .handlers.whatweb import whatweb_definition, whatweb_handler
+    from .handlers.searchsploit import searchsploit_definition, searchsploit_handler
+    from .handlers.dalfox import dalfox_definition, dalfox_handler
     from .handlers.msf_search import msf_search_definition, msf_search_handler
     from .handlers.msf_auxiliary import msf_auxiliary_definition, msf_auxiliary_handler
     from .handlers.msf_exploit import msf_exploit_definition, msf_exploit_handler
@@ -62,6 +67,14 @@ def durable_tool_definitions(
         "nexus.recon.httpx": (httpx_definition(tenant_id), httpx_handler),
         "nexus.web.nuclei": (nuclei_definition(tenant_id), nuclei_handler),
         "nexus.web.ffuf": (ffuf_definition(tenant_id), ffuf_handler),
+        "nexus.web.sqlmap": (sqlmap_definition(tenant_id), sqlmap_handler),
+        "nexus.web.dalfox": (dalfox_definition(tenant_id), dalfox_handler),
+        "nexus.recon.gobuster": (gobuster_definition(tenant_id), gobuster_handler),
+        "nexus.recon.whatweb": (whatweb_definition(tenant_id), whatweb_handler),
+        "nexus.exploit.searchsploit": (
+            searchsploit_definition(tenant_id),
+            searchsploit_handler,
+        ),
         "nexus.exploit.msf_search": (msf_search_definition(tenant_id), msf_search_handler),
         "nexus.exploit.msf_auxiliary": (msf_auxiliary_definition(tenant_id), msf_auxiliary_handler),
         "nexus.exploit.msf_exploit": (msf_exploit_definition(tenant_id), msf_exploit_handler),

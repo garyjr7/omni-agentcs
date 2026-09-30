@@ -89,12 +89,17 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **16 herramientas**:
+El catálogo durable contiene **21 herramientas**:
 
 - `nexus.system.status`, `nexus.workspace.search`.
 - `nexus.recon.nmap`, `nexus.recon.subfinder`, `nexus.recon.httpx`.
-- `nexus.web.nuclei`, `nexus.web.ffuf`.
-- `nexus.exploit.msf_search`, `nexus.exploit.msf_auxiliary`, `nexus.exploit.msf_exploit`.
+- `nexus.recon.gobuster` (dir/dns/vhost, wordlist confinada al workspace),
+  `nexus.recon.whatweb` (fingerprinting profundo vía `--log-json`).
+- `nexus.web.nuclei`, `nexus.web.ffuf`, `nexus.web.sqlmap` (batch, solo
+  detección por defecto), `nexus.web.dalfox` (XSS, sin blind callbacks).
+- `nexus.exploit.searchsploit` (lookup local de Exploit-DB, sin red ni scope),
+  `nexus.exploit.msf_search`, `nexus.exploit.msf_auxiliary`,
+  `nexus.exploit.msf_exploit`.
 - `nexus.session.list`, `nexus.session.interact`, `nexus.session.kill`.
 - `nexus.report.generate`.
 - `nexus.system.check_env`, `nexus.system.install_tool`.
@@ -492,7 +497,7 @@ modelo resuelto.
    A G E N T C S   ·   C L I
 
        =[ OmniAgentCS v3.0.0                                              ]
- + -- --=[ 16 tools · 1 providers · engagement: scanme-lab                ]
+ + -- --=[ 21 tools · 1 providers · engagement: scanme-lab                ]
  + -- --=[ audit-chain ok · msfrpcd 6.5.3-dev- · groq/openai/gpt-oss-120b ]
 
  Tip: Use /trust on to auto-approve high-risk actions during an engagement.

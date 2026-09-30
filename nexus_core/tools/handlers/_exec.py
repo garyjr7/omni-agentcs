@@ -10,6 +10,7 @@ identical in their execution contract.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -71,3 +72,10 @@ def append_repeated(flag: str, values: Sequence[str]) -> list[str]:
     for value in values:
         argv.extend([flag, value])
     return argv
+
+
+def safe_run_id(context: Any, fallback: str = "run") -> str:
+    """Return a filesystem-safe run id for durable per-run artifact paths."""
+    value = str(getattr(context, "run_id", "") or "").strip()
+    value = re.sub(r"[^A-Za-z0-9_-]", "", value)
+    return value[:64] or fallback

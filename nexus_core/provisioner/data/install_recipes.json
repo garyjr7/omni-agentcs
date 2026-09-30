@@ -71,7 +71,7 @@
   },
   "gobuster": {
     "description": "Content discovery", "purpose": "Enumeración web y DNS",
-    "verify": ["gobuster", "version"],
+    "verify": ["gobuster", "--version"],
     "recipes": {
       "go": {"command": ["go", "install", "github.com/OJ/gobuster/v3@latest"], "sudo": false, "installs_to": "~/go/bin/gobuster"},
       "apt": {"command": ["apt", "install", "-y", "gobuster"], "sudo": true},
@@ -84,6 +84,31 @@
     "recipes": {
       "apt": {"command": ["apt", "install", "-y", "impacket-scripts"], "sudo": true},
       "pipx": {"command": ["pipx", "install", "impacket"], "sudo": false, "installs_to": "~/.local/bin/smbclient.py", "verify": ["smbclient.py", "-h"]}
+    }
+  },
+  "whatweb": {
+    "description": "Next generation web scanner", "purpose": "Fingerprinting web: CMS, frameworks, headers",
+    "verify": ["whatweb", "--version"],
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "whatweb"], "sudo": true},
+      "brew": {"command": ["brew", "install", "whatweb"], "sudo": false}
+    }
+  },
+  "searchsploit": {
+    "description": "Exploit-DB local search", "purpose": "Búsqueda en Exploit-DB offline",
+    "verify": ["searchsploit", "-h"],
+    "post_install_notes": "No acepta --version en este build; la comprobación de disponibilidad usa -h.",
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "exploitdb"], "sudo": true},
+      "brew": {"command": ["brew", "install", "exploitdb"], "sudo": false}
+    }
+  },
+  "dalfox": {
+    "description": "Modern XSS scanner", "purpose": "Detección de XSS con análisis de parámetros",
+    "verify": ["dalfox", "version"],
+    "recipes": {
+      "go": {"command": ["go", "install", "github.com/hahwul/dalfox/v2@latest"], "sudo": false, "installs_to": "~/go/bin/dalfox"},
+      "brew": {"command": ["brew", "install", "dalfox"], "sudo": false}
     }
   }
 }

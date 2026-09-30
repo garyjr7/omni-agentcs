@@ -51,5 +51,10 @@ def test_check_env_registered_in_catalog():
         "nexus.session.kill",
         "nexus.session.interact",
         "nexus.report.generate",
+        "nexus.web.sqlmap",
+        "nexus.web.dalfox",
+        "nexus.recon.gobuster",
+        "nexus.recon.whatweb",
+        "nexus.exploit.searchsploit",
     } <= set(catalog)
-    assert len(catalog) == 16
+    assert len(catalog) == 21
