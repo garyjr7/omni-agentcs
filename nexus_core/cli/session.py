@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +33,25 @@ DEFAULT_AGENT_ID = "omni"
 DEFAULT_MAX_ITERATIONS = 12
 STREAM_INTERVAL_SECONDS = 0.5
 STREAM_MESSAGE_WINDOW = 500
+#: Engagement names are truncated in the prompt so the line never wraps.
+MAX_PROMPT_ENGAGEMENT_NAME = 30
+#: Provider env keys in ``LLMFactory.create_from_env`` order (fake excluded).
+_LLM_PROVIDER_KEYS = (
+    ("openai", "OPENAI_API_KEY"),
+    ("gemini", "GEMINI_API_KEY"),
+    ("groq", "GROQ_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("ollama", "OLLAMA_BASE_URL"),
+)
+#: Model env var and factory default per provider (banner label only).
+_LLM_MODEL_ENV = {
+    "fake": ("FAKE_LLM_MODEL", "nexus-fake-v1"),
+    "openai": ("OPENAI_MODEL", "gpt-4o-mini"),
+    "gemini": ("GEMINI_MODEL", "gemini-1.5-flash"),
+    "groq": ("GROQ_MODEL", "llama-3.3-70b-versatile"),
+    "anthropic": ("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+    "ollama": ("OLLAMA_MODEL", "llama3"),
+}
 
 #: Tool that sends one command into an open session.
 SESSION_INTERACT_TOOL = "nexus.session.interact"
@@ -81,6 +102,47 @@ def find_session(sessions: dict | None, session_uuid: str) -> dict | None:
 def build_llm_client() -> Any:
     """Resolve the provider used by the interactive loop (real providers first)."""
     return select_llm_client()
+
+
+def _stdout_is_tty() -> bool:
+    """True only when stdout is a real terminal (banner/spinner gate)."""
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:  # noqa: BLE001 - detached stdout counts as "not a tty"
+        return False
+
+
+def _detect_msfrpcd_version(timeout_seconds: float = 2.0) -> str | None:
+    """Version of a running msfrpcd, or ``None`` when it cannot be reached.
+
+    Reads ``core.version`` through the existing MSF client (no subprocess) with
+    a hard timeout: a dead daemon must never delay the REPL banner.
+    """
+    from nexus_core.integrations.metasploit.client import (
+        MetasploitClient,
+        MetasploitConfig,
+    )
+
+    try:
+        config = MetasploitConfig.from_env()
+        if not config.password:
+            return None
+    except Exception:  # noqa: BLE001 - unconfigured MSF is simply "n/a"
+        return None
+
+    async def _fetch() -> str | None:
+        async with MetasploitClient(config) as client:
+            data = await client._rpc("core.version", [])  # noqa: SLF001 - read-only probe
+        if isinstance(data, dict):
+            version = str(data.get("version") or "").strip()
+            if version:
+                return version
+        return None
+
+    try:
+        return asyncio.run(asyncio.wait_for(_fetch(), timeout_seconds))
+    except Exception:  # noqa: BLE001 - absent daemon is the normal case
+        return None
 
 
 def _install_readline() -> Path | None:
@@ -134,6 +196,7 @@ class OmniSession:
         export_dir: Any = None,
         run_id: str | None = None,
         trust_mode: bool = False,
+        no_color: bool = False,
     ) -> None:
         self.store = store
         self.tenant_id = tenant_id
@@ -150,6 +213,8 @@ class OmniSession:
         self.export_dir = Path(export_dir) if export_dir else None
         #: ``--trust-mode``: auto-authorize high-risk (never destructive) tools.
         self.trust_mode = bool(trust_mode)
+        #: ``--no-color``: the banner still renders, only plain ASCII.
+        self.no_color = bool(no_color)
         self.worker_id = f"cli:{self.operator_id}"
         self.history: list[str] = []
         self.run_id = run_id
@@ -223,18 +288,134 @@ class OmniSession:
 
     @property
     def prompt(self) -> str:
-        name = getattr(self.engagement, "name", None) or "(sin engagement)"
-        trust = "─[TRUST MODE]" if self.trust_mode else ""
+        """Prompt with the four states: normal, session, trust and both.
+
+        Colour is applied *around* each token, never inside it, so the plain
+        substrings (``[TRUST MODE]``, ``[session <uuid>/<type>]``) stay intact
+        and remain greppable from a transcript.
+        """
+        name = (getattr(self.engagement, "name", None) or "(sin engagement)")[:MAX_PROMPT_ENGAGEMENT_NAME]
+        trust = "─" + render.paint("[TRUST MODE]", render.RED, render.BOLD) if self.trust_mode else ""
         session = ""
         if self.active_session_uuid:
             info = self.active_session_info or {}
             kind = str(info.get("type") or "session")
-            session = f"─[session {self.active_session_uuid}/{kind}]"
+            session = "─" + render.paint(
+                f"[session {self.active_session_uuid}/{kind}]", render.MAGENTA
+            )
         report = ""
         if self.last_report_directory:
             # Short marker only: the full path is printed by ``/report``.
-            report = f"─[report {Path(self.last_report_directory).name}]"
-        return f"┌──(OmniAgentCS)─[{name}]{trust}{session}{report}\n└─$ "
+            report = "─" + render.paint(
+                f"[report {Path(self.last_report_directory).name}]", render.BLUE
+            )
+        header = "┌──(" + render.paint("OmniAgentCS", render.CYAN) + ")─["
+        return f"{header}{render.paint(name, render.YELLOW)}]{trust}{session}{report}\n└─$ "
+
+    # ------------------------------------------------------------ presentation
+    def _verify_audit_chain(self) -> bool:
+        """True when the durable audit chain validates. Fail-safe: ``False``."""
+        try:
+            valid, _ = AuditWriter(self.store).verify_chain()
+            return bool(valid)
+        except Exception:  # noqa: BLE001 - an unreadable chain is not "valid"
+            return False
+
+    def _llm_stats(self) -> tuple[str, int]:
+        """``(summary, real_provider_count)`` without constructing any client.
+
+        ``LLMFactory.create_from_env()`` logs one INFO line per provider to
+        stdout, which would land in the middle of the banner. The probe
+        therefore mirrors the factory's *resolution* (the same env keys and the
+        same precedence as ``select_llm_client``) while reading only the
+        environment: no client is built, nothing is logged, no key is used.
+        """
+        available = ["fake"] + [
+            name for name, key in _LLM_PROVIDER_KEYS if os.getenv(key)
+        ]
+        real = [name for name in available if name != "fake"]
+        selected = str(os.getenv("NEXUS_LLM_DEFAULT_PROVIDER") or "").strip().lower()
+        if selected:
+            # A selected-but-keyless provider falls back to fake, exactly like
+            # ``select_llm_client`` (never silently to another cloud).
+            chosen = selected if selected in available else "fake"
+        else:
+            chosen = real[0] if real else "fake"
+        model_env, default_model = _LLM_MODEL_ENV.get(chosen, ("", "unknown"))
+        model = str(os.getenv(model_env) or default_model) if model_env else default_model
+        return f"{chosen}/{model}", len(real)
+
+    def _llm_summary(self) -> str:
+        """Human label of the resolved provider, e.g. ``groq/openai/gpt-oss-20b``."""
+        return self._llm_stats()[0]
+
+    def _count_providers(self) -> int:
+        """Number of configured *real* LLM providers (the fake fallback excluded)."""
+        return self._llm_stats()[1]
+
+    def _supports_unicode(self) -> bool:
+        """True when stdout can encode the braille spinner frames."""
+        encoding = getattr(sys.stdout, "encoding", None) or ""
+        return "utf" in str(encoding).lower()
+
+    def _show_banner(self) -> None:
+        """Print the welcome banner once, only for a real interactive terminal."""
+        if os.getenv("NEXUS_NO_BANNER"):
+            return
+        if not _stdout_is_tty():
+            return
+        from .banner import build_banner, render_banner
+        from .main import PROGRAM_VERSION
+
+        try:
+            from nexus_core.tools.registry import durable_tool_definitions
+
+            tools_count = len(durable_tool_definitions(self.tenant_id))
+        except Exception:  # noqa: BLE001 - a broken catalog must not hide the banner
+            tools_count = 0
+        llm_summary, providers_count = self._llm_stats()
+        render_banner(
+            build_banner(
+                version=PROGRAM_VERSION,
+                tools_count=tools_count,
+                providers_count=providers_count,
+                engagement_name=getattr(self.engagement, "name", None),
+                audit_chain_valid=self._verify_audit_chain(),
+                msfrpcd_version=_detect_msfrpcd_version(),
+                llm_summary=llm_summary,
+                no_color=self.no_color,
+            ),
+            no_color=self.no_color,
+        )
+
+    def _describe_tool_call(self, tool_id: str, arguments: dict[str, Any]) -> str:
+        """One-line description of a running tool, shown by the spinner."""
+        arguments = arguments or {}
+        target = next(
+            (
+                str(arguments[key])
+                for key in ("target", "targets", "domain", "url", "host")
+                if arguments.get(key)
+            ),
+            "",
+        )
+        if tool_id == "nexus.recon.nmap":
+            return f"Ejecutando nmap contra {target or 'el objetivo'}"
+        if tool_id == "nexus.exploit.msf_exploit":
+            module = str(arguments.get("module") or "exploit").split("/")[-1]
+            return f"Ejecutando {module} contra {target or 'el objetivo'} (esperando sesión)"
+        if tool_id == SESSION_INTERACT_TOOL:
+            uuid = str(arguments.get("session_uuid") or self.active_session_uuid or "")
+            return f"Enviando comando a sesión {uuid[:8] or '?'}"
+        if tool_id == "nexus.report.generate":
+            return "Generando reporte del engagement"
+        return f"Ejecutando {tool_id}"
+
+    def _spinner_enabled(self) -> bool:
+        """Spinner gate: interactive terminal, colour allowed, not opted out."""
+        from .spinner import spinner_enabled
+
+        return spinner_enabled() and not os.getenv("NEXUS_NO_SPINNER")
 
     # --------------------------------------------------------------- sessions
     def fetch_sessions(self) -> dict | None:
@@ -342,8 +523,15 @@ class OmniSession:
                 f"denegado por el operador: {denial.get('reason') or denial.get('status')}"
             )
             return None
+        from .spinner import Spinner
+
         try:
-            result = asyncio.run(execute_tool(payload, context))
+            with Spinner(
+                self._describe_tool_call(tool_id, dict(arguments or {})),
+                enabled=self._spinner_enabled(),
+                use_ascii=not self._supports_unicode(),
+            ):
+                result = asyncio.run(execute_tool(payload, context))
         except (PermissionError, ValueError, RuntimeError, KeyError, TypeError) as exc:
             render.render_error(f"{tool_id} falló: {type(exc).__name__}: {exc}")
             return None
@@ -504,15 +692,22 @@ class OmniSession:
         )
         streamer.start()
         try:
-            result = asyncio.run(
-                run_react_loop(
-                    context=context,
-                    objective=objective,
-                    engagement_id=self.engagement_id,
-                    llm_client=self.llm_client,
-                    config=config,
+            from .spinner import Spinner
+
+            with Spinner(
+                f"Ejecutando objetivo: {objective[:80]}",
+                enabled=self._spinner_enabled(),
+                use_ascii=not self._supports_unicode(),
+            ):
+                result = asyncio.run(
+                    run_react_loop(
+                        context=context,
+                        objective=objective,
+                        engagement_id=self.engagement_id,
+                        llm_client=self.llm_client,
+                        config=config,
+                    )
                 )
-            )
         except KeyboardInterrupt:
             self.store.append_run_event(
                 self.tenant_id, run_id, "react.cancel_requested", {"source": "cli-sigint"}
@@ -544,6 +739,7 @@ class OmniSession:
     def run_repl(self) -> None:
         """Main loop: prompt → input → meta command or objective."""
         history_path = _install_readline()
+        self._show_banner()
         render.render_status(
             f"omni listo · tenant={self.tenant_id} · "
             f"engagement={self.engagement_id or '(ninguno)'} · /help para comandos"

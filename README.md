@@ -260,6 +260,60 @@ registro, no toca objetivos. Cada entregable queda registrado como artefacto
 content-addressed con `sha256`. Si la cadena de auditoría no valida, el reporte
 se genera igualmente y se marca visiblemente como **NO VERIFICADA**.
 
+## Presentación
+
+Al arrancar `omni` sin argumentos (modo REPL), se muestra un banner con el
+estado real del sistema: catálogo de tools, proveedores LLM configurados,
+engagement activo, validez de la cadena de auditoría, versión de msfrpcd y el
+modelo resuelto.
+
+```text
+ ██████╗ ███╗   ███╗███╗   ██╗██╗
+██╔═══██╗████╗ ████║████╗  ██║██║
+██║   ██║██╔████╔██║██╔██╗ ██║██║
+██║   ██║██║╚██╔╝██║██║╚██╗██║██║
+╚██████╔╝██║ ╚═╝ ██║██║ ╚████║██║
+ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝
+   A G E N T C S   ·   C L I
+
+       =[ OmniAgentCS v3.0.0                                              ]
+ + -- --=[ 16 tools · 1 providers · engagement: scanme-lab                ]
+ + -- --=[ audit-chain ok · msfrpcd 6.5.3-dev- · groq/openai/gpt-oss-120b ]
+
+ Tip: Use /trust on to auto-approve high-risk actions during an engagement.
+```
+
+Durante una operación larga (un nmap, un exploit esperando sesión) el spinner
+escribe en **stderr**, con tiempo transcurrido, sin interferir con `readline`
+ni con la salida de los comandos:
+
+```text
+⠋ Ejecutando nmap contra scanme.nmap.org  [2s]
+✓ Ejecutando nmap contra scanme.nmap.org  [4s]
+```
+
+El prompt resume el estado en una línea: engagement, sesión adjunta y trust
+mode, además del último reporte generado.
+
+```text
+┌──(OmniAgentCS)─[scanme-lab]
+└─$ /report
+┌──(OmniAgentCS)─[scanme-lab]─[session a1b2c3d4/meterpreter]─[TRUST MODE]
+└─$ id
+```
+
+Control de presentación:
+
+- `NEXUS_NO_BANNER=1` — omite el banner (útil en CI).
+- `NEXUS_NO_SPINNER=1` — omite el spinner durante las tool calls.
+- `NEXUS_TIP_SEED=<int>` — fija el tip rotativo (útil para tests).
+- `--no-color` — desactiva ANSI; el banner sigue apareciendo en texto plano.
+
+El banner **solo** aparece en modo REPL: `--objective`, `--help`, `--version`,
+`--config`, `--config-path`, `--doctor` y `--list-engagements` no lo muestran.
+Tampoco aparece si stdout no es un terminal, de modo que los pipelines y la
+salida redirigida siguen siendo texto plano.
+
 ## Estructura
 
 ```text
@@ -270,7 +324,7 @@ nexus_core/scope/           engagements y validación de alcance
 nexus_core/agent/           bucle ReAct (singular)
 nexus_core/tools/           catálogo, handlers y parsers
 nexus_core/report/          extracción de hallazgos y render Markdown/HTML
-nexus_core/cli/             REPL, wizard y doctor
+nexus_core/cli/             REPL, banner, spinner, wizard y doctor
 nexus_core/config/          config TOML y rutas XDG
 nexus_core/provisioner/     catálogo e instalación aprobada
 nexus_core/integrations/   cliente Metasploit RPC
