@@ -296,6 +296,41 @@ la actividad; las transiciones de inicio y cierre pueden añadir un frame.
 Mientras se ejecuta un comando, la entrada queda bloqueada salvo las
 aprobaciones solicitadas; Ctrl+C sigue interrumpiendo la operación.
 
+### Frontera única de escritura
+
+Toda escritura visible pasa por el router de la TUI. Esto incluye:
+
+- Output del agente y de las tools.
+- Logs de Python, vía `DeferredStreamHandler`, que resuelve `sys.stdout` en cada
+  emisión en lugar de capturarlo al construir el logger.
+- Warnings y excepciones no capturadas (`sys.excepthook`).
+- Mensajes de librerías (httpx, urllib3, etc.), que escriben al stream actual.
+
+Al arrancar el REPL con TUI, `sys.stdout` y `sys.stderr` se sustituyen por
+proxies hacia el scrollback y se restauran al salir (incluso si el REPL termina
+por una excepción). El fallback sin TTY conserva el comportamiento anterior: no
+se instala ningún proxy.
+
+Si necesitas ver el log interno para depurar:
+
+```bash
+NEXUS_LOG_LEVEL=info omni
+```
+
+Los logs aparecen en el scrollback, sin mover el cursor fuera del renderizador.
+
+### Ayuda contextual
+
+```text
+└─$ /ask que puedes hacer
+```
+
+`/ask` construye su *system prompt* con el estado real de la CLI: catálogo de
+comandos registrados, tools durables, engagement activo y proveedor resuelto.
+Responde con las capacidades concretas de Omni y el comando o el objetivo que
+las activa, no con teoría genérica de pentesting. Sigue sin ejecutar tools ni
+tocar el engagement o la auditoría.
+
 ### Vista del agente en ejecución
 
 Ejemplo de una ejecución real; las líneas de nmap se derivan de su resultado
@@ -414,6 +449,13 @@ En TUI, `/ask` y la vista previa de `/report` renderizan encabezados, negritas,
 cursivas, listas, código, enlaces y tablas con bordes ASCII. Se usa un
 renderizador ligero sin dependencias nuevas; admite este subconjunto de
 Markdown, no todo CommonMark. Los bloques de código conservan su texto literal.
+Las variantes `<br>`, `<br/>` y `<br />` se convierten en saltos de línea (las
+usan los modelos dentro de tablas). El texto se envuelve a 100 columnas de
+ancho de lectura, o al ancho del terminal menos 4 si es menor, con
+indentación de continuación en listas. Las tablas se adaptan a ese ancho:
+las celdas demasiado largas se recortan con `…` en vez de desbordar. Los
+encabezados se distinguen con color (H1 negrita + subrayado + cian, H2 negrita
++ cian, H3+ negrita).
 La vista previa de reportes se limita a 65 536 caracteres; el archivo generado queda completo.
 En fallback se conserva la salida anterior sin transformar Markdown.
 
@@ -503,14 +545,17 @@ salida redirigida siguen siendo texto plano.
 
 - `/ask <pregunta>` — consulta al LLM sin ejecutar tools, sin ReAct y sin
 escribir en el engagement ni en la auditoría. Mantiene un contexto local
-(últimos 20 mensajes) para repreguntar.
+(últimos 20 mensajes) para repreguntar y describe el catálogo real de comandos
+y tools del producto.
 - `/chat` — alias de `/ask`.
 
 ## Logging
 
 Por defecto los logs internos (`LLMFactory`, `NexusLLM`, `LLMClient.*`) están en
 `WARNING`, de modo que no aparecen durante el uso normal ni rompen la línea del
-spinner. Para depurar:
+spinner. La precedencia es: `NEXUS_LOG_LEVEL` en el entorno, luego `.env` y
+finalmente `warning`; un valor desconocido también cae en `warning`. El
+`.env.example` distribuido trae `NEXUS_LOG_LEVEL=warning`. Para depurar:
 
 ```bash
 NEXUS_LOG_LEVEL=info omni --engagement eng-scanme    # detalle de proveedores y llamadas

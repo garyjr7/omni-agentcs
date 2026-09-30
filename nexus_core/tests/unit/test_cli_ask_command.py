@@ -85,7 +85,9 @@ def test_cmd_ask_calls_llm_with_system_prompt(session, capsys):
     commands_module.cmd_ask(session, ["qué", "puedo", "hacer"])
     messages = session.llm_client.calls[0]
     assert messages[0].role == "system"
-    assert messages[0].content == commands_module.ASK_SYSTEM_PROMPT
+    # Contextual prompt: the base persona plus the real CLI catalog.
+    assert messages[0].content.startswith(commands_module.ASK_SYSTEM_PROMPT)
+    assert "nexus.recon.nmap" in messages[0].content
     assert messages[1].role == "user"
     assert messages[1].content == "qué puedo hacer"
     assert "usa /scope para ver el alcance" in capsys.readouterr().out

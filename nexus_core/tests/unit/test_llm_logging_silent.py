@@ -78,6 +78,16 @@ def test_configure_logging_defaults_to_warning(monkeypatch):
     assert llm_env.resolve_log_level() == logging.WARNING
 
 
+def test_default_log_level_is_warning():
+    """The shipped ``.env.example`` must not turn INFO chatter back on."""
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[3] / ".env.example"
+    lines = [line.strip() for line in example.read_text(encoding="utf-8").splitlines()]
+    assert "NEXUS_LOG_LEVEL=warning" in lines
+    assert llm_env.DEFAULT_LOG_LEVEL == "warning"
+
+
 def test_llm_factory_does_not_add_duplicate_handlers(monkeypatch):
     """Instantiating the same logger twice must not stack console handlers."""
     monkeypatch.setenv("NEXUS_LOG_LEVEL", "warning")

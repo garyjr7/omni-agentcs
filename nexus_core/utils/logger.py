@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import json
 import sys
 import os
@@ -66,6 +67,36 @@ def _default_level() -> int:
     }.get(name, logging.WARNING)
 
 
+class DeferredStreamHandler(logging.Handler):
+    """Console handler that resolves its stream at emit time, not at build time.
+
+    ``logging.StreamHandler(sys.stdout)`` stores the stdout object that existed
+    when the logger was created. When the TUI replaces ``sys.stdout`` with its
+    own router, that stored reference keeps writing to the physical terminal and
+    moves the cursor behind the renderer's back, corrupting the layout.
+
+    Resolving ``sys.stdout``/``sys.stderr`` on every ``emit`` keeps a single
+    writer: whatever the process currently calls stdout is the only destination.
+    """
+
+    terminator = "\n"
+
+    def __init__(self, level: int = logging.NOTSET, stream_name: str = "stdout"):
+        super().__init__(level)
+        self._stream_name = stream_name
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            stream = getattr(sys, self._stream_name, None)
+            if stream is None:
+                return
+            message = self.format(record)
+            stream.write(message + self.terminator)
+            self.flush()
+        except Exception:  # noqa: BLE001 - logging must never break the caller
+            self.handleError(record)
+
+
 class NexusLogger:
     """
     Custom logger class for NEXUS with JSON and console handlers.
@@ -81,7 +112,7 @@ class NexusLogger:
         self.logger.setLevel(_default_level())
 
         if not any(getattr(h, "_nexus_console", False) for h in self.logger.handlers):
-            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler = DeferredStreamHandler(stream_name="stdout")
             console_handler.setFormatter(NexusConsoleFormatter())
             console_handler._nexus_console = True  # type: ignore[attr-defined]
             self.logger.addHandler(console_handler)

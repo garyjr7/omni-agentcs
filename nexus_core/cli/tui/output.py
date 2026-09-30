@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
+import threading
 from typing import Protocol
 
 
@@ -60,25 +61,78 @@ def routed(method):
     return wrapper
 
 
+class TuiStreamProxy:
+    """Write-through proxy that keeps the TUI as the only terminal writer.
+
+    ``capture_output`` swaps ``sys.stdout``/``sys.stderr`` for this object while
+    the REPL runs: any library, logging handler or warning that writes to the
+    current stream lands in the scrollback buffer instead of the physical
+    terminal. The original stream stays available for read-only introspection
+    (``isatty``, ``fileno``, ``encoding``) and is restored by the context
+    manager, even when the REPL exits through an exception.
+    """
+
+    def __init__(self, session, stream_name: str, original):
+        self._tui = session
+        self._name = stream_name
+        self._original = original
+        self._lock = threading.Lock()
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        with self._lock:
+            self._tui.append_scrollback(str(text))
+        return len(text)
+
+    def flush(self) -> None:
+        self._tui.flush()
+
+    def isatty(self) -> bool:
+        return self._original.isatty()
+
+    def fileno(self):
+        return self._original.fileno()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+@contextmanager
+def capture_exceptions():
+    """Route uncaught tracebacks through the current stderr, not the raw one."""
+    import sys
+    import traceback
+
+    original = sys.excepthook
+
+    def hook(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            return original(exc_type, exc_value, exc_tb)
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            sys.stderr.write(f"\n✗ Excepción no capturada:\n{text}\n")
+        except Exception:  # noqa: BLE001 - never hide the original failure
+            original(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = hook
+    try:
+        yield
+    finally:
+        sys.excepthook = original
+
+
 @contextmanager
 def capture_output(session):
-    """Route incidental stdout/stderr into the region buffer without suspension."""
+    """Route incidental stdout/stderr and tracebacks into the region buffer.
+
+    Only installed for the TUI: the fallback path keeps writing to the real
+    terminal exactly as before.
+    """
     import sys
     from contextlib import redirect_stdout, redirect_stderr
 
-    class Stream:
-        def __init__(self, original):
-            self.original = original
-
-        def write(self, text):
-            session.append_scrollback(text)
-            return len(text)
-
-        def flush(self):
-            session.flush()
-
-        def __getattr__(self, name):
-            return getattr(self.original, name)
-
-    with redirect_stdout(Stream(sys.stdout)), redirect_stderr(Stream(sys.stderr)):
+    stdout = TuiStreamProxy(session, "stdout", sys.stdout)
+    stderr = TuiStreamProxy(session, "stderr", sys.stderr)
+    with redirect_stdout(stdout), redirect_stderr(stderr), capture_exceptions():
         yield

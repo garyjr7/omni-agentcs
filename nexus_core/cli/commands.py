@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from nexus_core.kernel.approvals import ApprovalService
 
 from . import render
+from .tui.markdown import DEFAULT_READING_WIDTH
 from .tui.output import routed
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -38,6 +39,57 @@ def _tool_catalog(session: "OmniSession") -> dict[str, Any]:
         return durable_tool_definitions(session.tenant_id)
     except Exception:  # noqa: BLE001 - a broken catalog must not kill the REPL
         return {}
+
+
+def _build_ask_system_prompt(session: "OmniSession") -> str:
+    """Build the ``/ask`` system prompt from the *real* CLI state.
+
+    ``/ask`` must describe *this* CLI — the commands registered right now, the
+    durable tools, the active engagement and the resolved LLM provider — instead
+    of generic pentest advice. Everything is read locally and nothing is
+    persisted or executed.
+    """
+    from nexus_core.cli.main import PROGRAM_VERSION
+
+    tools = _tool_catalog(session)
+    tool_lines = []
+    for tool_id, entry in sorted(tools.items())[:24]:
+        definition = entry[0] if isinstance(entry, tuple) else entry
+        description = str(getattr(definition, "description", "") or "").replace("\n", " ")[:80]
+        tool_lines.append(f"  - {tool_id}: {description}")
+
+    command_lines = []
+    for name in sorted(COMMANDS):
+        doc = (COMMANDS[name].__doc__ or "").strip().splitlines()
+        command_lines.append(f"  - {name}: {doc[0][:80] if doc else ''}")
+
+    engagement = session.engagement
+    if engagement is None:
+        engagement_context = "Sin engagement activo (las tools con scope serán denegadas)."
+    else:
+        domains = ", ".join(getattr(engagement, "domains", ()) or ()) or "(sin dominios)"
+        cidrs = ", ".join(getattr(engagement, "cidrs", ()) or ()) or "(sin CIDRs)"
+        engagement_context = (
+            f"id={getattr(engagement, 'engagement_id', '?')} · "
+            f"nombre={getattr(engagement, 'name', '?')} · dominios={domains} · CIDRs={cidrs}"
+        )
+
+    return (
+        f"{ASK_SYSTEM_PROMPT}\n\n"
+        f"Eres la CLI OmniAgentCS v{PROGRAM_VERSION}. El usuario está en el REPL y usa "
+        "/ask para consultar sin ejecutar herramientas. Responde con ayuda CONCRETA y "
+        "BREVE sobre esta CLI, no teoría genérica de pentesting.\n\n"
+        f"Engagement activo: {engagement_context}\n"
+        f"Proveedor LLM resuelto: {session._llm_summary()}\n\n"
+        f"Comandos meta disponibles ({len(COMMANDS)}):\n" + "\n".join(command_lines) + "\n\n"
+        f"Tools durables disponibles ({len(tools)}):\n"
+        + ("\n".join(tool_lines) if tool_lines else "  (catálogo no disponible)")
+        + "\n\nSi preguntan qué puedes hacer, lista capacidades específicas y el comando "
+        "exacto (/nombre) o el objetivo en lenguaje natural que las activa. Si preguntan "
+        "cómo hacer algo, indica el comando o el objetivo concreto. Tono directo y "
+        "técnico, sin preámbulos; máximo 400 palabras salvo que pidan detalle. Usa "
+        "markdown con encabezados, listas y bloques de código."
+    )
 
 
 def cmd_scope(session: "OmniSession", args: list[str]) -> None:
@@ -546,7 +598,7 @@ def _ask_messages(session: "OmniSession", question: str) -> list[Any]:
     """
     from nexus_core.llm.abstraction import LLMMessage
 
-    messages: list[Any] = [LLMMessage(role="system", content=ASK_SYSTEM_PROMPT)]
+    messages: list[Any] = [LLMMessage(role="system", content=_build_ask_system_prompt(session))]
     for role, content in session.ask_history[-ASK_HISTORY_LIMIT:]:
         messages.append(LLMMessage(role=role, content=content))
     messages.append(LLMMessage(role="user", content=question))
@@ -592,9 +644,13 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
     answer = str(getattr(response, "content", response) or "")
     session.ask_history.append(("user", question))
     session.ask_history.append(("assistant", answer))
+    max_width = None
+    if session._tui.use_tui:
+        columns = session._tui._session.output.get_size().columns
+        max_width = max(20, min(DEFAULT_READING_WIDTH, columns - 4))
     render.render_answer(
         answer, no_color=session.no_color, markdown=session._tui.use_tui,
-        max_width=session._tui._session.output.get_size().columns - 2 if session._tui.use_tui else None,
+        max_width=max_width,
     )
 
 
