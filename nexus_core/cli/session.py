@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import threading
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -27,6 +28,10 @@ from nexus_core.kernel.runtime import ExecutionContext, select_llm_client
 from . import commands as commands_module
 from . import render
 from .approval import default_operator_id, make_approval_callback
+from .tui.session import TuiSession, should_use_tui
+from .tui.history import history_path as tui_history_path
+from .tui.output import PlainOutput, TuiOutput, routed
+from .tui.status import load_status_preference
 
 DEFAULT_TENANT = "system"
 DEFAULT_AGENT_ID = "omni"
@@ -180,6 +185,9 @@ class OmniSession:
         run_id: str | None = None,
         trust_mode: bool = False,
         no_color: bool = False,
+        use_tui: bool | None = None,
+        status_bar_enabled: bool = True,
+        output=None,
     ) -> None:
         self.store = store
         self.tenant_id = tenant_id
@@ -216,6 +224,15 @@ class OmniSession:
         self.last_report_sha256: str | None = None
         #: Local ``/ask`` transcript (never persisted, never audited).
         self.ask_history: list[tuple[str, str]] = []
+        self._tui = TuiSession(
+            use_tui=should_use_tui() if use_tui is None else use_tui,
+            history_path=tui_history_path(), no_color=no_color,
+            status_bar_enabled=status_bar_enabled and load_status_preference(),
+        )
+        self._output = output or (TuiOutput(self._tui) if self._tui.use_tui else PlainOutput())
+        self._usage_by_run: dict[str, tuple[int, int, float]] = {}
+        self._usage_local = [0, 0, 0.0]
+        self._cost_known = True
         if run_id:
             # Resuming: recover the durable conversation of that run.
             self.conversation_id = memory.ensure_conversation(
@@ -358,8 +375,7 @@ class OmniSession:
         except Exception:  # noqa: BLE001 - a broken catalog must not hide the banner
             tools_count = 0
         llm_summary, providers_count = self._llm_stats()
-        render_banner(
-            build_banner(
+        banner_text = build_banner(
                 version=PROGRAM_VERSION,
                 tools_count=tools_count,
                 providers_count=providers_count,
@@ -368,9 +384,11 @@ class OmniSession:
                 msfrpcd_version=_detect_msfrpcd_version(),
                 llm_summary=llm_summary,
                 no_color=self.no_color,
-            ),
-            no_color=self.no_color,
         )
+        if self._tui.use_tui:
+            self._output.write(banner_text, end="")
+        else:
+            render_banner(banner_text, no_color=self.no_color)
 
     def _describe_tool_call(self, tool_id: str, arguments: dict[str, Any]) -> str:
         """One-line description of a running tool, shown by the spinner."""
@@ -399,7 +417,71 @@ class OmniSession:
         """Spinner gate: interactive terminal, colour allowed, not opted out."""
         from .spinner import spinner_enabled
 
-        return spinner_enabled() and not os.getenv("NEXUS_NO_SPINNER")
+        return not self._tui.use_tui and spinner_enabled() and not os.getenv("NEXUS_NO_SPINNER")
+
+    @contextmanager
+    def _busy(self, message):
+        self._tui.set_status(busy=True, busy_message=message)
+        try:
+            yield
+        finally:
+            self._tui.set_status(busy=False)
+
+    def _metered_client(self, client, *, durable=True):
+        if not self._tui.use_tui:
+            return client
+        from .tui.usage import MeteredClient
+
+        return MeteredClient(client, lambda response: self._record_usage(response, durable=durable))
+
+    def _record_usage(self, response, *, durable=True):
+        from .tui.usage import response_usage
+
+        incoming, outgoing, cost = response_usage(response)
+        self._cost_known = self._cost_known and cost is not None
+        amounts = (incoming, outgoing, cost or 0.0)
+        if durable and self.run_id:
+            previous = self._usage_by_run.get(self.run_id, (0, 0, 0.0))
+            self._usage_by_run[self.run_id] = tuple(a + b for a, b in zip(previous, amounts))
+            try:
+                for metric, amount in zip(("tokens_input", "tokens_output", "cost_usd"), amounts):
+                    self.store.record_usage(
+                        self.tenant_id, self.run_id, "cli_model", "all", metric, amount,
+                        {"source": "tui", "cost_known": cost is not None},
+                    )
+            except Exception:  # presentation must not fail an otherwise successful call
+                pass
+        else:
+            self._usage_local = [a + b for a, b in zip(self._usage_local, amounts)]
+        self._update_status_bar()
+
+    def _update_status_bar(self, *, force=False) -> None:
+        if not self._tui.use_tui and not force:
+            return
+        totals = list(self._usage_local)
+        for run_id, cached in self._usage_by_run.items():
+            try:
+                recorded = tuple(self.store.usage_total(
+                    self.tenant_id, run_id, "cli_model", "all", metric,
+                ) for metric in ("tokens_input", "tokens_output", "cost_usd"))
+                amounts = tuple(max(a, b) for a, b in zip(cached, recorded))
+            except Exception:
+                amounts = cached
+            totals = [a + b for a, b in zip(totals, amounts)]
+        fields = dict(
+            engagement_name=getattr(self.engagement, "name", None),
+            session_uuid=self.active_session_uuid,
+            session_type=(self.active_session_info or {}).get("type"),
+            trust_mode=self.trust_mode, provider_model=self._llm_summary(),
+            tokens_input=int(totals[0]), tokens_output=int(totals[1]),
+            cost_usd=totals[2], cost_known=self._cost_known,
+            audit_chain_valid=self._verify_audit_chain(),
+        )
+        if self._tui.use_tui:
+            self._tui.set_status(**fields)
+        else:
+            for key, value in fields.items():
+                setattr(self._tui._status, key, value)
 
     # --------------------------------------------------------------- sessions
     def fetch_sessions(self) -> dict | None:
@@ -415,6 +497,7 @@ class OmniSession:
             return None
         return find_session(sessions, self.active_session_uuid)
 
+    @routed
     def attach_session(self, session_uuid: str) -> bool:
         """Attach to an existing session by uuid; the scope is left untouched."""
         sessions = self.fetch_sessions()
@@ -431,6 +514,7 @@ class OmniSession:
         render.render_session_attached(self.active_session_info)
         return True
 
+    @routed
     def detach_session(self, *, notify: bool = True) -> str | None:
         """Leave session mode (the session itself keeps running)."""
         previous = self.active_session_uuid
@@ -438,9 +522,10 @@ class OmniSession:
         self.active_session_info = None
         self.session_started_at = None
         if notify and previous:
-            print(f"Detached from session {previous}. Session remains active.")
+            self._output.write(f"Detached from session {previous}. Session remains active.")
         return previous
 
+    @routed
     def check_active_session(self) -> bool:
         """Detect a dead session on prompt return; detach and warn when so."""
         if not self.active_session_uuid:
@@ -463,6 +548,7 @@ class OmniSession:
         self.run_id = str(run["id"])
         return self.run_id
 
+    @routed
     def invoke_tool(self, tool_id: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
         """Run one tool through ``execute_tool`` (policy, scope, approval, audit).
 
@@ -510,7 +596,7 @@ class OmniSession:
         from .spinner import Spinner
 
         try:
-            with Spinner(
+            with self._busy(self._describe_tool_call(tool_id, arguments)), Spinner(
                 self._describe_tool_call(tool_id, dict(arguments or {})),
                 enabled=self._spinner_enabled(),
                 use_ascii=not self._supports_unicode(),
@@ -595,6 +681,7 @@ class OmniSession:
             decision="deny" if outcome == "denied" else "allow",
         )
 
+    @routed
     def run_session_command(self, command: str) -> bool:
         """Send one line to the attached session and render its output."""
         session_uuid = self.active_session_uuid
@@ -622,6 +709,7 @@ class OmniSession:
         return True
 
     # ------------------------------------------------------------------ run
+    @routed
     def run_objective(self, objective: str) -> Any:
         """Run one objective through the durable ReAct loop, streaming events."""
         objective = str(objective or "").strip()
@@ -678,7 +766,7 @@ class OmniSession:
         try:
             from .spinner import Spinner
 
-            with Spinner(
+            with self._busy(f"Ejecutando objetivo: {objective[:80]}"), Spinner(
                 f"Ejecutando objetivo: {objective[:80]}",
                 enabled=self._spinner_enabled(),
                 use_ascii=not self._supports_unicode(),
@@ -688,7 +776,7 @@ class OmniSession:
                         context=context,
                         objective=objective,
                         engagement_id=self.engagement_id,
-                        llm_client=self.llm_client,
+                        llm_client=self._metered_client(self._llm) if self._tui.use_tui else self.llm_client,
                         config=config,
                     )
                 )
@@ -720,43 +808,56 @@ class OmniSession:
         return result
 
     # ----------------------------------------------------------------- repl
+    @routed
     def run_repl(self) -> None:
         """Main loop: prompt → input → meta command or objective."""
-        history_path = _install_readline()
-        self._show_banner()
-        render.render_status(
-            f"omni listo · tenant={self.tenant_id} · "
-            f"engagement={self.engagement_id or '(ninguno)'} · /help para comandos"
-        )
-        while not self.should_exit:
-            self.check_active_session()
-            try:
-                line = (self.input_reader or input)(self.prompt)
-            except KeyboardInterrupt:
-                print()
-                render.render_status("Ctrl+C interrumpe la entrada, no la sesión. /exit para salir.")
-                continue
-            except EOFError:
-                print()
-                break
-            text = str(line or "").strip()
-            if not text:
-                continue
-            self.history.append(f"└─$ {text}")
-            if text.startswith("/"):
-                commands_module.run_command(self, text)
-                continue
-            if self.active_session_uuid:
-                # Session mode: everything without a leading ``/`` goes to the
-                # session, through the tool gateway, never straight to the RPC.
-                self.run_session_command(text)
-                continue
-            self.run_objective(text)
-        _save_readline_history(history_path)
-        render.render_status("sesión terminada")
+        history_path = None if self._tui.use_tui else _install_readline()
+        stdout_patch = nullcontext()
+        if self._tui.use_tui:
+            from prompt_toolkit.patch_stdout import patch_stdout
+
+            stdout_patch = patch_stdout(raw=True)
+        try:
+            with stdout_patch:
+                if self._tui.use_tui:
+                    self._tui.clear_screen()
+                self._show_banner()
+                render.render_status(
+                    f"omni listo · tenant={self.tenant_id} · "
+                    f"engagement={self.engagement_id or '(ninguno)'} · /help para comandos"
+                )
+                self._update_status_bar()
+                while not self.should_exit:
+                    self.check_active_session()
+                    try:
+                        line = (self.input_reader or self._tui.prompt)(self.prompt)
+                    except KeyboardInterrupt:
+                        self._output.write("")
+                        render.render_status("Ctrl+C interrumpe la entrada, no la sesión. /exit para salir.")
+                        continue
+                    except EOFError:
+                        self._output.write("")
+                        break
+                    text = str(line or "").strip()
+                    if not text:
+                        continue
+                    self.history.append(f"└─$ {text}")
+                    if text.startswith("/"):
+                        commands_module.run_command(self, text)
+                    elif self.active_session_uuid:
+                        self.run_session_command(text)
+                    else:
+                        self.run_objective(text)
+                    self._update_status_bar()
+                    self._tui.invalidate()
+                render.render_status("sesión terminada")
+        finally:
+            _save_readline_history(history_path)
+            self._tui.close()
 
 
 # --------------------------------------------------------------- live stream
+@routed
 def _stream_run_events(session: OmniSession, stop_event: threading.Event) -> None:
     """Poll the durable run events and messages until the loop finishes.
 

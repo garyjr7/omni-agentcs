@@ -152,9 +152,9 @@ def build_banner(
     lines: list[str] = []
     if _terminal_width(width) >= MIN_WIDTH_FOR_ART:
         art = _art_lines()
-        for line in art[:-1]:
-            lines.append(_paint(line, render.CYAN, render.BOLD, colored=colored))
-        lines.append(_paint(art[-1], render.CYAN, colored=colored))
+        # Let the terminal theme provide contrast: bold cyan can map to an
+        # intense bright palette and obscure the block-letter shapes.
+        lines.extend(art)
         lines.append("")
     lines.extend((top, middle, bottom))
     if include_tip:

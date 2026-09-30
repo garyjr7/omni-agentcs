@@ -71,13 +71,13 @@ def _show_definition(tenant_id: str, tool_id: str) -> None:
         render.render_error(f"tool desconocida: {tool_id}")
         return
     risk = getattr(definition.risk, "value", str(getattr(definition, "risk", "unknown")))
-    print(render.paint(f"  {tool_id}", render.BOLD))
-    print(f"    descripción: {getattr(definition, 'description', '') or '(sin descripción)'}")
-    print(f"    riesgo:      {risk}")
-    print(f"    permisos:    {list(getattr(definition, 'required_permissions', ()) or ())}")
-    print(f"    scope:       obligatorio={bool(getattr(definition, 'scope_required', False))}"
+    render.write(render.paint(f"  {tool_id}", render.BOLD))
+    render.write(f"    descripción: {getattr(definition, 'description', '') or '(sin descripción)'}")
+    render.write(f"    riesgo:      {risk}")
+    render.write(f"    permisos:    {list(getattr(definition, 'required_permissions', ()) or ())}")
+    render.write(f"    scope:       obligatorio={bool(getattr(definition, 'scope_required', False))}"
           f" campo={getattr(definition, 'scope_target_field', None)}")
-    print(
+    render.write(
         "    input_schema: "
         + json.dumps(getattr(definition, "input_schema", {}) or {}, ensure_ascii=False, sort_keys=True)
     )
@@ -86,7 +86,7 @@ def _show_definition(tenant_id: str, tool_id: str) -> None:
 def edit_arguments(arguments: dict[str, Any], reader: Callable[[str], str]) -> dict[str, Any] | None:
     """Line-by-line argument editor (Enter keeps, ``-`` removes a key)."""
     edited = dict(arguments or {})
-    print("  Edita los argumentos (Enter mantiene el valor, '-' elimina la clave):")
+    render.write("  Edita los argumentos (Enter mantiene el valor, '-' elimina la clave):")
     for key in list(edited):
         current = edited[key]
         try:
@@ -204,6 +204,8 @@ def make_approval_callback(
     def callback(tool_id: str, arguments: dict[str, Any], decision: Any) -> ApprovalDecision:
         action = f"execute:tool:{tool_id}"
         reader = session.input_reader
+        if reader is None and session._tui.use_tui:
+            reader = session._tui.prompt
         if trust_mode and _risk_of(tenant_id, tool_id) not in NEVER_TRUSTED_RISKS:
             return _trust_authorization(
                 session, service, tenant_id, run_id, tool_id, arguments, action
@@ -216,7 +218,7 @@ def make_approval_callback(
                     validate(arguments, _tool_definition(tenant_id, tool_id).input_schema)
                     plan = plan_install(arguments["tool_name"], arguments.get("manager"))
                     action = approval_action(plan, dry_run=arguments.get("dry_run", False))
-                    print("Comando exacto de instalación:\n" + format_plan(plan))
+                    render.write("Comando exacto de instalación:\n" + format_plan(plan))
                 except (ValueError, KeyError):
                     return ApprovalDecision(approved=False, reason="no valid install plan")
             try:

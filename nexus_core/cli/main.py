@@ -40,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="máximo de iteraciones del bucle ReAct (default: 12)",
     )
     parser.add_argument("--no-color", action="store_true", help="desactiva la salida ANSI")
+    parser.add_argument("--no-tui", action="store_true", help="usa readline en lugar de la TUI")
     parser.add_argument(
         "--trust-mode",
         action="store_true",
@@ -160,6 +161,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         run_id=args.resume,
         trust_mode=args.trust_mode,
         no_color=args.no_color,
+        use_tui=False if args.no_tui or args.objective else None,
     )
     if args.objective:
         result = session.run_objective(args.objective)

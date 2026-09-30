@@ -262,6 +262,76 @@ se genera igualmente y se marca visiblemente como **NO VERIFICADA**.
 
 ## Presentación
 
+### Interfaz
+
+En terminales interactivos, OmniAgentCS usa `prompt_toolkit`: la entrada
+queda fija debajo del panel de salida, con autocompletado de comandos mediante
+Tab y una barra de estado persistente. El banner se muestra antes de la
+primera entrada y también queda en el panel. La interfaz usa la pantalla
+alternativa del terminal; al salir recupera la pantalla anterior sin volver
+a imprimir el panel. Usa `/history` o `/export` para consultar o guardar la
+conversación. El banner y las respuestas tienen una única salida en el panel;
+el ASCII usa el color predeterminado del terminal, sin negrita.
+
+```text
+┌──(OmniAgentCS)─[scanme-lab]
+└─$ _
+scanme-lab · groq/openai/gpt-oss-120b · 2.3k tok · ~$0.0200 · 5m12s
+```
+
+La barra muestra engagement, sesión adjunta, trust, proveedor/modelo, tokens,
+coste estimado y tiempo. Se refresca cada dos segundos; la aplicación corre
+en un hilo dedicado, así que permanece activa durante llamadas síncronas.
+El spinner de stderr se desactiva en TUI: la barra muestra la operación y
+su duración. La salida de los eventos se despacha al loop de la interfaz.
+Mientras se ejecuta un comando, la entrada queda bloqueada salvo las
+aprobaciones solicitadas; Ctrl+C sigue interrumpiendo la operación.
+
+Los tokens se acumulan desde las respuestas reales del modelo durante esta
+sesión de CLI, incluidas consultas `/ask`. Las llamadas ReAct registran su
+consumo por run mediante el store; `/ask` mantiene sus estadísticas locales.
+No se recupera consumo anterior al inicio de esta sesión. El coste usa
+`NEXUS_TUI_INPUT_USD_PER_MTOK` y `NEXUS_TUI_OUTPUT_USD_PER_MTOK`, tarifas que
+el operador debe ajustar al modelo activo. Sin ambas tarifas muestra `n/d`;
+Fake y Ollama tienen coste de API cero (no incluye infraestructura).
+En terminales estrechos la barra se trunca al ancho disponible.
+
+### Desactivar la TUI
+
+```bash
+NEXUS_NO_TUI=1 omni
+omni --no-tui
+```
+
+También aceptan `true` y `yes` en `NEXUS_NO_TUI`. El fallback a `input()` y
+readline es automático si **stdin o stdout** no es TTY, o si `prompt_toolkit`
+no se puede importar. Conserva el comportamiento anterior. En fallback
+sin TTY el banner se omite; en un terminal con `--no-tui` sigue apareciendo.
+Los modos one-shot no activan la TUI. `--no-color` y `NO_COLOR` desactivan
+los colores; la TUI sigue necesitando secuencias de control para dibujar.
+
+### Historial y status bar
+
+El historial persiste en `~/.local/state/omni/history`, respetando un
+`XDG_STATE_HOME` absoluto. Flecha arriba recupera comandos previos.
+Un adaptador de `FileHistory` conserva el formato de readline para alternar
+entre ambos modos; el archivo tiene permisos 600 y el directorio se crea
+con 700. Ctrl+D sale; una línea vacía simplemente vuelve a pedir entrada.
+
+```text
+/status          # ver si la barra está habilitada
+/status on       # activar
+/status off      # ocultar
+/status show     # imprimir el estado como texto plano
+```
+
+La preferencia se guarda atómicamente con permisos 600 en
+`~/.config/omni/tui.json` (respeta `XDG_CONFIG_HOME`). Este archivo separado
+conserva intacto el esquema de `config.toml`. En fallback también puedes
+cambiar la preferencia para la siguiente sesión TUI.
+
+### Banner y actividad
+
 Al arrancar `omni` sin argumentos (modo REPL), se muestra un banner con el
 estado real del sistema: catálogo de tools, proveedores LLM configurados,
 engagement activo, validez de la cadena de auditoría, versión de msfrpcd y el
@@ -283,7 +353,7 @@ modelo resuelto.
  Tip: Use /trust on to auto-approve high-risk actions during an engagement.
 ```
 
-Durante una operación larga (un nmap, un exploit esperando sesión) el spinner
+En fallback interactivo, durante una operación larga el spinner
 escribe en **stderr**, con tiempo transcurrido, sin interferir con `readline`
 ni con la salida de los comandos:
 

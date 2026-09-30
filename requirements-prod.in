@@ -1,1 +1,2 @@
 -r nexus_core/requirements.txt
+prompt_toolkit>=3.0,<4

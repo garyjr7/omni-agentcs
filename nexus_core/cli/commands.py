@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from nexus_core.kernel.approvals import ApprovalService
 
 from . import render
+from .tui.output import routed
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .session import OmniSession
@@ -43,21 +44,21 @@ def cmd_scope(session: "OmniSession", args: list[str]) -> None:
     """Muestra el engagement activo (scope firmado)."""
     render.render_engagement(session.engagement)
     if session.engagement is None:
-        print("   (las tools que exigen scope serán denegadas hasta fijar uno)")
+        render.write("   (las tools que exigen scope serán denegadas hasta fijar uno)")
 
 
 def cmd_tools(session: "OmniSession", args: list[str]) -> None:
     """Lista las tools durables con su riesgo y si exigen scope."""
     catalog = _tool_catalog(session)
     if not catalog:
-        print("(no hay tools durables disponibles)")
+        render.write("(no hay tools durables disponibles)")
         return
     for tool_id in sorted(catalog):
         entry = catalog[tool_id]
         definition = entry[0] if isinstance(entry, tuple) else entry
         risk = getattr(definition.risk, "value", str(getattr(definition, "risk", "unknown")))
         scope_required = bool(getattr(definition, "scope_required", False))
-        print(
+        render.write(
             f"  {tool_id:<26} riesgo={render.paint(risk, render.noise_color(risk)):<18}"
             f" scope={'sí' if scope_required else 'no':<3}"
             f" timeout={getattr(definition, 'timeout_seconds', '?')}s"
@@ -84,7 +85,7 @@ def cmd_history(session: "OmniSession", args: list[str]) -> None:
             return
     if not messages and session.history:
         for line in session.history[-limit:]:
-            print(line)
+            render.write(line)
         return
     render.render_messages(messages)
 
@@ -95,7 +96,7 @@ def cmd_clear(session: "OmniSession", args: list[str]) -> None:
     session.history.clear()
     if hasattr(session, "reset_context"):
         session.reset_context()
-    print(
+    render.write(
         f"Contexto local limpiado ({cleared} línea(s)). "
         "El engagement y la auditoría durable no se tocan."
     )
@@ -153,7 +154,7 @@ def cmd_export(session: "OmniSession", args: list[str]) -> None:
     except OSError as exc:
         render.render_error(f"no se pudo escribir {target}: {exc}")
         return
-    print(f"Sesión exportada a {target}")
+    render.write(f"Sesión exportada a {target}")
 
 
 def cmd_approvals(session: "OmniSession", args: list[str]) -> None:
@@ -164,10 +165,10 @@ def cmd_approvals(session: "OmniSession", args: list[str]) -> None:
         render.render_error(f"no se pudieron leer las aprobaciones: {exc}")
         return
     if not pending:
-        print("(no hay aprobaciones pendientes)")
+        render.write("(no hay aprobaciones pendientes)")
         return
     for approval in pending:
-        print(
+        render.write(
             f"  {approval.get('id')}  {approval.get('action')}  "
             f"run={approval.get('run_id')}  por={approval.get('requested_by')}  "
             f"{approval.get('created_at')}"
@@ -177,9 +178,10 @@ def cmd_approvals(session: "OmniSession", args: list[str]) -> None:
 def _read_answer(session: "OmniSession", prompt: str) -> str:
     """Read one line, turning Ctrl+C/Ctrl+D into an empty (cancel) answer."""
     try:
-        return str((session.input_reader or input)(prompt) or "").strip().lower()
+        reader = session.input_reader or (session._tui.prompt if session._tui.use_tui else input)
+        return str(reader(prompt) or "").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        print()
+        render.write()
         return ""
 
 
@@ -203,7 +205,7 @@ def cmd_session(session: "OmniSession", args: list[str]) -> None:
         return
     if action == "info":
         if not session.active_session_uuid:
-            print("(sin sesión activa: usa /sessions y /session attach <uuid>)")
+            render.write("(sin sesión activa: usa /sessions y /session attach <uuid>)")
             return
         info = session.refresh_active_session()
         if info is None:
@@ -220,7 +222,7 @@ def cmd_session(session: "OmniSession", args: list[str]) -> None:
 def cmd_detach(session: "OmniSession", args: list[str]) -> None:
     """Sale del modo sesión; la sesión sigue activa en msfrpcd."""
     if session.detach_session() is None:
-        print("(no había sesión activa)")
+        render.write("(no había sesión activa)")
 
 
 def _kill_one(session: "OmniSession", session_uuid: str) -> bool:
@@ -235,7 +237,7 @@ def _kill_one(session: "OmniSession", session_uuid: str) -> bool:
             f"{output.get('verification_method') or 'error'}"
         )
         return False
-    print(f"Sesión {session_uuid} terminada.")
+    render.write(f"Sesión {session_uuid} terminada.")
     if session.active_session_uuid == session_uuid:
         session.detach_session(notify=False)
     return True
@@ -258,11 +260,11 @@ def cmd_kill_session(session: "OmniSession", args: list[str]) -> None:
     elif request:
         targets = [request]
     else:
-        print("(no hay sesión activa; indica un uuid)")
+        render.write("(no hay sesión activa; indica un uuid)")
         render.render_session_list(sessions)
         return
     if not targets:
-        print("(no hay sesiones que terminar)")
+        render.write("(no hay sesiones que terminar)")
         return
     record = next(
         (
@@ -274,8 +276,8 @@ def cmd_kill_session(session: "OmniSession", args: list[str]) -> None:
     )
     label = targets[0] if len(targets) == 1 else f"{len(targets)} sesiones"
     detail = f" ({record.get('type')}, {record.get('session_host')})" if record else ""
-    print(render.paint(f"⚠️  Kill session {label}{detail}?", render.YELLOW))
-    print("    [Y] Yes  [N] No  [E] Kill all sessions")
+    render.write(render.paint(f"⚠️  Kill session {label}{detail}?", render.YELLOW))
+    render.write("    [Y] Yes  [N] No  [E] Kill all sessions")
     answer = _read_answer(session, "    > ")
     if answer in {"y", "yes", "s", "si", "sí"}:
         for uuid in targets:
@@ -283,12 +285,12 @@ def cmd_kill_session(session: "OmniSession", args: list[str]) -> None:
         return
     if answer in {"e", "all", "todas"}:
         if not known:
-            print("(no hay sesiones que terminar)")
+            render.write("(no hay sesiones que terminar)")
             return
         for uuid in known:
             _kill_one(session, uuid)
         return
-    print("cancelado")
+    render.write("cancelado")
 
 
 def _report_tools(session: "OmniSession"):
@@ -316,20 +318,20 @@ def cmd_findings(session: "OmniSession", args: list[str]) -> None:
         render.render_error(f"no se pudieron extraer hallazgos: {type(exc).__name__}: {exc}")
         return
     if not findings and not failed:
-        print(f"(sin hallazgos verificados en {session.engagement_id})")
+        render.write(f"(sin hallazgos verificados en {session.engagement_id})")
         return
     counts = {}
     for finding in findings:
         counts[finding.severity] = counts.get(finding.severity, 0) + 1
-    print(f"Hallazgos del engagement {session.engagement_id}:")
-    print(markdown_module.findings_table(findings))
-    print()
+    render.write(f"Hallazgos del engagement {session.engagement_id}:")
+    render.write(markdown_module.findings_table(findings))
+    render.write()
     breakdown = ", ".join(
         f"{counts[level]} {level}" for level in ("critical", "high", "medium", "low", "info") if counts.get(level)
     ) or "0"
-    print(f"Total: {len(findings)} findings ({breakdown})")
+    render.write(f"Total: {len(findings)} findings ({breakdown})")
     if failed:
-        print(f"Intentos sin hallazgo: {len(failed)} (ver /report)")
+        render.write(f"Intentos sin hallazgo: {len(failed)} (ver /report)")
 
 
 def cmd_report(session: "OmniSession", args: list[str]) -> None:
@@ -384,7 +386,7 @@ def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool
     if session.engagement is None:
         render.render_error("no hay engagement activo (usa /scope)")
         return
-    print(f"Generating report for engagement {session.engagement.name}...")
+    render.write(f"Generating report for engagement {session.engagement.name}...")
     result = _run_report_tool(session, _report_arguments(session, None, llm_cvss))
     if result is None:
         return
@@ -393,11 +395,11 @@ def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool
     session.last_report_directory = str(output.get("directory") or "")
     session.last_report_sha256 = str(output.get("report_sha256") or "")
     breakdown = output.get("severity_breakdown") or {}
-    print(
+    render.write(
         f"  ✓ {output.get('findings_count', 0)} findings de "
         f"{evidence.get('audit_events_used', 0)} eventos de auditoría"
     )
-    print(
+    render.write(
         "  ✓ severidad: "
         + ", ".join(
             f"{breakdown.get(level, 0)} {level}"
@@ -407,7 +409,7 @@ def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool
     # ``--llm-cvss`` asks for LLM scoring, but the handler falls back to the
     # deterministic heuristic when no provider is reachable. The label reports
     # the request without claiming the LLM was actually used.
-    print(
+    render.write(
         "  ✓ CVSS: "
         + (
             "LLM solicitado (vector validado localmente; heurística si no hay proveedor)"
@@ -415,29 +417,29 @@ def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool
             else "heurística determinista (/report --llm-cvss)"
         )
     )
-    print(
+    render.write(
         "  ✓ cadena de auditoría: "
         + ("válida" if evidence.get("audit_chain_valid") else "NO VERIFICADA")
     )
-    print(
+    render.write(
         f"  ✓ Markdown ({_kb(output.get('markdown_size_bytes'))}) "
         f"+ HTML ({_kb(output.get('html_size_bytes'))})"
     )
     for name, digest in (evidence.get("artifact_sha256") or {}).items():
-        print(f"  ✓ artifact {name}: {str(digest)[:16]}…")
-    print()
-    print(f"Report: {output.get('directory')}")
+        render.write(f"  ✓ artifact {name}: {str(digest)[:16]}…")
+    render.write()
+    render.write(f"Report: {output.get('directory')}")
     for key, name in (
         ("report_path_md", "report.md"),
         ("report_path_html", "report.html"),
         ("report_path_json", "report.json"),
     ):
         if output.get(key):
-            print(f"  - {name}")
-    print()
-    print(f"Report SHA256: {output.get('report_sha256')}")
+            render.write(f"  - {name}")
+    render.write()
+    render.write(f"Report SHA256: {output.get('report_sha256')}")
     if output.get("failed_attempts"):
-        print(f"Intentos fallidos documentados: {output['failed_attempts']}")
+        render.write(f"Intentos fallidos documentados: {output['failed_attempts']}")
 
 
 def _report_export(session: "OmniSession", directory: str, *, llm_cvss: bool) -> None:
@@ -446,7 +448,7 @@ def _report_export(session: "OmniSession", directory: str, *, llm_cvss: bool) ->
         render.render_error("no hay engagement activo (usa /scope)")
         return
     target = Path(directory).expanduser()
-    print(f"Exporting {session.engagement.name} report to {target}...")
+    render.write(f"Exporting {session.engagement.name} report to {target}...")
     result = _run_report_tool(session, _report_arguments(session, str(target), llm_cvss))
     if result is None:
         return
@@ -458,7 +460,7 @@ def _report_export(session: "OmniSession", directory: str, *, llm_cvss: bool) ->
         ("report_path_json", "report.json"),
     ):
         if output.get(key):
-            print(f"  ✓ {name}")
+            render.write(f"  ✓ {name}")
     manifest = {
         "engagement_id": output.get("engagement_id"),
         "report_sha256": output.get("report_sha256"),
@@ -480,8 +482,8 @@ def _report_export(session: "OmniSession", directory: str, *, llm_cvss: bool) ->
         return
     session.last_report_directory = str(target)
     session.last_report_sha256 = str(output.get("report_sha256") or "")
-    print(f"  ✓ report.sha256 + manifest.json ({len(manifest['artifacts'])} artifacts)")
-    print(f"Done. {target}")
+    render.write(f"  ✓ report.sha256 + manifest.json ({len(manifest['artifacts'])} artifacts)")
+    render.write(f"Done. {target}")
 
 
 def _kb(value: Any) -> str:
@@ -509,16 +511,16 @@ def cmd_timeline(session: "OmniSession", args: list[str]) -> None:
         render.render_error(f"no se pudo leer la cronología: {type(exc).__name__}: {exc}")
         return
     if not entries:
-        print("(sin eventos de auditoría para este engagement)")
+        render.write("(sin eventos de auditoría para este engagement)")
         return
     for entry in entries:
         detail = f"  ({entry.detail})" if entry.detail else ""
         tool_id = entry.tool_id.replace("nexus.", "") if entry.tool_id else "-"
-        print(
+        render.write(
             f"{entry.occurred_at[:19].replace('T', ' ')}  {tool_id:<20} "
             f"{entry.target[:30]:<30} {entry.decision or '-'}{detail}"
         )
-    print(f"\n{len(entries)} evento(s).")
+    render.write(f"\n{len(entries)} evento(s).")
 
 
 def _ask_messages(session: "OmniSession", question: str) -> list[Any]:
@@ -558,12 +560,12 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
 
     messages = _ask_messages(session, question)
     try:
-        with Spinner(
+        with session._busy("Consultando al modelo"), Spinner(
             "Consultando al modelo",
-            enabled=spinner_enabled(),
+            enabled=not session._tui.use_tui and spinner_enabled(),
             use_ascii=not session._supports_unicode(),
         ):
-            response = asyncio.run(llm.complete(messages))
+            response = asyncio.run(session._metered_client(llm, durable=False).complete(messages))
     except Exception as exc:  # noqa: BLE001 - the REPL survives a failed call
         render.render_error(f"la consulta falló: {type(exc).__name__}: {exc}")
         return
@@ -581,8 +583,8 @@ def cmd_chat(session: "OmniSession", args: list[str]) -> None:
 def cmd_trust(session: "OmniSession", args: list[str]) -> None:
     """Muestra o cambia trust mode (on/off) sin reiniciar el REPL."""
     if not args:
-        print(f"trust mode: {'ON' if session.trust_mode else 'OFF'}")
-        print("  (on: auto-aprueba tools de alto riesgo; nunca las destructivas)")
+        render.write(f"trust mode: {'ON' if session.trust_mode else 'OFF'}")
+        render.write("  (on: auto-aprueba tools de alto riesgo; nunca las destructivas)")
         return
     value = str(args[0]).strip().lower()
     if value in {"on", "1", "true", "yes", "si", "sí"}:
@@ -592,25 +594,46 @@ def cmd_trust(session: "OmniSession", args: list[str]) -> None:
     else:
         render.render_error(f"valor inválido para /trust: {args[0]!r} (usa on u off)")
         return
-    print(
+    render.write(
         f"trust mode: {'ON' if session.trust_mode else 'OFF'}"
         " (se aplica al siguiente objetivo)"
     )
 
 
+def cmd_status(session: "OmniSession", args: list[str]) -> None:
+    """/status [on|off|show]: muestra u oculta la barra (preferencia persistente)."""
+    from .tui.status import render_status_plain, save_status_preference
+
+    if len(args) > 1 or (args and args[0] not in {"on", "off", "show"}):
+        render.render_error("uso: /status [on|off|show]")
+        return
+    if args and args[0] in {"on", "off"}:
+        enabled = args[0] == "on"
+        save_status_preference(enabled)
+        session._tui.set_status_bar_enabled(enabled)
+    if args == ["show"]:
+        session._update_status_bar(force=True)
+        session._output.write(render_status_plain(session._tui._status))
+    else:
+        session._output.write(
+            f"status bar: {'ON' if session._tui.status_bar_enabled else 'OFF'}"
+            + ("" if session._tui.use_tui else " (fallback readline)")
+        )
+
+
 def cmd_help(session: "OmniSession", args: list[str]) -> None:
     """Muestra esta ayuda."""
-    print(render.paint("Comandos disponibles:", render.BOLD))
+    render.write(render.paint("Comandos disponibles:", render.BOLD))
     for name in sorted(COMMANDS):
         doc = (COMMANDS[name].__doc__ or "").strip().splitlines()
-        print(f"  {name:<12} {doc[0] if doc else ''}")
-    print("  (cualquier otra línea se envía como objetivo al agente)")
+        render.write(f"  {name:<12} {doc[0] if doc else ''}")
+    render.write("  (cualquier otra línea se envía como objetivo al agente)")
 
 
 def cmd_exit(session: "OmniSession", args: list[str]) -> None:
     """Sale del REPL."""
     session.should_exit = True
-    print("Cerrando sesión omni. La auditoría durable permanece.")
+    render.write("Cerrando sesión omni. La auditoría durable permanece.")
 
 
 COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
@@ -630,6 +653,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/ask": cmd_ask,
     "/chat": cmd_chat,
     "/trust": cmd_trust,
+    "/status": cmd_status,
     "/help": cmd_help,
     "/exit": cmd_exit,
     "/quit": cmd_exit,
@@ -644,6 +668,7 @@ def parse_command(line: str) -> tuple[str, list[str]]:
     return name, args
 
 
+@routed
 def run_command(session: "OmniSession", line: str) -> bool:
     """Run a meta command; return ``False`` when it is not a known command."""
     name, args = parse_command(line)

@@ -37,7 +37,10 @@ def _is_tty(stream: Any) -> bool:
 def spinner_enabled() -> bool:
     """True only when both streams are terminals and ANSI colour is allowed."""
     from . import render
+    from .tui.session import should_use_tui
 
+    if should_use_tui():
+        return False
     if not _is_tty(sys.stdout) or not _is_tty(sys.stderr):
         return False
     return bool(render.color_enabled())

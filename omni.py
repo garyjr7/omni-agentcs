@@ -13,8 +13,13 @@ from dotenv import load_dotenv
 
 
 def main(argv=None) -> int:
+    from nexus_core.cli.llm_env import configure_logging, publish_default_provider
+
+    configure_logging()
     # No files, wizard, or environment mutation at import time.
     load_dotenv(ROOT / ".env", override=False)
+    # Respect a log-level preference from .env before onboarding or clients.
+    configure_logging()
     from nexus_core.cli.main import build_parser, main as cli_main
     from nexus_core.config.xdg import resolve_xdg_paths
     from nexus_core.config.loader import ConfigError, apply_environment, load_config, save_config
@@ -54,9 +59,6 @@ def main(argv=None) -> int:
         apply_environment(config, paths)
         # One canonical resolution for the CLI, the worker and execute_react: a
         # stale LLM_PROVIDER=fake must not shadow a working real provider.
-        from nexus_core.cli.llm_env import configure_logging, publish_default_provider
-
-        configure_logging()
         publish_default_provider(config)
         return cli_main(argv, config=config, paths=paths)
     except WizardAborted:
