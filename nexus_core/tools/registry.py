@@ -34,6 +34,10 @@ def durable_tool_definitions(
         msf_session_kill_definition,
         msf_session_kill_handler,
     )
+    from .handlers.msf_session_interact import (
+        msf_session_interact_definition,
+        msf_session_interact_handler,
+    )
     from .handlers.nuclei import nuclei_definition, nuclei_handler
     from .handlers.subfinder import subfinder_definition, subfinder_handler
     from .handlers.system import system_status_definition, system_status_handler
@@ -59,6 +63,10 @@ def durable_tool_definitions(
         "nexus.exploit.msf_exploit": (msf_exploit_definition(tenant_id), msf_exploit_handler),
         "nexus.session.list": (msf_session_list_definition(tenant_id), msf_session_list_handler),
         "nexus.session.kill": (msf_session_kill_definition(tenant_id), msf_session_kill_handler),
+        "nexus.session.interact": (
+            msf_session_interact_definition(tenant_id),
+            msf_session_interact_handler,
+        ),
     }
     return catalog
 

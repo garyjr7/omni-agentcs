@@ -9,13 +9,16 @@ displays what the durable record already contains.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from nexus_core.agent import memory
-from nexus_core.agent.react import ReActConfig, run_react_loop
+from nexus_core.agent.react import ReActConfig, _operator_approval_gate, run_react_loop
+from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.models import Identity, RunContext
 from nexus_core.kernel.runtime import ExecutionContext, select_llm_client
 
@@ -28,6 +31,51 @@ DEFAULT_AGENT_ID = "omni"
 DEFAULT_MAX_ITERATIONS = 12
 STREAM_INTERVAL_SECONDS = 0.5
 STREAM_MESSAGE_WINDOW = 500
+
+#: Tool that sends one command into an open session.
+SESSION_INTERACT_TOOL = "nexus.session.interact"
+#: Tool that terminates one session.
+SESSION_KILL_TOOL = "nexus.session.kill"
+SESSION_COMMAND_AUDIT_ACTION = "session.command"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def fetch_sessions() -> dict | None:
+    """Read ``session.list`` directly; ``None`` when the daemon cannot answer.
+
+    Listing sessions is a read of the daemon's own state, not a command sent to
+    a session, so it does not need to go through the tool gateway. Returns
+    ``None`` (unknown) instead of ``{}`` so callers never mistake an unreachable
+    daemon for "no sessions".
+    """
+    from nexus_core.integrations.metasploit.client import (
+        MetasploitClient,
+        MetasploitConfig,
+    )
+
+    try:
+        config = MetasploitConfig.from_env()
+        if not config.password:
+            return None
+
+        async def _list() -> dict:
+            async with MetasploitClient(config) as client:
+                return await client.list_sessions()
+
+        return asyncio.run(_list())
+    except Exception:  # noqa: BLE001 - the REPL must survive an absent daemon
+        return None
+
+
+def find_session(sessions: dict | None, session_uuid: str) -> dict | None:
+    """Return the session record matching ``session_uuid``, if any."""
+    for record in (sessions or {}).values():
+        if isinstance(record, dict) and str(record.get("uuid") or "") == session_uuid:
+            return record
+    return None
 
 
 def build_llm_client() -> Any:
@@ -110,6 +158,11 @@ class OmniSession:
         self.should_exit = False
         self.last_result: Any = None
         self.last_question: str | None = None
+        #: Session-mode state (attach does not touch the engagement scope).
+        self.active_session_uuid: str | None = None
+        self.active_session_info: dict | None = None
+        self.session_commands_sent: int = 0
+        self.session_started_at: str | None = None
         if run_id:
             # Resuming: recover the durable conversation of that run.
             self.conversation_id = memory.ensure_conversation(
@@ -169,7 +222,173 @@ class OmniSession:
     def prompt(self) -> str:
         name = getattr(self.engagement, "name", None) or "(sin engagement)"
         trust = "─[TRUST MODE]" if self.trust_mode else ""
-        return f"┌──(OmniAgentCS)─[{name}]{trust}\n└─$ "
+        session = ""
+        if self.active_session_uuid:
+            info = self.active_session_info or {}
+            kind = str(info.get("type") or "session")
+            session = f"─[session {self.active_session_uuid}/{kind}]"
+        return f"┌──(OmniAgentCS)─[{name}]{trust}{session}\n└─$ "
+
+    # --------------------------------------------------------------- sessions
+    def fetch_sessions(self) -> dict | None:
+        """Read the daemon's session list; ``None`` when it cannot answer."""
+        return fetch_sessions()
+
+    def refresh_active_session(self) -> dict | None:
+        """Look the active session up; ``None`` when it is gone or unknown."""
+        if not self.active_session_uuid:
+            return None
+        sessions = self.fetch_sessions()
+        if sessions is None:
+            return None
+        return find_session(sessions, self.active_session_uuid)
+
+    def attach_session(self, session_uuid: str) -> bool:
+        """Attach to an existing session by uuid; the scope is left untouched."""
+        sessions = self.fetch_sessions()
+        if sessions is None:
+            render.render_error("no se pudo consultar msfrpcd (¿está vivo?)")
+            return False
+        record = find_session(sessions, str(session_uuid or ""))
+        if record is None:
+            render.render_error(f"sesión no encontrada: {session_uuid}")
+            return False
+        self.active_session_uuid = str(record.get("uuid") or session_uuid)
+        self.active_session_info = dict(record)
+        self.session_started_at = _utc_now()
+        render.render_session_attached(self.active_session_info)
+        return True
+
+    def detach_session(self, *, notify: bool = True) -> str | None:
+        """Leave session mode (the session itself keeps running)."""
+        previous = self.active_session_uuid
+        self.active_session_uuid = None
+        self.active_session_info = None
+        self.session_started_at = None
+        if notify and previous:
+            print(f"Detached from session {previous}. Session remains active.")
+        return previous
+
+    def check_active_session(self) -> bool:
+        """Detect a dead session on prompt return; detach and warn when so."""
+        if not self.active_session_uuid:
+            return True
+        if self.refresh_active_session() is None:
+            uuid = self.active_session_uuid
+            self.detach_session(notify=False)
+            render.render_session_died(uuid)
+            return False
+        return True
+
+    # ---------------------------------------------------------------- governed
+    def ensure_run(self, objective: str) -> str:
+        """Reuse the current run or create one, so audit always has a run id."""
+        if self.run_id:
+            return self.run_id
+        run = self.store.create_run(
+            self.tenant_id, {"source": "omni-cli", "objective": objective}
+        )
+        self.run_id = str(run["id"])
+        return self.run_id
+
+    def invoke_tool(self, tool_id: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """Run one tool through ``execute_tool`` (policy, scope, approval, audit).
+
+        The approval handshake reuses the very same gate the ReAct loop uses, so
+        an unattended operator gets the identical trust-mode behaviour.
+        """
+        from nexus_core.kernel.runtime import execute_tool
+        from nexus_core.tools.registry import durable_tool_definitions
+
+        entry = durable_tool_definitions(self.tenant_id).get(tool_id)
+        if entry is None:
+            render.render_error(f"tool desconocida: {tool_id}")
+            return None
+        definition = entry[0] if isinstance(entry, tuple) else entry
+        run_id = self.ensure_run(f"{tool_id} desde el REPL")
+        payload = {
+            "tool_id": tool_id,
+            "arguments": dict(arguments or {}),
+            "identity": self.agent_identity_payload,
+            "engagement_id": self.engagement_id,
+            "permissions": list(self.permissions),
+            "trace_id": run_id,
+        }
+        task = {
+            "id": f"cli-{run_id}",
+            "tenant_id": self.tenant_id,
+            "run_id": run_id,
+            "task_type": "tool.invoke",
+            "payload": payload,
+        }
+        context = ExecutionContext(self.store, task, self.worker_id)
+        config = ReActConfig(
+            on_approval_needed=make_approval_callback(
+                self, self.store, self.tenant_id, run_id, trust_mode=self.trust_mode
+            )
+        )
+        denial = _operator_approval_gate(
+            config=config, context=context, definition=definition, tool_payload=payload
+        )
+        if denial is not None:
+            render.render_error(
+                f"denegado por el operador: {denial.get('reason') or denial.get('status')}"
+            )
+            return None
+        try:
+            return asyncio.run(execute_tool(payload, context))
+        except (PermissionError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            render.render_error(f"{tool_id} falló: {type(exc).__name__}: {exc}")
+            return None
+
+    def audit_session_command(
+        self, session_uuid: str, command: str, run_id: str, outcome: str
+    ) -> None:
+        """Record every command sent into a session, with the current engagement."""
+        AuditWriter(self.store).append(
+            tenant_id=self.tenant_id,
+            trace_id=run_id,
+            actor_id=self.agent_subject_id,
+            action=SESSION_COMMAND_AUDIT_ACTION,
+            resource_type="session",
+            resource_id=session_uuid,
+            payload={
+                "tool_id": SESSION_INTERACT_TOOL,
+                "session_uuid": session_uuid,
+                "command": str(command)[:500],
+                "command_sha256": hashlib.sha256(str(command).encode("utf-8")).hexdigest(),
+                "engagement_id": self.engagement_id,
+                "run_id": run_id,
+                "outcome": outcome,
+            },
+            decision="deny" if outcome == "denied" else "allow",
+        )
+
+    def run_session_command(self, command: str) -> bool:
+        """Send one line to the attached session and render its output."""
+        session_uuid = self.active_session_uuid
+        if not session_uuid:
+            return False
+        run_id = self.ensure_run(f"comando a la sesión {session_uuid}")
+        result = self.invoke_tool(
+            SESSION_INTERACT_TOOL, {"session_uuid": session_uuid, "command": command}
+        )
+        if result is None:
+            self.audit_session_command(session_uuid, command, run_id, "denied")
+            return True
+        output = result.get("output") or {}
+        status = str(output.get("status") or "")
+        self.audit_session_command(session_uuid, command, run_id, status or "unknown")
+        if not output.get("success"):
+            render.render_error(
+                f"el comando no se verificó: {output.get('verification_method') or 'error'}"
+            )
+        render.render_session_output(str(output.get("output") or ""))
+        self.session_commands_sent += 1
+        if status == "session_dead":
+            self.detach_session(notify=False)
+            render.render_session_died(session_uuid)
+        return True
 
     # ------------------------------------------------------------------ run
     def run_objective(self, objective: str) -> Any:
@@ -271,6 +490,7 @@ class OmniSession:
             f"engagement={self.engagement_id or '(ninguno)'} · /help para comandos"
         )
         while not self.should_exit:
+            self.check_active_session()
             try:
                 line = (self.input_reader or input)(self.prompt)
             except KeyboardInterrupt:
@@ -286,6 +506,11 @@ class OmniSession:
             self.history.append(f"└─$ {text}")
             if text.startswith("/"):
                 commands_module.run_command(self, text)
+                continue
+            if self.active_session_uuid:
+                # Session mode: everything without a leading ``/`` goes to the
+                # session, through the tool gateway, never straight to the RPC.
+                self.run_session_command(text)
                 continue
             self.run_objective(text)
         _save_readline_history(history_path)

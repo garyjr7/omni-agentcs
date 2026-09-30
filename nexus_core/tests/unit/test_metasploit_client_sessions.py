@@ -17,6 +17,7 @@ from nexus_core.integrations.metasploit import client as client_module
 from nexus_core.integrations.metasploit.client import (
     MetasploitClient,
     MetasploitConfig,
+    MetasploitError,
     MetasploitUnavailable,
 )
 
@@ -117,15 +118,29 @@ def test_list_sessions_with_shell():
 
 
 def test_stop_session_success():
+    """stop_session resolves the uuid to the numeric sid the RPC expects."""
     seen = []
 
     async def run():
-        routes = {"session.stop": lambda params: seen.append(params) or {"result": "success"}}
+        routes = {
+            "session.list": lambda p: {"3": {"uuid": "sess-1", "type": "shell"}},
+            "session.stop": lambda params: seen.append(params) or {"result": "success"},
+        }
         async with make_client(responder(**routes)) as rpc:
             assert await rpc.stop_session("sess-1") == {"result": "success"}
 
     asyncio.run(run())
-    assert seen == [["sess-1"]]
+    assert seen == [["3"]], "session.stop must receive the sid, never the uuid"
+
+
+def test_stop_session_unknown_uuid_raises():
+    async def run():
+        routes = {"session.list": lambda p: {"3": {"uuid": "other", "type": "shell"}}}
+        async with make_client(responder(**routes)) as rpc:
+            with pytest.raises(MetasploitError):
+                await rpc.stop_session("sess-1")
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("uuid", ["", "a b", "x" * 65, "sess;drop", None])

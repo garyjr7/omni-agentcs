@@ -164,6 +164,123 @@ def cmd_approvals(session: "OmniSession", args: list[str]) -> None:
         )
 
 
+def _read_answer(session: "OmniSession", prompt: str) -> str:
+    """Read one line, turning Ctrl+C/Ctrl+D into an empty (cancel) answer."""
+    try:
+        return str((session.input_reader or input)(prompt) or "").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+
+
+def cmd_sessions(session: "OmniSession", args: list[str]) -> None:
+    """Lista las sesiones activas (uuid, tipo, peer, vía, usuario)."""
+    sessions = session.fetch_sessions()
+    if sessions is None:
+        render.render_error("no se pudo consultar msfrpcd (¿está vivo?)")
+        return
+    render.render_session_list(sessions)
+
+
+def cmd_session(session: "OmniSession", args: list[str]) -> None:
+    """Muestra o cambia la sesión activa: /session [attach <uuid>|info]."""
+    action = str(args[0]).lower() if args else "info"
+    if action == "attach":
+        if len(args) < 2:
+            render.render_error("uso: /session attach <uuid>")
+            return
+        session.attach_session(args[1])
+        return
+    if action == "info":
+        if not session.active_session_uuid:
+            print("(sin sesión activa: usa /sessions y /session attach <uuid>)")
+            return
+        info = session.refresh_active_session()
+        if info is None:
+            render.render_error(
+                f"la sesión {session.active_session_uuid} ya no está activa"
+            )
+            return
+        session.active_session_info = dict(info)
+        render.render_session_attached(info)
+        return
+    render.render_error(f"subcomando desconocido: {action!r} (usa attach o info)")
+
+
+def cmd_detach(session: "OmniSession", args: list[str]) -> None:
+    """Sale del modo sesión; la sesión sigue activa en msfrpcd."""
+    if session.detach_session() is None:
+        print("(no había sesión activa)")
+
+
+def _kill_one(session: "OmniSession", session_uuid: str) -> bool:
+    """Terminate one session through the governed tool; detach if it was ours."""
+    result = session.invoke_tool("nexus.session.kill", {"session_uuid": session_uuid})
+    if result is None:
+        return False
+    output = result.get("output") or {}
+    if not output.get("success"):
+        render.render_error(
+            f"no se pudo terminar {session_uuid}: "
+            f"{output.get('verification_method') or 'error'}"
+        )
+        return False
+    print(f"Sesión {session_uuid} terminada.")
+    if session.active_session_uuid == session_uuid:
+        session.detach_session(notify=False)
+    return True
+
+
+def cmd_kill_session(session: "OmniSession", args: list[str]) -> None:
+    """Termina una sesión: /kill-session [uuid], o todas con 'all'."""
+    sessions = session.fetch_sessions()
+    if sessions is None:
+        render.render_error("no se pudo consultar msfrpcd (¿está vivo?)")
+        return
+    known = [
+        str(record.get("uuid"))
+        for record in sessions.values()
+        if isinstance(record, dict) and record.get("uuid")
+    ]
+    request = str(args[0]) if args else (session.active_session_uuid or "")
+    if request.lower() == "all":
+        targets = known
+    elif request:
+        targets = [request]
+    else:
+        print("(no hay sesión activa; indica un uuid)")
+        render.render_session_list(sessions)
+        return
+    if not targets:
+        print("(no hay sesiones que terminar)")
+        return
+    record = next(
+        (
+            value
+            for value in sessions.values()
+            if isinstance(value, dict) and str(value.get("uuid")) == targets[0]
+        ),
+        None,
+    )
+    label = targets[0] if len(targets) == 1 else f"{len(targets)} sesiones"
+    detail = f" ({record.get('type')}, {record.get('session_host')})" if record else ""
+    print(render.paint(f"⚠️  Kill session {label}{detail}?", render.YELLOW))
+    print("    [Y] Yes  [N] No  [E] Kill all sessions")
+    answer = _read_answer(session, "    > ")
+    if answer in {"y", "yes", "s", "si", "sí"}:
+        for uuid in targets:
+            _kill_one(session, uuid)
+        return
+    if answer in {"e", "all", "todas"}:
+        if not known:
+            print("(no hay sesiones que terminar)")
+            return
+        for uuid in known:
+            _kill_one(session, uuid)
+        return
+    print("cancelado")
+
+
 def cmd_trust(session: "OmniSession", args: list[str]) -> None:
     """Muestra o cambia trust mode (on/off) sin reiniciar el REPL."""
     if not args:
@@ -206,6 +323,10 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/clear": cmd_clear,
     "/export": cmd_export,
     "/approvals": cmd_approvals,
+    "/sessions": cmd_sessions,
+    "/session": cmd_session,
+    "/detach": cmd_detach,
+    "/kill-session": cmd_kill_session,
     "/trust": cmd_trust,
     "/help": cmd_help,
     "/exit": cmd_exit,

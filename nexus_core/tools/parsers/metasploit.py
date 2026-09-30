@@ -175,6 +175,52 @@ def parse_msf_exploit(raw_dict: dict, module: str, target: str) -> MetasploitExp
     )
 
 
+INTERACTION_STATUSES = ("ok", "timeout", "session_dead")
+
+
+@dataclass(frozen=True)
+class MetasploitSessionInteraction:
+    session_uuid: str
+    command: str
+    status: str
+    output: str
+    output_bytes: int
+    duration_seconds: float
+    raw_sha256: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def parse_msf_interaction(
+    raw_dict: dict, session_uuid: str, command: str
+) -> MetasploitSessionInteraction:
+    """Parse the outcome of one command sent to an open session."""
+    if not isinstance(raw_dict, dict):
+        raise ValueError("interaction result must be an object")
+    status = raw_dict.get("status")
+    if status not in INTERACTION_STATUSES:
+        raise ValueError("unknown interaction status")
+    output = raw_dict.get("output")
+    if output is None:
+        output = ""
+    if not isinstance(output, str):
+        raise ValueError("interaction output must be a string")
+    try:
+        duration = round(float(raw_dict.get("duration_seconds") or 0.0), 3)
+    except (TypeError, ValueError):
+        raise ValueError("invalid duration_seconds") from None
+    return MetasploitSessionInteraction(
+        session_uuid=str(session_uuid),
+        command=str(command),
+        status=str(status),
+        output=output,
+        output_bytes=len(output.encode("utf-8", errors="replace")),
+        duration_seconds=duration,
+        raw_sha256=_sha(raw_dict),
+    )
+
+
 @dataclass(frozen=True)
 class MetasploitAuxiliaryResult:
     module: str

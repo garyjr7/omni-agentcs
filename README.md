@@ -78,7 +78,8 @@ python nexus_worker.py                    # worker durable
 Usa un ID listado por `--list-engagements`. Un checkout nuevo no incluye
 engagements ni credenciales: créalos en el wizard con tu alcance autorizado.
 En el REPL, `/help` muestra comandos; `/scope`, `/tools`, `/history`,
-`/approvals`, `/trust` y `/exit` permiten inspeccionar la sesión.
+`/approvals`, `/trust`, `/sessions`, `/session`, `/detach`, `/kill-session` y
+`/exit` permiten inspeccionar y controlar la sesión.
 
 Doctor muestra sistema, herramientas, gestores, rutas, SQLite, últimos eventos
 de auditoría y puerto/systemd de msfrpcd. El sondeo del puerto no autentica RPC.
@@ -87,13 +88,13 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **14 herramientas**:
+El catálogo durable contiene **15 herramientas**:
 
 - `nexus.system.status`, `nexus.workspace.search`.
 - `nexus.recon.nmap`, `nexus.recon.subfinder`, `nexus.recon.httpx`.
 - `nexus.web.nuclei`, `nexus.web.ffuf`.
 - `nexus.exploit.msf_search`, `nexus.exploit.msf_auxiliary`, `nexus.exploit.msf_exploit`.
-- `nexus.session.list`, `nexus.session.kill`.
+- `nexus.session.list`, `nexus.session.interact`, `nexus.session.kill`.
 - `nexus.system.check_env`, `nexus.system.install_tool`.
 
 `check_env` es de solo lectura. `install_tool` es HIGH y siempre requiere
@@ -154,6 +155,48 @@ sesión devuelve `status=timeout` con `verified=true` (la ejecución se verific�
 Las sesiones se gestionan con `nexus.session.list` (solo lectura, filtra por
 tipo) y `nexus.session.kill` (MEDIUM, cleanup por UUID). Ambas van por el
 gateway y quedan auditadas; ningún handler abre un shell.
+
+### Interacción con sesiones
+
+Después de explotar un target, la sesión queda activa y puedes interactuar con
+ella desde el REPL. Todo lo que **no** empieza por `/` se envía a la sesión
+adjunta; los comandos meta siguen funcionando igual.
+
+```text
+┌──(OmniAgentCS)─[scanme-lab]
+└─$ /sessions
+
+UUID       Type          Peer             Via                    User
+abc123     meterpreter   10.0.0.1:51234   ms17_010_eternalblue   NT AUTHORITY\SYSTEM
+
+┌──(OmniAgentCS)─[scanme-lab]
+└─$ /session attach abc123
+Attached to session abc123 (meterpreter)
+Target: 10.0.0.1
+User:   NT AUTHORITY\SYSTEM
+Escribe comandos directamente, /help para los comandos de Omni, /detach para salir.
+
+┌──(OmniAgentCS)─[scanme-lab]─[session abc123/meterpreter]
+└─$ sysinfo
+Computer        : WIN-DC-01
+OS              : Windows Server 2019
+...
+
+┌──(OmniAgentCS)─[scanme-lab]─[session abc123/meterpreter]
+└─$ /detach
+Detached from session abc123. Session remains active.
+```
+
+Dentro del modo sesión: `/detach` vuelve al modo normal (la sesión sigue viva),
+`/session info` muestra los datos de la sesión adjunta, `/sessions` lista las
+activas y `/kill-session [uuid]` (o `all`) termina sesiones. Si la sesión muere
+(por ejemplo el target se reinicia), el prompt vuelve solo a modo normal y avisa.
+
+Cada comando enviado a la sesión pasa por el gateway (`nexus.session.interact`,
+HIGH, sin scope: la sesión ya está abierta) igual que cualquier otra tool: se
+pide aprobación `y/n/e/?` por comando, o se auto-aprueba con `--trust-mode`, y
+cada uno queda auditado con el `engagement_id` actual. Los comandos que cerrarían
+la sesión (`exit`, `quit`, `background`, …) se rechazan: usa `/kill-session`.
 
 ### Trust mode
 

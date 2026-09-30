@@ -252,3 +252,83 @@ def render_findings(findings: Iterable[dict[str, Any]]) -> None:
         severity = str(finding.get("severity") or "info")
         title = str(finding.get("title") or finding.get("summary") or "")
         print(paint(f"  [{severity}]", YELLOW) + f" {title}")
+
+
+SESSION_TABLE_HEADERS = ("UUID", "Type", "Peer", "Via", "User")
+
+
+def _session_rows(sessions: dict[str, Any]) -> list[tuple[str, ...]]:
+    """One display row per session, ordered by numeric sid when possible."""
+    def sort_key(item: tuple[Any, Any]) -> tuple[int, str]:
+        key = str(item[0])
+        return (int(key), "") if key.isdigit() else (0, key)
+
+    rows = []
+    for sid, record in sorted((sessions or {}).items(), key=sort_key):
+        if not isinstance(record, dict):
+            continue
+        rows.append(
+            (
+                str(record.get("uuid") or sid)[:12],
+                str(record.get("type") or "?"),
+                str(record.get("tunnel_peer") or record.get("session_host") or "?"),
+                str(record.get("via_exploit") or "?").split("/")[-1][:22],
+                str(record.get("username") or "?"),
+            )
+        )
+    return rows
+
+
+def render_session_list(sessions: dict[str, Any]) -> None:
+    """Print a table of active sessions (uuid, type, peer, exploit, user)."""
+    rows = _session_rows(sessions)
+    if not rows:
+        print("(no hay sesiones activas)")
+        return
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows))
+        for index, header in enumerate(SESSION_TABLE_HEADERS)
+    ]
+
+    def line(values: tuple[str, ...]) -> str:
+        return "  ".join(value.ljust(widths[index]) for index, value in enumerate(values)).rstrip()
+
+    print(paint("Active Metasploit sessions:", BOLD))
+    print("  " + paint(line(SESSION_TABLE_HEADERS), DIM))
+    for row in rows:
+        print("  " + line(row))
+
+
+def render_session_attached(info: dict[str, Any]) -> None:
+    """Banner shown when the REPL attaches to one session."""
+    record = info or {}
+    print(
+        paint(
+            f"Attached to session {record.get('uuid') or '?'} ({record.get('type') or '?'})",
+            GREEN,
+            BOLD,
+        )
+    )
+    print(f"  Target: {record.get('target_host') or record.get('session_host') or '?'}")
+    print(f"  User:   {record.get('username') or '?'}")
+    print("  Escribe comandos directamente; /help para comandos Omni; /detach para salir.")
+
+
+def render_session_died(uuid: str, last_seen_seconds: float | None = None) -> None:
+    """Warn that the attached session is gone and the REPL is back to normal."""
+    detail = f" (última señal hace {last_seen_seconds:.1f}s)" if last_seen_seconds else ""
+    print(paint(f"✗ la sesión {uuid} ya no está activa{detail}", RED))
+    print("  vuelvo a modo normal: el target pudo reiniciarse o cerrar el canal")
+
+
+def render_session_output(
+    output: str, max_lines: int = 500, numbered: bool = False
+) -> None:
+    """Print session output, trimming very long bursts."""
+    text = str(output or "")
+    lines = text.splitlines()
+    total = len(lines)
+    if total > max_lines:
+        lines = lines[:max_lines] + [f"... ({total - max_lines} líneas más)"]
+    for index, line_text in enumerate(lines, start=1):
+        print(paint(f"{index:>4} │ ", DIM) + line_text if numbered else line_text)

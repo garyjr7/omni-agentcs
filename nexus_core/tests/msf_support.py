@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 from nexus_core.integrations.metasploit.client import MetasploitClient, MetasploitConfig
+from nexus_core.kernel.approvals import ApprovalService
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.control_store import ControlStore
 from nexus_core.kernel.models import Identity, RunContext
@@ -47,6 +48,19 @@ def gateway(tmp_path):
     return result, audit
 
 
+def gateway_with_approvals(tmp_path):
+    """Same gateway plus an ApprovalService, for HIGH-risk tools."""
+    store = ControlStore(tmp_path / "control.db")
+    store.initialize()
+    audit = AuditWriter(store)
+    approvals = ApprovalService(store)
+    result = ToolGateway(
+        PolicyEngine(), audit, approvals, scope_validator=make_scope_validator()
+    )
+    register_durable_tools(result)
+    return result, audit, approvals, store
+
+
 class FakeClient:
     def __init__(self, config):
         self._config = config
@@ -68,6 +82,19 @@ class FakeClient:
         self.get_module_options = AsyncMock(return_value={})
         self.list_sessions = AsyncMock(return_value={})
         self.stop_session = AsyncMock(return_value={"result": "success"})
+        self.has_session = AsyncMock(return_value=True)
+        self.write_shell = AsyncMock(return_value=True)
+        self.read_shell = AsyncMock(return_value="")
+        self.write_meterpreter = AsyncMock(return_value=True)
+        self.read_meterpreter = AsyncMock(return_value="")
+        self.run_in_session = AsyncMock(
+            return_value={
+                "status": "ok",
+                "output": "uid=1000(fixture) gid=1000(fixture)\n",
+                "bytes": 34,
+                "duration_seconds": 0.4,
+            }
+        )
         self.execute_exploit = AsyncMock(
             return_value={
                 "status": "timeout",

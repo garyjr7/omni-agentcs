@@ -49,5 +49,6 @@ def test_check_env_registered_in_catalog():
         "nexus.exploit.msf_exploit",
         "nexus.session.list",
         "nexus.session.kill",
+        "nexus.session.interact",
     } <= set(catalog)
-    assert len(catalog) == 14
+    assert len(catalog) == 15

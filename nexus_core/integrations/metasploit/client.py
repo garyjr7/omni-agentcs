@@ -23,6 +23,15 @@ class MetasploitError(Exception):
     """RPC failed; messages deliberately exclude remote bodies and secrets."""
 
 
+#: Session UUIDs as produced by the daemon (short hex-ish strings).
+SESSION_UUID_PATTERN = r"[A-Za-z0-9_-]{1,64}"
+#: Session types served by the ``session.shell_*`` RPCs.
+SHELL_SESSION_TYPES = frozenset({"shell", "powershell"})
+#: A command that produced no output at all is still considered delivered
+#: after this long (some commands are silent by design).
+MIN_NO_OUTPUT_SECONDS = 5.0
+
+
 class MetasploitUnavailable(MetasploitError):
     """Transport unavailable or request timed out."""
 
@@ -155,7 +164,11 @@ class MetasploitClient:
                 raise MetasploitAuthError("RPC authentication rejected")
             response.raise_for_status()
             data = (
-                normalize(msgpack.unpackb(response.content, raw=False))
+                # ``strict_map_key=False`` is required: session.* payloads are
+                # keyed by the integer sid, which the default rejects.
+                normalize(
+                    msgpack.unpackb(response.content, raw=False, strict_map_key=False)
+                )
                 if self._config.transport == "msgpack"
                 else response.json()
             )
@@ -283,13 +296,162 @@ class MetasploitClient:
         return result
 
     async def stop_session(self, session_uuid: str) -> dict:
-        """Terminate one session (``session.stop``); ``{"result": "success"}``."""
+        """Terminate one session by UUID; ``{"result": "success"}``.
+
+        ``session.stop`` takes the **numeric sid**, not the uuid (passing the
+        uuid makes the daemon index session ``0`` and answer 500), so the sid is
+        resolved through ``session.list`` first.
+        """
+        sid, _ = await self._resolve_session(session_uuid)
+        result = await self._rpc("session.stop", [sid])
+        return result if isinstance(result, dict) else {"result": result}
+
+    # --------------------------------------------------------------- sessions
+    @staticmethod
+    def _session_type(record: dict) -> str:
+        return str(record.get("type") or "").lower()
+
+    async def _resolve_session(
+        self, session_uuid: str, sessions: dict | None = None
+    ) -> tuple[str, str]:
+        """Resolve a session uuid to ``(sid, type)``; raise if it is gone."""
         if not isinstance(session_uuid, str) or not re.fullmatch(
-            r"[A-Za-z0-9_-]{1,64}", session_uuid
+            SESSION_UUID_PATTERN, session_uuid
         ):
             raise ValueError("invalid session uuid")
-        result = await self._rpc("session.stop", [session_uuid])
-        return result if isinstance(result, dict) else {"result": result}
+        for sid, record in (sessions if sessions is not None else await self.list_sessions()).items():
+            if isinstance(record, dict) and str(record.get("uuid") or "") == session_uuid:
+                return str(sid), self._session_type(record)
+        raise MetasploitError("session does not exist")
+
+    async def has_session(self, session_uuid: str, sessions: dict | None = None) -> bool:
+        """Whether the uuid is still listed by the daemon."""
+        try:
+            known = sessions if sessions is not None else await self.list_sessions()
+        except MetasploitError:
+            # The daemon cannot confirm the session; treat it as unusable.
+            return False
+        return any(
+            isinstance(record, dict) and str(record.get("uuid") or "") == session_uuid
+            for record in known.values()
+        )
+
+    async def write_shell(self, session_uuid: str, command: str) -> bool:
+        """Send one command to a shell/powershell session; ``\n`` is appended."""
+        if not isinstance(command, str) or not command:
+            raise ValueError("command must be a non-empty string")
+        sid, _ = await self._resolve_session(session_uuid)
+        payload = command if command.endswith("\n") else command + "\n"
+        # session.shell_write never appends the newline for us.
+        result = await self._rpc("session.shell_write", [sid, payload])
+        return isinstance(result, dict) and result.get("write_count") is not None
+
+    async def read_shell(self, session_uuid: str) -> str:
+        """Read pending shell output; ``""`` when there is nothing to read."""
+        sid, _ = await self._resolve_session(session_uuid)
+        result = await self._rpc("session.shell_read", [sid])
+        return str((result or {}).get("data") or "")
+
+    async def write_meterpreter(self, session_uuid: str, command: str) -> bool:
+        """Send one command to a Meterpreter session; ``\n`` is appended."""
+        if not isinstance(command, str) or not command:
+            raise ValueError("command must be a non-empty string")
+        sid, _ = await self._resolve_session(session_uuid)
+        payload = command if command.endswith("\n") else command + "\n"
+        result = await self._rpc("session.meterpreter_write", [sid, payload])
+        return isinstance(result, dict) and result.get("result") == "success"
+
+    async def read_meterpreter(self, session_uuid: str) -> str:
+        """Read pending Meterpreter output; ``""`` when there is nothing."""
+        sid, _ = await self._resolve_session(session_uuid)
+        result = await self._rpc("session.meterpreter_read", [sid])
+        return str((result or {}).get("data") or "")
+
+    async def run_in_session(
+        self,
+        session_uuid: str,
+        command: str,
+        *,
+        quiet_seconds: float = 1.5,
+        max_wait_seconds: float = 60.0,
+        poll_interval_seconds: float = 0.2,
+    ) -> dict:
+        """Send one command and collect its output.
+
+        The session type decides whether the ``session.shell_*`` or the
+        ``session.meterpreter_*`` RPCs are used. The command is considered
+        finished after ``quiet_seconds`` without new output (or, if it produced
+        no output at all, after :data:`MIN_NO_OUTPUT_SECONDS`), and the loop is
+        additionally bounded by ``max_wait_seconds`` so it always terminates and
+        stays cancellable through ``asyncio``.
+        """
+        if not isinstance(command, str) or not command:
+            raise ValueError("command must be a non-empty string")
+        for name, value, low, high in (
+            ("quiet_seconds", quiet_seconds, 0.1, 60.0),
+            ("max_wait_seconds", max_wait_seconds, 1.0, 3600.0),
+            ("poll_interval_seconds", poll_interval_seconds, 0.05, 10.0),
+        ):
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or not low <= value <= high
+            ):
+                raise ValueError(f"{name} must be between {low} and {high}")
+        started = time.monotonic()
+        try:
+            _, session_type = await self._resolve_session(session_uuid)
+        except MetasploitError:
+            # The session vanished before we could even write to it.
+            return self._interaction("session_dead", "", started)
+        is_shell = session_type in SHELL_SESSION_TYPES
+        write = self.write_shell if is_shell else self.write_meterpreter
+        read = self.read_shell if is_shell else self.read_meterpreter
+        try:
+            await write(session_uuid, command)
+        except MetasploitError:
+            return self._interaction("session_dead", "", started)
+
+        quiet_polls = max(1, math.ceil(quiet_seconds / poll_interval_seconds))
+        min_polls = max(1, math.ceil(MIN_NO_OUTPUT_SECONDS / poll_interval_seconds))
+        max_polls = max(1, math.ceil(max_wait_seconds / poll_interval_seconds))
+        deadline = started + max_wait_seconds
+        output = ""
+        quiet = 0
+        completed = False
+        for index in range(max_polls):
+            if index:
+                await asyncio.sleep(poll_interval_seconds)
+            if not await self.has_session(session_uuid):
+                return self._interaction("session_dead", output, started)
+            try:
+                data = await read(session_uuid)
+            except MetasploitError:
+                return self._interaction("session_dead", output, started)
+            if data:
+                output += data
+                quiet = 0
+            else:
+                quiet += 1
+            if output and quiet >= quiet_polls:
+                completed = True
+                break
+            if not output and index + 1 >= min_polls:
+                completed = True
+                break
+            if time.monotonic() >= deadline:
+                break
+        return self._interaction("ok" if completed else "timeout", output, started)
+
+    @staticmethod
+    def _interaction(status: str, output: str, started: float) -> dict:
+        return {
+            "status": status,
+            "output": output,
+            "bytes": len(output.encode("utf-8", errors="replace")),
+            "duration_seconds": round(time.monotonic() - started, 3),
+        }
 
     async def execute_exploit(
         self,
