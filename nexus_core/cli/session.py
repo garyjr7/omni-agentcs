@@ -35,23 +35,6 @@ STREAM_INTERVAL_SECONDS = 0.5
 STREAM_MESSAGE_WINDOW = 500
 #: Engagement names are truncated in the prompt so the line never wraps.
 MAX_PROMPT_ENGAGEMENT_NAME = 30
-#: Provider env keys in ``LLMFactory.create_from_env`` order (fake excluded).
-_LLM_PROVIDER_KEYS = (
-    ("openai", "OPENAI_API_KEY"),
-    ("gemini", "GEMINI_API_KEY"),
-    ("groq", "GROQ_API_KEY"),
-    ("anthropic", "ANTHROPIC_API_KEY"),
-    ("ollama", "OLLAMA_BASE_URL"),
-)
-#: Model env var and factory default per provider (banner label only).
-_LLM_MODEL_ENV = {
-    "fake": ("FAKE_LLM_MODEL", "nexus-fake-v1"),
-    "openai": ("OPENAI_MODEL", "gpt-4o-mini"),
-    "gemini": ("GEMINI_MODEL", "gemini-1.5-flash"),
-    "groq": ("GROQ_MODEL", "llama-3.3-70b-versatile"),
-    "anthropic": ("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
-    "ollama": ("OLLAMA_MODEL", "llama3"),
-}
 
 #: Tool that sends one command into an open session.
 SESSION_INTERACT_TOOL = "nexus.session.interact"
@@ -231,6 +214,8 @@ class OmniSession:
         #: Report-mode state: where the last deliverable was written.
         self.last_report_directory: str | None = None
         self.last_report_sha256: str | None = None
+        #: Local ``/ask`` transcript (never persisted, never audited).
+        self.ask_history: list[tuple[str, str]] = []
         if run_id:
             # Resuming: recover the durable conversation of that run.
             self.conversation_id = memory.ensure_conversation(
@@ -241,6 +226,18 @@ class OmniSession:
     @property
     def engagement_id(self) -> str | None:
         return getattr(self.engagement, "engagement_id", None)
+
+    @property
+    def _llm(self) -> Any:
+        """The LLM client of this session, resolved lazily if it was not given.
+
+        ``/ask`` is conversational and must not fail just because the caller
+        built the session without a client, so it resolves on first use through
+        the same ``select_llm_client`` the agentic path uses.
+        """
+        if self.llm_client is None:
+            self.llm_client = build_llm_client()
+        return self.llm_client
 
     @property
     def agent_subject_id(self) -> str:
@@ -322,28 +319,15 @@ class OmniSession:
             return False
 
     def _llm_stats(self) -> tuple[str, int]:
-        """``(summary, real_provider_count)`` without constructing any client.
+        """``(summary, real_provider_count)`` via the canonical resolution.
 
-        ``LLMFactory.create_from_env()`` logs one INFO line per provider to
-        stdout, which would land in the middle of the banner. The probe
-        therefore mirrors the factory's *resolution* (the same env keys and the
-        same precedence as ``select_llm_client``) while reading only the
-        environment: no client is built, nothing is logged, no key is used.
+        Delegates to :mod:`nexus_core.cli.llm_env` so the banner cannot drift
+        from what ``select_llm_client`` (and therefore ``execute_react``) will
+        actually use. No client is constructed: nothing is logged.
         """
-        available = ["fake"] + [
-            name for name, key in _LLM_PROVIDER_KEYS if os.getenv(key)
-        ]
-        real = [name for name in available if name != "fake"]
-        selected = str(os.getenv("NEXUS_LLM_DEFAULT_PROVIDER") or "").strip().lower()
-        if selected:
-            # A selected-but-keyless provider falls back to fake, exactly like
-            # ``select_llm_client`` (never silently to another cloud).
-            chosen = selected if selected in available else "fake"
-        else:
-            chosen = real[0] if real else "fake"
-        model_env, default_model = _LLM_MODEL_ENV.get(chosen, ("", "unknown"))
-        model = str(os.getenv(model_env) or default_model) if model_env else default_model
-        return f"{chosen}/{model}", len(real)
+        from .llm_env import provider_summary
+
+        return provider_summary()
 
     def _llm_summary(self) -> str:
         """Human label of the resolved provider, e.g. ``groq/openai/gpt-oss-20b``."""

@@ -27,6 +27,7 @@ BANNER_ASCII = r"""
 """
 
 TIPS = (
+    "Use /ask <question> for conversational help without executing tools.",
     "Use /trust on to auto-approve high-risk actions during an engagement.",
     "Use /report to generate a client-ready report with CVSS and MITRE.",
     "Use /session attach <uuid> to interact with an open Meterpreter session.",

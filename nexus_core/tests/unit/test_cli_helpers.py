@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+from nexus_core.cli import llm_env
 from nexus_core.cli import session as session_module
 from nexus_core.cli.session import OmniSession, _detect_msfrpcd_version
 from nexus_core.kernel.control_store import ControlStore
@@ -22,10 +23,10 @@ def _session(tmp_path=None) -> OmniSession:
 @pytest.fixture()
 def _llm_env(monkeypatch):
     """Start from a clean provider environment for each test."""
-    for _name, key in session_module._LLM_PROVIDER_KEYS:
+    for key in llm_env.PROVIDER_KEY_ENVS.values():
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.delenv("NEXUS_LLM_DEFAULT_PROVIDER", raising=False)
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv(llm_env.DEFAULT_PROVIDER_ENV, raising=False)
+    monkeypatch.delenv(llm_env.LEGACY_PROVIDER_ENV, raising=False)
 
 
 def test_llm_summary_with_groq_configured(monkeypatch, _llm_env):

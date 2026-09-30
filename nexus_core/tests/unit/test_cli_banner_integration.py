@@ -10,6 +10,7 @@ import pytest
 
 import omni
 from nexus_core.cli import commands as commands_module
+from nexus_core.cli import llm_env
 from nexus_core.cli import render, session as session_module
 from nexus_core.cli.session import OmniSession
 
@@ -43,6 +44,20 @@ def _env(monkeypatch):
     render.configure_color(no_color=False)
     yield
     render.configure_color(no_color=False)
+
+
+@pytest.fixture(autouse=True)
+def _offline_llm(monkeypatch, onboarding_env):
+    """Pin ``--objective`` runs to the offline provider.
+
+    Without this, ``omni.main`` would publish the real Groq provider found in
+    ``.env`` and the one-shot path would call the live API. The explicit
+    ``NEXUS_LLM_DEFAULT_PROVIDER`` wins in ``publish_default_provider``.
+
+    ``onboarding_env`` is requested so it is set up *first*: it clears
+    ``os.environ``, so pinning before it would be wiped.
+    """
+    monkeypatch.setenv(llm_env.DEFAULT_PROVIDER_ENV, llm_env.FAKE_PROVIDER)
 
 
 def _session(**kwargs) -> OmniSession:
@@ -139,6 +154,7 @@ def test_no_banner_in_objective_mode():
 @pytest.mark.parametrize(
     "argv",
     [
+        # --objective is one-shot: no REPL, therefore no banner.
         ["--objective", "escanea scanme.nmap.org", "--no-wizard"],
         ["--version"],
         ["--help"],

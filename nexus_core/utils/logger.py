@@ -48,20 +48,43 @@ class NexusConsoleFormatter(logging.Formatter):
         formatted_millis = f"{record.msecs:03.0f}"
         return f"{formatted_time}.{formatted_millis} [{level_color}{record.levelname}{RESET}] {CYAN}{record.name}{RESET} → {record.getMessage()}"
 
+def _default_level() -> int:
+    """Default log level from ``NEXUS_LOG_LEVEL`` (``warning`` unless asked).
+
+    Internal LLM chatter (one line per provider and per call) must not reach the
+    terminal by default: it corrupts the spinner line and buries the real output.
+    ``NEXUS_LOG_LEVEL=info`` (or ``debug``) restores it for development.
+    """
+    name = str(os.getenv("NEXUS_LOG_LEVEL") or "warning").strip().lower()
+    return {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "warning": logging.WARNING,
+        "warn": logging.WARNING,
+        "error": logging.ERROR,
+        "critical": logging.CRITICAL,
+    }.get(name, logging.WARNING)
+
+
 class NexusLogger:
     """
     Custom logger class for NEXUS with JSON and console handlers.
+
+    Handlers are installed once per logger name: re-instantiating a logger must
+    not stack a second ``StreamHandler`` and duplicate every line.
     """
     def __init__(self, name: str, module: str = "nexus", log_dir: Optional[str] = None, context: Optional[Dict] = None):
         self.name = name
         self.module = module
         self.context = context or {}
         self.logger = logging.getLogger(name)
-        self.logger.setLevel(logging.DEBUG)
+        self.logger.setLevel(_default_level())
 
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(NexusConsoleFormatter())
-        self.logger.addHandler(console_handler)
+        if not any(getattr(h, "_nexus_console", False) for h in self.logger.handlers):
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setFormatter(NexusConsoleFormatter())
+            console_handler._nexus_console = True  # type: ignore[attr-defined]
+            self.logger.addHandler(console_handler)
 
         if log_dir:
             log_path = pathlib.Path(log_dir) / f"{name}.log"

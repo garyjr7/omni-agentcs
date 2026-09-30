@@ -189,6 +189,15 @@ def render_summary(text: str, findings: Iterable[dict[str, Any]] = ()) -> None:
     print(paint("└" + "─" * width + "┘", BOLD))
 
 
+def render_answer(text: str) -> None:
+    """Print a conversational ``/ask`` answer, preserving its paragraphs."""
+    print()
+    print(paint("OmniAgent", CYAN, BOLD) + paint(" ·", DIM))
+    for line in str(text or "(sin respuesta)").splitlines():
+        print("  " + line if line.strip() else "")
+    print()
+
+
 def render_error(text: str) -> None:
     """Print an error line in red."""
     print(paint(f"✗ {text}", RED))

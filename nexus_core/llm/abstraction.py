@@ -493,6 +493,8 @@ class LLMFactory:
                     api_key=os.getenv("OPENAI_API_KEY")
                 )
                 clients["openai"] = OpenAIClient(config)
+                # Visibility is decided by NEXUS_LOG_LEVEL (default warning), so
+                # these stay INFO: one switch controls all internal chatter.
                 logger.info("OpenAI client created from environment variables.")
             except Exception as e:
                 logger.warning(f"Failed to create OpenAI client from env: {e}")

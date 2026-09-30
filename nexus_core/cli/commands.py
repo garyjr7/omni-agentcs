@@ -20,6 +20,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 DEFAULT_HISTORY_LIMIT = 20
 
+#: System prompt of ``/ask``: conversational, never executes anything.
+ASK_SYSTEM_PROMPT = (
+    "Eres OmniAgentCS, un asistente experto en ciberseguridad ofensiva. "
+    "Respondes con información técnica precisa y práctica. No ejecutas "
+    "herramientas: solo explicas, aconsejas y respondes preguntas."
+)
+#: How many previous /ask exchanges stay in the local conversational context.
+ASK_HISTORY_LIMIT = 20
+
 
 def _tool_catalog(session: "OmniSession") -> dict[str, Any]:
     from nexus_core.tools.registry import durable_tool_definitions
@@ -395,9 +404,16 @@ def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool
             for level in ("critical", "high", "medium", "low", "info")
         )
     )
+    # ``--llm-cvss`` asks for LLM scoring, but the handler falls back to the
+    # deterministic heuristic when no provider is reachable. The label reports
+    # the request without claiming the LLM was actually used.
     print(
         "  ✓ CVSS: "
-        + ("LLM (vector validado localmente)" if llm_cvss else "heurística determinista (/report --llm-cvss)")
+        + (
+            "LLM solicitado (vector validado localmente; heurística si no hay proveedor)"
+            if llm_cvss
+            else "heurística determinista (/report --llm-cvss)"
+        )
     )
     print(
         "  ✓ cadena de auditoría: "
@@ -505,6 +521,63 @@ def cmd_timeline(session: "OmniSession", args: list[str]) -> None:
     print(f"\n{len(entries)} evento(s).")
 
 
+def _ask_messages(session: "OmniSession", question: str) -> list[Any]:
+    """System prompt + local /ask history + the new question.
+
+    The history lives on the session object only: ``/ask`` is conversational and
+    deliberately never touches the durable conversation, the engagement or the
+    audit trail.
+    """
+    from nexus_core.llm.abstraction import LLMMessage
+
+    messages: list[Any] = [LLMMessage(role="system", content=ASK_SYSTEM_PROMPT)]
+    for role, content in session.ask_history[-ASK_HISTORY_LIMIT:]:
+        messages.append(LLMMessage(role=role, content=content))
+    messages.append(LLMMessage(role="user", content=question))
+    return messages
+
+
+def cmd_ask(session: "OmniSession", args: list[str]) -> None:
+    """Pregunta al LLM sin ejecutar tools: /ask <pregunta en lenguaje natural>."""
+    question = " ".join(str(part) for part in args).strip()
+    if not question:
+        render.render_error("uso: /ask <pregunta>")
+        return
+    try:
+        llm = session._llm
+    except Exception as exc:  # noqa: BLE001 - a missing provider must not kill the REPL
+        render.render_error(f"no se pudo construir el cliente LLM: {type(exc).__name__}: {exc}")
+        return
+    if llm is None:
+        render.render_error("LLM no configurado. Revisa tu .env.")
+        return
+
+    import asyncio
+
+    from .spinner import Spinner, spinner_enabled
+
+    messages = _ask_messages(session, question)
+    try:
+        with Spinner(
+            "Consultando al modelo",
+            enabled=spinner_enabled(),
+            use_ascii=not session._supports_unicode(),
+        ):
+            response = asyncio.run(llm.complete(messages))
+    except Exception as exc:  # noqa: BLE001 - the REPL survives a failed call
+        render.render_error(f"la consulta falló: {type(exc).__name__}: {exc}")
+        return
+    answer = str(getattr(response, "content", response) or "")
+    session.ask_history.append(("user", question))
+    session.ask_history.append(("assistant", answer))
+    render.render_answer(answer)
+
+
+def cmd_chat(session: "OmniSession", args: list[str]) -> None:
+    """Alias conversacional de /ask (mismo comportamiento, sin tools)."""
+    cmd_ask(session, args)
+
+
 def cmd_trust(session: "OmniSession", args: list[str]) -> None:
     """Muestra o cambia trust mode (on/off) sin reiniciar el REPL."""
     if not args:
@@ -554,6 +627,8 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/findings": cmd_findings,
     "/report": cmd_report,
     "/timeline": cmd_timeline,
+    "/ask": cmd_ask,
+    "/chat": cmd_chat,
     "/trust": cmd_trust,
     "/help": cmd_help,
     "/exit": cmd_exit,
@@ -591,6 +666,8 @@ def command_names() -> list[str]:
 __all__ = [
     "COMMANDS",
     "cmd_approvals",
+    "cmd_ask",
+    "cmd_chat",
     "cmd_clear",
     "cmd_exit",
     "cmd_export",

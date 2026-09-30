@@ -77,7 +77,7 @@ python nexus_worker.py                    # worker durable
 
 Usa un ID listado por `--list-engagements`. Un checkout nuevo no incluye
 engagements ni credenciales: créalos en el wizard con tu alcance autorizado.
-En el REPL, `/help` muestra comandos; `/scope`, `/tools`, `/history`,
+En el REPL, `/help` muestra comandos; `/ask`, `/scope`, `/tools`, `/history`,
 `/approvals`, `/trust`, `/sessions`, `/session`, `/detach`, `/kill-session`,
 `/findings`, `/report`, `/timeline` y `/exit` permiten inspeccionar y controlar
 la sesión.
@@ -292,6 +292,18 @@ ni con la salida de los comandos:
 ✓ Ejecutando nmap contra scanme.nmap.org  [4s]
 ```
 
+Para dudas conversacionales ("qué puedo hacer", "explica este módulo") usa
+`/ask`: consulta al modelo sin ejecutar ninguna herramienta y sin tocar el
+engagement ni la auditoría.
+
+```text
+┌──(OmniAgentCS)─[scanme-lab]
+└─$ /ask para qué sirve el trust mode
+
+OmniAgent ·
+  El trust mode auto-aprueba las tools de alto riesgo del engagement…
+```
+
 El prompt resume el estado en una línea: engagement, sesión adjunta y trust
 mode, además del último reporte generado.
 
@@ -314,6 +326,37 @@ El banner **solo** aparece en modo REPL: `--objective`, `--help`, `--version`,
 Tampoco aparece si stdout no es un terminal, de modo que los pipelines y la
 salida redirigida siguen siendo texto plano.
 
+### Comandos conversacionales
+
+- `/ask <pregunta>` — consulta al LLM sin ejecutar tools, sin ReAct y sin
+escribir en el engagement ni en la auditoría. Mantiene un contexto local
+(últimos 20 mensajes) para repreguntar.
+- `/chat` — alias de `/ask`.
+
+## Logging
+
+Por defecto los logs internos (`LLMFactory`, `NexusLLM`, `LLMClient.*`) están en
+`WARNING`, de modo que no aparecen durante el uso normal ni rompen la línea del
+spinner. Para depurar:
+
+```bash
+NEXUS_LOG_LEVEL=info omni --engagement eng-scanme    # detalle de proveedores y llamadas
+NEXUS_LOG_LEVEL=debug omni                           # incluye la construcción de clientes
+```
+
+### Selección de proveedor LLM
+
+La elección de proveedor se resuelve en un único sitio
+(`nexus_core/cli/llm_env.py`) y la comparten el CLI, el worker y el bucle ReAct:
+
+1. `NEXUS_LLM_DEFAULT_PROVIDER` explícito, si ese proveedor tiene credenciales.
+2. `LLM_PROVIDER` o el proveedor de `config.toml`.
+3. El primer proveedor real disponible.
+4. `fake` (offline, determinista) si no hay ninguno.
+
+Un `LLM_PROVIDER=fake` heredado **no** desplaza a un proveedor real ya
+configurado, y un proveedor sin credenciales nunca se anuncia como activo.
+
 ## Estructura
 
 ```text
@@ -324,7 +367,7 @@ nexus_core/scope/           engagements y validación de alcance
 nexus_core/agent/           bucle ReAct (singular)
 nexus_core/tools/           catálogo, handlers y parsers
 nexus_core/report/          extracción de hallazgos y render Markdown/HTML
-nexus_core/cli/             REPL, banner, spinner, wizard y doctor
+nexus_core/cli/             REPL, banner, spinner, selección LLM, wizard y doctor
 nexus_core/config/          config TOML y rutas XDG
 nexus_core/provisioner/     catálogo e instalación aprobada
 nexus_core/integrations/   cliente Metasploit RPC

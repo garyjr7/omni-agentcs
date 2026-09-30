@@ -2,7 +2,6 @@
 """Entry point del CLI omni."""
 
 import sys
-import os
 import time
 from pathlib import Path
 
@@ -53,9 +52,12 @@ def main(argv=None) -> int:
         elif args.reset_config:
             save_config(config, paths)
         apply_environment(config, paths)
-        os.environ.setdefault(
-            "NEXUS_LLM_DEFAULT_PROVIDER", os.getenv("LLM_PROVIDER", config.llm.default_provider)
-        )
+        # One canonical resolution for the CLI, the worker and execute_react: a
+        # stale LLM_PROVIDER=fake must not shadow a working real provider.
+        from nexus_core.cli.llm_env import configure_logging, publish_default_provider
+
+        configure_logging()
+        publish_default_provider(config)
         return cli_main(argv, config=config, paths=paths)
     except WizardAborted:
         print("Onboarding cancelado.", file=sys.stderr)

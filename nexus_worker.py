@@ -20,6 +20,7 @@ def main() -> None:
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     args = parser.parse_args()
     from dotenv import load_dotenv
+    from nexus_core.cli.llm_env import configure_logging, publish_default_provider
     from nexus_core.config.loader import apply_environment, load_config
     from nexus_core.config.xdg import resolve_xdg_paths
 
@@ -27,7 +28,9 @@ def main() -> None:
     paths = resolve_xdg_paths()
     config = load_config(paths)
     apply_environment(config, paths)
-    os.environ.setdefault("NEXUS_LLM_DEFAULT_PROVIDER", os.environ["LLM_PROVIDER"])
+    configure_logging()
+    # Same resolution as the CLI: the worker runs the same agentic executors.
+    publish_default_provider(config)
     worker_id = os.getenv("NEXUS_WORKER_ID", f"{socket.gethostname()}-{os.getpid()}")
     store = get_control_store()
     store.initialize()
