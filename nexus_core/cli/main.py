@@ -162,6 +162,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         trust_mode=args.trust_mode,
         no_color=args.no_color,
         use_tui=False if args.no_tui or args.objective else None,
+        engagement_names=[scope.name for scope in engagements],
     )
     if args.objective:
         result = session.run_objective(args.objective)

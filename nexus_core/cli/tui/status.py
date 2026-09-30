@@ -57,7 +57,7 @@ def _parts(state: StatusState):
     parts.append(("ansicyan", state.provider_model or "(sin modelo)"))
     tokens = state.tokens_input + state.tokens_output
     parts.append(("ansigreen", f"{tokens / 1000:.1f}k tok" if tokens >= 1000 else f"{tokens} tok"))
-    parts.append(("ansigreen", f"~${state.cost_usd:.4f}" if state.cost_known else "$n/d"))
+    parts.append(("ansigreen", f"~${state.cost_usd:.4f}" if state.cost_known else "$—"))
     parts.append(("dim", state.elapsed_human))
     if state.busy:
         elapsed = max(0, int(time.monotonic() - state.busy_started_at))

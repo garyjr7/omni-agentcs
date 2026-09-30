@@ -138,7 +138,7 @@ def test_status_live_toggle_and_fixed_input(tui_factory, monkeypatch):
     ui.session.flush()
     assert callable(ui.session._session.bottom_toolbar)
     assert ui.session._session.app.full_screen
-    assert len(ui.session._session.app.layout.container.children) == 2
+    assert len(ui.session._session.app.layout.container.content.children) == 2
 
 
 def test_llm_usage_accumulates_without_double_counting(tui_factory, monkeypatch, tmp_path):

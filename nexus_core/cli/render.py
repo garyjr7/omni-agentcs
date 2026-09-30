@@ -192,11 +192,16 @@ def render_summary(text: str, findings: Iterable[dict[str, Any]] = ()) -> None:
     write(paint("└" + "─" * width + "┘", BOLD))
 
 
-def render_answer(text: str) -> None:
+def render_answer(text: str, *, no_color: bool = False, markdown: bool = False, max_width=None) -> None:
     """Print a conversational ``/ask`` answer, preserving its paragraphs."""
     write()
     write(paint("OmniAgent", CYAN, BOLD) + paint(" ·", DIM))
-    for line in str(text or "(sin respuesta)").splitlines():
+    body = str(text or "(sin respuesta)")
+    if markdown:
+        from .tui.markdown import render_markdown
+
+        body = render_markdown(body, no_color=no_color or not color_enabled(), max_width=max_width)
+    for line in body.splitlines():
         write("  " + line if line.strip() else "")
     write()
 

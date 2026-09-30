@@ -188,6 +188,7 @@ class OmniSession:
         use_tui: bool | None = None,
         status_bar_enabled: bool = True,
         output=None,
+        engagement_names: list[str] | None = None,
     ) -> None:
         self.store = store
         self.tenant_id = tenant_id
@@ -224,15 +225,19 @@ class OmniSession:
         self.last_report_sha256: str | None = None
         #: Local ``/ask`` transcript (never persisted, never audited).
         self.ask_history: list[tuple[str, str]] = []
+        tui_enabled = should_use_tui() if use_tui is None else use_tui
         self._tui = TuiSession(
-            use_tui=should_use_tui() if use_tui is None else use_tui,
+            use_tui=tui_enabled,
             history_path=tui_history_path(), no_color=no_color,
             status_bar_enabled=status_bar_enabled and load_status_preference(),
+            tools=commands_module._tool_catalog(self) if tui_enabled else {},
+            engagements=engagement_names or ([self.engagement.name] if self.engagement else []),
         )
         self._output = output or (TuiOutput(self._tui) if self._tui.use_tui else PlainOutput())
         self._usage_by_run: dict[str, tuple[int, int, float]] = {}
         self._usage_local = [0, 0, 0.0]
-        self._cost_known = True
+        self._cost_known = False
+        self._has_usage = False
         if run_id:
             # Resuming: recover the durable conversation of that run.
             self.conversation_id = memory.ensure_conversation(
@@ -438,7 +443,8 @@ class OmniSession:
         from .tui.usage import response_usage
 
         incoming, outgoing, cost = response_usage(response)
-        self._cost_known = self._cost_known and cost is not None
+        self._cost_known = (self._cost_known if self._has_usage else True) and cost is not None
+        self._has_usage = True
         amounts = (incoming, outgoing, cost or 0.0)
         if durable and self.run_id:
             previous = self._usage_by_run.get(self.run_id, (0, 0, 0.0))

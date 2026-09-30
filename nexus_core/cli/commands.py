@@ -440,6 +440,20 @@ def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool
     render.write(f"Report SHA256: {output.get('report_sha256')}")
     if output.get("failed_attempts"):
         render.write(f"Intentos fallidos documentados: {output['failed_attempts']}")
+    if session._tui.use_tui and output.get("report_path_md"):
+        try:
+            with Path(output["report_path_md"]).open(encoding="utf-8") as report:
+                text = report.read(65537)
+            if len(text) > 65536:
+                text = text[:65536] + "\n\n(Vista truncada; consulta el archivo completo.)"
+            from .tui.markdown import render_markdown
+
+            session._output.write(render_markdown(
+                text, no_color=session._tui.no_color,
+                max_width=session._tui._session.output.get_size().columns,
+            ))
+        except (OSError, UnicodeError):
+            render.render_status("No se pudo abrir la vista Markdown; consulta el artefacto generado.")
 
 
 def _report_export(session: "OmniSession", directory: str, *, llm_cvss: bool) -> None:
@@ -572,7 +586,10 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
     answer = str(getattr(response, "content", response) or "")
     session.ask_history.append(("user", question))
     session.ask_history.append(("assistant", answer))
-    render.render_answer(answer)
+    render.render_answer(
+        answer, no_color=session.no_color, markdown=session._tui.use_tui,
+        max_width=session._tui._session.output.get_size().columns - 2 if session._tui.use_tui else None,
+    )
 
 
 def cmd_chat(session: "OmniSession", args: list[str]) -> None:
@@ -621,6 +638,13 @@ def cmd_status(session: "OmniSession", args: list[str]) -> None:
         )
 
 
+def cmd_exploit(session: "OmniSession", args: list[str]) -> None:
+    """/exploit view-live <job_uuid>: vista de estado MSF en otra terminal (solo lectura)."""
+    from .live_jobs import show_job
+
+    show_job(session, args)
+
+
 def cmd_help(session: "OmniSession", args: list[str]) -> None:
     """Muestra esta ayuda."""
     render.write(render.paint("Comandos disponibles:", render.BOLD))
@@ -654,6 +678,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/chat": cmd_chat,
     "/trust": cmd_trust,
     "/status": cmd_status,
+    "/exploit": cmd_exploit,
     "/help": cmd_help,
     "/exit": cmd_exit,
     "/quit": cmd_exit,

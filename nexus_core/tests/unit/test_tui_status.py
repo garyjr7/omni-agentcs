@@ -56,7 +56,7 @@ def test_status_plain_version_no_ansi():
 
 
 def test_unknown_cost_is_not_reported_as_zero():
-    assert "$n/d" in render_status_plain(StatusState(cost_known=False))
+    assert "$—" in render_status_plain(StatusState(cost_known=False))
 
 
 def test_status_zero_width():

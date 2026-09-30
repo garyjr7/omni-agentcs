@@ -292,7 +292,7 @@ sesión de CLI, incluidas consultas `/ask`. Las llamadas ReAct registran su
 consumo por run mediante el store; `/ask` mantiene sus estadísticas locales.
 No se recupera consumo anterior al inicio de esta sesión. El coste usa
 `NEXUS_TUI_INPUT_USD_PER_MTOK` y `NEXUS_TUI_OUTPUT_USD_PER_MTOK`, tarifas que
-el operador debe ajustar al modelo activo. Sin ambas tarifas muestra `n/d`;
+el operador debe ajustar al modelo activo. Sin ambas tarifas muestra `$—`;
 Fake y Ollama tienen coste de API cero (no incluye infraestructura).
 En terminales estrechos la barra se trunca al ancho disponible.
 
@@ -329,6 +329,58 @@ La preferencia se guarda atómicamente con permisos 600 en
 `~/.config/omni/tui.json` (respeta `XDG_CONFIG_HOME`). Este archivo separado
 conserva intacto el esquema de `config.toml`. En fallback también puedes
 cambiar la preferencia para la siguiente sesión TUI.
+
+### Autocompletado y sintaxis
+
+Tab completa comandos `/`, herramientas `nexus.`, argumentos de sus esquemas,
+engagements `@` y rutas que empiezan por `/`, `./`, `../` o `~/`. Si hay varias
+opciones, Tab abre el menú y las siguientes pulsaciones recorren las sugerencias.
+El menú también aparece mientras escribes; incluye la ayuda de cada comando.
+
+```text
+└─$ /he<TAB>                 → /help
+└─$ nexus.recon.<TAB>        → nexus.recon.httpx
+                              nexus.recon.nmap
+                              nexus.recon.subfinder
+└─$ nexus.recon.nmap <TAB>   → target=, flags=, timeout_seconds=, …
+```
+
+Los comandos, tools, argumentos, cadenas y rutas tienen colores distintos;
+`--no-color` los desactiva. Completar una tool o `@engagement` solo inserta
+texto: no invoca herramientas directamente ni cambia el engagement activo.
+El prompt normal sigue recibiendo objetivos; usa `/ask` para preguntas.
+
+### Multi-línea
+
+Alt+Enter inserta una línea nueva; Enter envía todo el objetivo. La entrada
+crece hasta la mitad de la pantalla y muestra `·` como continuación.
+El historial en disco convierte los saltos de línea en espacios para mantener
+la compatibilidad con readline. El fallback conserva su entrada de una línea.
+
+### Markdown en respuestas
+
+En TUI, `/ask` y la vista previa de `/report` renderizan encabezados, negritas,
+cursivas, listas, código, enlaces y tablas con bordes ASCII. Se usa un
+renderizador ligero sin dependencias nuevas; admite este subconjunto de
+Markdown, no todo CommonMark. Los bloques de código conservan su texto literal.
+La vista previa de reportes se limita a 65 536 caracteres; el archivo generado queda completo.
+En fallback se conserva la salida anterior sin transformar Markdown.
+
+### Ver un job en vivo
+
+```text
+/exploit view-live <job_uuid>
+/exploit watch <job_uuid>      # alias
+```
+
+Consulta el estado y los resultados del job MSF cada dos segundos en una
+ventana tmux separada si hay `$TMUX`, o mediante `x-terminal-emulator` si hay
+`$DISPLAY`. Requiere un engagement activo y acceso RPC configurado. La vista
+es de solo lectura: no lanza exploits ni consume el output de la consola MSF.
+Muestra `module.results`, no un stream crudo de stdout/stderr.
+Ctrl+C cierra la vista; al finalizar el job, Enter permite cerrarla.
+Sin terminal secundario, o en un pipeline, muestra una instantánea del estado.
+Un UUID inválido, inexistente o una consulta denegada no abre ninguna ventana.
 
 ### Banner y actividad
 

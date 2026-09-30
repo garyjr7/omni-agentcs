@@ -41,13 +41,19 @@ class TuiSession:
         self, *, use_tui: bool, history_path: Path | None = None,
         status_bar_enabled: bool = True, no_color: bool = False,
         prompt_style: dict[str, Any] | None = None,
+        enable_completion: bool = True,
+        commands: dict | None = None, tools: dict | None = None,
+        engagements: list[str] | None = None,
         input=None, output=None,
     ):
         self.use_tui = bool(use_tui)
         self.status_bar_enabled = status_bar_enabled
         self.no_color = no_color or "NO_COLOR" in os.environ
         self.prompt_text = "└─$ "
-        self._status = StatusState()
+        self._status = StatusState(cost_known=False)
+        self._completion_context = (commands, tools or {}, engagements or [])
+        self._enable_completion = enable_completion
+        self._completer = None
         self._lock = threading.RLock()
         self._closed = False
         self._session = None
@@ -65,20 +71,58 @@ class TuiSession:
 
     def _build(self, history_path, prompt_style, input, output):
         from prompt_toolkit import PromptSession
-        from prompt_toolkit.completion import WordCompleter
         from prompt_toolkit.data_structures import Point
         from prompt_toolkit.filters import Condition
         from prompt_toolkit.key_binding import KeyBindings
-        from prompt_toolkit.layout import HSplit, Window
+        from prompt_toolkit.layout import FloatContainer, HSplit, Window
         from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.layout.menus import CompletionsMenu, MultiColumnCompletionsMenu
         from prompt_toolkit.output import ColorDepth
         from prompt_toolkit.shortcuts import CompleteStyle
         from prompt_toolkit.styles import Style
 
-        from ..commands import command_names
+        from ..commands import COMMANDS
+        from .completion import OmniCompleter
+        from .lexer import OmniLexer
         from .history import file_history
 
+        commands, tools, engagements = self._completion_context
+        if self._enable_completion:
+            self._completer = OmniCompleter(
+                commands=COMMANDS if commands is None else commands,
+                tools=tools, engagements=engagements,
+            )
         keys = KeyBindings()
+
+        @keys.add("tab", eager=True)
+        def complete(event):
+            if not self._accepting or self._completer is None:
+                return
+            from prompt_toolkit.completion import CompleteEvent
+
+            buffer = event.current_buffer
+            if buffer.complete_state:
+                buffer.complete_next()
+                return
+            candidates = list(self._completer.get_completions(
+                buffer.document, CompleteEvent(completion_requested=True),
+            ))
+            # A rapid Tab can arrive while automatic async completion is still
+            # pending. Apply the unique candidate immediately in that case.
+            if len(candidates) == 1:
+                buffer.apply_completion(candidates[0])
+            elif candidates:
+                buffer.start_completion(insert_common_part=True)
+
+        @keys.add("escape", "enter", eager=True)
+        def newline(event):
+            if self._accepting:
+                event.current_buffer.insert_text("\n")
+
+        @keys.add("enter", eager=True)
+        def submit(event):
+            if self._accepting:
+                event.current_buffer.validate_and_handle()
 
         @keys.add("c-d", eager=True)
         def eof(event):
@@ -103,9 +147,10 @@ class TuiSession:
             history=file_history(history_path) if history_path else None,
             bottom_toolbar=self._toolbar if self.status_bar_enabled else None,
             refresh_interval=2.0, enable_open_in_editor=True, enable_suspend=True,
-            multiline=False, complete_style=CompleteStyle.MULTI_COLUMN,
-            completer=WordCompleter(command_names(), sentence=True),
-            complete_while_typing=False, reserve_space_for_menu=0,
+            multiline=True, complete_style=CompleteStyle.MULTI_COLUMN,
+            completer=self._completer, lexer=OmniLexer(no_color=self.no_color),
+            prompt_continuation=lambda width, line_number, is_soft_wrap: "  · ",
+            complete_while_typing=True, reserve_space_for_menu=0,
             style=Style.from_dict(prompt_style or {}),
             color_depth=ColorDepth.DEPTH_1_BIT if self.no_color else None,
             key_bindings=keys, input=input, output=output,
@@ -114,15 +159,42 @@ class TuiSession:
         self._session.default_buffer.read_only = Condition(lambda: not self._accepting)
         app = self._session.app
         prompt_container = app.layout.container
-        prompt_container.height = lambda: len(self.prompt_text.splitlines()) + int(self.status_bar_enabled)
+        prompt_container.height = self._input_height
         log = FormattedTextControl(
             lambda: self._formatted(self.transcript),
             get_cursor_position=lambda: Point(0, max(0, len(self.transcript.splitlines()) - 1)),
         )
-        app.layout.container = HSplit([
+        # PromptSession nests its menus inside the input's tiny FloatContainer.
+        # Move only completion floats to the screen root so they can open above
+        # the fixed input without overwriting the header or clipping options.
+        menus = []
+        seen = set()
+        for container in app.layout.walk():
+            if isinstance(container, FloatContainer):
+                keep = []
+                for floating in container.floats:
+                    if isinstance(floating.content, (CompletionsMenu, MultiColumnCompletionsMenu)):
+                        if id(floating) not in seen:
+                            menus.append(floating)
+                            seen.add(id(floating))
+                    else:
+                        keep.append(floating)
+                container.floats = keep
+        body = HSplit([
             Window(log, wrap_lines=True, always_hide_cursor=True), prompt_container,
         ])
+        app.layout.container = FloatContainer(body, menus)
         app.full_screen = True
+
+    def _input_height(self):
+        from prompt_toolkit.utils import get_cwidth
+
+        size = self._session.output.get_size()
+        columns = max(1, size.columns - 4)
+        rows = sum(max(1, (get_cwidth(line) + columns - 1) // columns)
+                   for line in self._session.default_buffer.document.lines)
+        desired = len(self.prompt_text.splitlines()) - 1 + rows + int(self.status_bar_enabled)
+        return min(desired, max(3, size.rows // 2))
 
     @property
     def transcript(self) -> str:
