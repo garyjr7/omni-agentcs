@@ -78,4 +78,33 @@ class ApprovalService:
             approval["run_id"] == context.run_id
             and approval["action"] == expected_action
             and approval["status"] == "approved"
+            and approval["consumed_at"] is None
         )
+
+    def consume(
+        self,
+        approval_id: str,
+        context: RunContext,
+        expected_action: str,
+    ) -> bool:
+        """Verify *and* consume an approval in one atomic, single-use step.
+
+        Returns ``True`` only the first time a matching, still-approved
+        approval for this tenant/run/action is claimed. The row is marked via
+        ``consumed_at`` inside a ``BEGIN IMMEDIATE`` transaction, so two
+        concurrent invocations cannot both succeed. Returns ``False`` when the
+        approval is unknown, belongs to another run/action, was denied, or was
+        already consumed.
+        """
+        with self.store.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """UPDATE kernel_approvals SET consumed_at=?
+                WHERE id=? AND tenant_id=? AND run_id=? AND action=?
+                  AND status='approved' AND consumed_at IS NULL""",
+                (utc_now(), approval_id, context.tenant_id, context.run_id,
+                 expected_action),
+            )
+            consumed = cursor.rowcount == 1
+            conn.commit()
+        return consumed

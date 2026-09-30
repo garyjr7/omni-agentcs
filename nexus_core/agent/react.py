@@ -413,7 +413,9 @@ async def run_react_loop(
                 "action": action.action,
                 "thought": action.thought,
                 "tool_id": action.tool_id,
-                "arguments": action.arguments,
+                # Persist a redacted copy only; the handler below still runs
+                # with the original credentials.
+                "arguments": memory._redact_arguments(action.arguments),
                 "warnings": list(action.warnings),
                 "run_id": run_id,
             },
@@ -526,7 +528,7 @@ async def run_react_loop(
             action.action,
             thought=action.thought,
             tool_id=action.tool_id,
-            arguments=action.arguments,
+            arguments=memory._redact_arguments(action.arguments),
             warnings=action.warnings,
             expected_outcome=action.expected_outcome,
         )

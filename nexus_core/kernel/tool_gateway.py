@@ -122,11 +122,18 @@ class ToolGateway:
             if decision.requires_approval:
                 if not self.approvals or not approval_id:
                     raise PermissionError("durable human approval is required")
-                if not self.approvals.verify(approval_id, context, action):
-                    raise PermissionError("approval does not authorize this tool invocation")
+                if not self.approvals.consume(approval_id, context, action):
+                    raise PermissionError("approval is invalid or already used")
 
             if install_plan is not None:
-                if not self.approvals or not approval_id or not self.approvals.verify(approval_id, context, action):
+                # ``consume`` already ran above when the policy asked for an
+                # approval; consuming again would fail. Only claim the approval
+                # here for plans the policy lets through without one.
+                if not decision.requires_approval and (
+                    not self.approvals
+                    or not approval_id
+                    or not self.approvals.consume(approval_id, context, action)
+                ):
                     raise PermissionError("exact install plan requires durable human approval")
                 context = replace(context, approved_install_plan=install_plan)
 

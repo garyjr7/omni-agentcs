@@ -9,6 +9,7 @@ the leading system prompt and the most recent messages intact.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from nexus_core.llm.abstraction import LLMMessage
@@ -110,6 +111,47 @@ def ensure_conversation(store: Any, tenant_id: str, run_id: str, owner_id: str) 
     return str(created["id"])
 
 
+def _redact_arguments(arguments: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Redact credentials from a tool-arguments dict before it is persisted.
+
+    The ReAct loop records the model's requested arguments in the durable
+    history *before* the handler runs. Those arguments can carry AD
+    credentials (``password``, ``hash``, ...), so they are scrubbed with the
+    same field-name policy the audit writer uses. The real execution path keeps
+    the original values; only the persisted copy is redacted.
+    """
+    if not arguments:
+        return arguments
+    from nexus_core.kernel.audit import AuditWriter
+
+    return AuditWriter._sanitize(arguments)
+
+
+def _redact_content(content: str) -> str:
+    """Redact JSON payloads, including the fences/prose accepted by the parser."""
+    from nexus_core.kernel.audit import AuditWriter
+
+    decoder = json.JSONDecoder()
+    output = []
+    copied = index = 0
+    while index < len(content):
+        if content[index] not in "{[":
+            index += 1
+            continue
+        try:
+            parsed, end = decoder.raw_decode(content, index)
+        except ValueError:
+            index += 1
+            continue
+        redacted = AuditWriter._sanitize(parsed)
+        if redacted != parsed:
+            output.extend((content[copied:index], json.dumps(redacted, ensure_ascii=False)))
+            copied = end
+        index = end
+    output.append(content[copied:])
+    return "".join(output)
+
+
 def append_step(
     store: Any,
     tenant_id: str,
@@ -123,6 +165,11 @@ def append_step(
         raise ValueError(f"unsupported ReAct message role: {role}")
     metadata = dict(metadata or {})
     run_id = metadata.pop("run_id", None)
+    # Sanitize structured credentials at the history write boundary.
+    from nexus_core.kernel.audit import AuditWriter
+
+    metadata = AuditWriter._sanitize(metadata)
+    content = _redact_content(content)
     message = store.append_message(
         tenant_id,
         conversation_id,

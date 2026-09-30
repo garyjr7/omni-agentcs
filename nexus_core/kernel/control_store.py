@@ -348,6 +348,11 @@ class ControlStore:
             conn.execute(
                 "ALTER TABLE kernel_workflow_steps ADD COLUMN compensation_task_id TEXT"
             )
+        approval_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(kernel_approvals)")
+        }
+        if "consumed_at" not in approval_columns:
+            conn.execute("ALTER TABLE kernel_approvals ADD COLUMN consumed_at TEXT")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
             (1, "durable_workflows", utc_now()),

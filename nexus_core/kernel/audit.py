@@ -105,9 +105,24 @@ class AuditWriter:
             previous_hash = value["event_hash"]
         return True, None
 
+    #: Field names whose values are always credentials and must never be
+    #: persisted in cleartext. The criterion is the *field name*, not the
+    #: value, so integrity digests (``content_sha256``, ``raw_sha256``,
+    #: ``event_hash``) are deliberately absent from this set. In AD/impacket
+    #: contexts a ``hash`` can authenticate via pass-the-hash, so it is treated
+    #: like a password.
+    SECRET_TERMS = frozenset({
+        "password", "passwd", "pwd", "secret", "token",
+        "api_key", "apikey", "authorization", "auth",
+        "hash", "hashes", "ntlm_hash", "lm_hash", "nthash",
+        "password_hash", "credential", "credentials",
+        "private_key", "privatekey", "ssh_key", "sshkey",
+        "bearer", "cookie", "session_id",
+    })
+
     @classmethod
     def _sanitize(cls, value: Any) -> Any:
-        secret_terms = {"password", "secret", "token", "api_key", "authorization"}
+        secret_terms = cls.SECRET_TERMS
         if isinstance(value, dict):
             return {
                 key: "[REDACTED]" if key.lower() in secret_terms else cls._sanitize(item)
