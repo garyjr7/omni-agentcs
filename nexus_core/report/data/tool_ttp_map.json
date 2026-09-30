@@ -1,0 +1,18 @@
+{
+  "nexus.system.status": [],
+  "nexus.system.check_env": [],
+  "nexus.system.install_tool": [],
+  "nexus.workspace.search": ["T1083"],
+  "nexus.recon.nmap": ["T1046", "T1595"],
+  "nexus.recon.subfinder": ["T1595", "T1592"],
+  "nexus.recon.httpx": ["T1595", "T1592"],
+  "nexus.web.nuclei": ["T1190"],
+  "nexus.web.ffuf": ["T1595"],
+  "nexus.exploit.msf_search": [],
+  "nexus.exploit.msf_auxiliary": ["T1046", "T1595"],
+  "nexus.exploit.msf_exploit": ["T1190", "T1210"],
+  "nexus.session.list": [],
+  "nexus.session.interact": ["T1059"],
+  "nexus.session.kill": [],
+  "nexus.report.generate": []
+}

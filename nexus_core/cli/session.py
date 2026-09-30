@@ -163,6 +163,9 @@ class OmniSession:
         self.active_session_info: dict | None = None
         self.session_commands_sent: int = 0
         self.session_started_at: str | None = None
+        #: Report-mode state: where the last deliverable was written.
+        self.last_report_directory: str | None = None
+        self.last_report_sha256: str | None = None
         if run_id:
             # Resuming: recover the durable conversation of that run.
             self.conversation_id = memory.ensure_conversation(
@@ -227,7 +230,11 @@ class OmniSession:
             info = self.active_session_info or {}
             kind = str(info.get("type") or "session")
             session = f"─[session {self.active_session_uuid}/{kind}]"
-        return f"┌──(OmniAgentCS)─[{name}]{trust}{session}\n└─$ "
+        report = ""
+        if self.last_report_directory:
+            # Short marker only: the full path is printed by ``/report``.
+            report = f"─[report {Path(self.last_report_directory).name}]"
+        return f"┌──(OmniAgentCS)─[{name}]{trust}{session}{report}\n└─$ "
 
     # --------------------------------------------------------------- sessions
     def fetch_sessions(self) -> dict | None:
@@ -336,10 +343,62 @@ class OmniSession:
             )
             return None
         try:
-            return asyncio.run(execute_tool(payload, context))
+            result = asyncio.run(execute_tool(payload, context))
         except (PermissionError, ValueError, RuntimeError, KeyError, TypeError) as exc:
             render.render_error(f"{tool_id} falló: {type(exc).__name__}: {exc}")
             return None
+        self.record_tool_result(run_id, tool_id, dict(arguments or {}), result)
+        return result
+
+    def record_tool_result(
+        self,
+        run_id: str,
+        tool_id: str,
+        arguments: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        """Persist a REPL-invoked ToolResult exactly like the ReAct loop does.
+
+        The audit trail keeps the decision and the completion, but deliberately
+        trims the output; the report layer reads the ToolResult from the durable
+        conversation, so a tool run from the REPL has to leave the same record a
+        model-driven call would. Failure here never breaks the command.
+        """
+        output = result.get("output") if isinstance(result, dict) else None
+        if not isinstance(output, dict):
+            return
+        try:
+            conversation_id = memory.ensure_conversation(
+                self.store, self.tenant_id, run_id, self.agent_id
+            )
+            observation = {
+                "success": bool(output.get("success")),
+                "verification_method": output.get("verification_method"),
+                "evidence": output.get("evidence"),
+                "output": output.get("output"),
+            }
+            memory.append_step(
+                self.store,
+                self.tenant_id,
+                conversation_id,
+                "user",
+                json.dumps({"tool_id": tool_id, **observation}, default=str),
+                {
+                    "kind": "react.observation",
+                    "source": "cli",
+                    "tool_id": tool_id,
+                    "arguments": arguments,
+                    "success": observation["success"],
+                    "tool_result": {
+                        key: value
+                        for key, value in observation.items()
+                        if key not in {"evidence", "output"}
+                    },
+                    "run_id": run_id,
+                },
+            )
+        except Exception:  # noqa: BLE001 - persistence must never break a command
+            return
 
     def audit_session_command(
         self, session_uuid: str, command: str, run_id: str, outcome: str

@@ -78,8 +78,9 @@ python nexus_worker.py                    # worker durable
 Usa un ID listado por `--list-engagements`. Un checkout nuevo no incluye
 engagements ni credenciales: créalos en el wizard con tu alcance autorizado.
 En el REPL, `/help` muestra comandos; `/scope`, `/tools`, `/history`,
-`/approvals`, `/trust`, `/sessions`, `/session`, `/detach`, `/kill-session` y
-`/exit` permiten inspeccionar y controlar la sesión.
+`/approvals`, `/trust`, `/sessions`, `/session`, `/detach`, `/kill-session`,
+`/findings`, `/report`, `/timeline` y `/exit` permiten inspeccionar y controlar
+la sesión.
 
 Doctor muestra sistema, herramientas, gestores, rutas, SQLite, últimos eventos
 de auditoría y puerto/systemd de msfrpcd. El sondeo del puerto no autentica RPC.
@@ -88,13 +89,14 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **15 herramientas**:
+El catálogo durable contiene **16 herramientas**:
 
 - `nexus.system.status`, `nexus.workspace.search`.
 - `nexus.recon.nmap`, `nexus.recon.subfinder`, `nexus.recon.httpx`.
 - `nexus.web.nuclei`, `nexus.web.ffuf`.
 - `nexus.exploit.msf_search`, `nexus.exploit.msf_auxiliary`, `nexus.exploit.msf_exploit`.
 - `nexus.session.list`, `nexus.session.interact`, `nexus.session.kill`.
+- `nexus.report.generate`.
 - `nexus.system.check_env`, `nexus.system.install_tool`.
 
 `check_env` es de solo lectura. `install_tool` es HIGH y siempre requiere
@@ -206,6 +208,58 @@ pidiendo confirmación. Cada auto-aprobación crea igualmente una aprobación
 durable y escribe auditoría con `trust_mode=true` y `trusted_by=<usuario>`, para
 distinguirla en el reporte. Úsalo solo en laboratorios controlados.
 
+## Reportes de engagement
+
+Al final de un engagement, genera el entregable que el cliente recibe. La
+capa de reporte lee el audit trail y los `ToolResult` persistidos y **nunca
+inventa un hallazgo**: solo transcribe lo que el toolkit verificó.
+
+```text
+┌──(OmniAgentCS)─[scanme-lab]
+└─$ /report
+
+Generating report for engagement scanme-lab...
+  ✓ 8 findings de 17 eventos de auditoría
+  ✓ severidad: 2 critical, 1 high, 0 medium, 1 low, 4 info
+  ✓ CVSS: heurística determinista (/report --llm-cvss)
+  ✓ cadena de auditoría: válida
+  ✓ Markdown (23.0 KB) + HTML (45.0 KB)
+
+Report: ~/.local/share/omni/reports/scanme-lab-20260929-143012/
+  - report.md
+  - report.html
+  - report.json
+
+Report SHA256: 21be4bc4bf0affd4...
+```
+
+El reporte incluye resumen ejecutivo (conteo por severidad), alcance firmado,
+metodología (toolkit usado), hallazgos (con CVSS, MITRE ATT&CK, CWE/CVE y
+evidencia), intentos fallidos, cronología completa y chain of custody (hash
+SHA256 de cada evidencia y del reporte).
+
+### Comandos
+
+- `/findings` — lista resumida de hallazgos del engagement activo.
+- `/report` — genera Markdown + HTML + JSON del engagement actual.
+- `/report --llm-cvss` — pide al LLM un vector CVSS 3.1 (validado y puntuado
+  localmente; si no hay proveedor, cae en la heurística determinista).
+- `/report export <dir>` — escribe el entregable en un directorio, con
+  `report.sha256` y `manifest.json` para verificar la evidencia.
+- `/timeline` — cronología de acciones leídas del audit trail.
+
+### Formatos
+
+- **Markdown**: para revisar y editar antes de entregar.
+- **HTML**: autocontenido (CSS embebido, sin JS ni CDN), listo para PDF
+  (navegador → imprimir → guardar como PDF).
+- **JSON**: para consumo programático (CI, dashboards, integraciones).
+
+La tool durable `nexus.report.generate` es `READ_ONLY` y no exige scope: lee el
+registro, no toca objetivos. Cada entregable queda registrado como artefacto
+content-addressed con `sha256`. Si la cadena de auditoría no valida, el reporte
+se genera igualmente y se marca visiblemente como **NO VERIFICADA**.
+
 ## Estructura
 
 ```text
@@ -215,6 +269,7 @@ nexus_core/kernel/          policy, auditoría, approvals, store y sandbox
 nexus_core/scope/           engagements y validación de alcance
 nexus_core/agent/           bucle ReAct (singular)
 nexus_core/tools/           catálogo, handlers y parsers
+nexus_core/report/          extracción de hallazgos y render Markdown/HTML
 nexus_core/cli/             REPL, wizard y doctor
 nexus_core/config/          config TOML y rutas XDG
 nexus_core/provisioner/     catálogo e instalación aprobada

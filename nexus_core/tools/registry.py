@@ -38,6 +38,10 @@ def durable_tool_definitions(
         msf_session_interact_definition,
         msf_session_interact_handler,
     )
+    from .handlers.report_generate import (
+        report_generate_definition,
+        report_generate_handler,
+    )
     from .handlers.nuclei import nuclei_definition, nuclei_handler
     from .handlers.subfinder import subfinder_definition, subfinder_handler
     from .handlers.system import system_status_definition, system_status_handler
@@ -66,6 +70,10 @@ def durable_tool_definitions(
         "nexus.session.interact": (
             msf_session_interact_definition(tenant_id),
             msf_session_interact_handler,
+        ),
+        "nexus.report.generate": (
+            report_generate_definition(tenant_id),
+            report_generate_handler,
         ),
     }
     return catalog

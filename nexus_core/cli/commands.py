@@ -7,6 +7,7 @@ audit and the persisted conversation are never modified by a meta command.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -281,6 +282,229 @@ def cmd_kill_session(session: "OmniSession", args: list[str]) -> None:
     print("cancelado")
 
 
+def _report_tools(session: "OmniSession"):
+    """Import the report layer lazily (the REPL must survive an import error)."""
+    from nexus_core.report import extractor as extractor_module
+    from nexus_core.report import markdown as markdown_module
+
+    return extractor_module, markdown_module
+
+
+def cmd_findings(session: "OmniSession", args: list[str]) -> None:
+    """Lista los hallazgos verificados del engagement activo (sin generar informe)."""
+    if session.engagement is None:
+        render.render_error("no hay engagement activo (usa /scope)")
+        return
+    try:
+        extractor_module, markdown_module = _report_tools(session)
+        findings, failed = extractor_module.extract_findings_sync(
+            session.store, session.tenant_id, session.engagement_id
+        )
+    except KeyError:
+        render.render_error(f"engagement desconocido: {session.engagement_id}")
+        return
+    except Exception as exc:  # noqa: BLE001 - never break the REPL
+        render.render_error(f"no se pudieron extraer hallazgos: {type(exc).__name__}: {exc}")
+        return
+    if not findings and not failed:
+        print(f"(sin hallazgos verificados en {session.engagement_id})")
+        return
+    counts = {}
+    for finding in findings:
+        counts[finding.severity] = counts.get(finding.severity, 0) + 1
+    print(f"Hallazgos del engagement {session.engagement_id}:")
+    print(markdown_module.findings_table(findings))
+    print()
+    breakdown = ", ".join(
+        f"{counts[level]} {level}" for level in ("critical", "high", "medium", "low", "info") if counts.get(level)
+    ) or "0"
+    print(f"Total: {len(findings)} findings ({breakdown})")
+    if failed:
+        print(f"Intentos sin hallazgo: {len(failed)} (ver /report)")
+
+
+def cmd_report(session: "OmniSession", args: list[str]) -> None:
+    """Genera el reporte del engagement: /report [export <dir>] [--llm-cvss]."""
+    if not args:
+        _report_generate(session, [], llm_cvss=False)
+        return
+    verb = str(args[0]).lower()
+    if verb == "export":
+        if len(args) < 2:
+            render.render_error("uso: /report export <directorio>")
+            return
+        _report_export(session, args[1], llm_cvss="--llm-cvss" in args)
+        return
+    if verb == "--llm-cvss":
+        _report_generate(session, [], llm_cvss=True)
+        return
+    render.render_error(f"subcomando desconocido: {args[0]!r} (usa /report, /report export <dir>)")
+
+
+def _report_arguments(session: "OmniSession", output_dir: str | None, llm_cvss: bool) -> dict:
+    arguments: dict = {"engagement_id": session.engagement_id, "format": "both"}
+    if output_dir:
+        arguments["output_dir"] = output_dir
+    if llm_cvss:
+        arguments["llm_cvss"] = True
+    return arguments
+
+
+def _run_report_tool(session: "OmniSession", arguments: dict) -> dict | None:
+    """Run ``nexus.report.generate`` through the gateway and report failures.
+
+    ``invoke_tool`` returns ``{"tool_id": ..., "output": <ToolResult>}`` (the
+    same shape ``_kill_one`` reads), so this unwraps the ToolResult and returns
+    it directly: ``output`` + ``evidence`` live inside it.
+    """
+    result = session.invoke_tool("nexus.report.generate", arguments)
+    if result is None:
+        return None
+    tool_result = result.get("output") if isinstance(result, dict) else None
+    if not isinstance(tool_result, dict) or not tool_result.get("success"):
+        render.render_error(
+            "el reporte no se pudo verificar: "
+            f"{(tool_result or {}).get('verification_method') or 'error'}"
+        )
+        return None
+    return tool_result
+
+
+def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool) -> None:
+    """Generate the report for the active engagement and print the summary."""
+    if session.engagement is None:
+        render.render_error("no hay engagement activo (usa /scope)")
+        return
+    print(f"Generating report for engagement {session.engagement.name}...")
+    result = _run_report_tool(session, _report_arguments(session, None, llm_cvss))
+    if result is None:
+        return
+    output = result.get("output") or {}
+    evidence = result.get("evidence") or {}
+    session.last_report_directory = str(output.get("directory") or "")
+    session.last_report_sha256 = str(output.get("report_sha256") or "")
+    breakdown = output.get("severity_breakdown") or {}
+    print(
+        f"  ✓ {output.get('findings_count', 0)} findings de "
+        f"{evidence.get('audit_events_used', 0)} eventos de auditoría"
+    )
+    print(
+        "  ✓ severidad: "
+        + ", ".join(
+            f"{breakdown.get(level, 0)} {level}"
+            for level in ("critical", "high", "medium", "low", "info")
+        )
+    )
+    print(
+        "  ✓ CVSS: "
+        + ("LLM (vector validado localmente)" if llm_cvss else "heurística determinista (/report --llm-cvss)")
+    )
+    print(
+        "  ✓ cadena de auditoría: "
+        + ("válida" if evidence.get("audit_chain_valid") else "NO VERIFICADA")
+    )
+    print(
+        f"  ✓ Markdown ({_kb(output.get('markdown_size_bytes'))}) "
+        f"+ HTML ({_kb(output.get('html_size_bytes'))})"
+    )
+    for name, digest in (evidence.get("artifact_sha256") or {}).items():
+        print(f"  ✓ artifact {name}: {str(digest)[:16]}…")
+    print()
+    print(f"Report: {output.get('directory')}")
+    for key, name in (
+        ("report_path_md", "report.md"),
+        ("report_path_html", "report.html"),
+        ("report_path_json", "report.json"),
+    ):
+        if output.get(key):
+            print(f"  - {name}")
+    print()
+    print(f"Report SHA256: {output.get('report_sha256')}")
+    if output.get("failed_attempts"):
+        print(f"Intentos fallidos documentados: {output['failed_attempts']}")
+
+
+def _report_export(session: "OmniSession", directory: str, *, llm_cvss: bool) -> None:
+    """Write the report plus a verifiable manifest to a deliverable directory."""
+    if session.engagement is None:
+        render.render_error("no hay engagement activo (usa /scope)")
+        return
+    target = Path(directory).expanduser()
+    print(f"Exporting {session.engagement.name} report to {target}...")
+    result = _run_report_tool(session, _report_arguments(session, str(target), llm_cvss))
+    if result is None:
+        return
+    output = result.get("output") or {}
+    evidence = result.get("evidence") or {}
+    for key, name in (
+        ("report_path_md", "report.md"),
+        ("report_path_html", "report.html"),
+        ("report_path_json", "report.json"),
+    ):
+        if output.get(key):
+            print(f"  ✓ {name}")
+    manifest = {
+        "engagement_id": output.get("engagement_id"),
+        "report_sha256": output.get("report_sha256"),
+        "findings": output.get("findings_count"),
+        "severity_breakdown": output.get("severity_breakdown"),
+        "artifacts": evidence.get("artifact_sha256") or {},
+        "artifact_ids": evidence.get("artifacts") or [],
+    }
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "report.sha256").write_text(
+            f"{output.get('report_sha256')}  report.json\n", encoding="utf-8"
+        )
+        (target / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        render.render_error(f"no se pudo escribir el manifiesto: {exc}")
+        return
+    session.last_report_directory = str(target)
+    session.last_report_sha256 = str(output.get("report_sha256") or "")
+    print(f"  ✓ report.sha256 + manifest.json ({len(manifest['artifacts'])} artifacts)")
+    print(f"Done. {target}")
+
+
+def _kb(value: Any) -> str:
+    try:
+        return f"{int(value) / 1024:.1f} KB"
+    except (TypeError, ValueError):
+        return "? KB"
+
+
+def cmd_timeline(session: "OmniSession", args: list[str]) -> None:
+    """Muestra la cronología de acciones del engagement (desde el audit trail)."""
+    if session.engagement is None:
+        render.render_error("no hay engagement activo (usa /scope)")
+        return
+    try:
+        extractor_module, _ = _report_tools(session)
+        run_ids = [args[0]] if args else None
+        entries = extractor_module.timeline_for(
+            session.store, session.tenant_id, session.engagement_id, run_ids
+        )
+    except KeyError:
+        render.render_error(f"engagement desconocido: {session.engagement_id}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        render.render_error(f"no se pudo leer la cronología: {type(exc).__name__}: {exc}")
+        return
+    if not entries:
+        print("(sin eventos de auditoría para este engagement)")
+        return
+    for entry in entries:
+        detail = f"  ({entry.detail})" if entry.detail else ""
+        tool_id = entry.tool_id.replace("nexus.", "") if entry.tool_id else "-"
+        print(
+            f"{entry.occurred_at[:19].replace('T', ' ')}  {tool_id:<20} "
+            f"{entry.target[:30]:<30} {entry.decision or '-'}{detail}"
+        )
+    print(f"\n{len(entries)} evento(s).")
+
+
 def cmd_trust(session: "OmniSession", args: list[str]) -> None:
     """Muestra o cambia trust mode (on/off) sin reiniciar el REPL."""
     if not args:
@@ -327,6 +551,9 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/session": cmd_session,
     "/detach": cmd_detach,
     "/kill-session": cmd_kill_session,
+    "/findings": cmd_findings,
+    "/report": cmd_report,
+    "/timeline": cmd_timeline,
     "/trust": cmd_trust,
     "/help": cmd_help,
     "/exit": cmd_exit,
@@ -367,9 +594,12 @@ __all__ = [
     "cmd_clear",
     "cmd_exit",
     "cmd_export",
+    "cmd_findings",
     "cmd_help",
     "cmd_history",
+    "cmd_report",
     "cmd_scope",
+    "cmd_timeline",
     "cmd_tools",
     "cmd_trust",
     "command_names",
