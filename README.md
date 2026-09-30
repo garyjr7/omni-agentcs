@@ -264,14 +264,20 @@ se genera igualmente y se marca visiblemente como **NO VERIFICADA**.
 
 ### Interfaz
 
-En terminales interactivos, OmniAgentCS usa `prompt_toolkit`: la entrada
-queda fija debajo del panel de salida, con autocompletado de comandos mediante
-Tab y una barra de estado persistente. El banner se muestra antes de la
-primera entrada y también queda en el panel. La interfaz usa la pantalla
-alternativa del terminal; al salir recupera la pantalla anterior sin volver
-a imprimir el panel. Usa `/history` o `/export` para consultar o guardar la
-conversación. El banner y las respuestas tienen una única salida en el panel;
-el ASCII usa el color predeterminado del terminal, sin negrita.
+En terminales interactivos, OmniAgentCS usa una Application de `prompt_toolkit`
+con cuatro regiones: historial de salida, indicador de trabajo, entrada
+multilínea y barra de estado. El prompt y la barra permanecen abajo, con
+autocompletado mediante Tab. Se usa la pantalla principal (`full_screen=False`),
+sin borrar el terminal al arrancar ni cambiar a una pantalla alternativa.
+El banner aparece una vez; el ASCII usa el color predeterminado, sin negrita.
+
+PageUp y PageDown recorren todo el historial del panel; al volver al final se
+reanuda el seguimiento automático. Se conserva en memoria toda la salida
+mostrada, sin el límite previo de 2000 líneas. El historial anterior del
+terminal permanece intacto, pero su rueda de scroll no sustituye a PageUp:
+el contenido que el panel desplaza se conserva en el buffer de la aplicación,
+no se duplica en el scrollback nativo. Usa `/history` o `/export` para consultar
+o guardar la conversación antes de cerrar la CLI.
 
 ```text
 ┌──(OmniAgentCS)─[scanme-lab]
@@ -280,12 +286,57 @@ scanme-lab · groq/openai/gpt-oss-120b · 2.3k tok · ~$0.0200 · 5m12s
 ```
 
 La barra muestra engagement, sesión adjunta, trust, proveedor/modelo, tokens,
-coste estimado y tiempo. Se refresca cada dos segundos; la aplicación corre
+coste estimado y tiempo. En reposo se refresca cada dos segundos; la aplicación corre
 en un hilo dedicado, así que permanece activa durante llamadas síncronas.
-El spinner de stderr se desactiva en TUI: la barra muestra la operación y
-su duración. La salida de los eventos se despacha al loop de la interfaz.
+El spinner de stderr se desactiva en TUI: una línea sobre el prompt muestra
+la operación y su duración. Se anima a 4 Hz y se oculta al terminar.
+Los eventos se acumulan durante 50 ms y se añaden al buffer en el hilo de la
+interfaz. El renderizador aplica diferencias, con límite de 4 frames/s durante
+la actividad; las transiciones de inicio y cierre pueden añadir un frame.
 Mientras se ejecuta un comando, la entrada queda bloqueada salvo las
 aprobaciones solicitadas; Ctrl+C sigue interrumpiendo la operación.
+
+### Vista del agente en ejecución
+
+Ejemplo de una ejecución real; las líneas de nmap se derivan de su resultado
+estructurado, porque el mensaje durable no conserva el stdout crudo:
+
+```text
+🤖 [OmniAgent]: Escanea scanme.nmap.org con nmap, puertos 22,80,443.
+⚙️  [Recon-NMAP] nmap -sT -p 22,80,443 -oX - scanme.nmap.org
+   -> Host up: 45.33.32.156
+   ...
+   -> Puerto 443/tcp filtered: https
+   -> Nmap done: 1 host(s) up · 1.85s
+   ✓ 2 puertos abiertos · 1 hosts up · noise: high · 1.85s
+
+ ⠹ Working... (29s · esc to interrupt)
+┌──(OmniAgentCS)─[scanme-lab]
+└─$ _
+scanme-lab · groq/openai/gpt-oss-120b · 6.3k tok · $— · 37s
+```
+
+Cada tool muestra como máximo tres líneas de datos: primera y últimas dos,
+con un único `...` adicional cuando se omite contenido. Se filtran líneas
+vacías, separadores y progreso idéntico consecutivo. Las líneas largas se
+recortan a 100 caracteres. El resumen usa las métricas y la verificación
+disponibles; no inventa duración, ruido ni comandos. Para herramientas cuyo
+argv depende del handler se muestra la solicitud durable con sus argumentos.
+El polling obtiene acciones y resultados cada 0,5 s; no hay streaming de tokens
+ni acceso al stdout de un proceso mientras la herramienta todavía se ejecuta.
+
+`/timeline` muestra auditoría, no stdout completo. `/history` permite consultar
+los mensajes durables disponibles; `/ask` es conversacional y no ejecuta comandos.
+
+### Interrumpir
+
+- **Esc durante un run** registra `react.cancel_requested`: el bucle se detiene
+  al llegar al siguiente punto seguro. Una tool ya iniciada puede terminar antes.
+- **Esc durante `/ask` o una invocación directa** cancela la tarea asíncrona de
+  esa operación; no garantiza terminar trabajos remotos ya iniciados.
+- **Ctrl+C** cancela la entrada actual; durante un run conserva la interrupción
+  existente y devuelve el control al REPL.
+- **Ctrl+D**, con el prompt vacío, sale del REPL.
 
 Los tokens se acumulan desde las respuestas reales del modelo durante esta
 sesión de CLI, incluidas consultas `/ask`. Las llamadas ReAct registran su
@@ -353,7 +404,7 @@ El prompt normal sigue recibiendo objetivos; usa `/ask` para preguntas.
 ### Multi-línea
 
 Alt+Enter inserta una línea nueva; Enter envía todo el objetivo. La entrada
-crece hasta la mitad de la pantalla y muestra `·` como continuación.
+crece hasta cinco líneas editables y muestra `·` como continuación.
 El historial en disco convierte los saltos de línea en espacios para mantener
 la compatibilidad con readline. El fallback conserva su entrada de una línea.
 

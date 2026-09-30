@@ -579,7 +579,13 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
             enabled=not session._tui.use_tui and spinner_enabled(),
             use_ascii=not session._supports_unicode(),
         ):
-            response = asyncio.run(session._metered_client(llm, durable=False).complete(messages))
+            response = asyncio.run(session._with_cancel(
+                session._metered_client(llm, durable=False).complete(messages),
+                None, cooperative=False,
+            ))
+    except asyncio.CancelledError:
+        render.render_status("consulta cancelada")
+        return
     except Exception as exc:  # noqa: BLE001 - the REPL survives a failed call
         render.render_error(f"la consulta falló: {type(exc).__name__}: {exc}")
         return

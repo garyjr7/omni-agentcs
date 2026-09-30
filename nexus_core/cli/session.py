@@ -426,11 +426,11 @@ class OmniSession:
 
     @contextmanager
     def _busy(self, message):
-        self._tui.set_status(busy=True, busy_message=message)
+        self._tui.set_busy(message)
         try:
             yield
         finally:
-            self._tui.set_status(busy=False)
+            self._tui.clear_busy()
 
     def _metered_client(self, client, *, durable=True):
         if not self._tui.use_tui:
@@ -438,6 +438,31 @@ class OmniSession:
         from .tui.usage import MeteredClient
 
         return MeteredClient(client, lambda response: self._record_usage(response, durable=durable))
+
+    async def _with_cancel(self, operation, run_id, *, cooperative=True):
+        """Consume UI cancellation on the work loop, never writing DB on the UI thread."""
+        if not self._tui.use_tui:
+            return await operation
+        task = asyncio.create_task(operation)
+        try:
+            while not task.done():
+                if self._tui._cancel_event.is_set():
+                    self._tui._cancel_event.clear()
+                    if run_id:
+                        self.store.append_run_event(
+                            self.tenant_id, run_id, "react.cancel_requested", {"source": "cli-escape"}
+                        )
+                    self._output.write("• Cancelación solicitada; esperando el punto seguro de la operación.")
+                    if not cooperative:
+                        task.cancel()
+                    # Exactly one request for this operation.
+                    return await task
+                await asyncio.wait({task}, timeout=0.05)
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     def _record_usage(self, response, *, durable=True):
         from .tui.usage import response_usage
@@ -602,16 +627,25 @@ class OmniSession:
         from .spinner import Spinner
 
         try:
+            if self._tui.use_tui:
+                from .tui.stream import format_tool_invocation
+                self._output.write(format_tool_invocation(tool_id, arguments))
             with self._busy(self._describe_tool_call(tool_id, arguments)), Spinner(
                 self._describe_tool_call(tool_id, dict(arguments or {})),
                 enabled=self._spinner_enabled(),
                 use_ascii=not self._supports_unicode(),
             ):
-                result = asyncio.run(execute_tool(payload, context))
+                result = asyncio.run(self._with_cancel(execute_tool(payload, context), run_id, cooperative=False))
+        except asyncio.CancelledError:
+            render.render_status("operación cancelada")
+            return None
         except (PermissionError, ValueError, RuntimeError, KeyError, TypeError) as exc:
             render.render_error(f"{tool_id} falló: {type(exc).__name__}: {exc}")
             return None
         self.record_tool_result(run_id, tool_id, dict(arguments or {}), result)
+        if self._tui.use_tui:
+            from .tui.stream import render_tool_result
+            self._output.write(render_tool_result(result.get("output") or {}))
         return result
 
     def record_tool_result(
@@ -772,19 +806,21 @@ class OmniSession:
         try:
             from .spinner import Spinner
 
-            with self._busy(f"Ejecutando objetivo: {objective[:80]}"), Spinner(
+            if self._tui.use_tui:
+                self._output.write(f"🤖 [OmniAgent]: {objective}")
+            with self._busy("Working"), Spinner(
                 f"Ejecutando objetivo: {objective[:80]}",
                 enabled=self._spinner_enabled(),
                 use_ascii=not self._supports_unicode(),
             ):
                 result = asyncio.run(
-                    run_react_loop(
+                    self._with_cancel(run_react_loop(
                         context=context,
                         objective=objective,
                         engagement_id=self.engagement_id,
                         llm_client=self._metered_client(self._llm) if self._tui.use_tui else self.llm_client,
                         config=config,
-                    )
+                    ), run_id)
                 )
         except KeyboardInterrupt:
             self.store.append_run_event(
@@ -820,13 +856,11 @@ class OmniSession:
         history_path = None if self._tui.use_tui else _install_readline()
         stdout_patch = nullcontext()
         if self._tui.use_tui:
-            from prompt_toolkit.patch_stdout import patch_stdout
+            from .tui.output import capture_output
 
-            stdout_patch = patch_stdout(raw=True)
+            stdout_patch = capture_output(self._tui)
         try:
             with stdout_patch:
-                if self._tui.use_tui:
-                    self._tui.clear_screen()
                 self._show_banner()
                 render.render_status(
                     f"omni listo · tenant={self.tenant_id} · "
@@ -903,13 +937,28 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
     except Exception:  # noqa: BLE001
         return
     for message in messages[state["messages"] :]:
-        _render_message(message)
+        if session._tui.use_tui:
+            from .tui.stream import render_message
+            text = render_message(message)
+            if text:
+                session._output.write(text)
+        else:
+            _render_message(message)
     state["messages"] = len(messages)
 
 
 def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
-    event_type = str(event.get("event_type") or "")
+    event_type = str(event.get("event_type") or event.get("action") or "")
     payload = event.get("payload") or {}
+    if session._tui.use_tui:
+        from .tui.stream import format_tool_invocation, render_tool_result
+        if event_type == "react.action" and "arguments" in payload:
+            session._output.write(format_tool_invocation(payload.get("tool_id", "?"), payload["arguments"]))
+        elif event_type in {"tool.complete", "tool.failed"}:
+            result = payload.get("tool_result") or payload
+            if event_type == "tool.failed":
+                result = {**result, "success": False}
+            session._output.write(render_tool_result(result))
     if event_type == "react.parse_error":
         render.render_error(f"respuesta no parseable del LLM: {payload.get('error')}")
     elif event_type == "react.scope_violation":

@@ -147,5 +147,5 @@ def test_completion_menu_can_use_space_above_prompt(tui_factory):
     ui = tui_factory()
     root = ui.session._session.app.layout.container
     assert isinstance(root, FloatContainer)
-    assert len(root.floats) == 2
-    assert len(root.content.children) == 2
+    assert len(root.floats) == 1
+    assert len(root.content.children) == 4

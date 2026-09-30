@@ -21,7 +21,7 @@ def test_banner_is_buffered_once_until_first_prompt(tui_factory):
         terminal_print.assert_not_called()
 
 
-def test_startup_patch_clear_banner_status_prompt_order(monkeypatch):
+def test_startup_capture_banner_status_prompt_order(monkeypatch):
     events = []
     session = OmniSession(store=None, use_tui=False)
     def eof(prompt):
@@ -32,14 +32,14 @@ def test_startup_patch_clear_banner_status_prompt_order(monkeypatch):
         close=lambda: None,
     )
     @contextmanager
-    def patched_stdout(**kwargs):
+    def patched_stdout(*args, **kwargs):
         events.append("patch")
         yield
-    monkeypatch.setattr("prompt_toolkit.patch_stdout.patch_stdout", patched_stdout)
+    monkeypatch.setattr("nexus_core.cli.tui.output.capture_output", patched_stdout)
     monkeypatch.setattr(session, "_show_banner", lambda: events.append("banner"))
     monkeypatch.setattr(session, "_update_status_bar", lambda: events.append("status"))
     session.run_repl()
-    assert events == ["patch", "clear", "banner", "status", "prompt"]
+    assert events == ["patch", "banner", "status", "prompt"]
 
 
 def test_no_info_logs_before_banner_on_startup(onboarding_env, monkeypatch, capsys):

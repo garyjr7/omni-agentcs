@@ -58,3 +58,27 @@ def routed(method):
         with route_output(session._output):
             return method(session, *args, **kwargs)
     return wrapper
+
+
+@contextmanager
+def capture_output(session):
+    """Route incidental stdout/stderr into the region buffer without suspension."""
+    import sys
+    from contextlib import redirect_stdout, redirect_stderr
+
+    class Stream:
+        def __init__(self, original):
+            self.original = original
+
+        def write(self, text):
+            session.append_scrollback(text)
+            return len(text)
+
+        def flush(self):
+            session.flush()
+
+        def __getattr__(self, name):
+            return getattr(self.original, name)
+
+    with redirect_stdout(Stream(sys.stdout)), redirect_stderr(Stream(sys.stderr)):
+        yield

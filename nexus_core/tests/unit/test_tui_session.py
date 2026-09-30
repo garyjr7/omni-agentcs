@@ -4,7 +4,6 @@ import threading
 from unittest.mock import patch
 
 import pytest
-from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.formatted_text import fragment_list_to_text
 
 from nexus_core.cli.tui.history import history_path
@@ -32,15 +31,16 @@ def test_prompt_raises_keyboard_interrupt(tui_factory):
         ui.session.prompt()
 
 
-def test_print_routes_through_run_in_terminal(tui_factory):
+def test_print_updates_buffer_without_terminal_suspension(tui_factory):
     ui = tui_factory()
     ui.pipe.send_text("start\n")
     ui.session.prompt()
     ui.session.flush()
-    with patch("prompt_toolkit.application.run_in_terminal", wraps=run_in_terminal) as route:
+    with patch("prompt_toolkit.application.run_in_terminal", side_effect=AssertionError("external terminal write")) as route:
         ui.session.print("event")
         ui.session.flush()
-    assert route.call_count == 1
+    assert route.call_count == 0
+    assert "event" in ui.session._scrollback.text
 
 
 def test_set_status_updates_fields(tui_factory):

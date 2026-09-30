@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from contextvars import copy_context
 import importlib
 import os
@@ -63,28 +62,23 @@ class TuiSession:
         self._ready = threading.Event()
         self._answers: Queue = Queue()
         self._accepting = False
-        self._lines: deque[str] = deque(maxlen=2000)
-        self._pending: set = set()
+        self._lines: list[str] = []
+        self._styled_lines = [[]]
+        self._write_queue: list[str] = []
+        self._flush_scheduled = False
+        self._auto_scroll = True
+        self._cancel_event = threading.Event()
         self._error = None
         if self.use_tui:
             self._build(history_path, prompt_style, input, output)
 
     def _build(self, history_path, prompt_style, input, output):
-        from prompt_toolkit import PromptSession
-        from prompt_toolkit.data_structures import Point
-        from prompt_toolkit.filters import Condition
         from prompt_toolkit.key_binding import KeyBindings
-        from prompt_toolkit.layout import FloatContainer, HSplit, Window
-        from prompt_toolkit.layout.controls import FormattedTextControl
-        from prompt_toolkit.layout.menus import CompletionsMenu, MultiColumnCompletionsMenu
-        from prompt_toolkit.output import ColorDepth
-        from prompt_toolkit.shortcuts import CompleteStyle
-        from prompt_toolkit.styles import Style
-
+        from prompt_toolkit.filters import Condition
         from ..commands import COMMANDS
         from .completion import OmniCompleter
-        from .lexer import OmniLexer
         from .history import file_history
+        from .layout import build_layout
 
         commands, tools, engagements = self._completion_context
         if self._enable_completion:
@@ -96,7 +90,7 @@ class TuiSession:
 
         @keys.add("tab", eager=True)
         def complete(event):
-            if not self._accepting or self._completer is None:
+            if not self._can_edit or self._completer is None:
                 return
             from prompt_toolkit.completion import CompleteEvent
 
@@ -116,24 +110,24 @@ class TuiSession:
 
         @keys.add("escape", "enter", eager=True)
         def newline(event):
-            if self._accepting:
+            if self._can_edit:
                 event.current_buffer.insert_text("\n")
 
         @keys.add("enter", eager=True)
         def submit(event):
-            if self._accepting:
+            if self._can_edit:
                 event.current_buffer.validate_and_handle()
 
         @keys.add("c-d", eager=True)
         def eof(event):
-            if self._accepting and not event.current_buffer.text:
+            if self._can_edit and not event.current_buffer.text:
                 self._answer(EOFError())
-            elif self._accepting:
+            elif self._can_edit:
                 event.current_buffer.delete()
 
         @keys.add("c-c", eager=True)
         def interrupt(event):
-            if self._accepting:
+            if self._can_edit:
                 event.current_buffer.reset()
                 self._answer(KeyboardInterrupt())
             else:
@@ -142,49 +136,23 @@ class TuiSession:
 
                 _thread.interrupt_main()
 
-        self._session = PromptSession(
-            message=lambda: self._formatted(self.prompt_text),
-            history=file_history(history_path) if history_path else None,
-            bottom_toolbar=self._toolbar if self.status_bar_enabled else None,
-            refresh_interval=2.0, enable_open_in_editor=True, enable_suspend=True,
-            multiline=True, complete_style=CompleteStyle.MULTI_COLUMN,
-            completer=self._completer, lexer=OmniLexer(no_color=self.no_color),
-            prompt_continuation=lambda width, line_number, is_soft_wrap: "  · ",
-            complete_while_typing=True, reserve_space_for_menu=0,
-            style=Style.from_dict(prompt_style or {}),
-            color_depth=ColorDepth.DEPTH_1_BIT if self.no_color else None,
-            key_bindings=keys, input=input, output=output,
-        )
-        self._session.default_buffer.accept_handler = self._accept
-        self._session.default_buffer.read_only = Condition(lambda: not self._accepting)
-        app = self._session.app
-        prompt_container = app.layout.container
-        prompt_container.height = self._input_height
-        log = FormattedTextControl(
-            lambda: self._formatted(self.transcript),
-            get_cursor_position=lambda: Point(0, max(0, len(self.transcript.splitlines()) - 1)),
-        )
-        # PromptSession nests its menus inside the input's tiny FloatContainer.
-        # Move only completion floats to the screen root so they can open above
-        # the fixed input without overwriting the header or clipping options.
-        menus = []
-        seen = set()
-        for container in app.layout.walk():
-            if isinstance(container, FloatContainer):
-                keep = []
-                for floating in container.floats:
-                    if isinstance(floating.content, (CompletionsMenu, MultiColumnCompletionsMenu)):
-                        if id(floating) not in seen:
-                            menus.append(floating)
-                            seen.add(id(floating))
-                    else:
-                        keep.append(floating)
-                container.floats = keep
-        body = HSplit([
-            Window(log, wrap_lines=True, always_hide_cursor=True), prompt_container,
-        ])
-        app.layout.container = FloatContainer(body, menus)
-        app.full_screen = True
+        @keys.add("escape", filter=Condition(lambda: self._status.busy and not self._accepting))
+        def cancel(event):
+            self._cancel_event.set()
+
+        @keys.add("pageup")
+        def page_up(event):
+            self._auto_scroll = False
+            self._scrollback.cursor_up(count=max(1, self._session.output.get_size().rows - 5))
+
+        @keys.add("pagedown")
+        def page_down(event):
+            self._scrollback.cursor_down(count=max(1, self._session.output.get_size().rows - 5))
+            if self._scrollback.document.is_cursor_at_the_end:
+                self._auto_scroll = True
+
+        build_layout(self, keys, file_history(history_path) if history_path else None,
+                     prompt_style, input, output)
 
     def _input_height(self):
         from prompt_toolkit.utils import get_cwidth
@@ -193,8 +161,13 @@ class TuiSession:
         columns = max(1, size.columns - 4)
         rows = sum(max(1, (get_cwidth(line) + columns - 1) // columns)
                    for line in self._session.default_buffer.document.lines)
-        desired = len(self.prompt_text.splitlines()) - 1 + rows + int(self.status_bar_enabled)
-        return min(desired, max(3, size.rows // 2))
+        return max(0, len(self.prompt_text.splitlines()) - 1) + min(5, rows)
+
+    @property
+    def _can_edit(self):
+        # Preserve typeahead between prompts. While working, only an explicit
+        # prompt (e.g. operator approval) may unlock the input region.
+        return self._accepting or not self._status.busy
 
     @property
     def transcript(self) -> str:
@@ -211,7 +184,8 @@ class TuiSession:
         if not self.status_bar_enabled:
             return []
         with self._lock:
-            fragments = render_status_bar(self._status, width=self._session.output.get_size().columns)
+            from dataclasses import replace
+            fragments = render_status_bar(replace(self._status, busy=False), width=self._session.output.get_size().columns)
         return [("", text) for _, text in fragments] if self.no_color else fragments
 
     def set_status_bar_enabled(self, enabled: bool):
@@ -228,7 +202,7 @@ class TuiSession:
         self.invalidate()
 
     def _accept(self, buffer):
-        if self._accepting:
+        if self._can_edit:
             text = buffer.text
             self.print(self.prompt_text + text)
             self._answer(text)
@@ -263,8 +237,7 @@ class TuiSession:
 
     def _dispatch(self, callback):
         if self._loop is not None and self._loop.is_running():
-            # run_in_terminal creates asyncio tasks: marshal onto the UI loop
-            # with its application context, just like StdoutProxy does.
+            # All Buffer mutations belong to the UI loop and its app context.
             self._loop.call_soon_threadsafe(self._context.copy().run, callback)
         else:
             callback()
@@ -281,6 +254,7 @@ class TuiSession:
         self._start()
         self.invalidate()
         result = self._answers.get()
+        self._accepting = False
         if isinstance(result, BaseException):
             raise result
         return result
@@ -289,27 +263,58 @@ class TuiSession:
         if not self.use_tui:
             print(text, end=end)
             return
-        from prompt_toolkit.application import run_in_terminal
+        self.append_scrollback(str(text) + end)
 
-        def append():
-            with self._lock:
-                self._lines.extend((str(text) + end).splitlines(keepends=True))
-            self.invalidate()
-
-        def schedule():
-            # The full-screen panel owns these lines. Printing to the physical
-            # terminal too would duplicate them when the renderer resumes.
-            future = run_in_terminal(append)
-            self._pending.add(future)
-            future.add_done_callback(self._pending.discard)
-
+    def append_scrollback(self, text: str) -> None:
+        if not self.use_tui:
+            print(text, end="")
+            return
+        with self._lock:
+            self._lines.append(str(text))
+            self._write_queue.append(str(text))
+            if self._flush_scheduled:
+                return
+            self._flush_scheduled = True
         if self._loop is not None and self._loop.is_running():
-            self._dispatch(schedule)
+            self._dispatch(lambda: self._loop.call_later(0.05, self._flush_scrollback))
         else:
-            append()
-        # Before the first prompt, the transcript is the sole destination.
-        # Emitting it now would show the banner again when the panel paints.
-        self.invalidate()
+            self._flush_scrollback()
+
+    def _flush_scrollback(self):
+        from prompt_toolkit.document import Document
+        from prompt_toolkit.formatted_text import fragment_list_to_text
+        from prompt_toolkit.formatted_text.utils import split_lines
+
+        with self._lock:
+            text = "".join(self._write_queue)
+            self._write_queue.clear()
+            self._flush_scheduled = False
+        if not text:
+            return
+        fragments = self._formatted(text)
+        lines = list(split_lines(fragments))
+        self._styled_lines[-1].extend(lines[0])
+        self._styled_lines.extend(lines[1:])
+        plain = self._scrollback.text + fragment_list_to_text(fragments)
+        cursor = len(plain) if self._auto_scroll else self._scrollback.cursor_position
+        self._scrollback.set_document(Document(plain, cursor), bypass_readonly=True)
+        # BufferControl observes the document change; no explicit invalidation.
+
+    def _render_busy(self):
+        if not self._status.busy:
+            return []
+        elapsed = max(0, int(time.monotonic() - self._status.busy_started_at))
+        frame = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 4) % 10]
+        message = self._status.busy_message or "Working"
+        text = f" {frame} {message}... ({elapsed}s · esc to interrupt)"
+        return [("" if self.no_color else "class:busy", text)]
+
+    def set_busy(self, message: str = ""):
+        self._cancel_event.clear()
+        self.set_status(busy=True, busy_message=message)
+
+    def clear_busy(self):
+        self.set_status(busy=False)
 
     def clear_screen(self) -> None:
         """Clear the TUI terminal before its first frame; fallback is untouched."""
@@ -329,14 +334,13 @@ class TuiSession:
             return
         done = threading.Event()
 
-        async def drain():
+        def drain():
             try:
-                if self._pending:
-                    await asyncio.gather(*tuple(self._pending))
+                self._flush_scrollback()
             finally:
                 done.set()
 
-        self._dispatch(lambda: self._loop.create_task(drain()))
+        self._dispatch(drain)
         if not done.wait(5):
             raise RuntimeError("TUI output did not drain")
 
@@ -359,6 +363,8 @@ class TuiSession:
                 )
             for key, value in fields.items():
                 setattr(self._status, aliases.get(key, key), value)
+        self._session.app.refresh_interval = 0.25 if self._status.busy else None
+        self._dispatch(self._session.app.refresh_wake.set)
         self.invalidate()
 
     def invalidate(self) -> None:
