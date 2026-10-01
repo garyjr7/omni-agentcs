@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from nexus_core.config.loader import config_exists, effective_db_path
 from nexus_core.config.schema import DEFAULT_MODELS, PROVIDERS, model_env_name
+from nexus_core.kernel.sandbox_modes import active_mode, guarantees_for
 from nexus_core.provisioner.detector import check_all_tools, detect_managers, detect_os
 from nexus_core.provisioner.installer import probe_command
 
@@ -101,6 +102,10 @@ def run_doctor(paths, config, *, as_json=False) -> int:
             "backend": "postgres" if postgres else "sqlite",
             "diagnostic": "remote database not queried" if postgres else "local read-only",
         },
+        "sandbox": {
+            "mode": active_mode().value,
+            **guarantees_for().to_dict(),
+        },
         "managers": list(detect_managers()),
         "tools": {name: asdict(status) for name, status in check_all_tools().items()},
         "msfrpcd": _rpc_status(),
@@ -139,6 +144,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
             ("Rutas XDG", "paths"),
             ("Config", "config"),
             ("Base de datos", "db"),
+            ("Sandbox", "sandbox"),
             ("Gestores", "managers"),
             ("Herramientas", "tools"),
             ("msfrpcd", "msfrpcd"),
@@ -151,6 +157,13 @@ def run_doctor(paths, config, *, as_json=False) -> int:
                     print(
                         f"  {name:12} {'✓' if item['present'] else '✗'} {item['path'] or '(ausente)'}  {item['version'] or ''}"
                     )
+            elif key == "sandbox":
+                print(f"  modo:              {value['mode']}")
+                print(f"  aislamiento FS:    {'sí' if value['filesystem_isolation'] else 'no'}")
+                print(f"  aislamiento red:   {'sí' if value['network_isolation'] else 'no'}")
+                print(f"  process isolation: {'sí' if value['process_isolation'] else 'no'}")
+                print(f"  límites recursos:  {'sí' if value['resource_limits'] else 'no'}")
+                print(f"  tools network:     {'OK' if value['supports_network_tools'] else 'no'}")
             elif isinstance(value, dict):
                 for name, item in value.items():
                     print(f"  {name}: {json.dumps(item, ensure_ascii=False)}")

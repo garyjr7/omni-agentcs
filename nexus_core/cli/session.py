@@ -466,7 +466,7 @@ class OmniSession:
 
         return MeteredClient(client, lambda response: self._record_usage(response, durable=durable))
 
-    async def _with_cancel(self, operation, run_id, *, cooperative=True):
+    async def _with_cancel(self, operation, run_id, *, cooperative=True, cancel_event=None):
         """Consume UI cancellation on the work loop, never writing DB on the UI thread."""
         if not self._tui.use_tui:
             return await operation
@@ -475,6 +475,9 @@ class OmniSession:
             while not task.done():
                 if self._tui._cancel_event.is_set():
                     self._tui._cancel_event.clear()
+                    if cancel_event is not None:
+                        # Signal the executor so it can kill in-flight tools.
+                        cancel_event.set()
                     if run_id:
                         self.store.append_run_event(
                             self.tenant_id, run_id, "react.cancel_requested", {"source": "cli-escape"}
@@ -854,6 +857,7 @@ class OmniSession:
                 enabled=self._spinner_enabled(),
                 use_ascii=not self._supports_unicode(),
             ):
+                cancel_event = asyncio.Event()
                 result = asyncio.run(
                     self._with_cancel(run_react_loop(
                         context=context,
@@ -862,7 +866,8 @@ class OmniSession:
                         llm_client=self._metered_client(self._llm) if self._tui.use_tui else self.llm_client,
                         config=config,
                         conversation_id=self.conversation_id,
-                    ), run_id)
+                        cancel_event=cancel_event,
+                    ), run_id, cancel_event=cancel_event)
                 )
         except KeyboardInterrupt:
             self.store.append_run_event(

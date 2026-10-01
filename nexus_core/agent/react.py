@@ -319,6 +319,39 @@ def _record_response_tokens(
     return amount
 
 
+async def _await_tool(
+    awaitable: Any,
+    *,
+    timeout: float,
+    cancel_event: asyncio.Event | None,
+) -> tuple[Any, bool]:
+    """Await one tool call, racing it against ``cancel_event``.
+
+    Returns ``(result, cancelled)``. On cancellation the in-flight tool task is
+    cancelled and drained, which lets the sandbox kill its process group before
+    the loop returns.
+    """
+    task = asyncio.ensure_future(awaitable)
+    if cancel_event is None:
+        return await asyncio.wait_for(task, timeout=timeout), False
+    cancel_waiter = asyncio.ensure_future(cancel_event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {task, cancel_waiter}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+        if task in done:
+            return await task, False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if cancel_waiter in done:
+            return None, True
+        raise asyncio.TimeoutError
+    finally:
+        if not cancel_waiter.done():
+            cancel_waiter.cancel()
+            await asyncio.gather(cancel_waiter, return_exceptions=True)
+
+
 async def run_react_loop(
     *,
     context: Any,
@@ -329,12 +362,16 @@ async def run_react_loop(
     tool_catalog: dict[str, Any] | None = None,
     conversation_id: str | None = None,
     budget_tokens: int | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> ReActResult:
     """Run the durable ReAct loop until completion, abort or iteration budget.
 
     ``conversation_id`` lets the caller pin the durable conversation (the CLI's
     persistent work session). When omitted the loop keeps its historic
-    behaviour of deriving one conversation per run.
+    behaviour of deriving one conversation per run. ``cancel_event`` (or
+    ``context.cancel_event`` when omitted) aborts the loop between iterations
+    and interrupts an in-flight tool call, whose sandbox then kills its
+    process group.
     """
     from nexus_core.kernel import runtime as runtime_module
     from nexus_core.kernel.scope_loader import load_engagement_scope
@@ -352,6 +389,8 @@ async def run_react_loop(
     conversation_id = conversation_id or memory.ensure_conversation(
         store, tenant_id, run_id, agent_id
     )
+    if cancel_event is None:
+        cancel_event = getattr(context, "cancel_event", None)
     budget = _budget_tokens(payload, budget_tokens)
     history = memory.load_history(store, tenant_id, conversation_id, limit=500)
     # In a shared work session every run records its own objective; in a per-run
@@ -397,6 +436,16 @@ async def run_react_loop(
                 run_id,
                 BUDGET_EVENT_TYPE,
                 {"used": used, "budget": budget, "iteration": iteration},
+            )
+            break
+
+        if cancel_event is not None and cancel_event.is_set():
+            status = STATUS_CANCELLED
+            store.append_run_event(
+                tenant_id,
+                run_id,
+                "react.cancelled",
+                {"iteration": iteration, "phase": "between_iterations"},
             )
             break
 
@@ -700,9 +749,10 @@ async def run_react_loop(
                 )
                 continue
         try:
-            invocation = await asyncio.wait_for(
+            invocation, cancelled_now = await _await_tool(
                 runtime_module.execute_tool(tool_payload, context),
                 timeout=config.timeout_per_tool_seconds,
+                cancel_event=cancel_event,
             )
         except ScopeViolation as exc:
             # The scope is sacred: never retry with another target.
@@ -746,6 +796,18 @@ async def run_react_loop(
             }
             consecutive_failures += 1
         else:
+            if cancelled_now:
+                status = STATUS_CANCELLED
+                final_summary = "cancellation requested during a tool call"
+                entry["tool_result"] = {"success": False, "cancelled": True}
+                actions.append(entry)
+                store.append_run_event(
+                    tenant_id,
+                    run_id,
+                    "react.cancelled",
+                    {"iteration": iteration, "phase": "tool", "tool_id": action.tool_id},
+                )
+                break
             observation = _observation_payload(invocation)
             if observation.get("success"):
                 consecutive_failures = 0

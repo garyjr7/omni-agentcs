@@ -23,6 +23,9 @@ class ExecutionContext:
     store: Any
     task: dict
     worker_id: str
+    #: Cooperative cancellation signal consumed by long-running executors
+    #: (the ReAct loop and the worker heartbeat). ``None`` = never cancelled.
+    cancel_event: Any = None
 
     @property
     def tenant_id(self) -> str:

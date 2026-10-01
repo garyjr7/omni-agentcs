@@ -107,6 +107,7 @@ def build_banner(
     audit_chain_valid: bool,
     msfrpcd_version: str | None,
     llm_summary: str,
+    sandbox_mode: str | None = None,
     no_color: bool = False,
     width: int | None = None,
     include_tip: bool = True,
@@ -118,10 +119,14 @@ def build_banner(
     """
     colored = not no_color
     name = str(engagement_name) if engagement_name else "none"
+    if sandbox_mode is None:
+        from nexus_core.kernel.sandbox_modes import active_mode
+
+        sandbox_mode = active_mode().value
     header = f"OmniAgentCS v{version}"
     tools_line = (
         f"{int(tools_count)} tools · {int(providers_count)} providers · "
-        f"engagement: {name}"
+        f"sandbox: {sandbox_mode} · engagement: {name}"
     )
     marker = ("✓" if audit_chain_valid else "✗") if colored else (
         "ok" if audit_chain_valid else "INVALID"

@@ -13,6 +13,56 @@ from nexus_core.kernel.runtime import ExecutionContext, build_default_registry
 from nexus_core.kernel.store_factory import get_control_store
 from nexus_core.kernel.workflows import DurableWorkflowEngine
 
+#: How often a running task renews its lease (seconds).
+LEASE_RENEW_INTERVAL_SECONDS = 30.0
+#: The renewed lease window; comfortably larger than the interval.
+LEASE_SECONDS = 120
+
+
+async def _execute_with_heartbeat(
+    store,
+    task,
+    worker_id: str,
+    registry,
+    context: ExecutionContext,
+    timeout_seconds: float,
+    *,
+    renew_interval: float = LEASE_RENEW_INTERVAL_SECONDS,
+    lease_seconds: int = LEASE_SECONDS,
+) -> dict:
+    """Run an executor while renewing the task lease in the background.
+
+    If a renewal fails the worker no longer owns the task: the executor is
+    signalled through ``context.cancel_event`` so a long tool call can be
+    interrupted instead of being re-executed concurrently by another worker.
+    """
+    stop = asyncio.Event()
+
+    async def renew_loop() -> None:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=max(0.01, renew_interval))
+                return
+            except asyncio.TimeoutError:
+                pass
+            renewed = await asyncio.to_thread(
+                store.renew_task_lease, task["id"], worker_id, lease_seconds=lease_seconds
+            )
+            if not renewed:
+                cancel_event = getattr(context, "cancel_event", None)
+                if cancel_event is not None:
+                    cancel_event.set()
+                return
+
+    renew_task = asyncio.create_task(renew_loop())
+    try:
+        return await asyncio.wait_for(
+            registry.execute(task, context), timeout=timeout_seconds
+        )
+    finally:
+        stop.set()
+        await asyncio.gather(renew_task, return_exceptions=True)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="OmniAgentCS durable worker")
@@ -40,9 +90,14 @@ def main() -> None:
         task = store.claim_task(worker_id)
         if task:
             try:
-                context = ExecutionContext(store=store, task=task, worker_id=worker_id)
-                result = asyncio.run(asyncio.wait_for(
-                    registry.execute(task, context), timeout=task["timeout_seconds"]
+                context = ExecutionContext(
+                    store=store,
+                    task=task,
+                    worker_id=worker_id,
+                    cancel_event=asyncio.Event(),
+                )
+                result = asyncio.run(_execute_with_heartbeat(
+                    store, task, worker_id, registry, context, task["timeout_seconds"]
                 ))
                 store.complete_task(task["id"], worker_id, result=result)
             except Exception as exc:

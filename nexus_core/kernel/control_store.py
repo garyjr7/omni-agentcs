@@ -662,6 +662,30 @@ class ControlStore:
             self._transition(conn, row["id"], row["status"], "running", "lease claimed", worker_id)
         return self._decode_row(claimed, ("payload", "result"))
 
+    def renew_task_lease(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        lease_seconds: int = 60,
+    ) -> bool:
+        """Extend the lease if ``worker_id`` still owns the running task.
+
+        Returns ``True`` when the lease was renewed and ``False`` when the
+        caller no longer owns an active lease (another worker took over, or the
+        task already finished). A long-running executor must upgrade the
+        heartbeat to a cancel when this returns ``False``.
+        """
+        now = datetime.now(timezone.utc)
+        lease_until = (now + timedelta(seconds=lease_seconds)).isoformat()
+        with self.connect() as conn:
+            updated = conn.execute(
+                """UPDATE kernel_tasks SET lease_until=?, updated_at=?
+                WHERE id=? AND lease_owner=? AND status='running'""",
+                (lease_until, utc_now(), task_id, worker_id),
+            )
+            return updated.rowcount == 1
+
     def complete_task(
         self,
         task_id: str,
