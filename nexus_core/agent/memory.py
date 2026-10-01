@@ -110,6 +110,50 @@ def ensure_conversation(store: Any, tenant_id: str, run_id: str, owner_id: str) 
     return str(created["id"])
 
 
+WORK_SESSION_PREFIX = "work:"
+ASK_SOURCE = "ask"
+
+
+def work_session_title(engagement_id: str | None) -> str:
+    """Deterministic title of the durable conversation shared by an engagement."""
+    return f"{WORK_SESSION_PREFIX}{engagement_id or 'no-engagement'}"
+
+
+def find_work_conversation(
+    store: Any, tenant_id: str, owner_id: str, engagement_id: str | None
+) -> str | None:
+    """Return the newest ``work:<engagement>`` conversation, if it exists."""
+    wanted = work_session_title(engagement_id)
+    for conversation in store.list_conversations(tenant_id, owner_id):
+        if conversation.get("title") == wanted:
+            return str(conversation["id"])
+    return None
+
+
+def ensure_work_conversation(
+    store: Any, tenant_id: str, owner_id: str, engagement_id: str | None
+) -> str:
+    """Return (creating if needed) the work conversation of the engagement."""
+    existing = find_work_conversation(store, tenant_id, owner_id, engagement_id)
+    if existing:
+        return existing
+    return start_work_conversation(store, tenant_id, owner_id, engagement_id)
+
+
+def start_work_conversation(
+    store: Any, tenant_id: str, owner_id: str, engagement_id: str | None
+) -> str:
+    """Create a fresh work conversation (``/clear`` rotates to a new one).
+
+    Rotation keeps the previous conversation in the store: it is simply no
+    longer the most recently updated one, so it becomes an archive.
+    """
+    created = store.create_conversation(
+        tenant_id, owner_id, work_session_title(engagement_id), agent_id=owner_id
+    )
+    return str(created["id"])
+
+
 def _redact_arguments(arguments: dict[str, Any] | None) -> dict[str, Any] | None:
     """Redact credentials from a tool-arguments dict before it is persisted.
 
@@ -178,6 +222,32 @@ def load_history(
     """
     messages = store.list_messages(tenant_id, conversation_id, limit=max(1, int(limit)))
     return _collapse_summaries(messages)
+
+
+def prior_objectives(
+    messages: list[dict[str, Any]], current_run_id: str | None
+) -> list[str]:
+    """Objectives already recorded in this work session, oldest first.
+
+    A shared work session accumulates one ``react.system`` message per run so
+    durable traceability is preserved. The ReAct loop surfaces those earlier
+    objectives to the model so it can build on the engagement's prior work;
+    the objective of the run being executed is excluded because it is already
+    the focus of the current prompt.
+    """
+    objectives: list[str] = []
+    wanted = str(current_run_id or "")
+    for message in messages:
+        if message_kind(message) != SYSTEM_MESSAGE_KIND:
+            continue
+        if str(message.get("run_id") or "") == wanted:
+            continue
+        metadata = message.get("metadata") or {}
+        objective = str((metadata if isinstance(metadata, dict) else {}).get("objective") or "")
+        objective = objective.strip()
+        if objective and objective not in objectives:
+            objectives.append(objective)
+    return objectives
 
 
 async def summarize_history_if_large(

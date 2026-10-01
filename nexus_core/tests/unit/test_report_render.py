@@ -155,8 +155,13 @@ def test_html_mobile_responsive_meta_tag(report):
 def test_markdown_json_serializable(report):
     payload = render_markdown_json(report)
     decoded = json.loads(payload)
-    assert decoded["schema"] == "nexus.engagement_report/1"
+    assert decoded["schema"] == "nexus.engagement_report/2"
     assert decoded["engagement_id"] == "eng-lab"
+    # The extended schema carries the non-finding collections too.
+    assert decoded["inventories"] == []
+    assert decoded["references"] == []
+    assert decoded["surfaces"] == []
+    assert decoded["evidences"] == []
     assert len(decoded["findings"]) == len(report.findings)
     assert set(decoded["findings_by_severity"]) == {
         "critical",

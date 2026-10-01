@@ -49,5 +49,12 @@
   "T1105": {"name": "Ingress Tool Transfer", "tactic": "Command and Control"},
   "T1095": {"name": "Non-Application Layer Protocol", "tactic": "Command and Control"},
   "T1071": {"name": "Application Layer Protocol", "tactic": "Command and Control"},
-  "T1027": {"name": "Obfuscated Files or Information", "tactic": "Defense Evasion"}
+  "T1027": {"name": "Obfuscated Files or Information", "tactic": "Defense Evasion"},
+  "T1059.007": {"name": "JavaScript", "tactic": "Execution"},
+  "T1588.005": {"name": "Exploits", "tactic": "Resource Development"},
+  "T1069": {"name": "Permission Groups Discovery", "tactic": "Discovery"},
+  "T1482": {"name": "Domain Trust Discovery", "tactic": "Discovery"},
+  "T1003.003": {"name": "NTDS", "tactic": "Credential Access"},
+  "T1558.003": {"name": "Kerberoasting", "tactic": "Credential Access"},
+  "T1021.002": {"name": "SMB/Windows Admin Shares", "tactic": "Lateral Movement"}
 }

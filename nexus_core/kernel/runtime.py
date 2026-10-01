@@ -351,12 +351,18 @@ async def execute_react(payload: dict, context: ExecutionContext) -> dict:
 
     llm = select_llm_client()
     config = ReActConfig(max_iterations=max(1, int(payload.get("max_iterations") or 12)))
+    budget = str(payload.get("budget_tokens") or os.getenv("NEXUS_RUN_BUDGET_TOKENS", "0"))
+    try:
+        budget_tokens = max(0, int(budget))
+    except (TypeError, ValueError):
+        budget_tokens = 0
     result = await run_react_loop(
         context=context,
         objective=objective,
         engagement_id=payload.get("engagement_id"),
         llm_client=llm,
         config=config,
+        budget_tokens=budget_tokens,
     )
     return {
         "status": result.status,

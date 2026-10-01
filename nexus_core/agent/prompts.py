@@ -7,7 +7,6 @@ context without touching the response contract.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 REACT_SYSTEM_PROMPT = """Eres OmniAgent, un agente autónomo de
@@ -16,7 +15,7 @@ ciberseguridad ofensiva operando dentro de un engagement autorizado.
 Tu trabajo es completar objetivos de pentesting paso a paso usando las
 herramientas disponibles. En cada iteración decides UNA acción.
 
-HERRAMIENTAS DISPONIBLES:
+HERRAMIENTAS DISPONIBLES (una línea por tool):
 {tool_catalog}
 
 REGLAS:
@@ -31,6 +30,11 @@ REGLAS:
   solicitar nexus.system.install_tool para una herramienta de su catálogo;
   el operador debe aprobar el comando exacto. Nunca inventes comandos de
   instalación ni intentes evitar una denegación de aprobación.
+- El historial de esta sesión de trabajo puede contener objetivos ya
+  ejecutados con sus tool calls, preguntas informativas (`/ask`, sin ejecución)
+  y aclaraciones. Si el usuario se refiere a algo mencionado antes en esta
+  sesión, tienes acceso a ello: cita el contexto previo si es relevante y no
+  repitas trabajo ya hecho sin motivo.
 
 RESPONDE SIEMPRE CON UN JSON VÁLIDO, sin markdown, sin texto adicional:
 
@@ -38,7 +42,7 @@ Para invocar una herramienta:
 {{
   "thought": "razonamiento en 1-3 frases sobre qué hacer y por qué",
   "action": "tool_call",
-  "tool_id": "nexus.recon.nmap",
+  "tool_id": "<tool_id del catálogo>",
   "arguments": {{"target": "10.0.0.5", "flags": ["-Pn", "-p", "22,80"]}},
   "expected_outcome": "qué esperas que devuelva esta tool"
 }}
@@ -59,9 +63,6 @@ Para pedir aclaración al humano (el bucle se pausará):
   "action": "request_clarification",
   "question": "..."
 }}
-
-CATÁLOGO DE HERRAMIENTAS:
-{catalog_text}
 
 OBJETIVO DEL USUARIO:
 {objective}
@@ -84,24 +85,58 @@ HISTORIAL A RESUMIR:
 """
 
 
+#: Cap on the description copied into the compact catalog line.
+CATALOG_DESCRIPTION_CHARS = 64
+#: Cap on how many declared arguments are listed per tool.
+CATALOG_MAX_ARGUMENTS = 5
+
+
+def _schema_arguments(definition: Any) -> str:
+    """Compact ``name:type`` list of a tool's declared arguments."""
+    schema = getattr(definition, "input_schema", None) or {}
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(properties, dict):
+        return "-"
+    required = set(schema.get("required") or ())
+    parts: list[str] = []
+    for name, spec in properties.items():
+        if len(parts) >= CATALOG_MAX_ARGUMENTS:
+            parts.append("…")
+            break
+        kind = spec.get("type") if isinstance(spec, dict) else None
+        if kind is None and isinstance(spec, dict) and "enum" in spec:
+            kind = "enum"
+        label = f"{name}:{kind or 'any'}"
+        if name in required:
+            label += "*"
+        parts.append(label)
+    return ", ".join(parts) or "-"
+
+
 def render_tool_catalog(catalog: dict[str, Any]) -> str:
-    """Render the tool catalog as stable, LLM-readable plain text."""
+    """Render the tool catalog as one compact, stable line per tool.
+
+    The full JSON schema is deliberately *not* embedded: the compact form (id,
+    description, arguments, risk, scope) is enough for the model and keeps the
+    prompt small. The catalog is rendered exactly once per prompt.
+    """
     if not catalog:
         return "(no hay herramientas disponibles)"
     lines: list[str] = []
     for tool_id in sorted(catalog):
         definition = catalog[tool_id][0] if isinstance(catalog[tool_id], tuple) else catalog[tool_id]
         risk = getattr(definition.risk, "value", str(getattr(definition, "risk", "unknown")))
-        lines.append(f"- {tool_id}")
-        lines.append(f"    descripción: {getattr(definition, 'description', '') or '(sin descripción)'}")
-        lines.append(f"    riesgo: {risk} | timeout: {getattr(definition, 'timeout_seconds', '?')}s")
+        description = " ".join(str(getattr(definition, "description", "") or "").split())
+        if len(description) > CATALOG_DESCRIPTION_CHARS:
+            description = description[:CATALOG_DESCRIPTION_CHARS].rstrip() + "…"
         if getattr(definition, "scope_required", False):
-            lines.append(
-                "    scope: OBLIGATORIO"
-                f" (campo de target: {getattr(definition, 'scope_target_field', None) or '?'})"
-            )
-        schema = getattr(definition, "input_schema", None) or {}
-        lines.append(f"    argumentos (JSON schema): {json.dumps(schema, ensure_ascii=False, sort_keys=True)}")
+            scope = f"scope:{getattr(definition, 'scope_target_field', None) or '?'}"
+        else:
+            scope = "sin scope"
+        lines.append(
+            f"- {tool_id}: {description or '(sin descripción)'} | "
+            f"args[{_schema_arguments(definition)}] | riesgo:{risk} | {scope}"
+        )
     return "\n".join(lines)
 
 
@@ -141,7 +176,6 @@ def render_system_prompt(
     catalog_text = render_tool_catalog(catalog)
     return REACT_SYSTEM_PROMPT.format(
         tool_catalog=catalog_text,
-        catalog_text=catalog_text,
         objective=objective,
         engagement_id=engagement_id or "(ninguno)",
         scope_summary=scope_summary,

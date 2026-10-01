@@ -98,7 +98,7 @@ def test_cmd_history_returns_messages(session, capsys):
     assert "react.action" in out
 
 
-def test_cmd_clear_resets_local_history_not_engagement(session, capsys):
+def test_cmd_clear_rotates_work_session_not_engagement(session, capsys):
     engagement = session.engagement
     durable_conversation = session.conversation_id
     session.history.extend(["[completed] hecho", "└─$ escanea"])
@@ -107,13 +107,16 @@ def test_cmd_clear_resets_local_history_not_engagement(session, capsys):
 
     out = capsys.readouterr().out
     assert "Contexto local limpiado" in out
+    assert "Nueva sesión de trabajo" in out
     assert session.history == []
     assert session.engagement is engagement
     assert session.engagement_id == "eng-scanme"
     assert session.run_id is None and session.conversation_id is None
-    # The durable record is untouched.
+    # The previous durable record is untouched and a new work session exists.
     assert session.store.list_messages("system", durable_conversation)
-    assert len(session.store.list_conversations("system", "omni")) == 1
+    assert len(session.store.list_conversations("system", "omni")) == 2
+    assert len(commands._work_conversations(session)) == 1
+    assert commands._work_conversations(session)[0]["id"] != durable_conversation
 
 
 def test_cmd_export_writes_markdown(session, capsys, tmp_path):

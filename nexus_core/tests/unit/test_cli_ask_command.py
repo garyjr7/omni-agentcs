@@ -78,7 +78,8 @@ def test_cmd_ask_without_args_shows_usage(session, capsys):
     commands_module.cmd_ask(session, [])
     out = capsys.readouterr().out
     assert "uso: /ask <pregunta>" in out
-    assert session.ask_history == []
+    # No work session is created for an empty question.
+    assert session.store.list_conversations(TENANT, session.agent_id) == []
 
 
 def test_cmd_ask_calls_llm_with_system_prompt(session, capsys):
@@ -99,12 +100,15 @@ def test_cmd_ask_does_not_invoke_tools(session):
     invoke_tool.assert_not_called()
 
 
-def test_cmd_ask_does_not_persist_to_engagement(session):
-    """No durable conversation, no run, no messages: purely local."""
+def test_cmd_ask_persists_to_work_session_without_run_or_audit(session):
+    """``/ask`` now shares the durable work session, but executes nothing."""
     commands_module.cmd_ask(session, ["hola"])
     assert session.run_id is None
     assert session.conversation_id is None
-    assert session.store.list_conversations(TENANT, session.agent_subject_id) == []
+    # It lands in the work session, never as the run's conversation.
+    conversations = commands_module._work_conversations(session)
+    assert len(conversations) == 1
+    assert len(session.store.list_messages(TENANT, conversations[0]["id"])) == 2
     # ``ensure_run`` would have set ``run_id``; the durable run table stays empty.
     with session.store.connect() as conn:
         runs = conn.execute(
@@ -172,19 +176,27 @@ def test_cmd_ask_failure_does_not_break_the_repl(session, capsys):
     session.llm_client.complete = _boom
     commands_module.cmd_ask(session, ["hola"])
     assert "la consulta falló" in capsys.readouterr().out
-    # A failed exchange leaves no trace in the local history either.
-    assert session.ask_history == []
+    # A failed exchange persists nothing in the work session.
+    conversation = commands_module._work_conversations(session)
+    assert all(
+        session.store.list_messages(TENANT, item["id"]) == [] for item in conversation
+    )
 
 
-def test_cmd_ask_keeps_local_history_for_follow_ups(session):
+def test_cmd_ask_keeps_durable_history_for_follow_ups(session):
     commands_module.cmd_ask(session, ["primera"])
     commands_module.cmd_ask(session, ["segunda"])
-    assert [role for role, _ in session.ask_history] == [
+    # The exchange is persisted in the durable work session, not in memory.
+    conversations = commands_module._work_conversations(session)
+    assert len(conversations) == 1
+    messages = session.store.list_messages(TENANT, conversations[0]["id"])
+    assert [message["role"] for message in messages] == [
         "user",
         "assistant",
         "user",
         "assistant",
     ]
+    assert all(message["metadata"]["source"] == "ask" for message in messages)
     second = session.llm_client.calls[1]
     # system + (user, assistant) + the new question
     assert len(second) == 4

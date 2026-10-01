@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -49,6 +50,12 @@ STATUS_CLARIFICATION = "clarification"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 STATUS_SCOPE_VIOLATION = "scope_violation_aborted"
+STATUS_BUDGET_EXCEEDED = "budget_exceeded"
+BUDGET_EVENT_TYPE = "react.budget_exceeded"
+#: Subject under which the loop books its own token spend.
+BUDGET_SUBJECT_TYPE = "model_route"
+BUDGET_SUBJECT_ID = "react"
+BUDGET_METRIC = "tokens"
 
 
 @dataclass(frozen=True)
@@ -269,6 +276,49 @@ def _observation_payload(invocation: dict[str, Any]) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------- the loop
+def _budget_tokens(payload: dict[str, Any], explicit: int | None) -> int:
+    """Resolve the per-run token budget from the payload, env or explicit arg."""
+    if explicit is not None:
+        raw: Any = explicit
+    elif payload.get("budget_tokens") not in (None, ""):
+        raw = payload.get("budget_tokens")
+    else:
+        raw = os.getenv("NEXUS_RUN_BUDGET_TOKENS", "0")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _budget_used(store: Any, tenant_id: str, run_id: str) -> int:
+    """Tokens the loop already booked for this run (0 when unreadable)."""
+    try:
+        return int(
+            store.usage_total(
+                tenant_id, run_id, BUDGET_SUBJECT_TYPE, BUDGET_SUBJECT_ID, BUDGET_METRIC
+            )
+        )
+    except Exception:  # noqa: BLE001 - accounting must not abort a run
+        return 0
+
+
+def _record_response_tokens(
+    store: Any, tenant_id: str, run_id: str, response: Any
+) -> int:
+    """Book the tokens of one model response; returns the amount recorded."""
+    amount = int(getattr(response, "total_tokens", 0) or 0)
+    if amount <= 0:
+        return 0
+    try:
+        store.record_usage(
+            tenant_id, run_id, BUDGET_SUBJECT_TYPE, BUDGET_SUBJECT_ID, BUDGET_METRIC,
+            amount, {"source": "react-loop"},
+        )
+    except Exception:  # noqa: BLE001 - accounting must not abort a run
+        return 0
+    return amount
+
+
 async def run_react_loop(
     *,
     context: Any,
@@ -277,8 +327,15 @@ async def run_react_loop(
     llm_client: Any,
     config: ReActConfig = ReActConfig(),
     tool_catalog: dict[str, Any] | None = None,
+    conversation_id: str | None = None,
+    budget_tokens: int | None = None,
 ) -> ReActResult:
-    """Run the durable ReAct loop until completion, abort or iteration budget."""
+    """Run the durable ReAct loop until completion, abort or iteration budget.
+
+    ``conversation_id`` lets the caller pin the durable conversation (the CLI's
+    persistent work session). When omitted the loop keeps its historic
+    behaviour of deriving one conversation per run.
+    """
     from nexus_core.kernel import runtime as runtime_module
     from nexus_core.kernel.scope_loader import load_engagement_scope
     from nexus_core.tools.registry import durable_tool_definitions
@@ -292,10 +349,17 @@ async def run_react_loop(
     audit = AuditWriter(store)
     scope = load_engagement_scope(store, tenant_id, engagement_id)
 
-    conversation_id = memory.ensure_conversation(store, tenant_id, run_id, agent_id)
+    conversation_id = conversation_id or memory.ensure_conversation(
+        store, tenant_id, run_id, agent_id
+    )
+    budget = _budget_tokens(payload, budget_tokens)
     history = memory.load_history(store, tenant_id, conversation_id, limit=500)
+    # In a shared work session every run records its own objective; in a per-run
+    # conversation this is identical to the historic "first message" behaviour.
     if not any(
-        memory.message_kind(message) == memory.SYSTEM_MESSAGE_KIND for message in history
+        memory.message_kind(message) == memory.SYSTEM_MESSAGE_KIND
+        and str(message.get("run_id") or "") == str(run_id)
+        for message in history
     ):
         memory.append_step(
             store,
@@ -307,7 +371,13 @@ async def run_react_loop(
         )
         history = memory.load_history(store, tenant_id, conversation_id, limit=500)
 
-    actions = _persisted_actions(history)
+    # A shared work session holds the messages of several runs. Resume
+    # bookkeeping (action log + iteration cursor) is scoped to this run so a
+    # new objective does not inherit the iteration budget of the previous one.
+    run_history = [
+        message for message in history if str(message.get("run_id") or "") == str(run_id)
+    ]
+    actions = _persisted_actions(run_history)
     iteration = _last_persisted_iteration(actions)
     status = STATUS_MAX_ITERATIONS
     final_summary = ""
@@ -316,6 +386,20 @@ async def run_react_loop(
     consecutive_failures = 0
 
     while iteration < config.max_iterations:
+        used = _budget_used(store, tenant_id, run_id) if budget else 0
+        if budget and used >= budget:
+            status = STATUS_BUDGET_EXCEEDED
+            final_summary = (
+                f"token budget exhausted: {used} >= {budget} without task_complete"
+            )
+            store.append_run_event(
+                tenant_id,
+                run_id,
+                BUDGET_EVENT_TYPE,
+                {"used": used, "budget": budget, "iteration": iteration},
+            )
+            break
+
         if _cancellation_requested(store, tenant_id, run_id):
             status = STATUS_CANCELLED
             store.append_run_event(
@@ -338,6 +422,17 @@ async def run_react_loop(
                 history_summary = summary
                 history = memory.load_history(store, tenant_id, conversation_id, limit=500)
 
+        # In a shared work session the model must be able to build on the
+        # objectives executed earlier in the engagement, not just the current
+        # one. Surface them explicitly in the session context.
+        prior = memory.prior_objectives(history, run_id)
+        if prior:
+            base = history_summary or "(sin historial previo)"
+            bullets = "\n".join(f"- {objective}" for objective in prior)
+            history_summary = (
+                f"{base}\n\nObjetivos previos de esta sesión de trabajo:\n{bullets}"
+            )
+
         system_prompt = render_system_prompt(
             catalog=catalog,
             objective=objective,
@@ -354,6 +449,7 @@ async def run_react_loop(
         )
 
         response = await llm_client.complete(messages)
+        _record_response_tokens(store, tenant_id, run_id, response)
         raw_response = str(getattr(response, "content", "") or "")
 
         try:

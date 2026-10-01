@@ -42,6 +42,7 @@ from .models import (
     Evidence,
     FailedAttempt,
     Finding,
+    ReportItem,
     TimelineEntry,
     severity_rank,
     with_digest,
@@ -65,6 +66,16 @@ _FALLBACK_TARGET_FIELDS: dict[str, str] = {
     "nexus.web.ffuf": "url",
     "nexus.exploit.msf_exploit": "target",
     "nexus.exploit.msf_auxiliary": "target",
+    "nexus.web.sqlmap": "url",
+    "nexus.web.dalfox": "target",
+    "nexus.recon.gobuster": "target",
+    "nexus.recon.whatweb": "targets",
+    "nexus.recon.netexec": "target",
+    "nexus.recon.bloodhound_python": "dc",
+    "nexus.exploit.searchsploit": "query",
+    "nexus.attack.impacket_secretsdump": "target",
+    "nexus.attack.impacket_getuserspns": "dc_ip",
+    "nexus.attack.impacket_psexec": "target",
 }
 
 #: Tools that never produce a finding on their own (bookkeeping only).
@@ -795,6 +806,381 @@ def _session_findings(observation: Observation, context: _Context) -> list[Findi
     ]
 
 
+# --------------------------------------------------- extended report builders
+def _report_item(
+    *,
+    kind: str,
+    title: str,
+    detail: dict[str, Any],
+    observation: Observation,
+    context: _Context,
+    targets: Iterable[str] = (),
+    excerpt: Any = None,
+) -> ReportItem:
+    """Build a non-finding report item with its chain of custody."""
+    return ReportItem(
+        kind=kind,
+        title=title,
+        detail=detail,
+        discovered_by_tool=observation.tool_id,
+        discovered_at=observation.created_at,
+        affected_targets=tuple(str(item) for item in targets if str(item or "").strip()),
+        mitre_techniques=mitre.techniques_for_tool(observation.tool_id),
+        evidence=_evidence_for(
+            observation,
+            context,
+            excerpt=excerpt if excerpt is not None else (observation.output or {}),
+        ),
+    )
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _sqlmap_findings(observation: Observation, context: _Context) -> list[Finding]:
+    output = observation.output or {}
+    url = str(output.get("url") or "")
+    results: list[Finding] = []
+    for index, item in enumerate(_dict_list(output.get("findings"))):
+        parameter = str(item.get("parameter") or "?")
+        injection = str(item.get("injection_type") or "SQL injection")
+        dbms = item.get("dbms")
+        title = str(item.get("title") or f"SQL injection en parámetro `{parameter}`")
+        results.append(
+            Finding(
+                finding_id=_finding_id("sqli", observation, f"{index}:{parameter}"),
+                title=title,
+                description=(
+                    f"sqlmap confirmó una inyección SQL ({injection}) en el parámetro "
+                    f"`{parameter}` ({str(item.get('method') or 'GET')}) de {url or 'el objetivo'}"
+                    + (f", DBMS `{dbms}`" if dbms else "")
+                    + f". Payload observado: `{str(item.get('payload') or '')[:300]}`"
+                ),
+                severity=severity.normalize_severity(item.get("severity"), default="high"),
+                cvss_score=None,
+                cvss_vector=None,
+                cwe="CWE-89",
+                cve=None,
+                mitre_techniques=(),
+                owasp_category="A03:2021-Injection",
+                affected_targets=tuple(filter(None, (url,))),
+                evidence=_evidence_for(observation, context, excerpt=item),
+                discovered_by_tool=observation.tool_id,
+                discovered_at=observation.created_at,
+                reproduction_steps=(
+                    f"sqlmap -u {url} --batch --flush-session".strip(),
+                    f"Confirmar la inyección en el parámetro `{parameter}`",
+                ),
+                kind="sqli",
+            )
+        )
+    return results
+
+
+def _dalfox_findings(observation: Observation, context: _Context) -> list[Finding]:
+    output = observation.output or {}
+    target = str(output.get("target") or "")
+    results: list[Finding] = []
+    for index, item in enumerate(_dict_list(output.get("findings"))):
+        url = str(item.get("url") or target)
+        param = str(item.get("param") or "?")
+        results.append(
+            Finding(
+                finding_id=_finding_id("xss", observation, f"{index}:{param}"),
+                title=str(item.get("message") or f"XSS reflectido en parámetro `{param}`"),
+                description=(
+                    f"dalfox confirmó un XSS ({str(item.get('inject_type') or 'reflected')}) "
+                    f"en el parámetro `{param}` de {url or 'el objetivo'}. Payload: "
+                    f"`{str(item.get('payload') or '')[:300]}`. Evidencia: "
+                    f"`{str(item.get('evidence') or '')[:300]}`"
+                ),
+                severity=severity.normalize_severity(item.get("severity"), default="medium"),
+                cvss_score=None,
+                cvss_vector=None,
+                cwe=str(item.get("cwe") or "CWE-79"),
+                cve=None,
+                mitre_techniques=(),
+                owasp_category="A03:2021-Injection",
+                affected_targets=tuple(filter(None, (url,))),
+                evidence=_evidence_for(observation, context, excerpt=item),
+                discovered_by_tool=observation.tool_id,
+                discovered_at=observation.created_at,
+                reproduction_steps=(
+                    f"dalfox url {url}".strip(),
+                    f"Revisar el parámetro `{param}` y su vector de inyección",
+                ),
+                kind="xss",
+            )
+        )
+    return results
+
+
+def _gobuster_inventory(observation: Observation, context: _Context) -> list[ReportItem]:
+    output = observation.output or {}
+    hits = _dict_list(output.get("hits"))
+    if not hits:
+        return []
+    target = str(output.get("target") or "")
+    entries = [
+        {
+            "path": str(hit.get("path") or ""),
+            "status": hit.get("status"),
+            "size": hit.get("size"),
+            "redirect": hit.get("redirect"),
+        }
+        for hit in hits
+    ]
+    return [
+        _report_item(
+            kind="inventory",
+            title=f"Rutas descubiertas ({len(entries)})",
+            detail={
+                "mode": str(output.get("mode") or ""),
+                "target": target,
+                "hits": entries,
+            },
+            observation=observation,
+            context=context,
+            targets=(str(hit.get("path") or "") for hit in entries),
+        )
+    ]
+
+
+def _whatweb_inventory(observation: Observation, context: _Context) -> list[ReportItem]:
+    output = observation.output or {}
+    targets = _dict_list(output.get("fingerprints"))
+    if not targets:
+        return []
+    entries = []
+    urls: list[str] = []
+    for target in targets:
+        url = str(target.get("url") or "")
+        if url:
+            urls.append(url)
+        entries.append(
+            {
+                "url": url,
+                "http_status": target.get("http_status"),
+                "technologies": [
+                    {
+                        "name": str(fp.get("name") or ""),
+                        "version": fp.get("version"),
+                        "confidence": fp.get("confidence"),
+                    }
+                    for fp in _dict_list(target.get("fingerprints"))
+                ],
+            }
+        )
+    return [
+        _report_item(
+            kind="inventory",
+            title=f"Stack tecnológico identificado ({len(entries)} target(s))",
+            detail={"targets": entries},
+            observation=observation,
+            context=context,
+            targets=urls,
+        )
+    ]
+
+
+def _searchsploit_reference(
+    observation: Observation, context: _Context
+) -> list[ReportItem]:
+    output = observation.output or {}
+    exploits = _dict_list(output.get("exploits"))
+    shellcodes = _dict_list(output.get("shellcodes"))
+    if not exploits and not shellcodes:
+        return []
+    query = str(output.get("query") or "")
+    entries = exploits + shellcodes
+    return [
+        _report_item(
+            kind="reference",
+            title=f"Exploits disponibles para «{query}» ({len(entries)})",
+            detail={
+                "query": query,
+                "total": output.get("total"),
+                "exploits": exploits,
+                "shellcodes": shellcodes,
+            },
+            observation=observation,
+            context=context,
+            targets=(str(item.get("edb_id") or "") for item in entries),
+        )
+    ]
+
+
+def _netexec_surface(observation: Observation, context: _Context) -> list[ReportItem]:
+    output = observation.output or {}
+    entries = _dict_list(output.get("entries"))
+    if not entries:
+        return []
+    protocol = str(output.get("protocol") or "")
+    targets = [str(item) for item in (output.get("targets") or []) if item]
+    if not targets and output.get("target"):
+        targets = [str(output["target"])]
+    return [
+        _report_item(
+            kind="surface",
+            title=f"Superficie {protocol or 'red'} observada ({len(entries)} línea(s))",
+            detail={
+                "protocol": protocol,
+                "targets": targets,
+                "entries": entries,
+            },
+            observation=observation,
+            context=context,
+            targets=targets,
+        )
+    ]
+
+
+def _bloodhound_evidence(
+    observation: Observation, context: _Context
+) -> list[ReportItem]:
+    output = observation.output or {}
+    files = _dict_list(output.get("files"))
+    total_records = int(output.get("total_records") or 0)
+    if not files and not total_records:
+        return []
+    dc = str(output.get("dc") or "")
+    return [
+        _report_item(
+            kind="evidence",
+            title=(
+                f"Mapa de Active Directory recolectado "
+                f"({len(files)} fichero(s), {total_records} registro(s))"
+            ),
+            detail={
+                "domain": str(output.get("domain") or ""),
+                "dc": dc,
+                "total_records": total_records,
+                "files": files,
+            },
+            observation=observation,
+            context=context,
+            targets=tuple(filter(None, (dc,))),
+        )
+    ]
+
+
+def _secretsdump_findings(observation: Observation, context: _Context) -> list[Finding]:
+    output = observation.output or {}
+    entries = _dict_list(output.get("entries"))
+    secrets = _dict_list(output.get("secrets"))
+    if not entries and not secrets:
+        return []
+    target = str(output.get("target") or "")
+    usernames = [str(item.get("username") or "") for item in entries]
+    return [
+        Finding(
+            finding_id=_finding_id("credentials", observation),
+            title=f"Credenciales volcadas ({len(entries)} cuenta(s))",
+            description=(
+                f"secretsdump extrajo material de autenticación de {target or 'el objetivo'}: "
+                f"{len(entries)} cuenta(s) con hashes NTLM"
+                + (f" ({', '.join(usernames[:20])})" if usernames else "")
+                + (f" y {len(secrets)} secreto(s) LSA" if secrets else "")
+                + f". Fuentes: {', '.join(str(source) for source in output.get('sources') or []) or 'n/d'}."
+            ),
+            severity="critical",
+            cvss_score=None,
+            cvss_vector=None,
+            cwe="CWE-522",
+            cve=None,
+            mitre_techniques=("T1003.003",),
+            owasp_category="A02:2021-Cryptographic Failures",
+            affected_targets=tuple(filter(None, (target,))),
+            evidence=_evidence_for(observation, context, excerpt=output),
+            discovered_by_tool=observation.tool_id,
+            discovered_at=observation.created_at,
+            reproduction_steps=(
+                f"secretsdump -target {target} (método {output.get('method') or 'n/d'})",
+                "Confirmar el acceso con las credenciales obtenidas sin reutilizarlas fuera del alcance",
+            ),
+            kind="credentials",
+        )
+    ]
+
+
+def _getuserspns_findings(observation: Observation, context: _Context) -> list[Finding]:
+    output = observation.output or {}
+    principals = _dict_list(output.get("service_principals"))
+    hashes = _dict_list(output.get("hashes"))
+    if not principals and not hashes:
+        return []
+    dc_ip = str(output.get("dc_ip") or "")
+    names = [str(item.get("name") or item.get("service_principal_name") or "") for item in principals]
+    return [
+        Finding(
+            finding_id=_finding_id("kerberoast", observation),
+            title=f"Cuentas kerberoastables ({len(principals)})",
+            description=(
+                f"GetUserSPNs enumeró {len(principals)} cuenta(s) de servicio con SPN en "
+                f"{output.get('domain') or 'el dominio'}"
+                + (f" ({', '.join(names[:20])})" if names else "")
+                + (f" y solicitó {len(hashes)} ticket(s) TGS (hash Kerberoast)" if hashes else "")
+                + ". Un atacante puede crackearlos offline para escalar privilegios."
+            ),
+            severity="high",
+            cvss_score=None,
+            cvss_vector=None,
+            cwe="CWE-522",
+            cve=None,
+            mitre_techniques=("T1558.003",),
+            owasp_category="A02:2021-Cryptographic Failures",
+            affected_targets=tuple(filter(None, (dc_ip,))),
+            evidence=_evidence_for(observation, context, excerpt=output),
+            discovered_by_tool=observation.tool_id,
+            discovered_at=observation.created_at,
+            reproduction_steps=(
+                f"GetUserSPNs -dc-ip {dc_ip} -request".strip(),
+                "Crackear los hashes TGS offline y validar las cuentas afectadas",
+            ),
+            kind="kerberoast",
+        )
+    ]
+
+
+def _psexec_findings(observation: Observation, context: _Context) -> list[Finding]:
+    output = observation.output or {}
+    if not output.get("connected"):
+        return []
+    target = str(output.get("target") or "")
+    command = str(output.get("command") or "")
+    lines = [str(line) for line in (output.get("lines") or [])]
+    return [
+        Finding(
+            finding_id=_finding_id("remote_exec", observation),
+            title="Ejecución remota confirmada con psexec",
+            description=(
+                f"psexec ejecutó `{command or 'el comando'}` en {target or 'el objetivo'} "
+                f"y devolvió {len(lines)} línea(s) de salida. La conexión remota está "
+                "confirmada por la post-condition del handler."
+            ),
+            severity="critical",
+            cvss_score=None,
+            cvss_vector=None,
+            cwe="CWE-284",
+            cve=None,
+            mitre_techniques=("T1021.002",),
+            owasp_category=None,
+            affected_targets=tuple(filter(None, (target,))),
+            evidence=_evidence_for(observation, context, excerpt=output),
+            discovered_by_tool=observation.tool_id,
+            discovered_at=observation.created_at,
+            reproduction_steps=(
+                f"psexec -target {target} `{command}`".strip(),
+                "Revisar la salida del comando remoto en la evidencia",
+            ),
+            kind="remote_exec",
+        )
+    ]
+
+
 def _deduplicate(findings: list[Finding]) -> list[Finding]:
     """Merge identical observations within :data:`DEDUP_WINDOW_SECONDS`."""
     merged: list[Finding] = []
@@ -983,6 +1369,16 @@ async def extract_findings(
             produced, attempts = _exploit_findings(observation, context)
             findings.extend(produced)
             failed.extend(attempts)
+        elif observation.tool_id == "nexus.web.sqlmap":
+            findings.extend(_sqlmap_findings(observation, context))
+        elif observation.tool_id == "nexus.web.dalfox":
+            findings.extend(_dalfox_findings(observation, context))
+        elif observation.tool_id == "nexus.attack.impacket_secretsdump":
+            findings.extend(_secretsdump_findings(observation, context))
+        elif observation.tool_id == "nexus.attack.impacket_getuserspns":
+            findings.extend(_getuserspns_findings(observation, context))
+        elif observation.tool_id == "nexus.attack.impacket_psexec":
+            findings.extend(_psexec_findings(observation, context))
         elif observation.tool_id == "nexus.session.interact":
             findings.extend(_session_findings(observation, context))
 
@@ -1050,6 +1446,61 @@ def extract_findings_sync(
     import asyncio
 
     return asyncio.run(extract_findings(store, tenant_id, engagement_id, run_ids))
+
+
+async def extract_report_items(
+    store: Any,
+    tenant_id: str,
+    engagement_id: str,
+    run_ids: list[str] | None = None,
+) -> tuple[
+    tuple[ReportItem, ...], tuple[ReportItem, ...], tuple[ReportItem, ...], tuple[ReportItem, ...]
+]:
+    """Return inventories, references, surfaces and evidence for the engagement.
+
+    Not every tool produces a vulnerability. Inventories (gobuster, whatweb),
+    references (searchsploit), surfaces (netexec) and evidence (BloodHound) are
+    represented faithfully instead of being forced into a finding.
+    """
+    collection = _collect(store, tenant_id, engagement_id, run_ids)
+    inventories: list[ReportItem] = []
+    references: list[ReportItem] = []
+    surfaces: list[ReportItem] = []
+    evidences: list[ReportItem] = []
+    for observation in collection.observations:
+        if observation.run_id not in collection.selected or not observation.success:
+            continue
+        tool_id = observation.tool_id
+        if tool_id == "nexus.recon.gobuster":
+            inventories.extend(_gobuster_inventory(observation, collection.context))
+        elif tool_id == "nexus.recon.whatweb":
+            inventories.extend(_whatweb_inventory(observation, collection.context))
+        elif tool_id == "nexus.exploit.searchsploit":
+            references.extend(_searchsploit_reference(observation, collection.context))
+        elif tool_id == "nexus.recon.netexec":
+            surfaces.extend(_netexec_surface(observation, collection.context))
+        elif tool_id == "nexus.recon.bloodhound_python":
+            evidences.extend(_bloodhound_evidence(observation, collection.context))
+    return (
+        tuple(inventories),
+        tuple(references),
+        tuple(surfaces),
+        tuple(evidences),
+    )
+
+
+def extract_report_items_sync(
+    store: Any,
+    tenant_id: str,
+    engagement_id: str,
+    run_ids: list[str] | None = None,
+) -> tuple[
+    tuple[ReportItem, ...], tuple[ReportItem, ...], tuple[ReportItem, ...], tuple[ReportItem, ...]
+]:
+    """Blocking wrapper around :func:`extract_report_items`."""
+    import asyncio
+
+    return asyncio.run(extract_report_items(store, tenant_id, engagement_id, run_ids))
 
 
 def _sessions_opened(observations: Iterable[Observation], selected: set[str]) -> int:
@@ -1206,6 +1657,9 @@ async def build_report(
     metadata = await extract_engagement_metadata(store, tenant_id, engagement_id)
     collection = _collect(store, tenant_id, engagement_id, run_ids)
     findings, failed = await extract_findings(store, tenant_id, engagement_id, run_ids)
+    inventories, references, surfaces, evidences = await extract_report_items(
+        store, tenant_id, engagement_id, run_ids
+    )
     scored = attach_cvss(findings, llm_client if llm_cvss else None)
 
     tools_used: list[str] = []
@@ -1249,6 +1703,10 @@ async def build_report(
         run_ids=tuple(sorted(collection.selected)),
         scope_signature=str(metadata.get("scope_signature") or ""),
         notes=notes,
+        inventories=inventories,
+        references=references,
+        surfaces=surfaces,
+        evidences=evidences,
     )
     return with_digest(report)
 
@@ -1263,6 +1721,8 @@ __all__ = [
     "extract_engagement_metadata",
     "extract_findings",
     "extract_findings_sync",
+    "extract_report_items",
+    "extract_report_items_sync",
     "matches_scope",
     "summarize_scope",
     "target_field_for",

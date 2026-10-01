@@ -117,8 +117,43 @@ def cmd_tools(session: "OmniSession", args: list[str]) -> None:
         )
 
 
+def _work_conversations(session: "OmniSession") -> list[dict[str, Any]]:
+    """Durable work sessions of this agent (active first, by updated_at)."""
+    from nexus_core.agent import memory
+
+    try:
+        conversations = session.store.list_conversations(session.tenant_id, session.agent_id)
+    except Exception:  # noqa: BLE001
+        return []
+    return [
+        item
+        for item in conversations
+        if str(item.get("title") or "").startswith(memory.WORK_SESSION_PREFIX)
+    ]
+
+
 def cmd_history(session: "OmniSession", args: list[str]) -> None:
-    """Muestra los últimos mensajes del run actual."""
+    """Muestra los últimos mensajes del run actual (/history [n] | --archive)."""
+    if args and args[0] == "--archive":
+        conversations = _work_conversations(session)
+        if not conversations:
+            render.write("(no hay sesiones de trabajo archivadas)")
+            return
+        render.write("Sesiones de trabajo (la primera es la activa):")
+        for item in conversations:
+            try:
+                count = len(
+                    session.store.list_messages(
+                        session.tenant_id, str(item["id"]), limit=500
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                count = 0
+            render.write(
+                f"  {item['id']}  {item.get('title')}  "
+                f"mensajes={count}  actualizado={item.get('updated_at')}"
+            )
+        return
     limit = DEFAULT_HISTORY_LIMIT
     if args:
         try:
@@ -143,15 +178,23 @@ def cmd_history(session: "OmniSession", args: list[str]) -> None:
 
 
 def cmd_clear(session: "OmniSession", args: list[str]) -> None:
-    """Limpia el contexto local de la sesión (mantiene el engagement)."""
+    """Rota a una sesión de trabajo nueva (mantiene el engagement y archiva)."""
     cleared = len(getattr(session, "history", []) or [])
     session.history.clear()
+    previous = getattr(session, "conversation_id", None)
+    new_session = None
+    if hasattr(session, "rotate_work_session"):
+        new_session = session.rotate_work_session()
     if hasattr(session, "reset_context"):
         session.reset_context()
     render.write(
-        f"Contexto local limpiado ({cleared} línea(s)). "
-        "El engagement y la auditoría durable no se tocan."
+        f"Contexto local limpiado ({cleared} línea(s)). Nueva sesión de trabajo "
+        f"{new_session or '(sin store)'}: el historial anterior queda archivado "
+        f"(consúltalo con /history --archive). El engagement y la auditoría durable "
+        f"no se tocan."
     )
+    if previous:
+        render.write(f"  (sesión anterior: {previous})")
 
 
 def _export_markdown(session: "OmniSession", messages: list[dict[str, Any]]) -> str:
@@ -589,18 +632,84 @@ def cmd_timeline(session: "OmniSession", args: list[str]) -> None:
     render.write(f"\n{len(entries)} evento(s).")
 
 
-def _ask_messages(session: "OmniSession", question: str) -> list[Any]:
-    """System prompt + local /ask history + the new question.
+#: Observation kinds that carry no useful conversational context for ``/ask``.
+_ASK_SKIP_KINDS = frozenset(
+    {"react.action", "react.observation", "react.correction", "react.history_summary"}
+)
+#: Kinds that do carry context: completion summaries and clarifications.
+_ASK_CONTEXT_KINDS = frozenset({"", "ask", "react.final", "react.clarification"})
 
-    The history lives on the session object only: ``/ask`` is conversational and
-    deliberately never touches the durable conversation, the engagement or the
-    audit trail.
+
+def _ask_context_messages(session: "OmniSession", limit: int) -> list[Any]:
+    """Recent user/assistant turns of the shared work session."""
+    from nexus_core.llm.abstraction import LLMMessage
+
+    conversation_id = None
+    if hasattr(session, "_ensure_work_session"):
+        try:
+            conversation_id = session._ensure_work_session()
+        except Exception:  # noqa: BLE001 - /ask must survive a store failure
+            conversation_id = None
+    if not conversation_id:
+        return []
+    try:
+        stored = session.store.list_messages(
+            session.tenant_id, conversation_id, limit=500
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    context: list[Any] = []
+    for message in stored:
+        role = str(message.get("role") or "")
+        if role not in {"user", "assistant"}:
+            continue
+        metadata = message.get("metadata") or {}
+        kind = str(metadata.get("kind") or "")
+        if kind in _ASK_SKIP_KINDS or kind not in _ASK_CONTEXT_KINDS:
+            continue
+        content = str(message.get("content") or "")
+        if content:
+            context.append(LLMMessage(role=role, content=content))
+    return context[-limit:]
+
+
+def _persist_ask(session: "OmniSession", question: str, answer: str) -> None:
+    """Append the /ask exchange to the engagement's durable work session."""
+    from nexus_core.agent import memory
+
+    conversation_id = None
+    if hasattr(session, "_ensure_work_session"):
+        try:
+            conversation_id = session._ensure_work_session()
+        except Exception:  # noqa: BLE001
+            conversation_id = None
+    if not conversation_id:
+        return
+    for role, content in (("user", question), ("assistant", answer)):
+        try:
+            memory.append_step(
+                session.store,
+                session.tenant_id,
+                conversation_id,
+                role,
+                content,
+                {"source": memory.ASK_SOURCE, "kind": "ask"},
+            )
+        except Exception:  # noqa: BLE001 - persistence must not break /ask
+            return
+
+
+def _ask_messages(session: "OmniSession", question: str) -> list[Any]:
+    """System prompt + shared work-session context + the new question.
+
+    ``/ask`` shares the engagement's durable work session with the objectives,
+    so the model sees the previous directives, summaries and questions. The
+    system prompt is rebuilt locally and nothing is executed.
     """
     from nexus_core.llm.abstraction import LLMMessage
 
     messages: list[Any] = [LLMMessage(role="system", content=_build_ask_system_prompt(session))]
-    for role, content in session.ask_history[-ASK_HISTORY_LIMIT:]:
-        messages.append(LLMMessage(role=role, content=content))
+    messages.extend(_ask_context_messages(session, ASK_HISTORY_LIMIT))
     messages.append(LLMMessage(role="user", content=question))
     return messages
 
@@ -642,8 +751,7 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
         render.render_error(f"la consulta falló: {type(exc).__name__}: {exc}")
         return
     answer = str(getattr(response, "content", response) or "")
-    session.ask_history.append(("user", question))
-    session.ask_history.append(("assistant", answer))
+    _persist_ask(session, question, answer)
     max_width = None
     if session._tui.use_tui:
         columns = session._tui._session.output.get_size().columns

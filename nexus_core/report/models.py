@@ -75,6 +75,35 @@ class Finding:
 
 
 @dataclass(frozen=True)
+class ReportItem:
+    """A non-finding observation worth reporting (inventory/reference/surface).
+
+    Not every tool produces a vulnerability: an inventory lists what was
+    discovered (endpoints, stack), a reference points at available material
+    (Exploit-DB entries, an AD map) and a surface describes reachable services.
+    ``kind`` is one of ``"inventory"``, ``"reference"``, ``"surface"`` or
+    ``"evidence"``.
+    """
+
+    kind: str
+    title: str
+    detail: dict[str, Any]
+    discovered_by_tool: str
+    discovered_at: str
+    affected_targets: tuple[str, ...] = ()
+    mitre_techniques: tuple[str, ...] = ()
+    evidence: tuple[Evidence, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable representation of the item."""
+        value = asdict(self)
+        value["affected_targets"] = list(self.affected_targets)
+        value["mitre_techniques"] = list(self.mitre_techniques)
+        value["evidence"] = [item.to_dict() for item in self.evidence]
+        return value
+
+
+@dataclass(frozen=True)
 class FailedAttempt:
     """Something the toolkit tried that produced no finding (never a finding).
 
@@ -136,6 +165,11 @@ class EngagementReport:
     run_ids: tuple[str, ...] = ()
     scope_signature: str = ""
     notes: str = ""
+    #: Non-finding observations, grouped so every renderer can surface them.
+    inventories: tuple[ReportItem, ...] = ()
+    references: tuple[ReportItem, ...] = ()
+    surfaces: tuple[ReportItem, ...] = ()
+    evidences: tuple[ReportItem, ...] = ()
 
     @property
     def findings_by_severity(self) -> dict[str, int]:
@@ -170,6 +204,10 @@ class EngagementReport:
             "run_ids": list(self.run_ids),
             "findings_by_severity": self.findings_by_severity,
             "notes": self.notes,
+            "inventories": [item.to_dict() for item in self.inventories],
+            "references": [item.to_dict() for item in self.references],
+            "surfaces": [item.to_dict() for item in self.surfaces],
+            "evidences": [item.to_dict() for item in self.evidences],
         }
 
 
@@ -207,6 +245,7 @@ __all__ = [
     "Evidence",
     "FailedAttempt",
     "Finding",
+    "ReportItem",
     "TimelineEntry",
     "canonical_body",
     "report_digest",

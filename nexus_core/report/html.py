@@ -7,6 +7,7 @@ report digest so a printed copy can be tied back to the durable record.
 
 from __future__ import annotations
 
+import json
 from html import escape
 from typing import Any, Iterable
 
@@ -51,6 +52,14 @@ th { color: var(--muted); font-weight: 600; }
 .sev-medium { background: var(--medium); }
 .sev-low { background: var(--low); }
 .sev-info { background: var(--info); }
+.item { border: 1px solid var(--line); border-left: 5px solid var(--info); border-radius: .4rem;
+  padding: .7rem .9rem; margin: .8rem 0; }
+.item.inventory { border-left-color: var(--low); }
+.item.reference { border-left-color: #2b6cb0; }
+.item.surface { border-left-color: var(--medium); }
+.item.evidence { border-left-color: var(--muted); }
+.item h4 { margin: .1rem 0 .4rem; }
+.item .kind { font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .finding { border: 1px solid var(--line); border-left: 5px solid var(--info); border-radius: .4rem;
   padding: .8rem 1rem; margin: 1rem 0; }
 .finding.critical { border-left-color: var(--critical); }
@@ -189,6 +198,31 @@ def render_html(report: EngagementReport) -> str:
         parts += ["</tbody></table>"]
     parts.append("</section>")
 
+    parts += _render_items_section(
+        "inventario",
+        "Inventario",
+        report.inventories,
+        "No se registró inventario (endpoints, stack) para este engagement.",
+    )
+    parts += _render_items_section(
+        "referencias",
+        "Referencias",
+        report.references,
+        "No se registraron referencias (Exploit-DB, AD) para este engagement.",
+    )
+    parts += _render_items_section(
+        "superficie",
+        "Superficie expuesta",
+        report.surfaces,
+        "No se registró superficie adicional para este engagement.",
+    )
+    parts += _render_items_section(
+        "evidencia",
+        "Evidencia adicional",
+        report.evidences,
+        "No se registró evidencia adicional para este engagement.",
+    )
+
     parts += ["<section id='cronologia'><h2>Cronología</h2>"]
     if not report.timeline:
         parts.append("<p>Sin eventos de auditoría para este engagement.</p>")
@@ -251,6 +285,52 @@ def render_html(report: EngagementReport) -> str:
         "",
     ]
     return "\n".join(parts)
+
+
+def _render_items_section(
+    anchor: str, title: str, items: Iterable[Any], empty_message: str
+) -> list[str]:
+    """Render one group of non-finding items with a per-kind left border."""
+    items = tuple(items)
+    parts = [f"<section id='{anchor}'><h2>{_e(title)}</h2>"]
+    if not items:
+        parts.append(f"<p>{_e(empty_message)}</p>")
+    for item in items:
+        parts.append(_render_item(item))
+    parts.append("</section>")
+    return parts
+
+
+def _render_item(item: Any) -> str:
+    kind = str(item.kind or "info")
+    parts = [
+        f'<article class="item {_e(kind)}">',
+        f'<div class="kind">{_e(kind)}</div>',
+        f"<h4>{_e(item.title)}</h4>",
+        '<dl class="props">',
+        f"<dt>Descubierto por</dt><dd><code>{_e(item.discovered_by_tool)}</code></dd>",
+        f"<dt>Fecha</dt><dd>{_e(item.discovered_at)}</dd>",
+    ]
+    if item.affected_targets:
+        parts.append(f"<dt>Objetivos</dt><dd>{_list(item.affected_targets)}</dd>")
+    if item.mitre_techniques:
+        parts.append(f"<dt>MITRE ATT&CK</dt><dd>{_list(item.mitre_techniques)}</dd>")
+    parts.append("</dl>")
+    if item.detail:
+        parts.append(
+            f"<pre>{_e(json.dumps(item.detail, indent=2, sort_keys=True, ensure_ascii=False))}</pre>"
+        )
+    if item.evidence:
+        parts.append("<details><summary>Evidencia (chain of custody)</summary><ul>")
+        for evidence in item.evidence:
+            digest = evidence.sha256 or "sin sha256"
+            parts.append(
+                f"<li><code>{_e(evidence.kind)}</code> {_e(evidence.ref_id)} "
+                f"(sha256: <code>{_e(digest)}</code>, {_e(evidence.created_at)})</li>"
+            )
+        parts.append("</ul></details>")
+    parts.append("</article>")
+    return "".join(parts)
 
 
 def _render_finding(finding: Finding) -> str:

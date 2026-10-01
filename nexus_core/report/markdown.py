@@ -135,6 +135,27 @@ def render_markdown(report: EngagementReport) -> str:
             )
         lines.append("")
 
+    lines += _render_items_section(
+        "Inventario",
+        report.inventories,
+        "_No se registró inventario (endpoints, stack) para este engagement._",
+    )
+    lines += _render_items_section(
+        "Referencias",
+        report.references,
+        "_No se registraron referencias (Exploit-DB, AD) para este engagement._",
+    )
+    lines += _render_items_section(
+        "Superficie expuesta",
+        report.surfaces,
+        "_No se registró superficie adicional para este engagement._",
+    )
+    lines += _render_items_section(
+        "Evidencia adicional",
+        report.evidences,
+        "_No se registró evidencia adicional para este engagement._",
+    )
+
     lines += ["## Cronología", ""]
     if not report.timeline:
         lines.append("_Sin eventos de auditoría para este engagement._")
@@ -194,6 +215,53 @@ def render_markdown(report: EngagementReport) -> str:
     )
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_items_section(
+    title: str, items: Iterable[Any], empty_message: str
+) -> list[str]:
+    """Render one group of non-finding items (inventory/reference/surface/...)."""
+    lines = [f"## {title}", ""]
+    items = tuple(items)
+    if not items:
+        lines.append(empty_message)
+        lines.append("")
+        return lines
+    for item in items:
+        lines += _render_report_item(item)
+    return lines
+
+
+def _render_report_item(item: Any) -> list[str]:
+    lines = [
+        f"### {_value(item.title)}",
+        "",
+        f"**Tipo:** {_value(item.kind)}",
+        f"**Descubierto por:** `{_value(item.discovered_by_tool)}`",
+        f"**Fecha:** {_value(item.discovered_at)}",
+    ]
+    if item.affected_targets:
+        lines.append(f"**Objetivos:** {_join(item.affected_targets)}")
+    if item.mitre_techniques:
+        lines.append(f"**MITRE ATT&CK:** {', '.join(item.mitre_techniques)}")
+    lines.append("")
+    if item.detail:
+        lines += _fence(
+            json.dumps(item.detail, indent=2, sort_keys=True, ensure_ascii=False),
+            "json",
+        )
+        lines.append("")
+    if item.evidence:
+        lines.append("**Evidencia (chain of custody):**")
+        lines.append("")
+        for evidence in item.evidence:
+            digest = evidence.sha256 or "sin sha256"
+            lines.append(
+                f"- `{evidence.kind}` {evidence.ref_id} "
+                f"(sha256: `{digest}`, {evidence.created_at})"
+            )
+        lines.append("")
+    return lines
 
 
 def _join(values: Any) -> str:
@@ -266,7 +334,7 @@ def render_markdown_json(report: EngagementReport) -> str:
     payload["findings_by_severity"] = {
         level: payload["findings_by_severity"].get(level, 0) for level in SEVERITY_ORDER
     }
-    payload["schema"] = "nexus.engagement_report/1"
+    payload["schema"] = "nexus.engagement_report/2"
     return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 

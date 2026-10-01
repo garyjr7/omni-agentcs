@@ -212,6 +212,8 @@ class OmniSession:
         self.run_id = run_id
         self.resume_run_id = run_id
         self.conversation_id: str | None = None
+        #: Durable work session of the active engagement (shared by runs and /ask).
+        self._work_session_id: str | None = None
         self.should_exit = False
         self.last_result: Any = None
         self.last_question: str | None = None
@@ -223,8 +225,6 @@ class OmniSession:
         #: Report-mode state: where the last deliverable was written.
         self.last_report_directory: str | None = None
         self.last_report_sha256: str | None = None
-        #: Local ``/ask`` transcript (never persisted, never audited).
-        self.ask_history: list[tuple[str, str]] = []
         tui_enabled = should_use_tui() if use_tui is None else use_tui
         self._tui = TuiSession(
             use_tui=tui_enabled,
@@ -304,6 +304,33 @@ class OmniSession:
         self.resume_run_id = None
         self.last_result = None
         self.last_question = None
+
+    # ------------------------------------------------------------ work session
+    def _ensure_work_session(self) -> str | None:
+        """Conversation of the engagement's persistent work session.
+
+        The durable conversation is created once per engagement and reused by
+        every run and by ``/ask``, so the model sees the whole engagement
+        context instead of a single objective. It survives individual runs and
+        CLI restarts (looked up by title ``work:<engagement_id>``).
+        """
+        if self.store is None:
+            return None
+        if self._work_session_id:
+            return self._work_session_id
+        self._work_session_id = memory.ensure_work_conversation(
+            self.store, self.tenant_id, self.agent_id, self.engagement_id
+        )
+        return self._work_session_id
+
+    def rotate_work_session(self) -> str | None:
+        """Start a new work session (``/clear``); the previous one is archived."""
+        if self.store is None:
+            return None
+        self._work_session_id = memory.start_work_conversation(
+            self.store, self.tenant_id, self.agent_id, self.engagement_id
+        )
+        return self._work_session_id
 
     @property
     def prompt(self) -> str:
@@ -678,7 +705,7 @@ class OmniSession:
         if not isinstance(output, dict):
             return
         try:
-            conversation_id = memory.ensure_conversation(
+            conversation_id = self._ensure_work_session() or memory.ensure_conversation(
                 self.store, self.tenant_id, run_id, self.agent_id
             )
             observation = {
@@ -778,7 +805,9 @@ class OmniSession:
                 )["id"]
             )
         self.run_id = run_id
-        self.conversation_id = memory.ensure_conversation(
+        # Reuse the engagement's durable work session: a new objective keeps the
+        # context of the previous ones instead of opening a fresh conversation.
+        self.conversation_id = self._ensure_work_session() or memory.ensure_conversation(
             self.store, self.tenant_id, run_id, self.agent_id
         )
         payload = {
@@ -832,6 +861,7 @@ class OmniSession:
                         engagement_id=self.engagement_id,
                         llm_client=self._metered_client(self._llm) if self._tui.use_tui else self.llm_client,
                         config=config,
+                        conversation_id=self.conversation_id,
                     ), run_id)
                 )
         except KeyboardInterrupt:
@@ -927,7 +957,20 @@ def _stream_run_events(session: OmniSession, stop_event: threading.Event) -> Non
 def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
     run_id = session.run_id
     if run_id != state["run_id"]:
-        state.update(run_id=run_id, sequence=0, messages=0)
+        # A shared work session already holds the previous runs' messages; skip
+        # them and stream only what this run appends.
+        existing = 0
+        if session.conversation_id:
+            try:
+                existing = len(
+                    session.store.list_messages(
+                        session.tenant_id, session.conversation_id,
+                        limit=STREAM_MESSAGE_WINDOW,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - the stream must never break the run
+                existing = 0
+        state.update(run_id=run_id, sequence=0, messages=existing)
         return
     if not run_id:
         return

@@ -14,5 +14,15 @@
   "nexus.session.list": [],
   "nexus.session.interact": ["T1059"],
   "nexus.session.kill": [],
-  "nexus.report.generate": []
+  "nexus.report.generate": [],
+  "nexus.web.sqlmap": ["T1190"],
+  "nexus.web.dalfox": ["T1059.007"],
+  "nexus.recon.gobuster": ["T1595"],
+  "nexus.recon.whatweb": ["T1592"],
+  "nexus.exploit.searchsploit": ["T1588.005"],
+  "nexus.recon.netexec": ["T1046", "T1087", "T1069"],
+  "nexus.recon.bloodhound_python": ["T1087", "T1069", "T1482"],
+  "nexus.attack.impacket_secretsdump": ["T1003.003"],
+  "nexus.attack.impacket_getuserspns": ["T1558.003"],
+  "nexus.attack.impacket_psexec": ["T1021.002"]
 }
