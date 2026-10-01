@@ -1,2 +1,4 @@
 -r nexus_core/requirements.txt
 prompt_toolkit>=3.0,<4
+# Sliver C2 gRPC client (nexus.c2.* durable tools).
+sliver-py>=0.0.19

@@ -61,5 +61,10 @@ def test_check_env_registered_in_catalog():
         "nexus.attack.impacket_secretsdump",
         "nexus.attack.impacket_getuserspns",
         "nexus.attack.impacket_psexec",
+        "nexus.c2.sliver_server",
+        "nexus.c2.sliver_implants",
+        "nexus.c2.sliver_sessions",
+        "nexus.c2.sliver_exec",
+        "nexus.c2.sliver_pivot",
     } <= set(catalog)
-    assert len(catalog) == 26
+    assert len(catalog) == 31

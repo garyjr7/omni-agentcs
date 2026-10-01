@@ -64,6 +64,20 @@ def durable_tool_definitions(
         impacket_getuserspns_handler,
     )
     from .handlers.impacket_psexec import psexec_definition, impacket_psexec_handler
+    from .handlers.sliver_server import (
+        sliver_server_definition,
+        sliver_server_handler,
+    )
+    from .handlers.sliver_implants import (
+        sliver_implants_definition,
+        sliver_implants_handler,
+    )
+    from .handlers.sliver_sessions import (
+        sliver_sessions_definition,
+        sliver_sessions_handler,
+    )
+    from .handlers.sliver_exec import sliver_exec_definition, sliver_exec_handler
+    from .handlers.sliver_pivot import sliver_pivot_definition, sliver_pivot_handler
 
     catalog = {
         "nexus.system.check_env": (check_env_definition(tenant_id), check_env_handler),
@@ -116,6 +130,20 @@ def durable_tool_definitions(
             report_generate_definition(tenant_id),
             report_generate_handler,
         ),
+        "nexus.c2.sliver_server": (
+            sliver_server_definition(tenant_id),
+            sliver_server_handler,
+        ),
+        "nexus.c2.sliver_implants": (
+            sliver_implants_definition(tenant_id),
+            sliver_implants_handler,
+        ),
+        "nexus.c2.sliver_sessions": (
+            sliver_sessions_definition(tenant_id),
+            sliver_sessions_handler,
+        ),
+        "nexus.c2.sliver_exec": (sliver_exec_definition(tenant_id), sliver_exec_handler),
+        "nexus.c2.sliver_pivot": (sliver_pivot_definition(tenant_id), sliver_pivot_handler),
     }
     return catalog
 

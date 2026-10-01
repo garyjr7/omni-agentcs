@@ -5,6 +5,8 @@ httpx>=0.27.0
 python-dotenv>=1.0.1
 google-genai>=1.30,<2
 msgpack>=1.2.1,<2
+# Sliver C2 gRPC client (nexus.c2.* durable tools).
+sliver-py>=0.0.19
 # Existing optional PostgreSQL and telemetry backends.
 psycopg[binary]==3.3.4
 opentelemetry-api>=1.27,<2

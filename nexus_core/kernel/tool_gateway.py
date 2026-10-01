@@ -78,7 +78,10 @@ class ToolGateway:
                         raise PermissionError("scope is required but not provided")
                 elif self.scope_validator is not None:
                     try:
-                        if tool_id in {"nexus.session.list", "nexus.session.interact", "nexus.session.kill"}:
+                        if definition.scope_target_field is None:
+                            # Engagement-scoped tools (sessions, C2) carry no
+                            # per-call target: validate the engagement itself
+                            # instead of a scope_target_field.
                             from .sessions import validate_session_scope
 
                             validate_session_scope(context)

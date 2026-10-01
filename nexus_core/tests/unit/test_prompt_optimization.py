@@ -50,9 +50,10 @@ def test_prompt_catalog_compact_format(catalog):
     assert '"type"' not in line
 
 
-def test_catalog_under_5k_chars_for_26_tools(catalog):
-    assert len(catalog) == 26
-    assert len(render_tool_catalog(catalog)) < 5000
+def test_catalog_stays_compact_for_31_tools(catalog):
+    assert len(catalog) == 31
+    # Compact catalog only: ~185 chars per tool, never the full JSON schema.
+    assert len(render_tool_catalog(catalog)) < 6500
 
 
 def test_prompt_under_18k_chars(catalog):

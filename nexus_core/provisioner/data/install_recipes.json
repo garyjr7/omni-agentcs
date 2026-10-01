@@ -124,5 +124,13 @@
       "go": {"command": ["go", "install", "github.com/hahwul/dalfox/v2@latest"], "sudo": false, "installs_to": "~/go/bin/dalfox"},
       "brew": {"command": ["brew", "install", "dalfox"], "sudo": false}
     }
+  },
+  "sliver-py": {
+    "description": "Python gRPC client for Sliver C2",
+    "purpose": "C2 post-exploitation automation",
+    "verify": ["python3", "-c", "from sliver import SliverClient"],
+    "recipes": {
+      "pip": {"command": ["pip", "install", "sliver-py"], "sudo": false}
+    }
   }
 }

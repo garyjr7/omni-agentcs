@@ -1,5 +1,7 @@
 -r requirements-prod.in
 prompt_toolkit>=3.0,<4
+# Sliver C2 gRPC client (nexus.c2.* durable tools); also pulled via prod.in.
+sliver-py>=0.0.19
 pytest>=8.2.0
 pytest-asyncio>=0.23.7
 pytest-cov>=5.0.0

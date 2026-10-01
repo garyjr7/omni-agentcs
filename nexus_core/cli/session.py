@@ -47,6 +47,16 @@ SESSION_INTERACT_TOOL = "nexus.session.interact"
 SESSION_KILL_TOOL = "nexus.session.kill"
 SESSION_COMMAND_AUDIT_ACTION = "session.command"
 
+#: Session backends the REPL can attach to.
+SESSION_BACKEND_MSF = "msf"
+SESSION_BACKEND_SLIVER = "sliver"
+
+#: Sliver durable tools used by the REPL session mode and meta commands.
+SLIVER_SERVER_TOOL = "nexus.c2.sliver_server"
+SLIVER_IMPLANTS_TOOL = "nexus.c2.sliver_implants"
+SLIVER_SESSIONS_TOOL = "nexus.c2.sliver_sessions"
+SLIVER_EXEC_TOOL = "nexus.c2.sliver_exec"
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -85,6 +95,17 @@ def find_session(sessions: dict | None, session_uuid: str) -> dict | None:
         if isinstance(record, dict) and str(record.get("uuid") or "") == session_uuid:
             return record
     return None
+
+
+def _normalize_sliver_session(record: dict) -> dict:
+    """Present a Sliver session in the shape the REPL already renders."""
+    session_id = str(record.get("session_id") or "")
+    return {
+        **record,
+        "uuid": session_id,
+        "type": str(record.get("kind") or "session"),
+        "target_host": record.get("remote_address") or record.get("hostname") or "",
+    }
 
 
 def build_llm_client() -> Any:
@@ -220,6 +241,8 @@ class OmniSession:
         #: Session-mode state (attach does not touch the engagement scope).
         self.active_session_uuid: str | None = None
         self.active_session_info: dict | None = None
+        #: Which C2 backend the attached session belongs to (msf | sliver).
+        self.active_session_backend: str = SESSION_BACKEND_MSF
         self.session_commands_sent: int = 0
         self.session_started_at: str | None = None
         #: Report-mode state: where the last deliverable was written.
@@ -345,10 +368,12 @@ class OmniSession:
         session = ""
         if self.active_session_uuid:
             info = self.active_session_info or {}
-            kind = str(info.get("type") or "session")
-            session = "─" + render.paint(
-                f"[session {self.active_session_uuid}/{kind}]", render.MAGENTA
-            )
+            kind = str(info.get("type") or info.get("kind") or "session")
+            if self.active_session_backend == SESSION_BACKEND_SLIVER:
+                token = f"[sliver:{self.active_session_uuid}/{kind}]"
+            else:
+                token = f"[session {self.active_session_uuid}/{kind}]"
+            session = "─" + render.paint(token, render.MAGENTA)
         report = ""
         if self.last_report_directory:
             # Short marker only: the full path is printed by ``/report``.
@@ -561,14 +586,53 @@ class OmniSession:
         except PermissionError:
             return {}
 
+    def fetch_sliver_sessions(self) -> dict | None:
+        """Read Sliver sessions/beacons through the governed tool.
+
+        Returns ``None`` when the tool cannot answer so callers never mistake an
+        unreachable team server for "no sessions".
+        """
+        result = self.invoke_tool(SLIVER_SESSIONS_TOOL, {"kind": "both"})
+        if not isinstance(result, dict) or not result.get("success"):
+            return None
+        payload = result.get("output") or {}
+        records: dict[str, dict] = {}
+        for item in list(payload.get("sessions") or []) + list(payload.get("beacons") or []):
+            if isinstance(item, dict) and item.get("session_id"):
+                records[str(item["session_id"])] = _normalize_sliver_session(item)
+        return records
+
     def refresh_active_session(self) -> dict | None:
         """Look the active session up; ``None`` when it is gone or unknown."""
         if not self.active_session_uuid:
             return None
+        if self.active_session_backend == SESSION_BACKEND_SLIVER:
+            sessions = self.fetch_sliver_sessions()
+            if sessions is None:
+                return None
+            return sessions.get(self.active_session_uuid)
         sessions = self.fetch_sessions()
         if sessions is None:
             return None
         return find_session(sessions, self.active_session_uuid)
+
+    @routed
+    def attach_sliver_session(self, session_uuid: str) -> bool:
+        """Attach to a Sliver session/beacon; the scope is left untouched."""
+        sessions = self.fetch_sliver_sessions()
+        if sessions is None:
+            render.render_error("no se pudo consultar el team server de Sliver (¿está vivo?)")
+            return False
+        record = sessions.get(str(session_uuid or ""))
+        if record is None:
+            render.render_error(f"sesión Sliver no encontrada: {session_uuid}")
+            return False
+        self.active_session_uuid = str(record.get("uuid") or session_uuid)
+        self.active_session_info = dict(record)
+        self.active_session_backend = SESSION_BACKEND_SLIVER
+        self.session_started_at = _utc_now()
+        render.render_session_attached(self.active_session_info)
+        return True
 
     @routed
     def attach_session(self, session_uuid: str) -> bool:
@@ -593,6 +657,7 @@ class OmniSession:
         previous = self.active_session_uuid
         self.active_session_uuid = None
         self.active_session_info = None
+        self.active_session_backend = SESSION_BACKEND_MSF
         self.session_started_at = None
         if notify and previous:
             self._output.write(f"Detached from session {previous}. Session remains active.")
@@ -741,7 +806,13 @@ class OmniSession:
             return
 
     def audit_session_command(
-        self, session_uuid: str, command: str, run_id: str, outcome: str
+        self,
+        session_uuid: str,
+        command: str,
+        run_id: str,
+        outcome: str,
+        *,
+        tool_id: str = SESSION_INTERACT_TOOL,
     ) -> None:
         """Record every command sent into a session, with the current engagement."""
         AuditWriter(self.store).append(
@@ -752,7 +823,7 @@ class OmniSession:
             resource_type="session",
             resource_id=session_uuid,
             payload={
-                "tool_id": SESSION_INTERACT_TOOL,
+                "tool_id": tool_id,
                 "session_uuid": session_uuid,
                 "command": str(command)[:500],
                 "command_sha256": hashlib.sha256(str(command).encode("utf-8")).hexdigest(),
@@ -770,6 +841,8 @@ class OmniSession:
         if not session_uuid:
             return False
         run_id = self.ensure_run(f"comando a la sesión {session_uuid}")
+        if self.active_session_backend == SESSION_BACKEND_SLIVER:
+            return self._run_sliver_command(session_uuid, command, run_id)
         result = self.invoke_tool(
             SESSION_INTERACT_TOOL, {"session_uuid": session_uuid, "command": command}
         )
@@ -788,6 +861,34 @@ class OmniSession:
         if status == "session_dead":
             self.detach_session(notify=False)
             render.render_session_died(session_uuid)
+        return True
+
+    def _run_sliver_command(self, session_uuid: str, command: str, run_id: str) -> bool:
+        """Send one line to a Sliver session/beacon via ``nexus.c2.sliver_exec``."""
+        kind = str((self.active_session_info or {}).get("kind") or "session")
+        result = self.invoke_tool(
+            SLIVER_EXEC_TOOL,
+            {"session_id": session_uuid, "command": command, "kind": kind},
+        )
+        if result is None:
+            self.audit_session_command(
+                session_uuid, command, run_id, "denied", tool_id=SLIVER_EXEC_TOOL
+            )
+            return True
+        output = result.get("output") or {}
+        status = str(output.get("status") or "")
+        self.audit_session_command(
+            session_uuid, command, run_id, status or "unknown", tool_id=SLIVER_EXEC_TOOL
+        )
+        if not result.get("success"):
+            render.render_error(
+                f"el comando no se verificó: {result.get('verification_method') or 'error'}"
+            )
+        text = str(output.get("stdout") or "")
+        if not text and output.get("stderr"):
+            text = str(output.get("stderr"))
+        render.render_session_output(text)
+        self.session_commands_sent += 1
         return True
 
     # ------------------------------------------------------------------ run

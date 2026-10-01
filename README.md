@@ -89,7 +89,7 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **26 herramientas**:
+El catálogo durable contiene **31 herramientas**:
 
 - `nexus.system.status`, `nexus.workspace.search`.
 - `nexus.recon.nmap`, `nexus.recon.subfinder`, `nexus.recon.httpx`.
@@ -106,6 +106,8 @@ El catálogo durable contiene **26 herramientas**:
   `nexus.attack.impacket_getuserspns` (MEDIUM, Kerberoasting),
   `nexus.attack.impacket_psexec` (DESTRUCTIVE, ejecucion remota RemComSvc).
 - `nexus.session.list`, `nexus.session.interact`, `nexus.session.kill`.
+- `nexus.c2.sliver_server`, `nexus.c2.sliver_implants`, `nexus.c2.sliver_sessions`,
+  `nexus.c2.sliver_exec` (HIGH), `nexus.c2.sliver_pivot` (HIGH).
 - `nexus.report.generate`.
 - `nexus.system.check_env`, `nexus.system.install_tool`.
 
@@ -244,6 +246,31 @@ El resolver acepta las variantes `impacket-<nombre>` (Kali), `<nombre>.py`
 `bloodhound-python`. Los binarios se ejecutan por ruta absoluta, porque el PATH
 del sandbox no incluye `~/.local/bin`. psexec no abre una sesión durable, así
 que no registra fila en `kernel_sessions`.
+
+### Sliver C2
+
+Cinco tools integran el C2 moderno **Sliver** vía gRPC (`sliver-py`), sin
+subprocess: el bridge habla mTLS con el *multiplayer* del team server usando el
+operator config que indica `SLIVER_OPERATOR_CONFIG`.
+
+- `nexus.c2.sliver_server` (READ_ONLY): versión, operadores conectados y jobs.
+- `nexus.c2.sliver_implants` (READ_ONLY): builds y profiles de implants. No
+  genera implants.
+- `nexus.c2.sliver_sessions` (READ_ONLY, scope): lista sessions y beacons y los
+  registra en `kernel_sessions`; solo muestra los del engagement actual.
+- `nexus.c2.sliver_exec` (HIGH, scope): ejecuta UN comando en una session o
+  beacon ya registrado por el engagement. Rechaza metacaracteres de shell y un
+  conjunto de comandos destructivos (`shutdown`, `mkfs`, `format`, ...).
+- `nexus.c2.sliver_pivot` (HIGH, scope): pivoting (`portfwd`, `socks5`, `list`,
+  `kill`).
+
+Todas fallan cerrado: si el team server no responde o el config no existe,
+devuelven `verified=false` (`sliver_unavailable` / `sliver_auth_missing`) en vez
+de un error. En el REPL, `/sliver` muestra el estado del server, `/implants`
+lista builds y profiles y `/sessions --sliver` lista las sessions del engagement;
+`attach_session` es vía `/session attach <id>` desde esa lista. El prompt de modo
+sesión las marca con el prefijo `[sliver:<id>/<kind>]` y los comandos se
+enrutan por `nexus.c2.sliver_exec`.
 
 ### Trust mode
 
@@ -537,7 +564,7 @@ modelo resuelto.
    A G E N T C S   ·   C L I
 
        =[ OmniAgentCS v3.0.0                                              ]
- + -- --=[ 26 tools · 1 providers · engagement: scanme-lab                ]
+ + -- --=[ 31 tools · 1 providers · engagement: scanme-lab                ]
  + -- --=[ audit-chain ok · msfrpcd 6.5.3-dev- · groq/openai/gpt-oss-120b ]
 
  Tip: Use /trust on to auto-approve high-risk actions during an engagement.

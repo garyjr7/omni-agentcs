@@ -280,8 +280,33 @@ def _read_answer(session: "OmniSession", prompt: str) -> str:
         return ""
 
 
+def _render_sliver_sessions(session: "OmniSession") -> None:
+    """Table of the Sliver sessions/beacons of the current engagement."""
+    sessions = session.fetch_sliver_sessions()
+    if sessions is None:
+        render.render_error("no se pudo consultar el team server de Sliver (¿está vivo?)")
+        return
+    if not sessions:
+        render.write("(no hay sesiones Sliver activas)")
+        return
+    render.write(render.paint("Active Sliver sessions:", render.BOLD))
+    for record in sessions.values():
+        render.write(
+            f"  {str(record.get('uuid') or '?'):<12} "
+            f"{str(record.get('type') or '?'):<8} "
+            f"{record.get('remote_address') or '?'} "
+            f"{record.get('username') or '?'}"
+        )
+
+
 def cmd_sessions(session: "OmniSession", args: list[str]) -> None:
-    """Lista las sesiones activas (uuid, tipo, peer, vía, usuario)."""
+    """Lista las sesiones activas (uuid, tipo, peer, vía, usuario).
+
+    Uso: /sessions [--sliver] para listar las sesiones del team server Sliver.
+    """
+    if args and str(args[0]).lower() in {"--sliver", "sliver"}:
+        _render_sliver_sessions(session)
+        return
     sessions = session.fetch_sessions()
     if sessions is None:
         render.render_error("no se pudo consultar msfrpcd (¿está vivo?)")
@@ -815,6 +840,58 @@ def cmd_exploit(session: "OmniSession", args: list[str]) -> None:
     show_job(session, args)
 
 
+def cmd_sliver(session: "OmniSession", args: list[str]) -> None:
+    """Estado del team server de Sliver (versión, operadores, jobs)."""
+    result = session.invoke_tool("nexus.c2.sliver_server", {})
+    if result is None:
+        render.render_error("no se pudo consultar el team server de Sliver")
+        return
+    output = result.get("output") or {}
+    if not result.get("success"):
+        render.render_error(
+            f"Sliver no está disponible: {result.get('verification_method') or 'error'}"
+        )
+        return
+    render.write(render.paint(f"Sliver {output.get('version') or '?'}", render.BOLD))
+    render.write(
+        f"  operadores: {output.get('operators_count', 0)}  "
+        f"jobs: {output.get('jobs_count', 0)}"
+    )
+    for operator in output.get("operators") or []:
+        if not isinstance(operator, dict):
+            continue
+        status = "online" if operator.get("online") else "offline"
+        render.write(f"  - {operator.get('name') or '?'} ({status})")
+
+
+def cmd_implants(session: "OmniSession", args: list[str]) -> None:
+    """Lista builds y profiles de implants de Sliver (solo lectura)."""
+    result = session.invoke_tool("nexus.c2.sliver_implants", {"kind": "both"})
+    if result is None:
+        render.render_error("no se pudo consultar el team server de Sliver")
+        return
+    output = result.get("output") or {}
+    if not result.get("success"):
+        render.render_error(
+            f"Sliver no está disponible: {result.get('verification_method') or 'error'}"
+        )
+        return
+    builds = output.get("builds") or {}
+    profiles = output.get("profiles") or []
+    render.write(
+        render.paint(
+            f"Builds: {output.get('builds_count', 0)}  Profiles: {output.get('profiles_count', 0)}",
+            render.BOLD,
+        )
+    )
+    for name in sorted(builds):
+        render.write(f"  build   {name}")
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        render.write(f"  profile {profile.get('Name') or profile.get('name') or '?'}")
+
+
 def cmd_help(session: "OmniSession", args: list[str]) -> None:
     """Muestra esta ayuda."""
     render.write(render.paint("Comandos disponibles:", render.BOLD))
@@ -849,6 +926,8 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/trust": cmd_trust,
     "/status": cmd_status,
     "/exploit": cmd_exploit,
+    "/sliver": cmd_sliver,
+    "/implants": cmd_implants,
     "/help": cmd_help,
     "/exit": cmd_exit,
     "/quit": cmd_exit,
@@ -894,7 +973,9 @@ __all__ = [
     "cmd_findings",
     "cmd_help",
     "cmd_history",
+    "cmd_implants",
     "cmd_report",
+    "cmd_sliver",
     "cmd_scope",
     "cmd_timeline",
     "cmd_tools",
