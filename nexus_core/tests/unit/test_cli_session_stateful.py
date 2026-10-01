@@ -79,6 +79,11 @@ def session(tmp_path) -> OmniSession:
         operator_id="operator:tester",
     )
     value.run_id = str(run["id"])
+    from nexus_core.kernel.sessions import SessionRegistry
+    for record in SESSIONS.values():
+        SessionRegistry(store).register(session_uuid=record['uuid'], tenant_id=TENANT,
+            engagement_id=value.engagement.engagement_id, run_id=value.run_id,
+            session_type=record['type'], target_host=record['session_host'], opened_by_tool='fixture')
     return value
 
 

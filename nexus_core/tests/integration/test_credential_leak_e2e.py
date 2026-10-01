@@ -45,7 +45,8 @@ class ScriptedLLM:
 
 
 @pytest.mark.parametrize("wrapper", ["{}", "```json\n{}\n```", "Acción:\n{}\nFin."])
-def test_e2e_credentials_never_persisted_to_kernel_messages(tmp_path, wrapper):
+@pytest.mark.parametrize("malformed", [False, True])
+def test_e2e_credentials_never_persisted_to_kernel_messages(tmp_path, wrapper, malformed):
     store = ControlStore(tmp_path / "control.db")
     store.initialize()
     EngagementStore(store).create(
@@ -118,7 +119,7 @@ def test_e2e_credentials_never_persisted_to_kernel_messages(tmp_path, wrapper):
                 context=context,
                 objective="e2e leak",
                 engagement_id="eng-1",
-                llm_client=ScriptedLLM([wrapper.format(tool_call), done]),
+                llm_client=ScriptedLLM([wrapper.format(tool_call[:-2] if malformed else tool_call), done]),
                 config=ReActConfig(max_iterations=3),
             )
         )
@@ -129,6 +130,17 @@ def test_e2e_credentials_never_persisted_to_kernel_messages(tmp_path, wrapper):
     assert PASSWORD not in blob
     assert NTLM_HASH not in blob
     # The handler still got the real credentials.
-    assert received["password"] == PASSWORD
-    assert received["hash"] == NTLM_HASH
+    if malformed:
+        assert received == {}, "malformed requests must never execute"
+    else:
+        assert received["password"] == PASSWORD
+        assert received["hash"] == NTLM_HASH
+    with store.connect() as conn:
+        audit_rows = conn.execute("SELECT payload FROM kernel_audit_events").fetchall()
+    audit_blob = "\n".join(row["payload"] for row in audit_rows)
+    assert PASSWORD not in audit_blob and NTLM_HASH not in audit_blob
+    event_blob = json.dumps(store.list_run_events("system", run["id"]))
+    assert PASSWORD not in event_blob and NTLM_HASH not in event_blob
+    from nexus_core.kernel.audit import AuditWriter
+    assert AuditWriter(store).verify_chain()[0]
     assert outcome.conversation_id

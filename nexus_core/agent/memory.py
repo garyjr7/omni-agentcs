@@ -9,7 +9,6 @@ the leading system prompt and the most recent messages intact.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from nexus_core.llm.abstraction import LLMMessage
@@ -127,29 +126,14 @@ def _redact_arguments(arguments: dict[str, Any] | None) -> dict[str, Any] | None
     return AuditWriter._sanitize(arguments)
 
 
-def _redact_content(content: str) -> str:
-    """Redact JSON payloads, including the fences/prose accepted by the parser."""
-    from nexus_core.kernel.audit import AuditWriter
+def _sanitize_content_for_persistence(content: str) -> str:
+    from nexus_core.kernel.redaction import sanitize_text
 
-    decoder = json.JSONDecoder()
-    output = []
-    copied = index = 0
-    while index < len(content):
-        if content[index] not in "{[":
-            index += 1
-            continue
-        try:
-            parsed, end = decoder.raw_decode(content, index)
-        except ValueError:
-            index += 1
-            continue
-        redacted = AuditWriter._sanitize(parsed)
-        if redacted != parsed:
-            output.extend((content[copied:index], json.dumps(redacted, ensure_ascii=False)))
-            copied = end
-        index = end
-    output.append(content[copied:])
-    return "".join(output)
+    return sanitize_text(content)
+
+
+# Compatibility for existing callers/tests.
+_redact_content = _sanitize_content_for_persistence
 
 
 def append_step(

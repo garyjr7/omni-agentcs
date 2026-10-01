@@ -28,6 +28,12 @@ class _PostgresConnection:
     def executescript(self, sql: str):
         return self.connection.execute(sql)
 
+    def commit(self) -> None:
+        self.connection.commit()
+
+    def rollback(self) -> None:
+        self.connection.rollback()
+
     def __enter__(self):
         self.connection.__enter__()
         return self
@@ -58,6 +64,9 @@ class PostgresControlStore(ControlStore):
         )
         with self.connect() as conn:
             conn.executescript(schema)
+            conn.execute(
+                "ALTER TABLE kernel_approvals ADD COLUMN IF NOT EXISTS consumed_at TEXT"
+            )
             conn.execute(
                 """INSERT INTO kernel_tenants(id,name,created_at) VALUES(?,?,?)
                 ON CONFLICT(id) DO NOTHING""",

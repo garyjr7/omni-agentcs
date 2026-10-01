@@ -517,7 +517,19 @@ class OmniSession:
     # --------------------------------------------------------------- sessions
     def fetch_sessions(self) -> dict | None:
         """Read the daemon's session list; ``None`` when it cannot answer."""
-        return fetch_sessions()
+        from nexus_core.kernel.models import Identity, RunContext
+        from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope
+
+        context = RunContext(self.tenant_id, Identity("cli-session-list", self.tenant_id),
+                             scope=self.engagement, store=self.store)
+        try:
+            validate_session_scope(context)
+            raw = fetch_sessions()
+            if raw is None:
+                return None
+            return SessionRegistry(self.store).filter_owned(context, raw)
+        except PermissionError:
+            return {}
 
     def refresh_active_session(self) -> dict | None:
         """Look the active session up; ``None`` when it is gone or unknown."""

@@ -91,13 +91,12 @@ class ApprovalService:
 
         Returns ``True`` only the first time a matching, still-approved
         approval for this tenant/run/action is claimed. The row is marked via
-        ``consumed_at`` inside a ``BEGIN IMMEDIATE`` transaction, so two
-        concurrent invocations cannot both succeed. Returns ``False`` when the
+        ``consumed_at`` by one conditional UPDATE. Both SQLite and PostgreSQL
+        serialize conflicting updates, so only one invocation can succeed. Returns ``False`` when the
         approval is unknown, belongs to another run/action, was denied, or was
         already consumed.
         """
         with self.store.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
                 """UPDATE kernel_approvals SET consumed_at=?
                 WHERE id=? AND tenant_id=? AND run_id=? AND action=?
@@ -106,5 +105,4 @@ class ApprovalService:
                  expected_action),
             )
             consumed = cursor.rowcount == 1
-            conn.commit()
         return consumed

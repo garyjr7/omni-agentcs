@@ -148,19 +148,17 @@ def test_interact_audits_each_command(tmp_path, monkeypatch):
     assert {"tool.invoke", "tool.complete"} <= {event["action"] for event in events}
 
 
-def test_interact_no_scope_required(tmp_path, monkeypatch):
+def test_interact_requires_engagement(tmp_path, monkeypatch):
+    from dataclasses import replace
     definition = module.msf_session_interact_definition()
-    assert definition.scope_required is False and definition.scope_target_field is None
+    assert definition.scope_required is True and definition.scope_target_field is None
     assert definition.risk.value == "high"
-    fake_client(monkeypatch, module)
+    client = fake_client(monkeypatch, module)
     gw, _, run_context, approval_id = _approved_gateway(tmp_path)
-    # No engagement scope is needed: the session is already open.
-    assert run_context.scope is None
-    result = asyncio.run(
-        gw.invoke("nexus.session.interact", ARGS, run_context, approval_id=approval_id)
-    )
-    assert result["verified"] is True
-    assert result["output"]["status"] == "ok"
+    with pytest.raises(PermissionError, match="scope"):
+        asyncio.run(gw.invoke("nexus.session.interact", ARGS,
+                             replace(run_context, scope=None), approval_id=approval_id))
+    client.authenticate.assert_not_awaited()
 
 
 def test_interact_high_risk_needs_approval_in_the_gateway(tmp_path, monkeypatch):
@@ -191,3 +189,24 @@ def test_interact_never_executes_shell(monkeypatch):
         patch("asyncio.create_subprocess_exec", side_effect=AssertionError("no process")),
     ):
         assert execute().success
+
+
+@pytest.fixture(autouse=True)
+def _owned_context(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from nexus_core.kernel.control_store import ControlStore
+    from nexus_core.kernel.sessions import SessionRegistry
+    from nexus_core.tests.msf_support import context as base_context, scope
+
+    store = ControlStore(tmp_path / "ownership.db")
+    store.initialize()
+    def owned_context(engagement=None):
+        ctx = replace(base_context(engagement or scope()), store=store)
+        for uuid in ("sess-1", "sess-2"):
+            registry = SessionRegistry(store)
+            if registry.get("system", uuid) is None:
+                registry.register(session_uuid=uuid, tenant_id="system",
+                    engagement_id=ctx.scope.engagement_id, run_id=ctx.run_id,
+                    session_type="shell", target_host="203.0.113.10", opened_by_tool="fixture")
+        return ctx
+    monkeypatch.setitem(globals(), "context", owned_context)

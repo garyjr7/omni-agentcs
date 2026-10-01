@@ -19,6 +19,7 @@ from nexus_core.integrations.metasploit.client import (
 )
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.schema_validation import validate
+from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope
 from nexus_core.tools.parsers.metasploit import parse_msf_interaction
 
 #: Commands that would detach or kill the session: use the kill tool instead.
@@ -61,7 +62,7 @@ def msf_session_interact_definition(tenant_id: str = "system") -> ToolDefinition
         timeout_seconds=360,
         max_output_bytes=10_000_000,
         scope_target_field=None,
-        scope_required=False,
+        scope_required=True,
     )
 
 
@@ -101,6 +102,14 @@ async def msf_session_interact_handler(arguments: dict, context: RunContext) -> 
     max_wait = arguments.get("max_wait_seconds", 60)
     if type(max_wait) is not int or not 5 <= max_wait <= 300:
         raise ValueError("max_wait_seconds must be between 5 and 300")
+    try:
+        validate_session_scope(context)
+    except PermissionError:
+        return ToolResult(verification_method="session_scope_required")
+    registry = SessionRegistry(context.store)
+    denied = registry.denial(context, session_uuid)
+    if denied is not None:
+        return denied
     try:
         config = MetasploitConfig.from_env()
         if not config.password:

@@ -71,3 +71,24 @@ def test_session_kill_audit_event(tmp_path, monkeypatch):
     assert {"tool.invoke", "tool.complete"} <= actions
     assert all(event["decision"] == "allow" for event in events)
     assert module.msf_session_kill_definition().risk.value == "medium"
+
+
+@pytest.fixture(autouse=True)
+def _owned_context(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from nexus_core.kernel.control_store import ControlStore
+    from nexus_core.kernel.sessions import SessionRegistry
+    from nexus_core.tests.msf_support import context as base_context, scope
+
+    store = ControlStore(tmp_path / "ownership.db")
+    store.initialize()
+    def owned_context(engagement=None):
+        ctx = replace(base_context(engagement or scope()), store=store)
+        for uuid in ("sess-1", "sess-2"):
+            registry = SessionRegistry(store)
+            if registry.get("system", uuid) is None:
+                registry.register(session_uuid=uuid, tenant_id="system",
+                    engagement_id=ctx.scope.engagement_id, run_id=ctx.run_id,
+                    session_type="shell", target_host="203.0.113.10", opened_by_tool="fixture")
+        return ctx
+    monkeypatch.setitem(globals(), "context", owned_context)

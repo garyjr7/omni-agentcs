@@ -48,8 +48,15 @@ class Feed:
 def session(tmp_path) -> OmniSession:
     store = ControlStore(tmp_path / "commands.db")
     store.initialize()
-    value = OmniSession(store=store, tenant_id=TENANT, operator_id="operator:tester")
+    from nexus_core.tests.msf_support import scope
+    value = OmniSession(store=store, tenant_id=TENANT, operator_id="operator:tester",
+                        engagement=scope(cidrs=("10.0.0.0/24",)))
     value.run_id = str(store.create_run(TENANT, {})["id"])
+    from nexus_core.kernel.sessions import SessionRegistry
+    for record in SESSIONS.values():
+        SessionRegistry(store).register(session_uuid=record['uuid'], tenant_id=TENANT,
+            engagement_id=value.engagement.engagement_id, run_id=value.run_id,
+            session_type=record['type'], target_host=record['session_host'], opened_by_tool='fixture')
     return value
 
 

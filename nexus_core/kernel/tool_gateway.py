@@ -78,7 +78,12 @@ class ToolGateway:
                         raise PermissionError("scope is required but not provided")
                 elif self.scope_validator is not None:
                     try:
-                        self.scope_validator(context, definition, arguments)
+                        if tool_id in {"nexus.session.list", "nexus.session.interact", "nexus.session.kill"}:
+                            from .sessions import validate_session_scope
+
+                            validate_session_scope(context)
+                        else:
+                            self.scope_validator(context, definition, arguments)
                     except Exception as exc:
                         self.audit.append(
                             tenant_id=context.tenant_id,

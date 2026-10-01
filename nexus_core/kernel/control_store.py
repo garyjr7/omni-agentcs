@@ -232,9 +232,17 @@ CREATE TABLE IF NOT EXISTS kernel_quotas (
 CREATE TABLE IF NOT EXISTS kernel_approvals (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
     action TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-    requested_by TEXT NOT NULL, decided_by TEXT, reason TEXT,
+    requested_by TEXT NOT NULL, decided_by TEXT, reason TEXT, consumed_at TEXT,
     created_at TEXT NOT NULL, decided_at TEXT
 );
+CREATE TABLE IF NOT EXISTS kernel_sessions (
+    id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, engagement_id TEXT NOT NULL,
+    run_id TEXT NOT NULL, session_type TEXT NOT NULL, target_host TEXT NOT NULL,
+    opened_at TEXT NOT NULL, closed_at TEXT, opened_by_tool TEXT NOT NULL,
+    FOREIGN KEY(tenant_id) REFERENCES kernel_tenants(id)
+);
+CREATE INDEX IF NOT EXISTS idx_kernel_sessions_engagement
+    ON kernel_sessions(tenant_id, engagement_id);
 CREATE TABLE IF NOT EXISTS kernel_audit_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
     tenant_id TEXT NOT NULL, trace_id TEXT NOT NULL, actor_id TEXT NOT NULL,
@@ -485,6 +493,9 @@ class ControlStore:
 
     def append_run_event(self, tenant_id: str, run_id: str, event_type: str,
                          payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        from .redaction import sanitize
+
+        payload = sanitize(payload or {})
         event = {
             "event_id": f"event_{uuid4().hex}", "tenant_id": tenant_id,
             "run_id": run_id, "event_type": event_type,
@@ -551,6 +562,10 @@ class ControlStore:
                        classification: str = "internal") -> Dict[str, Any]:
         if role not in {"system", "user", "assistant", "tool"}:
             raise ValueError("unsupported message role")
+        from .redaction import sanitize, sanitize_text
+
+        content = sanitize_text(content)
+        metadata = sanitize(metadata or {})
         message = {"id": f"message_{uuid4().hex}", "tenant_id": tenant_id,
                    "conversation_id": conversation_id, "run_id": run_id,
                    "role": role, "content": content, "metadata": metadata or {},
@@ -655,6 +670,10 @@ class ControlStore:
         result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
     ) -> None:
+        from .redaction import sanitize
+
+        result = sanitize(result)
+        error = sanitize(error)
         status = "failed" if error else "completed"
         now = utc_now()
         with self.connect() as conn:
@@ -683,6 +702,9 @@ class ControlStore:
 
     def fail_or_retry_task(self, task_id: str, worker_id: str, error: str) -> str:
         """Retry with exponential backoff, or atomically move an exhausted task to DLQ."""
+        from .redaction import sanitize_text
+
+        error = sanitize_text(error)
         now = datetime.now(timezone.utc)
         with self.connect() as conn:
             row = conn.execute(

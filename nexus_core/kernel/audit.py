@@ -111,23 +111,10 @@ class AuditWriter:
     #: ``event_hash``) are deliberately absent from this set. In AD/impacket
     #: contexts a ``hash`` can authenticate via pass-the-hash, so it is treated
     #: like a password.
-    SECRET_TERMS = frozenset({
-        "password", "passwd", "pwd", "secret", "token",
-        "api_key", "apikey", "authorization", "auth",
-        "hash", "hashes", "ntlm_hash", "lm_hash", "nthash",
-        "password_hash", "credential", "credentials",
-        "private_key", "privatekey", "ssh_key", "sshkey",
-        "bearer", "cookie", "session_id",
-    })
+    from .redaction import SECRET_TERMS
 
     @classmethod
     def _sanitize(cls, value: Any) -> Any:
-        secret_terms = cls.SECRET_TERMS
-        if isinstance(value, dict):
-            return {
-                key: "[REDACTED]" if key.lower() in secret_terms else cls._sanitize(item)
-                for key, item in value.items()
-            }
-        if isinstance(value, list):
-            return [cls._sanitize(item) for item in value]
-        return value
+        from .redaction import sanitize
+
+        return sanitize(value)

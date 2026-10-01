@@ -160,8 +160,15 @@ módulo (`module.options`), no uno inventado. Un exploit que corre sin abrir
 sesión devuelve `status=timeout` con `verified=true` (la ejecución se verificó).
 
 Las sesiones se gestionan con `nexus.session.list` (solo lectura, filtra por
-tipo) y `nexus.session.kill` (MEDIUM, cleanup por UUID). Ambas van por el
-gateway y quedan auditadas; ningún handler abre un shell.
+tipo y engagement) y `nexus.session.kill` (MEDIUM, cleanup por UUID). Ambas
+van por el gateway y quedan auditadas; ningún handler abre un shell.
+
+`kernel_sessions` registra tenant, engagement, run de origen y target validado.
+Las sesiones nuevas solo se atribuyen si el UUID del job (`exploit_uuid`) y el
+host reportado coinciden con la operación autorizada. Las sesiones anteriores
+sin registro, de origen incierto, cerradas o de otro engagement se deniegan;
+no se importan automáticamente desde el daemon. El listado del CLI también
+aplica este filtro. Un registro no puede reasignarse a otro engagement.
 
 ### Interacción con sesiones
 
@@ -200,7 +207,7 @@ activas y `/kill-session [uuid]` (o `all`) termina sesiones. Si la sesión muere
 (por ejemplo el target se reinicia), el prompt vuelve solo a modo normal y avisa.
 
 Cada comando enviado a la sesión pasa por el gateway (`nexus.session.interact`,
-HIGH, sin scope: la sesión ya está abierta) igual que cualquier otra tool: se
+HIGH, con scope vigente y pertenencia registrada) igual que cualquier otra tool: se
 pide aprobación `y/n/e/?` por comando, o se auto-aprueba con `--trust-mode`, y
 cada uno queda auditado con el `engagement_id` actual. Los comandos que cerrarían
 la sesión (`exit`, `quit`, `background`, …) se rechazan: usa `/kill-session`.
@@ -626,3 +633,18 @@ Las decisiones y el balance de tests del cleanup están en
 ## Licencia
 
 Por definir. Este repositorio no incluye todavía una licencia de distribución.
+
+### Persistencia de credenciales y aprobaciones
+
+Mensajes, auditoría, eventos y resultados durables redactan campos de
+credenciales también cuando aparecen en JSON incompleto, fences Markdown o
+asignaciones como `password=...`. El saneamiento solo cambia la copia persistida;
+no repara solicitudes inválidas ni sustituye los argumentos en memoria que usa
+la ejecución. Reconoce campos conocidos: no detecta cualquier secreto arbitrario
+en prosa y no borra filtraciones históricas ya almacenadas.
+
+Las aprobaciones se consumen con una actualización condicional atómica en
+SQLite y PostgreSQL. La inicialización incorpora `consumed_at` también a bases
+PostgreSQL existentes. La prueba contra PostgreSQL real requiere `DATABASE_URL`
+y permiso para crear un esquema temporal exclusivo; no utiliza tablas de la
+aplicación.

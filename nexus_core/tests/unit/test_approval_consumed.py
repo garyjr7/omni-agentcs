@@ -67,7 +67,7 @@ def test_additive_migration_preserves_existing_approvals(tmp_path):
 
     old = ControlStore(tmp_path / "old.db")
     with old.connect() as conn:
-        conn.executescript(SCHEMA)
+        conn.executescript(SCHEMA.replace("reason TEXT, consumed_at TEXT,", "reason TEXT,"))
     context = _context(old)
     approval_id = _approved(old, context, "execute:tool:test")
     old.initialize()

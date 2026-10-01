@@ -185,8 +185,12 @@ async def _await_removal(
 def test_e2e_session_interact_against_local_shell(tmp_path):
     """A command routed through the gateway reaches the session and returns output."""
     port = _free_port()
-    gw, audit, approvals, _store = gateway_with_approvals(tmp_path)
-    run_context = context()
+    from dataclasses import replace
+    from nexus_core.kernel.sessions import SessionRegistry
+    from nexus_core.tests.msf_support import scope
+
+    gw, audit, approvals, store = gateway_with_approvals(tmp_path)
+    run_context = replace(context(scope(cidrs=("127.0.0.1/32",))), store=store)
     approval = approvals.request(run_context, f"execute:tool:{INTERACT_TOOL}")
     approvals.decide(approval["id"], "system", "operator-e2e", True, "e2e approval")
 
@@ -194,6 +198,9 @@ def test_e2e_session_interact_against_local_shell(tmp_path):
         async with MetasploitClient(MetasploitConfig.from_env()) as client:
             job_id, uuid, proc = await _open_session(client, port)
             try:
+                SessionRegistry(store).register(session_uuid=uuid, tenant_id="system",
+                    engagement_id=run_context.scope.engagement_id, run_id=run_context.run_id,
+                    session_type="shell", target_host=LOOPBACK, opened_by_tool="local-e2e-fixture")
                 return (
                     await gw.invoke(
                         INTERACT_TOOL,

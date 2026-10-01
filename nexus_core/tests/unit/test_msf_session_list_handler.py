@@ -64,14 +64,16 @@ def test_session_list_empty(monkeypatch):
     assert result.output["sessions"] == []
 
 
-def test_session_list_no_scope_required(tmp_path, monkeypatch):
+def test_session_list_requires_engagement(tmp_path, monkeypatch):
+    from dataclasses import replace
     definition = module.msf_session_list_definition()
-    assert definition.scope_required is False and definition.scope_target_field is None
-    fake_client(monkeypatch, module)
+    assert definition.scope_required is True and definition.scope_target_field is None
+    client = fake_client(monkeypatch, module)
     gw, audit = gateway(tmp_path)
-    result = asyncio.run(gw.invoke("nexus.session.list", {}, context()))
-    assert result["success"] is True
-    assert any(e["action"] == "tool.complete" for e in audit.export("system"))
+    with pytest.raises(PermissionError, match="scope"):
+        asyncio.run(gw.invoke("nexus.session.list", {}, replace(context(), scope=None)))
+    client.authenticate.assert_not_awaited()
+    assert any(e["action"] == "scope.denied" for e in audit.export("system"))
 
 
 def test_session_list_fail_closed_when_daemon_down(monkeypatch):
@@ -86,3 +88,24 @@ def test_session_list_rejects_unknown_filter(monkeypatch):
     fake_client(monkeypatch, module)
     with pytest.raises(ValueError):
         execute({"filter_type": "rootkit"})
+
+
+@pytest.fixture(autouse=True)
+def _owned_context(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from nexus_core.kernel.control_store import ControlStore
+    from nexus_core.kernel.sessions import SessionRegistry
+    from nexus_core.tests.msf_support import context as base_context, scope
+
+    store = ControlStore(tmp_path / "ownership.db")
+    store.initialize()
+    def owned_context(engagement=None):
+        ctx = replace(base_context(engagement or scope()), store=store)
+        for uuid in ("sess-1", "sess-2"):
+            registry = SessionRegistry(store)
+            if registry.get("system", uuid) is None:
+                registry.register(session_uuid=uuid, tenant_id="system",
+                    engagement_id=ctx.scope.engagement_id, run_id=ctx.run_id,
+                    session_type="shell", target_host="203.0.113.10", opened_by_tool="fixture")
+        return ctx
+    monkeypatch.setitem(globals(), "context", owned_context)

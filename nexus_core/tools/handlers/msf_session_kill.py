@@ -11,6 +11,7 @@ from nexus_core.integrations.metasploit.client import (
 )
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.schema_validation import validate
+from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope
 
 SESSION_UUID_PATTERN = r"[A-Za-z0-9_-]{1,64}"
 
@@ -43,7 +44,7 @@ def msf_session_kill_definition(tenant_id: str = "system") -> ToolDefinition:
         timeout_seconds=60,
         max_output_bytes=100_000,
         scope_target_field=None,
-        scope_required=False,
+        scope_required=True,
     )
 
 
@@ -53,6 +54,14 @@ async def msf_session_kill_handler(arguments: dict, context: RunContext) -> Tool
     if not isinstance(session_uuid, str) or not re.fullmatch(SESSION_UUID_PATTERN, session_uuid):
         raise ValueError("invalid session uuid")
     try:
+        validate_session_scope(context)
+    except PermissionError:
+        return ToolResult(verification_method="session_scope_required")
+    registry = SessionRegistry(context.store)
+    denied = registry.denial(context, session_uuid)
+    if denied is not None:
+        return denied
+    try:
         config = MetasploitConfig.from_env()
         if not config.password:
             return ToolResult(verification_method="msf_credentials_missing")
@@ -61,6 +70,8 @@ async def msf_session_kill_handler(arguments: dict, context: RunContext) -> Tool
                 return ToolResult(verification_method="msf_unavailable")
             result = await client.stop_session(session_uuid)
             outcome = str(result.get("result") or result.get("status") or "").lower()
+            if outcome == "success":
+                registry.close(context, session_uuid)
             return ToolResult(
                 output={"session_uuid": session_uuid, "result": outcome or "unknown"},
                 verified=outcome == "success",
