@@ -53,6 +53,17 @@ def durable_tool_definitions(
     from .handlers.system_env import check_env_definition, check_env_handler
     from .handlers.system_install import install_tool_definition, install_tool_handler
     from .handlers.workspace import workspace_search_definition, workspace_search_handler
+    from .handlers.netexec import netexec_definition, netexec_handler
+    from .handlers.bloodhound import bloodhound_definition, bloodhound_handler
+    from .handlers.impacket_secretsdump import (
+        impacket_secretsdump_definition,
+        impacket_secretsdump_handler,
+    )
+    from .handlers.impacket_getuserspns import (
+        getuserspns_definition,
+        impacket_getuserspns_handler,
+    )
+    from .handlers.impacket_psexec import psexec_definition, impacket_psexec_handler
 
     catalog = {
         "nexus.system.check_env": (check_env_definition(tenant_id), check_env_handler),
@@ -74,6 +85,23 @@ def durable_tool_definitions(
         "nexus.exploit.searchsploit": (
             searchsploit_definition(tenant_id),
             searchsploit_handler,
+        ),
+        "nexus.recon.netexec": (netexec_definition(tenant_id), netexec_handler),
+        "nexus.recon.bloodhound_python": (
+            bloodhound_definition(tenant_id),
+            bloodhound_handler,
+        ),
+        "nexus.attack.impacket_secretsdump": (
+            impacket_secretsdump_definition(tenant_id),
+            impacket_secretsdump_handler,
+        ),
+        "nexus.attack.impacket_getuserspns": (
+            getuserspns_definition(tenant_id),
+            impacket_getuserspns_handler,
+        ),
+        "nexus.attack.impacket_psexec": (
+            psexec_definition(tenant_id),
+            impacket_psexec_handler,
         ),
         "nexus.exploit.msf_search": (msf_search_definition(tenant_id), msf_search_handler),
         "nexus.exploit.msf_auxiliary": (msf_auxiliary_definition(tenant_id), msf_auxiliary_handler),

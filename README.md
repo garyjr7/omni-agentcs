@@ -89,7 +89,7 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **21 herramientas**:
+El catálogo durable contiene **26 herramientas**:
 
 - `nexus.system.status`, `nexus.workspace.search`.
 - `nexus.recon.nmap`, `nexus.recon.subfinder`, `nexus.recon.httpx`.
@@ -100,6 +100,11 @@ El catálogo durable contiene **21 herramientas**:
 - `nexus.exploit.searchsploit` (lookup local de Exploit-DB, sin red ni scope),
   `nexus.exploit.msf_search`, `nexus.exploit.msf_auxiliary`,
   `nexus.exploit.msf_exploit`.
+- `nexus.recon.netexec` (enumeracion SMB/LDAP), `nexus.recon.bloodhound_python`
+  (recoleccion del grafo AD).
+- `nexus.attack.impacket_secretsdump` (HIGH, volcado SAM/LSA/NTDS),
+  `nexus.attack.impacket_getuserspns` (MEDIUM, Kerberoasting),
+  `nexus.attack.impacket_psexec` (DESTRUCTIVE, ejecucion remota RemComSvc).
 - `nexus.session.list`, `nexus.session.interact`, `nexus.session.kill`.
 - `nexus.report.generate`.
 - `nexus.system.check_env`, `nexus.system.install_tool`.
@@ -211,6 +216,34 @@ HIGH, con scope vigente y pertenencia registrada) igual que cualquier otra tool:
 pide aprobación `y/n/e/?` por comando, o se auto-aprueba con `--trust-mode`, y
 cada uno queda auditado con el `engagement_id` actual. Los comandos que cerrarían
 la sesión (`exit`, `quit`, `background`, …) se rechazan: usa `/kill-session`.
+
+### Herramientas AD
+
+Cinco tools amplían la cobertura de Active Directory. Todas piden scope, se
+ejecutan por el sandbox y usan un allowlist de flags; el modelo nunca obtiene
+un shell ni elige ejecutables fuera del catálogo.
+
+- `nexus.recon.netexec` (MEDIUM): enumeración SMB/LDAP con NetExec. La
+  operación (`shares`, `users`, `groups`, `smb_sessions`, `disks`, ...) se
+  traduce al flag real (por ejemplo `--shares` o `--smb-sessions`), siempre con
+  `--no-progress` (NetExec no expone `-q`). Ejecución, módulos y volcado
+  (`-x`, `-X`, `-M`, `--sam`, `--ntds`) están prohibidos.
+- `nexus.recon.bloodhound_python` (MEDIUM): recolección del grafo con
+  bloodhound-python. Fuerza `--auth-method ntlm`, usa `-dc HOST` y
+  `-ns NAMESERVER` (no `ComputerOnly`) y deja los JSON en el workspace.
+- `nexus.attack.impacket_secretsdump` (HIGH): SAM/LSA/NTDS. `-outputfile` es un
+  prefijo; genera `.sam`, `.secrets`, `.cached` y `.ntds`. `-just-dc` solo NTDS.
+- `nexus.attack.impacket_getuserspns` (MEDIUM): Kerberoasting. El positional es
+  `domain/username:password`; el DC se indica con `-dc-ip`.
+- `nexus.attack.impacket_psexec` (DESTRUCTIVE): ejecución remota con psexec de
+  Impacket, basado en **RemComSvc**. Siempre requiere aprobación humana, incluso
+  en `--trust-mode`.
+
+El resolver acepta las variantes `impacket-<nombre>` (Kali), `<nombre>.py`
+(pipx) y `<nombre>`. NetExec se resuelve como `nxc`/`netexec` y BloodHound como
+`bloodhound-python`. Los binarios se ejecutan por ruta absoluta, porque el PATH
+del sandbox no incluye `~/.local/bin`. psexec no abre una sesión durable, así
+que no registra fila en `kernel_sessions`.
 
 ### Trust mode
 
@@ -504,7 +537,7 @@ modelo resuelto.
    A G E N T C S   ·   C L I
 
        =[ OmniAgentCS v3.0.0                                              ]
- + -- --=[ 21 tools · 1 providers · engagement: scanme-lab                ]
+ + -- --=[ 26 tools · 1 providers · engagement: scanme-lab                ]
  + -- --=[ audit-chain ok · msfrpcd 6.5.3-dev- · groq/openai/gpt-oss-120b ]
 
  Tip: Use /trust on to auto-approve high-risk actions during an engagement.

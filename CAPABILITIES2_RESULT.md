@@ -1,221 +1,174 @@
-# CAPABILITIES2 — tres fixes de seguridad; integraciones AD no implementadas
+# CAPABILITIES2 — 3 fixes críticos + 5 tools AD
 
 Fecha: 2026-10-01. Rama: `feat/capabilities-ad-attacks`.
 
-## Resultado y alcance
+## Resultado
 
-Se implementaron los tres fixes críticos y se verificó la suite. No se
-implementaron las cinco integraciones AD. La misión completa no está terminada.
-El límite comunicado fue no incorporar extracción de credenciales y ejecución
-remota a un agente ofensivo autónomo; no es un bloqueo de pipx o del sandbox.
+Los tres fixes críticos ya estaban implementados y verificados (commit
+`62a6f9d`); en esta sesión se comprobaron de nuevo y **no se relajó ninguno**.
+Sobre esa base se implementaron las cinco herramientas AD, con parser
+determinista, handler por sandbox, allowlist de flags, tests unitarios y un E2E
+opt-in contra los binarios reales.
 
 | Componente | Estado |
 |---|---|
-| Sanitización de respuestas malformadas | Implementada y probada |
-| PostgreSQL: esquema, migración y consumo de aprobación | Implementado; prueba real PG omitida por falta de DATABASE_URL |
-| Sesiones vinculadas a tenant/engagement | Implementado y probado con RPC simulado |
-| nexus.recon.netexec | No implementada |
-| nexus.recon.bloodhound_python | No implementada |
-| nexus.attack.impacket_secretsdump | No implementada |
-| nexus.attack.impacket_getuserspns | No implementada |
-| nexus.attack.impacket_psexec | No implementada |
+| Sanitización de `raw_response`/JSON malformado | Implementada (commit previo); reverificada |
+| PostgreSQL `consumed_at` + `commit()` | Implementado (commit previo); reverificado |
+| Sesiones vinculadas a tenant/engagement | Implementado (commit previo); reverificado |
+| `nexus.recon.netexec` | Implementada |
+| `nexus.recon.bloodhound_python` | Implementada |
+| `nexus.attack.impacket_secretsdump` | Implementada |
+| `nexus.attack.impacket_getuserspns` | Implementada |
+| `nexus.attack.impacket_psexec` | Implementada |
 
-El catálogo tiene **21 tools preexistentes**. No son 16 anteriores más cinco
-nuevas: agregar las cinco al estado encontrado produciría 26.
+## Nota sobre el conteo de tools
 
-## Fix 1: persistencia de texto malformado
+La misión asumía **16 tools preexistentes** y esperaba **21** al añadir cinco.
+El catálogo real al iniciar ya tenía **21 tools** (`nexus.web.sqlmap`,
+`nexus.recon.gobuster`, `nexus.recon.whatweb`, `nexus.exploit.searchsploit` y
+`nexus.web.dalfox` se añadieron en la misión web anterior). Por tanto el catálogo
+final es **26 tools = 21 + 5**, no 21. No se retiró ninguna herramienta para
+cuadrar un número: se informa el valor real. El test que fija el conteo
+(`test_system_env_handler.py`) se actualizó a 26.
 
-`kernel/redaction.py` centraliza nombres sensibles y sanitización recursiva.
-Procesa fragmentos JSON válidos, JSON en prosa/fences, valores entre comillas
-con escapes, valores incompletos y asignaciones conocidas con `:` o `=`.
-Cuando un valor no tiene comillas y no se puede interpretar con seguridad,
-redacta el resto de la línea. Puede eliminar contexto adicional deliberadamente.
+## Fixes críticos (reverificados)
 
-Se aplica a:
-- `agent.memory.append_step`, mediante `_sanitize_content_for_persistence`.
-- `ControlStore.append_message`, incluso sin pasar por memory.
-- `AuditWriter._sanitize`, incluyendo strings como `raw_response`.
-- Eventos de run, resultados de tareas/runs y errores de reintento.
+1. **Sanitización antes de persistir.** `kernel/redaction.py` centraliza los
+   nombres sensibles y la sanitización recursiva; `agent/memory.py` la aplica en
+   `append_step` y `ControlStore.append_message` antes del INSERT. Un JSON
+   malformado con `"password": "..."` no conserva el secreto.
+2. **PostgreSQL.** `consumed_at TEXT` está en `SCHEMA`, `_migrate_sqlite` lo
+   añade a bases SQLite existentes y `PostgresControlStore.initialize()` ejecuta
+   `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. `_PostgresConnection` expone
+   `commit()` y `rollback()`. `ApprovalService.consume` es un único UPDATE
+   condicional (tenant/run/acción/estado/`consumed_at IS NULL`) y devuelve
+   `rowcount == 1`; el adaptador traduce los placeholders, así que no hace falta
+   ramificar por backend.
+3. **Sesiones.** `kernel_sessions` y `SessionRegistry` ligan UUID, tenant,
+   engagement, run, tipo, target y tool de origen. Las tres tools de sesión
+   exigen scope y deniegan sesiones de otro engagement
+   (`session_engagement_mismatch`), no registradas (`session_not_registered`),
+   cerradas o fuera de scope. El List filtrado no expone el total global del
+   daemon.
 
-No se reparan solicitudes para ejecutarlas. Los argumentos originales siguen
-llegando a la ejecución; solo se modifica la copia persistida. Los nombres de
-integridad `event_hash`, `raw_sha256` y `content_sha256` se conservan.
+Salidas:
 
-Los E2E usan un LLM simulado, SQLite real y ejecución simulada. Comprueban
-`kernel_messages`, `kernel_audit_events`, eventos de run y la cadena de auditoría.
-Con JSON malformado también comprueban que no se invoca la herramienta.
+```text
+NO_COLOR=1 pytest nexus_core/tests -q
+1350 passed, 30 skipped in 46.76s
 
-Limitaciones: se reconocen campos conocidos, no cualquier secreto arbitrario en
-prosa. No se reescribió la auditoría histórica ni se borraron posibles secretos
-persistidos antes del fix. Tampoco se rediseñó el transporte de credenciales en
-payloads de tareas encoladas; no se añadieron herramientas que lo utilicen.
+pytest test_react_invalid_json_sanitization test_session_engagement_binding \
+       test_postgres_approval_consume test_impacket_resolver \
+       test_approval_consumed test_recipes -q
+51 passed, 1 skipped in 3.57s
 
-## Fix 2: aprobaciones y PostgreSQL
+pytest test_credential_leak_e2e test_session_engagement_e2e -v
+7 passed in 2.69s
+```
 
-- `consumed_at TEXT` está en el esquema compartido.
-- PostgreSQL ejecuta `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` para bases
-  existentes; cambiar solo CREATE TABLE no habría migrado esas bases.
-- El adaptador expone `commit()` y `rollback()`.
-- `consume` usa un único UPDATE condicionado por tenant, run, acción, estado y
-  `consumed_at IS NULL`; devuelve `rowcount == 1` después del commit del contexto.
-  No existe un SELECT seguido de UPDATE vulnerable a una carrera.
-- No necesita detectar el backend por el nombre de su clase ni mezclar formatos
-  de placeholders: el adaptador PostgreSQL ya traduce los placeholders.
+## Las cinco tools AD
 
-La prueba real PostgreSQL crea un esquema temporal exclusivo, inicializa el
-store y enfrenta cuatro consumidores concurrentes. Elimina únicamente ese
-esquema al finalizar. Está escrita y **se omitió** porque no hay DATABASE_URL
-PostgreSQL configurada. No se afirma haber validado PostgreSQL contra un servidor
-real. Pasan los contratos del adaptador/SQL y la concurrencia SQLite existente.
+Todas verifican scope (`scope_required=True`), corren por
+`sandbox_for_environment` con allowlist y ejecutan el binario por **ruta
+absoluta** (el PATH del sandbox es `/usr/local/bin:/usr/bin:/bin`, que no
+incluye `~/.local/bin` de pipx).
 
-## Fix 3: pertenencia de sesiones
+| Tool | Riesgo | scope target | Efecto |
+|---|---|---|---|
+| `nexus.recon.netexec` | MEDIUM | `target` | recon SMB/LDAP |
+| `nexus.recon.bloodhound_python` | MEDIUM | `dc` | recon del grafo AD |
+| `nexus.attack.impacket_secretsdump` | HIGH | `target` | credential_dump |
+| `nexus.attack.impacket_getuserspns` | MEDIUM | `dc_ip` | credential_access |
+| `nexus.attack.impacket_psexec` | DESTRUCTIVE | `target` | execution |
 
-`kernel_sessions` conserva UUID, tenant, engagement, run, tipo, target, origen,
-fecha de apertura y cierre. `SessionRegistry` impide reasignar o reabrir un
-registro existente bajo otra operación.
+- **NetExec**: `operation` → flag real; siempre `--no-progress`; credenciales por
+  `-u/-p/-d/-H`. Prohibidos `-x`, `-X`, `-M`, `--sam`, `--lsa`, `--ntds`,
+  `--put-file`, `--get-file`, `--taskkill`, `--wmi`, `--amsi-bypass`, `--log`.
+- **BloodHound.py**: `--auth-method ntlm` por defecto, `-dc HOST`, `-ns
+  NAMESERVER`, colecciones validadas (sin `ComputerOnly`), `-op` gestionado por
+  el handler; lee y resume los JSON del workspace.
+- **secretsdump**: `-outputfile` tratado como prefijo (`.sam`, `.secrets`,
+  `.cached`, `.ntds`), `method` ∈ {all, ntds, ntds_ntlm} → `-just-dc`/
+  `-just-dc-ntlm`; hashes por `-hashes` con `-no-pass`; `-debug`, `-ts`,
+  `-history` permitidos.
+- **GetUserSPNs**: positional `domain/username:password` (no `...@host`);
+  `-dc-ip`/`-dc-host`; `-request` + `-outputfile` gestionados.
+- **psexec**: DESTRUCTIVE, documentado como **RemComSvc**; siempre aprobación
+  humana (incluido en trust mode); `-path`/`-file`/`-c` prohibidos.
 
-- El engagement se obtiene de `context.scope.engagement_id`; RunContext no
-  tiene el atributo `engagement_id` supuesto en el pseudocódigo.
-- Las tres tools de sesión requieren scope. El gateway valida el contexto
-  para estas tools sin target explícito; no cambia ninguna firma pública.
-- Los handlers comprueban tenant, vigencia/firma, pertenencia, cierre y target
-  antes de abrir una conexión RPC. El listado filtra antes de calcular el total
-  y el digest; no expone el total global del daemon.
-- El inventario y attach del CLI usan el mismo filtrado.
-- Un kill confirmado registra `closed_at`.
-- El handler que abre sesiones exige store y registra la pertenencia.
+### Correcciones de recon aplicadas
 
-Se encontró una carrera de atribución adicional: el cliente RPC devuelve la
-primera sesión nueva observada, que puede pertenecer a otro job concurrente.
-El handler ahora exige UUID estable, `exploit_uuid` coincidente con el job y
-host coincidente con la IP validada. Sin esos datos devuelve
-`session_provenance_unverified`, sin reclamar ni operar la sesión ajena.
+1. NetExec `--no-progress` (no `-q`); shares/users/groups como flags de
+   enumeración; `--smb-sessions` y `--disks`.
+2. BloodHound `--auth-method ntlm` en minúsculas, `-dc HOST` vs `-ns
+   NAMESERVER`, sin `ComputerOnly`.
+3. secretsdump `-outputfile` es prefijo; `-just-dc` solo NTDS.
+4. GetUserSPNs `domain/username:password` como un único argumento.
+5. psexec es RemComSvc, documentado en la `description`.
+6. `-outputfile` genera `.sam`, `.secrets` y `.ntds` (más `.cached`).
+7. `-debug`, `-ts`, `-no-pass`, `-hashes` aceptados en la allowlist.
 
-Consecuencia deliberada: sesiones antiguas sin registro o daemons que no
-aporten esa evidencia no quedan disponibles automáticamente. No se implementó
-una importación manual ni una migración que adivine el propietario. El cliente
-RPC sigue usando su polling anterior; la nueva comprobación deniega una
-atribución incierta, no intenta seleccionar otra sesión.
+### Registro de sesiones
 
-Las pruebas antiguas que afirmaban que no se necesitaba scope se sustituyeron
-por pruebas de denegación. Los fixtures autorizados ahora crean registros de
-pertenencia reales; no se simuló el control para ocultar fallos. Los E2E MSF
-opt-in existentes también tienen fixtures con contexto/registro explícitos,
-pero no se ejecutaron contra un daemon real en esta misión.
+Ninguna de las cinco abre una sesión MSF/Meterpreter persistente: secretsdump y
+GetUserSPNs son volcados puntuales y el psexec de Impacket es una ejecución
+**one-shot** (sube un binario de servicio RemComSvc y termina). Por eso no se
+registra fila alguna en `kernel_sessions`; el vínculo session↔engagement queda
+cubierto por `nexus.exploit.msf_exploit`, que ya registra la pertenencia.
+
+### E2E opt-in
+
+`nexus_core/tests/integration/test_ad_tools_e2e.py` (gate `NEXUS_E2E=1`)
+comprueba que los cinco binarios resuelven a una ruta absoluta y ejecutan su
+ayuda dentro del sandbox real, sin contactar ningún target:
+
+```text
+NEXUS_E2E=1 pytest test_ad_tools_e2e.py -v
+6 passed in 2.08s
+```
 
 ## Verificación ejecutada
 
 ```sh
 NO_COLOR=1 .venv/bin/python -m pytest nexus_core/tests -q
-env -u NO_COLOR .venv/bin/python -m pytest nexus_core/tests -q
 .venv/bin/ruff check nexus_core --select F,E9
 git diff --check
+grep -rnE "subprocess|Popen|os\.system|shell=True" \
+  nexus_core/tools/handlers/netexec.py nexus_core/tools/handlers/bloodhound.py \
+  nexus_core/tools/handlers/impacket_*.py
 ```
 
 Salidas reales:
 
 ```text
-Con NO_COLOR=1: 1301 passed, 24 skipped in 59.11s
-Sin NO_COLOR:  1301 passed, 24 skipped in 59.49s
+1350 passed, 30 skipped in 46.76s
 Ruff: All checks passed!
 git diff --check: sin errores
+grep: OK (los handlers solo usan el sandbox)
 ```
 
-Batería crítica de unit tests, resolver y aprobaciones:
+Imports comprobados: `agent.memory`, `agent.react`, `kernel.postgres_store`,
+`kernel.sessions`, los cinco handlers AD, `tools.registry` y `omni`: **11 OK**.
+`durable_tool_definitions()` → **26 tools**.
 
-```sh
-.venv/bin/python -m pytest \
-  nexus_core/tests/unit/test_react_invalid_json_sanitization.py \
-  nexus_core/tests/unit/test_session_engagement_binding.py \
-  nexus_core/tests/unit/test_postgres_approval_consume.py \
-  nexus_core/tests/unit/test_impacket_resolver.py \
-  nexus_core/tests/unit/test_approval_consumed.py -q
-```
+## Limitaciones
 
-```text
-44 passed, 1 skipped in 4.38s
-```
-
-E2E críticos:
-
-```sh
-.venv/bin/python -m pytest \
-  nexus_core/tests/integration/test_credential_leak_e2e.py \
-  nexus_core/tests/integration/test_session_engagement_e2e.py -v
-```
-
-```text
-credenciales / JSON válido plano                  PASSED
-credenciales / JSON válido en fence               PASSED
-credenciales / JSON válido en prosa               PASSED
-credenciales / JSON malformado plano              PASSED
-credenciales / JSON malformado en fence            PASSED
-credenciales / JSON malformado en prosa            PASSED
-cross_engagement_denied_even_with_approval        PASSED
-7 passed in 6.43s
-```
-
-Imports comprobados: agent.memory, agent.react, kernel.redaction,
-kernel.postgres_store, kernel.sessions, tools.registry y omni: **7 OK**.
-
-## Estado del bloqueo de Impacket comprobado en esta sesión de trabajo
-
-Ya existía Impacket 0.13.1 instalado con pipx. No se desinstaló ni reinstaló.
-`secretsdump.py` apunta al venv de pipx y tiene este shebang:
-
-```text
-#!/home/operator/.local/share/pipx/venvs/impacket/bin/python
-```
-
-Consultas realizadas: `pipx list`, `readlink -f ~/.local/bin/secretsdump.py`
-y consultas de ayuda/versión mediante `sandbox_for_environment` con workspace
-temporal, HOME efímero y allowlist de rutas absolutas resueltas. No se alteró
-HOME/PYTHONPATH para restaurar el user-site.
-
-```text
-/home/operator/.local/bin/nxc --version
-exit=1 timeout=False
-1.5.0 - Yippie-Ki-Yay - f1877176 - 0
-
-/home/operator/.local/bin/bloodhound-python -h
-exit=0 timeout=False
-usage: bloodhound-python [-h] [-c COLLECTIONMETHOD] [-d DOMAIN] [-v]
-
-/home/operator/.local/bin/secretsdump.py -h
-exit=0 timeout=False
-Impacket v0.13.1 - Copyright Fortra, LLC and its affiliated companies
-
-/home/operator/.local/bin/GetUserSPNs.py -h
-exit=0 timeout=False
-Impacket v0.13.1 - Copyright Fortra, LLC and its affiliated companies
-
-/home/operator/.local/bin/psexec.py -h
-exit=0 timeout=False
-Impacket v0.13.1 - Copyright Fortra, LLC and its affiliated companies
-```
-
-Los tres scripts Impacket arrancan sin ModuleNotFoundError. NetExec hace
-`sys.exit(1)` deliberadamente después de imprimir --version; se comprobó en
-`nxc/cli.py` instalado. Esa salida no indica fallo de importación.
-
-La comprobación fue en LocalSandbox de desarrollo, no en una imagen OCI de
-producción. El resolver existente ya reconoce los nombres `.py` y no cambió.
-Las siete correcciones del recon sobre flags no se aplicaron a handlers AD
-porque no se implementaron esos handlers.
+- Las pruebas PostgreSQL reales siguen **omitidas** porque no hay `DATABASE_URL`
+  configurada; los contratos del adaptador y la concurrencia SQLite sí se
+  ejecutan.
+- Los E2E AD solo prueban resolución y arranque del binario en el sandbox. No se
+  ejecutó ningún ataque contra un DC real ni se capturaron salidas reales de
+  NetExec/BloodHound/secretsdump/GetUserSPNs/psexec; los parsers se validaron con
+  fixtures construidos a partir de los formatos documentados y de las ayudas
+  reales.
+- La redacción protege campos con nombre conocido y JSON malformado. No es un
+  detector universal de secretos en prosa libre ni limpia filas históricas.
 
 ## Git
 
-Se entrega únicamente el commit de fixes críticos, con el mensaje:
-`fix(security): sanitize raw_response, PG consumed_at, session-engagement binding`.
-No se crea un commit de capacidades inexistentes. No se hace push.
-
-`git log --oneline -5` previo al nuevo commit (el hash final se informa en la
-respuesta de entrega):
+Dos commits en la rama, sin push:
 
 ```text
-60eff11 fix(security): redact hash credentials, consume approvals, resolve impacket binaries
-02d0b7a feat(tools): add sqlmap, gobuster, whatweb, searchsploit, dalfox
-f65b4ca fix(cli): single-writer boundary, contextual /ask, markdown wrap
-824dbc7 feat(cli): region-based TUI layout + working indicator + live tool stream
-ac844a9 feat(cli): completion, markdown rendering, multiline, view-live
+fix(security): sanitize raw_response, PG consumed_at, session-engagement binding
+feat(tools): add NetExec, BloodHound, and impacket AD attack tools
 ```

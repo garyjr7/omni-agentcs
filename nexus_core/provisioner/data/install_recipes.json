@@ -86,6 +86,20 @@
       "pipx": {"command": ["pipx", "install", "impacket"], "sudo": false, "installs_to": "~/.local/bin/smbclient.py", "verify": ["smbclient.py", "-h"]}
     }
   },
+  "netexec": {
+    "description": "Network execution and AD enumeration toolkit", "purpose": "Enumeración SMB/LDAP de Active Directory",
+    "verify": ["nxc", "--help"],
+    "recipes": {
+      "pipx": {"command": ["pipx", "install", "netexec"], "sudo": false, "installs_to": "~/.local/bin/nxc", "verify": ["nxc", "--help"]}
+    }
+  },
+  "bloodhound": {
+    "description": "BloodHound.py AD graph collector", "purpose": "Recolección del grafo de Active Directory",
+    "verify": ["bloodhound-python", "--help"],
+    "recipes": {
+      "pipx": {"command": ["pipx", "install", "bloodhound"], "sudo": false, "installs_to": "~/.local/bin/bloodhound-python"}
+    }
+  },
   "whatweb": {
     "description": "Next generation web scanner", "purpose": "Fingerprinting web: CMS, frameworks, headers",
     "verify": ["whatweb", "--version"],

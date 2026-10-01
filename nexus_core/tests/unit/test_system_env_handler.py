@@ -56,5 +56,10 @@ def test_check_env_registered_in_catalog():
         "nexus.recon.gobuster",
         "nexus.recon.whatweb",
         "nexus.exploit.searchsploit",
+        "nexus.recon.netexec",
+        "nexus.recon.bloodhound_python",
+        "nexus.attack.impacket_secretsdump",
+        "nexus.attack.impacket_getuserspns",
+        "nexus.attack.impacket_psexec",
     } <= set(catalog)
-    assert len(catalog) == 21
+    assert len(catalog) == 26
