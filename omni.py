@@ -49,8 +49,22 @@ def main(argv=None) -> int:
             from nexus_core.cli.doctor import run_doctor
 
             return run_doctor(paths, config, as_json=args.json)
+        if args.setup:
+            import json as _json
+
+            from nexus_core.provisioner.readiness import assess_environment, render_report
+
+            # Reflect config-derived secrets (scope signing, provider keys) in
+            # the assessment, not only what the shell already exported.
+            apply_environment(config, paths)
+            report = assess_environment()
+            if args.json:
+                print(_json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+            else:
+                print(render_report(report))
+            return 0
         if args.json:
-            print("--json requiere --doctor", file=sys.stderr)
+            print("--json requiere --doctor o --setup", file=sys.stderr)
             return 2
         if should_run_wizard(paths, force_no_wizard=args.no_wizard):
             config = run_wizard(paths)

@@ -65,6 +65,8 @@ Un config corrupto se respalda como `.bak` y se recupera con defaults.
 omni                                      # selección de engagement y REPL
 omni --doctor --no-wizard                  # diagnóstico local
 omni --doctor --json                       # diagnóstico JSON, sin secretos
+omni --setup                               # verifica el entorno ofensivo
+omni --setup --json                        # idem, salida JSON
 omni --config                             # editar con $EDITOR
 omni --config-path                        # ruta del config
 omni --list-engagements
@@ -82,6 +84,17 @@ En el REPL, `/help` muestra comandos; `/ask`, `/scope`, `/tools`, `/history`,
 `/findings`, `/facts`, `/report`, `/timeline` y `/exit` permiten inspeccionar y
 controlar la sesión. `/facts` lista el blackboard del engagement
 (`/facts <tipo>` filtra por tipo de hecho).
+
+### Entorno operativo (`--setup`)
+
+OmniAgentCS es una herramienta de pentesting: su primer arranque verifica e
+informa de **todo** el entorno ofensivo, no solo del proveedor LLM. `omni --setup`
+(y `omni --setup --json`) evalúa binarios (`nmap`, `hydra`, `gobuster`,
+`sliver-server`, …), servicios (`msfrpcd`, team server de Sliver) y
+configuraciones (operator config de Sliver, plantillas de nuclei, diccionarios,
+secreto de firma del alcance), y para cada carencia imprime el paso de
+instalación/configuración concreto. Los binarios se instalan con el flujo
+aprobado `nexus.system.install_tool`; los servicios se documentan como comando.
 
 Doctor muestra sistema, herramientas, gestores, rutas, SQLite, últimos eventos
 de auditoría y puerto/systemd de msfrpcd. El sondeo del puerto no autentica RPC.

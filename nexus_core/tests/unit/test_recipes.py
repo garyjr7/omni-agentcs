@@ -11,8 +11,9 @@ pytestmark = pytest.mark.usefixtures("onboarding_env")
 
 def test_load_recipes_valid_json():
     recipes = load_recipes()
-    assert len(recipes) == 16
+    assert len(recipes) == 18
     assert {"whatweb", "searchsploit", "dalfox", "netexec", "bloodhound"} <= set(recipes)
+    assert {"hydra", "sliver-server"} <= set(recipes)
     assert "sliver-py" in recipes
     assert recipes["sliver-py"]["recipes"]["pip"]["command"] == ["pip", "install", "sliver-py"]
     assert all({"description", "purpose", "verify", "recipes"} <= set(r) for r in recipes.values())

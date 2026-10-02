@@ -125,6 +125,24 @@
       "brew": {"command": ["brew", "install", "dalfox"], "sudo": false}
     }
   },
+  "hydra": {
+    "description": "Online password cracking", "purpose": "Prueba de credenciales (ssh/ftp)",
+    "verify": ["hydra", "-h"],
+    "post_install_notes": "hydra imprime su ayuda y devuelve el control; la disponibilidad se decide por la presencia del binario.",
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "hydra"], "sudo": true},
+      "dnf": {"command": ["dnf", "install", "-y", "hydra"], "sudo": true},
+      "yum": {"command": ["yum", "install", "-y", "hydra"], "sudo": true},
+      "pacman": {"command": ["pacman", "-S", "--noconfirm", "hydra"], "sudo": true},
+      "brew": {"command": ["brew", "install", "hydra"], "sudo": false}
+    }
+  },
+  "sliver-server": {
+    "description": "Sliver C2 team server", "purpose": "C2, persistencia y movimiento lateral",
+    "verify": ["sliver-server", "version"],
+    "post_install_notes": "Sliver no está en los repos de distro. Instálalo desde https://sliver.sh; luego levanta el team server y genera el operator config con `sliver-server operator --name omni --lhost <IP> --save <ruta>.cfg` y exporta SLIVER_OPERATOR_CONFIG.",
+    "recipes": {}
+  },
   "sliver-py": {
     "description": "Python gRPC client for Sliver C2",
     "purpose": "C2 post-exploitation automation",

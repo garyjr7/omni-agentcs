@@ -57,7 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"{PROGRAM} {PROGRAM_VERSION}")
     for flag, help_text in (
-        ("doctor", "diagnóstico del sistema"), ("json", "salida JSON para --doctor"),
+        ("doctor", "diagnóstico del sistema"), ("json", "salida JSON para --doctor/--setup"),
+        ("setup", "verifica e informa del entorno ofensivo (binarios y servicios)"),
         ("config", "editar config global"), ("config-path", "imprimir ruta de config"),
         ("no-wizard", "omitir onboarding interactivo"), ("reset-config", "respaldar config y reiniciar onboarding"),
     ):
