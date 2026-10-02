@@ -57,7 +57,7 @@ def test_prompt_catalog_compact_format(catalog):
 
 
 def test_catalog_stays_compact_for_all_tools(catalog):
-    assert len(catalog) == 35
+    assert len(catalog) == 36
     # Compact catalog only: ~185 chars per tool, never the full JSON schema.
     assert len(render_tool_catalog(catalog)) < 7000
 

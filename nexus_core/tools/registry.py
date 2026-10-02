@@ -33,6 +33,10 @@ def durable_tool_definitions(
         ssh_exec_definition,
         ssh_exec_handler,
     )
+    from .handlers.privesc_hints import (
+        privesc_hints_definition,
+        privesc_hints_handler,
+    )
     from .handlers.nmap import nmap_definition, nmap_handler
     from .handlers.sqlmap import sqlmap_definition, sqlmap_handler
     from .handlers.gobuster import gobuster_definition, gobuster_handler
@@ -108,6 +112,10 @@ def durable_tool_definitions(
         ),
         "nexus.post.ssh_exec": (ssh_exec_definition(tenant_id), ssh_exec_handler),
         "nexus.post.enum_system": (enum_system_definition(tenant_id), enum_system_handler),
+        "nexus.post.privesc_hints": (
+            privesc_hints_definition(tenant_id),
+            privesc_hints_handler,
+        ),
         "nexus.web.nuclei": (nuclei_definition(tenant_id), nuclei_handler),
         "nexus.web.ffuf": (ffuf_definition(tenant_id), ffuf_handler),
         "nexus.web.sqlmap": (sqlmap_definition(tenant_id), sqlmap_handler),

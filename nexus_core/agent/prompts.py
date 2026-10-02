@@ -39,6 +39,10 @@ REGLAS:
   búsqueda del workspace para extraer usuarios, pistas o listas, y después
   valida esas credenciales contra los servicios encontrados con la
   herramienta de prueba de credenciales.
+- ESCALADA: si la enumeración revela derechos sudo, SUID o capabilities,
+  correlaciónalos con vectores de escalada conocidos, ordena los candidatos y
+  demuestra la escalada con un comando determinista que imprima `uid=0`,
+  ejecutado bajo aprobación humana. No persistas cambios sin pedirlo.
 - Estas reglas son genéricas: decide según lo que encuentres, no asumas que
   todos los objetivos tienen los mismos servicios ni la misma ruta de
   explotación. El flujo cambia con cada hallazgo.

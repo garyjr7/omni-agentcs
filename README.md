@@ -89,7 +89,7 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **35 herramientas**:
+El catálogo durable contiene **36 herramientas**:
 
 - `nexus.system.status`, `nexus.workspace.search`.
 - `nexus.recon.nmap` (perfiles `quick`/`full_tcp`/`service`/`top_udp`),
@@ -99,7 +99,9 @@ El catálogo durable contiene **35 herramientas**:
   `ssh`/`ftp` con hydra; intentos acotados).
 - `nexus.post.ssh_exec` (HIGH, ejecuta UN comando vía SSH con una credencial
   validada; rechaza comandos destructivos), `nexus.post.enum_system` (MEDIUM,
-  enumera identidad, usuarios, `sudo -l`, SUID, capabilities y cron).
+  enumera identidad, usuarios, `sudo -l`, SUID, capabilities y cron),
+  `nexus.post.privesc_hints` (READ_ONLY, correlaciona ese surface con vectores
+  GTFOBins y propone el comando de prueba `uid=0`; no ejecuta nada).
 - `nexus.recon.gobuster` (dir/dns/vhost, wordlist confinada al workspace),
   `nexus.recon.whatweb` (fingerprinting profundo vía `--log-json`).
 - `nexus.web.nuclei`, `nexus.web.ffuf`, `nexus.web.sqlmap` (batch, solo
@@ -571,7 +573,7 @@ modelo resuelto.
    A G E N T C S   ·   C L I
 
        =[ OmniAgentCS v3.0.0                                              ]
- + -- --=[ 35 tools · 1 providers · engagement: scanme-lab                ]
+ + -- --=[ 36 tools · 1 providers · engagement: scanme-lab                ]
  + -- --=[ audit-chain ok · msfrpcd 6.5.3-dev- · groq/openai/gpt-oss-120b ]
 
  Tip: Use /trust on to auto-approve high-risk actions during an engagement.

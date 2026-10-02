@@ -98,6 +98,41 @@ def test_ssh_exec_runs_client_in_sandbox():
     assert result.output["stdout"] == "lin\n"
 
 
+def test_ssh_exec_feeds_sudo_password_on_stdin():
+    payload = {
+        "ok": True,
+        "connected": True,
+        "stdout": "uid=0(root)\n",
+        "stderr": "",
+        "exit_status": 0,
+    }
+    with _fake_sandbox(_sandbox_for(payload)) as sandbox:
+        result = _run(
+            ssh_exec_handler,
+            {
+                "target": "10.65.151.43",
+                "username": "lin",
+                "password": "secret",
+                "command": "sudo /bin/tar cf /dev/null /dev/null",
+            },
+        )
+    remote = json.loads(sandbox.calls[0][0][-1])
+    assert remote["command"].startswith("sudo -S ")
+    assert remote["stdin"] == "secret\n"
+    assert result.evidence["sudo_stdin"] is True
+
+
+def test_ssh_exec_no_stdin_for_plain_command():
+    payload = {"ok": True, "connected": True, "stdout": "x\n", "stderr": "", "exit_status": 0}
+    with _fake_sandbox(_sandbox_for(payload)) as sandbox:
+        _run(
+            ssh_exec_handler,
+            {"target": "10.65.151.43", "username": "lin", "password": "secret", "command": "id"},
+        )
+    remote = json.loads(sandbox.calls[0][0][-1])
+    assert remote["stdin"] is None
+
+
 def test_ssh_exec_rejects_destructive_command():
     with pytest.raises(ValueError):
         _run(

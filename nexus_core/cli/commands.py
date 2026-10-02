@@ -53,7 +53,9 @@ def _build_ask_system_prompt(session: "OmniSession") -> str:
 
     tools = _tool_catalog(session)
     tool_lines = []
-    for tool_id, entry in sorted(tools.items())[:24]:
+    # Keep the whole durable catalog (compact: one line per tool); the cap only
+    # guards against a runaway catalog, so it must exceed the current size.
+    for tool_id, entry in sorted(tools.items())[:64]:
         definition = entry[0] if isinstance(entry, tuple) else entry
         description = str(getattr(definition, "description", "") or "").replace("\n", " ")[:80]
         tool_lines.append(f"  - {tool_id}: {description}")

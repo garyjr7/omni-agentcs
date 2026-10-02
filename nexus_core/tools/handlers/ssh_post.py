@@ -108,7 +108,19 @@ def main():
         result["connected"] = True
         if mode == "exec":
             command = payload.get("command", "")
-            stdin, stdout, stderr = client.exec_command(command, timeout=payload.get("command_timeout", 60))
+            stdin_data = payload.get("stdin")
+            # sudo reads the password from a tty; allocate a pty only when we
+            # actually feed stdin, keeping normal commands pty-free.
+            stdin, stdout, stderr = client.exec_command(
+                command, timeout=payload.get("command_timeout", 60), get_pty=bool(stdin_data)
+            )
+            if stdin_data:
+                stdin.write(stdin_data)
+                stdin.flush()
+                try:
+                    stdin.channel.shutdown_write()
+                except Exception:
+                    pass
             out = stdout.read().decode("utf-8", "replace")
             err = stderr.read().decode("utf-8", "replace")
             code = stdout.channel.recv_exit_status()
@@ -126,10 +138,17 @@ def main():
                         err = stderr.read().decode("utf-8", "replace")
                         code = stdout.channel.recv_exit_status()
                         if code != 0:
-                            # Non-interactive sudo failed: feed the password to -S.
-                            stdin, stdout, stderr = client.exec_command("sudo -S -l", timeout=command_timeout)
+                            # Non-interactive sudo failed: feed the password to -S
+                            # over a pty (sudo reads the password from the tty).
+                            stdin, stdout, stderr = client.exec_command(
+                                "sudo -S -l", timeout=command_timeout, get_pty=True
+                            )
                             stdin.write(password + "\n")
                             stdin.flush()
+                            try:
+                                stdin.channel.shutdown_write()
+                            except Exception:
+                                pass
                             out = stdout.read().decode("utf-8", "replace")
                             err = stderr.read().decode("utf-8", "replace")
                             code = stdout.channel.recv_exit_status()
@@ -304,6 +323,14 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
     forbidden = _forbidden_command(command)
     if forbidden is not None:
         raise ValueError(f"command contains a forbidden token: {forbidden!r}")
+    # ``sudo`` needs a password on a non-interactive channel. Reuse the login
+    # credential (the common case) via ``sudo -S`` and feed it on stdin, so the
+    # secret never appears in the remote argv.
+    stdin_data: str | None = None
+    remote_command = command
+    if command.startswith("sudo ") and " -S" not in command[:16]:
+        remote_command = "sudo -S " + command[len("sudo ") :]
+        stdin_data = password + "\n"
     port = int(arguments.get("port") or SSH_DEFAULT_PORT)
     requested_timeout = arguments.get("timeout_seconds")
     timeout_seconds = min(
@@ -317,10 +344,20 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         port=port,
         username=username,
         password=password,
-        payload={"command": command, "command_timeout": min(60, timeout_seconds)},
+        payload={
+            "command": remote_command,
+            "command_timeout": min(60, timeout_seconds),
+            "stdin": stdin_data,
+        },
         timeout_seconds=timeout_seconds,
     )
-    evidence = {"mode": "exec", "command": command, "port": port, "username": username}
+    evidence = {
+        "mode": "exec",
+        "command": command,
+        "sudo_stdin": stdin_data is not None,
+        "port": port,
+        "username": username,
+    }
     if result.timed_out:
         return ToolResult(
             output={"error": "ssh command timed out", "target": target},

@@ -70,5 +70,6 @@ def test_check_env_registered_in_catalog():
         "nexus.cred.bruteforce",
         "nexus.post.ssh_exec",
         "nexus.post.enum_system",
+        "nexus.post.privesc_hints",
     } <= set(catalog)
-    assert len(catalog) == 35
+    assert len(catalog) == 36
