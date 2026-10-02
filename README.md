@@ -101,10 +101,22 @@ aprobado `nexus.system.install_tool`; los servicios se documentan como comando.
 
 `omni --setup --install` genera el plan de instalación de cada binario ausente
 (no ejecuta nada sin `--yes`); `omni --setup --install --yes` aplica los planes
-por el mismo bucle aprobado detectar → plan → ejecutar → verificar. Los
-binarios de terceros que no están en un gestor (Sliver) **no** se instalan con
-un `curl | sh` a ciegas: se reportan con la ruta oficial verificable, y el
-operator config se genera una vez que `sliver-server` existe.
+por el mismo bucle aprobado detectar → plan → ejecutar → verificar.
+
+**Sliver no se instala con un `curl | sh` a ciegas.** Con `--yes` el bootstrap
+descarga la release **fijada**, verifica la firma **minisign** con la clave
+pública oficial (`RWTZPg959v3b7tLG7VzKHRB1/QT+d3c71Uzetfa44qAoX5rH7mGoQTTR`),
+instala el binario en `~/.local/bin/sliver-server` **solo si la firma es
+válida**, levanta el team server en el puerto 31337 y genera el operator config
+en `~/.config/omni/sliver/operator.cfg`. Si falta `minisign`, se instala primero
+con su receta (y aparece como componente de `--setup`).
+
+**msfrpcd** se instala/repare como servicio systemd con
+`scripts/install_msfrpcd_service.sh`. La contraseña nunca viaja en `argv`: se
+escribe en un fichero temporal `0600` y el script siembra `/etc/default/msfrpcd`
+(600 `root:root`). La ejecución es no interactiva (`sudo -n`), de modo que sin
+sudo sin contraseña obtienes el comando exacto para ejecutarlo a mano en vez de
+un prompt colgado.
 
 Doctor muestra sistema, herramientas, gestores, rutas, SQLite, últimos eventos
 de auditoría y puerto/systemd de msfrpcd. El sondeo del puerto no autentica RPC.

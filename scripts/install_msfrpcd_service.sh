@@ -1,6 +1,27 @@
 #!/usr/bin/env bash
-# Repair the system unit using the existing root-owned password file.
+# Install (or repair) the msfrpcd systemd unit.
+#
+# Usage: sudo bash scripts/install_msfrpcd_service.sh [--password-file <path>]
+#
+# Without --password-file this only *repairs* an existing root-owned
+# /etc/default/msfrpcd. With it (a 0600 file containing MSFRPC_PASSWORD=...),
+# the file is seeded first, so a fresh machine can be configured in one run
+# without ever passing the secret on the command line.
 set -euo pipefail
+
+password_file=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --password-file)
+            password_file="${2:-}"
+            shift 2
+            ;;
+        *)
+            echo "Argumento desconocido: $1" >&2
+            exit 2
+            ;;
+    esac
+done
 
 if [[ $EUID -ne 0 ]]; then
     echo 'Ejecutar con sudo bash scripts/install_msfrpcd_service.sh' >&2
@@ -12,8 +33,15 @@ env_file=/etc/default/msfrpcd
 unit_file=/etc/systemd/system/msfrpcd.service
 
 if [[ ! -f $env_file || -L $env_file ]]; then
-    echo 'Falta /etc/default/msfrpcd o es un enlace simbólico.' >&2
-    exit 1
+    if [[ -n $password_file && -f $password_file ]]; then
+        # Seed the root-owned credential file from a user-supplied 0600 file.
+        install -m 600 -o root -g root -- "$password_file" "$env_file"
+        echo "Sembrado $env_file desde $password_file"
+    else
+        echo 'Falta /etc/default/msfrpcd o es un enlace simbólico.' >&2
+        echo 'Crea el fichero (600 root:root) con MSFRPC_PASSWORD=<clave> o pasa --password-file <ruta>.' >&2
+        exit 1
+    fi
 fi
 if [[ $(stat -c '%a %u:%g' "$env_file") != '600 0:0' ]]; then
     echo 'El archivo de credenciales debe tener permisos 600 y propietario root:root.' >&2

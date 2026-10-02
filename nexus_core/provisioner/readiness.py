@@ -40,6 +40,7 @@ BINARY_COMPONENTS: tuple[tuple[str, str, str, bool], ...] = (
     ("bloodhound", "bloodhound-python", "Grafo de Active Directory", False),
     ("impacket", "impacket-smbclient", "Auditoría de protocolos", False),
     ("dalfox", "dalfox", "Detección de XSS", False),
+    ("minisign", "minisign", "Verificación de firmas (Sliver)", False),
     ("sliver-server", "sliver-server", "C2 Sliver (team server)", False),
 )
 
@@ -132,8 +133,9 @@ def assess_environment(
         present = which(binary) is not None
         if component_id == "sliver-server":
             setup = (
-                "Instala Sliver: https://sliver.sh (curl instalador oficial) y "
-                "levanta el team server; luego genera el operator config con "
+                "Ejecuta `omni --setup --install --yes`: descarga la release "
+                "fijada, verifica la firma minisign, instala el binario, levanta "
+                "el team server y genera el operator config con "
                 f"`{sliver_operator_plan(lhost=lhost)}`."
             )
         elif component_id in recipe_names:

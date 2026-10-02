@@ -137,10 +137,21 @@
       "brew": {"command": ["brew", "install", "hydra"], "sudo": false}
     }
   },
+  "minisign": {
+    "description": "Minisign signature verifier", "purpose": "Verificación de firmas (Sliver)",
+    "verify": ["minisign", "-v"],
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "minisign"], "sudo": true},
+      "dnf": {"command": ["dnf", "install", "-y", "minisign"], "sudo": true},
+      "yum": {"command": ["yum", "install", "-y", "minisign"], "sudo": true},
+      "pacman": {"command": ["pacman", "-S", "--noconfirm", "minisign"], "sudo": true},
+      "brew": {"command": ["brew", "install", "minisign"], "sudo": false}
+    }
+  },
   "sliver-server": {
     "description": "Sliver C2 team server", "purpose": "C2, persistencia y movimiento lateral",
     "verify": ["sliver-server", "version"],
-    "post_install_notes": "Sliver no está en los repos de distro. Instálalo desde https://sliver.sh; luego levanta el team server y genera el operator config con `sliver-server operator --name omni --lhost <IP> --save <ruta>.cfg` y exporta SLIVER_OPERATOR_CONFIG.",
+    "post_install_notes": "Sliver no está en los repos de distro. `omni --setup --install --yes` descarga la release fijada, verifica la firma minisign con la clave oficial, instala el binario, levanta el team server y genera el operator config.",
     "recipes": {}
   },
   "sliver-py": {
