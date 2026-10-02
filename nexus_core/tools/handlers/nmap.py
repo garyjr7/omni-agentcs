@@ -62,6 +62,23 @@ NMAP_ALLOWED_PROGRAMS = ("python3", "git", "rg", "nmap")
 NMAP_DEFAULT_TIMEOUT_SECONDS = 120
 NMAP_MAX_TIMEOUT_SECONDS = 600
 
+# Perfiles de reconocimiento: nombre -> (flags base, timeout recomendado).
+# El perfil se expande server-side, así que el modelo nunca inventa flags: pide
+# un nombre conocido. ``full_tcp`` cubre los 65535 puertos TCP (-p-), que es el
+# paso que descubre servicios fuera de la lista "común" (p. ej. FTP en 21).
+NMAP_PROFILES: dict[str, dict[str, Any]] = {
+    "quick": {"flags": ["-Pn", "-F", "-T4"], "timeout_seconds": 120},
+    "full_tcp": {"flags": ["-Pn", "-p-", "-T4", "--open"], "timeout_seconds": 600},
+    "service": {
+        "flags": ["-Pn", "-p-", "-sV", "-sC", "-T4", "--open"],
+        "timeout_seconds": 600,
+    },
+    "top_udp": {
+        "flags": ["-Pn", "-sU", "--top-ports", "100", "-T4"],
+        "timeout_seconds": 600,
+    },
+}
+
 
 def validate_and_canonicalize_flags(raw_flags: list[str]) -> tuple[list[str], str, set[str]]:
     """Validate raw LLM-provided flags and compute the aggregate noise level.
@@ -125,6 +142,15 @@ def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
             "type": "object",
             "properties": {
                 "target": {"type": "string", "minLength": 1, "maxLength": 255},
+                "profile": {
+                    "type": "string",
+                    "enum": sorted(NMAP_PROFILES),
+                    "description": (
+                        "Perfil de escaneo predefinido. Usa 'full_tcp' para "
+                        "descubrimiento completo de puertos (-p-) y 'service' "
+                        "para detección de versiones sobre todos los puertos."
+                    ),
+                },
                 "flags": {
                     "type": "array",
                     "items": {"type": "string", "maxLength": 64},
@@ -155,13 +181,34 @@ async def _run_nmap(sandbox: Any, argv: list[str], timeout_seconds: int):
 async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
     """Execute an allowlisted nmap scan inside a sandbox and parse its XML."""
     target = str(arguments["target"]).strip()
-    raw_flags = arguments.get("flags") or []
-    flags, noise_level, warnings = validate_and_canonicalize_flags(list(raw_flags))
+    raw_flags = list(arguments.get("flags") or [])
+
+    profile = arguments.get("profile")
+    profile_name: str | None = None
+    base_flags: list[str] = []
+    profile_timeout: int | None = None
+    if profile not in (None, ""):
+        profile_name = str(profile).strip()
+        spec = NMAP_PROFILES.get(profile_name)
+        if spec is None:
+            raise ValueError(f"unknown nmap profile: {profile_name!r}")
+        base_flags = list(spec["flags"])
+        profile_timeout = int(spec["timeout_seconds"])
+
+    flags, noise_level, warnings = validate_and_canonicalize_flags([*base_flags, *raw_flags])
+    if "-p-" in flags and "-p" in flags:
+        raise ValueError("conflicting nmap flags: '-p-' (all ports) and '-p <ports>'")
+    if profile_name:
+        warnings = set(warnings)
+        warnings.add(f"profile: {profile_name}")
+
     requested_timeout = arguments.get("timeout_seconds")
-    timeout_seconds = min(
-        NMAP_MAX_TIMEOUT_SECONDS,
-        max(10, int(requested_timeout) if requested_timeout else NMAP_DEFAULT_TIMEOUT_SECONDS),
-    )
+    if requested_timeout:
+        timeout_seconds = min(NMAP_MAX_TIMEOUT_SECONDS, max(10, int(requested_timeout)))
+    elif profile_timeout:
+        timeout_seconds = min(NMAP_MAX_TIMEOUT_SECONDS, max(10, profile_timeout))
+    else:
+        timeout_seconds = NMAP_DEFAULT_TIMEOUT_SECONDS
 
     argv = ["nmap", *flags, "-oX", "-", target]
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
@@ -203,13 +250,14 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
         output={
             "target": target,
             "noise_level": noise_level,
+            "profile": profile_name,
             "scan": scan.to_dict(),
         },
         verified=verified,
-        verification_method="nmap_xml_parsed",
-        evidence={
-            "noise_level": noise_level,
-            "host_count": len(scan.hosts),
+        verification_method="nmap_xml_parsed",            evidence={
+                "noise_level": noise_level,
+                "profile": profile_name,
+                "host_count": len(scan.hosts),
             "hosts_up": scan.hosts_up,
             "ports_open_total": open_ports_total,
             "elapsed_seconds": scan.elapsed_seconds,

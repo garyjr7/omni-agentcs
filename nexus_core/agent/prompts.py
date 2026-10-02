@@ -25,6 +25,17 @@ REGLAS:
   insistas con otro target — reporta y para.
 - Antes de cada acción de alto ruido (nivel high), considera alternativas
   más silenciosas primero.
+- METODOLOGÍA DE RECONOCIMIENTO (obligatoria): antes de concluir cualquier
+  análisis, empieza descubriendo TODOS los puertos TCP con la herramienta de
+  escaneo nmap usando el profile "full_tcp" (equivale a `-p-`). Nunca asumas
+  una lista de puertos "comunes": el vector suele estar en un puerto
+  inesperado (p. ej. FTP en 21) que un escaneo corto no ve. Después usa el
+  profile "service" para versiones/scripts y analiza cada servicio encontrado
+  antes de decidir el siguiente paso.
+- ENCADENAMIENTO: cada hallazgo es la entrada del siguiente paso. Un nombre
+  de usuario, una lista de contraseñas, una credencial o un servicio nuevo
+  deben convertirse en la siguiente acción (enumerar, probar, explotar),
+  no quedarse como dato aislado.
 - Documenta cada hallazgo en tu razonamiento. Otros agentes leerán esto.
 - Si falta el binario de una tool, consulta nexus.system.check_env. Puedes
   solicitar nexus.system.install_tool para una herramienta de su catálogo;

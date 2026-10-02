@@ -66,6 +66,24 @@ def test_credentials_redacted_from_output(monkeypatch):
     assert client._config.password not in str(run().to_dict())
 
 
+def test_placeholder_optional_filters_are_ignored(monkeypatch):
+    # Regression: LLMs send empty/"none" for optional filters; those must act
+    # as "no filter" instead of raising invalid cve/platform and looping.
+    client = fake_client(monkeypatch, module)
+    result = run(
+        {
+            "query": "OpenSSH 8.2p1",
+            "module_type": "auxiliary",
+            "platform": "",
+            "cve": "none",
+        }
+    )
+    assert result.success
+    client.search_modules.assert_awaited_once_with(
+        query="OpenSSH 8.2p1", module_type="auxiliary"
+    )
+
+
 def test_invalid_cve(monkeypatch):
     client = fake_client(monkeypatch, module)
     with pytest.raises(ValueError):

@@ -11,6 +11,21 @@ from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, Tool
 from nexus_core.kernel.schema_validation import validate
 from nexus_core.tools.parsers.metasploit import parse_msf_search
 
+# LLMs routinely fill optional filters with empty or placeholder values; those
+# must behave as "no filter" instead of failing the strict pattern checks.
+_OPTIONAL_FILTERS = ("module_type", "platform", "cve")
+_PLACEHOLDER_FILTER_VALUES = {"", "none", "null", "n/a", "na"}
+
+
+def _drop_placeholder_filters(arguments: dict) -> dict:
+    """Return a copy with empty/placeholder optional filters removed."""
+    cleaned = dict(arguments)
+    for key in _OPTIONAL_FILTERS:
+        value = cleaned.get(key)
+        if isinstance(value, str) and value.strip().lower() in _PLACEHOLDER_FILTER_VALUES:
+            cleaned.pop(key, None)
+    return cleaned
+
 
 def msf_search_definition(tenant_id: str = "system") -> ToolDefinition:
     return ToolDefinition(
@@ -48,6 +63,7 @@ def msf_search_definition(tenant_id: str = "system") -> ToolDefinition:
 
 
 async def msf_search_handler(arguments: dict, context: RunContext) -> ToolResult:
+    arguments = _drop_placeholder_filters(arguments)
     validate(arguments, msf_search_definition().input_schema)
     limit = arguments.get("limit", 50)
     if not 1 <= limit <= 100:

@@ -112,6 +112,13 @@ async def whatweb_handler(arguments: dict, context: RunContext) -> ToolResult:
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
     run_id = safe_run_id(context)
     output_path = Path(workspace_root).resolve() / f"whatweb_{run_id}.json"
+    # whatweb *appends* to --log-json. Reusing the per-run path across ReAct
+    # iterations concatenates JSON documents and breaks the parser, so every
+    # invocation must start from a clean file.
+    try:
+        output_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
     argv = [
         "whatweb",

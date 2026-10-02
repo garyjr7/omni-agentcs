@@ -146,3 +146,44 @@ def test_nmap_definition_declares_scope_requirements():
     assert definition.scope_target_field == "target"
     assert definition.scope_required is True
     assert definition.tenant_id == "system"
+
+
+def test_nmap_definition_exposes_profile_enum():
+    definition = nmap_definition()
+    profile = definition.input_schema["properties"]["profile"]
+    assert "full_tcp" in profile["enum"]
+    assert "service" in profile["enum"]
+
+
+# ---------------------------------------------------------------------- profiles
+def test_full_tcp_profile_scans_all_ports_with_its_own_timeout():
+    with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
+        result = _run({"target": "203.0.113.10", "profile": "full_tcp"})
+    argv, timeout = sandbox.calls[0]
+    assert "-p-" in argv
+    assert timeout == 600
+    assert result.output["profile"] == "full_tcp"
+    assert result.evidence["profile"] == "full_tcp"
+
+
+def test_explicit_timeout_overrides_profile_timeout():
+    with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
+        _run({"target": "203.0.113.10", "profile": "full_tcp", "timeout_seconds": 90})
+    assert sandbox.calls[0][1] == 90
+
+
+def test_profile_flags_combine_with_explicit_flags():
+    with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
+        _run({"target": "203.0.113.10", "profile": "full_tcp", "flags": ["-sV"]})
+    argv = sandbox.calls[0][0]
+    assert "-p-" in argv and "-sV" in argv
+
+
+def test_unknown_profile_is_rejected():
+    with pytest.raises(ValueError):
+        _run({"target": "203.0.113.10", "profile": "does-not-exist"})
+
+
+def test_profile_all_ports_conflicts_with_explicit_port_list():
+    with pytest.raises(ValueError):
+        _run({"target": "203.0.113.10", "profile": "full_tcp", "flags": ["-p", "22,80"]})

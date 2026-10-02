@@ -169,6 +169,23 @@ class ScopeValidationTests(unittest.TestCase):
         result = ScopeValidator(scope, signing_secret="top-secret").validate("203.0.113.10")
         self.assertEqual(result.ip, "203.0.113.10")
 
+    def test_wizard_scope_signature_survives_persistence(self):
+        # Regression: the wizard signs before EngagementStore.create() fills
+        # created_at, which used to invalidate the stored signature because
+        # created_at is part of canonical_form().
+        from nexus_core.cli.wizard import _initial_scope
+
+        secret = "wizard-secret"
+        scope = _initial_scope("eng", "203.0.113.0/24", secret)
+        with tempfile.TemporaryDirectory() as directory:
+            store = ControlStore(Path(directory) / "db.sqlite")
+            store.initialize()
+            engagements = EngagementStore(store)
+            created = engagements.create(scope)
+            loaded = engagements.get("system", created.engagement_id)
+            result = ScopeValidator(loaded, signing_secret=secret).validate("203.0.113.10")
+            self.assertEqual(result.ip, "203.0.113.10")
+
     def test_private_ip_with_private_cidr_is_allowed(self):
         scope = make_scope(cidrs=("10.0.0.0/8",))
         result = ScopeValidator(scope).validate("10.1.2.3")

@@ -35,6 +35,12 @@ def test_prompt_no_catalog_duplication(catalog):
     assert prompt.count("nexus.recon.nmap") == 1
 
 
+def test_prompt_requires_full_tcp_recon(catalog):
+    prompt = _prompt(catalog)
+    assert "METODOLOGÍA DE RECONOCIMIENTO" in prompt
+    assert "full_tcp" in prompt
+
+
 def test_prompt_template_references_catalog_once():
     # Guard against re-introducing a second ``{...}`` catalog placeholder.
     assert REACT_SYSTEM_PROMPT.count("{tool_catalog}") == 1
@@ -50,10 +56,10 @@ def test_prompt_catalog_compact_format(catalog):
     assert '"type"' not in line
 
 
-def test_catalog_stays_compact_for_31_tools(catalog):
-    assert len(catalog) == 31
+def test_catalog_stays_compact_for_all_tools(catalog):
+    assert len(catalog) == 32
     # Compact catalog only: ~185 chars per tool, never the full JSON schema.
-    assert len(render_tool_catalog(catalog)) < 6500
+    assert len(render_tool_catalog(catalog)) < 7000
 
 
 def test_prompt_under_18k_chars(catalog):

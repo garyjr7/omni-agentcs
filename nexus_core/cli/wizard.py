@@ -74,6 +74,10 @@ def _initial_scope(name, entries, secret):
         domains=tuple(domains),
         urls=(),
         exclusions=(),
+        # created_at is part of the signed canonical form, so it must be set
+        # before signing; otherwise EngagementStore.create() fills it later and
+        # invalidates the signature (scope signature is invalid).
+        created_at=now.isoformat(),
     )
     signature = hmac.new(
         secret.encode(), scope.canonical_form().encode(), hashlib.sha256

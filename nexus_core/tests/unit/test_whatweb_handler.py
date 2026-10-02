@@ -26,18 +26,25 @@ SAMPLE = (
 
 
 class FakeSandbox:
-    def __init__(self, result: SandboxResult):
+    def __init__(self, result: SandboxResult, payload: str | None = None):
         self.result = result
+        self.payload = payload
         self.calls: list[tuple[list[str], float]] = []
 
     async def run(self, argv, *, timeout_seconds: float = 30):
         self.calls.append((list(argv), timeout_seconds))
+        # whatweb writes its --log-json file during execution; emulate that so
+        # the handler's fresh-file behavior is exercised faithfully.
+        if self.payload is not None:
+            path = next(t.split("=", 1)[1] for t in argv if t.startswith("--log-json="))
+            with open(path, "a", encoding="utf-8") as stream:
+                stream.write(self.payload)
         return self.result
 
 
 @contextlib.contextmanager
-def _fake_sandbox(result: SandboxResult):
-    sandbox = FakeSandbox(result)
+def _fake_sandbox(result: SandboxResult, payload: str | None = None):
+    sandbox = FakeSandbox(result, payload)
     allowlists: list[tuple[str, ...]] = []
 
     def factory(workspace_root, allowed_programs=None):
@@ -72,8 +79,7 @@ def test_noise_level_from_aggression():
 
 
 def test_handler_builds_log_json_command(workspace):
-    (workspace / "whatweb_t1.json").write_text(SAMPLE, encoding="utf-8")
-    with _fake_sandbox(SandboxResult(0, "", "")) as (sandbox, _):
+    with _fake_sandbox(SandboxResult(0, "", ""), SAMPLE) as (sandbox, _):
         result = _run({"targets": ["http://x/"]})
     argv = sandbox.calls[0][0]
     assert argv[0] == "whatweb"
@@ -106,8 +112,7 @@ def test_handler_forces_aggression_four_to_three(workspace):
 
 
 def test_handler_reads_and_parses_the_json_log(workspace):
-    (workspace / "whatweb_t1.json").write_text(SAMPLE, encoding="utf-8")
-    with _fake_sandbox(SandboxResult(0, "", "")):
+    with _fake_sandbox(SandboxResult(0, "", ""), SAMPLE):
         result = _run({"targets": ["http://x/"]})
     assert result.verified is True
     assert result.output["fingerprints"][0]["url"] == "http://x/"
@@ -122,11 +127,30 @@ def test_handler_returns_unverified_when_no_log(workspace):
 
 
 def test_handler_returns_unverified_on_parse_error(workspace):
-    (workspace / "whatweb_t1.json").write_text("{not json", encoding="utf-8")
-    with _fake_sandbox(SandboxResult(0, "", "")):
+    with _fake_sandbox(SandboxResult(0, "", ""), "{not json"):
         result = _run({"targets": ["http://x/"]})
     assert result.success is False
     assert result.verification_method == "whatweb_parse_failed"
+
+
+def test_handler_starts_from_a_clean_log_between_calls(workspace):
+    # Regression: whatweb appends to --log-json. Reusing the per-run path across
+    # iterations used to concatenate documents and fail whatweb_parse_failed.
+    target = workspace / "whatweb_t1.json"
+
+    class AppendingSandbox:
+        async def run(self, argv, *, timeout_seconds=30):
+            with open(target, "a", encoding="utf-8") as stream:
+                stream.write(SAMPLE + "\n")
+            return SandboxResult(0, "", "")
+
+    with mock.patch.object(
+        whatweb_module, "sandbox_for_environment", lambda *a, **k: AppendingSandbox()
+    ):
+        first = _run({"targets": ["http://x/"]})
+        second = _run({"targets": ["http://x/"]})
+    assert first.verified is True
+    assert second.verified is True
 
 
 def test_handler_returns_unverified_on_timeout(workspace):
