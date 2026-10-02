@@ -67,5 +67,6 @@ def test_check_env_registered_in_catalog():
         "nexus.c2.sliver_exec",
         "nexus.c2.sliver_pivot",
         "nexus.recon.ftp",
+        "nexus.cred.bruteforce",
     } <= set(catalog)
-    assert len(catalog) == 32
+    assert len(catalog) == 33

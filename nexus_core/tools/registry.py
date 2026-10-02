@@ -23,6 +23,10 @@ def durable_tool_definitions(
     from .handlers.ffuf import ffuf_definition, ffuf_handler
     from .handlers.httpx import httpx_definition, httpx_handler
     from .handlers.ftp import ftp_definition, ftp_handler
+    from .handlers.cred_bruteforce import (
+        cred_bruteforce_definition,
+        cred_bruteforce_handler,
+    )
     from .handlers.nmap import nmap_definition, nmap_handler
     from .handlers.sqlmap import sqlmap_definition, sqlmap_handler
     from .handlers.gobuster import gobuster_definition, gobuster_handler
@@ -92,6 +96,10 @@ def durable_tool_definitions(
         "nexus.recon.subfinder": (subfinder_definition(tenant_id), subfinder_handler),
         "nexus.recon.httpx": (httpx_definition(tenant_id), httpx_handler),
         "nexus.recon.ftp": (ftp_definition(tenant_id), ftp_handler),
+        "nexus.cred.bruteforce": (
+            cred_bruteforce_definition(tenant_id),
+            cred_bruteforce_handler,
+        ),
         "nexus.web.nuclei": (nuclei_definition(tenant_id), nuclei_handler),
         "nexus.web.ffuf": (ffuf_definition(tenant_id), ffuf_handler),
         "nexus.web.sqlmap": (sqlmap_definition(tenant_id), sqlmap_handler),

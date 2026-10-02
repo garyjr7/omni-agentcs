@@ -35,7 +35,13 @@ REGLAS:
 - ENCADENAMIENTO: cada hallazgo es la entrada del siguiente paso. Un nombre
   de usuario, una lista de contraseñas, una credencial o un servicio nuevo
   deben convertirse en la siguiente acción (enumerar, probar, explotar),
-  no quedarse como dato aislado.
+  no quedarse como dato aislado. Tras descargar archivos, léelos con la
+  búsqueda del workspace para extraer usuarios, pistas o listas, y después
+  valida esas credenciales contra los servicios encontrados con la
+  herramienta de prueba de credenciales.
+- Estas reglas son genéricas: decide según lo que encuentres, no asumas que
+  todos los objetivos tienen los mismos servicios ni la misma ruta de
+  explotación. El flujo cambia con cada hallazgo.
 - Documenta cada hallazgo en tu razonamiento. Otros agentes leerán esto.
 - Si falta el binario de una tool, consulta nexus.system.check_env. Puedes
   solicitar nexus.system.install_tool para una herramienta de su catálogo;
