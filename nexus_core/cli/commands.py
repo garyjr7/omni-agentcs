@@ -456,6 +456,40 @@ def cmd_findings(session: "OmniSession", args: list[str]) -> None:
         render.write(f"Intentos sin hallazgo: {len(failed)} (ver /report)")
 
 
+def cmd_facts(session: "OmniSession", args: list[str]) -> None:
+    """Lista los hechos registrados (blackboard): /facts [tipo]."""
+    if session.engagement is None:
+        render.render_error("no hay engagement activo (usa /scope)")
+        return
+    from nexus_core.kernel.blackboard import FACT_TYPES, Blackboard
+
+    fact_type = args[0] if args else None
+    if fact_type is not None and fact_type not in FACT_TYPES:
+        render.render_error(
+            f"tipo desconocido: {fact_type!r} (tipos: {', '.join(FACT_TYPES)})"
+        )
+        return
+    try:
+        board = Blackboard(session.store)
+        facts = board.list_facts(
+            session.tenant_id, session.engagement_id, fact_type=fact_type
+        )
+    except Exception as exc:  # noqa: BLE001 - never break the REPL
+        render.render_error(f"no se pudo leer el blackboard: {type(exc).__name__}: {exc}")
+        return
+    if not facts:
+        render.write(f"(sin hechos registrados en {session.engagement_id})")
+        return
+    render.write(f"Hechos del engagement {session.engagement_id} ({len(facts)}):")
+    for fact in facts:
+        mark = "" if fact.get("verified") else " [sin verificar]"
+        render.write(
+            f"  [{fact['fact_type']}] {fact['key']}{mark} via {fact.get('source', '?')}"
+        )
+    summary = board.summary(session.tenant_id, session.engagement_id)
+    render.write(f"Resumen: {summary['counts']}")
+
+
 def cmd_report(session: "OmniSession", args: list[str]) -> None:
     """Genera el reporte del engagement: /report [export <dir>] [--llm-cvss]."""
     if not args:
@@ -921,6 +955,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/detach": cmd_detach,
     "/kill-session": cmd_kill_session,
     "/findings": cmd_findings,
+    "/facts": cmd_facts,
     "/report": cmd_report,
     "/timeline": cmd_timeline,
     "/ask": cmd_ask,
@@ -969,6 +1004,7 @@ __all__ = [
     "cmd_approvals",
     "cmd_ask",
     "cmd_chat",
+    "cmd_facts",
     "cmd_clear",
     "cmd_exit",
     "cmd_export",

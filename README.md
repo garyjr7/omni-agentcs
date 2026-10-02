@@ -79,8 +79,9 @@ Usa un ID listado por `--list-engagements`. Un checkout nuevo no incluye
 engagements ni credenciales: créalos en el wizard con tu alcance autorizado.
 En el REPL, `/help` muestra comandos; `/ask`, `/scope`, `/tools`, `/history`,
 `/approvals`, `/trust`, `/sessions`, `/session`, `/detach`, `/kill-session`,
-`/findings`, `/report`, `/timeline` y `/exit` permiten inspeccionar y controlar
-la sesión.
+`/findings`, `/facts`, `/report`, `/timeline` y `/exit` permiten inspeccionar y
+controlar la sesión. `/facts` lista el blackboard del engagement
+(`/facts <tipo>` filtra por tipo de hecho).
 
 Doctor muestra sistema, herramientas, gestores, rutas, SQLite, últimos eventos
 de auditoría y puerto/systemd de msfrpcd. El sondeo del puerto no autentica RPC.

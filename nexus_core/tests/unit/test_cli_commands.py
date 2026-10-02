@@ -137,6 +137,35 @@ def test_cmd_approvals_empty_when_none_pending(session, capsys):
     assert "(no hay aprobaciones pendientes)" in out
 
 
+def test_cmd_facts_lists_recorded_facts(session, capsys):
+    from nexus_core.kernel.blackboard import Blackboard
+
+    Blackboard(session.store).record(
+        tenant_id="system",
+        engagement_id=session.engagement_id,
+        fact_type="service",
+        key="10.0.0.5:21/tcp",
+        value={"port": 21},
+        source="nexus.recon.nmap",
+        created_by="operator:tester",
+    )
+    commands.cmd_facts(session, [])
+    out = capsys.readouterr().out
+    assert "[service]" in out
+    assert "10.0.0.5:21/tcp" in out
+    assert "Resumen:" in out
+
+
+def test_cmd_facts_empty_engagement(session, capsys):
+    commands.cmd_facts(session, [])
+    assert "sin hechos registrados" in capsys.readouterr().out
+
+
+def test_cmd_facts_rejects_unknown_type(session, capsys):
+    commands.cmd_facts(session, ["bogus"])
+    assert "tipo desconocido" in capsys.readouterr().out
+
+
 def test_cmd_help_lists_all_commands(session, capsys):
     commands.cmd_help(session, [])
     out = capsys.readouterr().out
