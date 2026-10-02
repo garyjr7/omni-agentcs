@@ -37,6 +37,12 @@ def durable_tool_definitions(
         privesc_hints_definition,
         privesc_hints_handler,
     )
+    from .handlers.knowledge_facts import (
+        query_facts_definition,
+        query_facts_handler,
+        record_fact_definition,
+        record_fact_handler,
+    )
     from .handlers.nmap import nmap_definition, nmap_handler
     from .handlers.sqlmap import sqlmap_definition, sqlmap_handler
     from .handlers.gobuster import gobuster_definition, gobuster_handler
@@ -115,6 +121,14 @@ def durable_tool_definitions(
         "nexus.post.privesc_hints": (
             privesc_hints_definition(tenant_id),
             privesc_hints_handler,
+        ),
+        "nexus.knowledge.record_fact": (
+            record_fact_definition(tenant_id),
+            record_fact_handler,
+        ),
+        "nexus.knowledge.query_facts": (
+            query_facts_definition(tenant_id),
+            query_facts_handler,
         ),
         "nexus.web.nuclei": (nuclei_definition(tenant_id), nuclei_handler),
         "nexus.web.ffuf": (ffuf_definition(tenant_id), ffuf_handler),

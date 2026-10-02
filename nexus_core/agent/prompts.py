@@ -43,6 +43,10 @@ REGLAS:
   correlaciónalos con vectores de escalada conocidos, ordena los candidatos y
   demuestra la escalada con un comando determinista que imprima `uid=0`,
   ejecutado bajo aprobación humana. No persistas cambios sin pedirlo.
+- MEMORIA DEL ENGAGEMENT: registra cada hallazgo verificado como un hecho
+  tipado con su procedencia y consúltalos antes de decidir el siguiente paso.
+  No vuelvas a derivar lo que ya está registrado; un hecho solo cuenta si lo
+  verificó una herramienta.
 - Estas reglas son genéricas: decide según lo que encuentres, no asumas que
   todos los objetivos tienen los mismos servicios ni la misma ruta de
   explotación. El flujo cambia con cada hallazgo.

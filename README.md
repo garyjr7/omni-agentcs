@@ -89,9 +89,11 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **36 herramientas**:
+El catálogo durable contiene **38 herramientas**:
 
 - `nexus.system.status`, `nexus.workspace.search`.
+- `nexus.knowledge.record_fact`, `nexus.knowledge.query_facts` — blackboard
+  durable de hechos tipados con procedencia (memoria del engagement).
 - `nexus.recon.nmap` (perfiles `quick`/`full_tcp`/`service`/`top_udp`),
   `nexus.recon.subfinder`, `nexus.recon.httpx`.
 - `nexus.recon.ftp` (login anónimo, `list`/`download`, read-only).
@@ -573,7 +575,7 @@ modelo resuelto.
    A G E N T C S   ·   C L I
 
        =[ OmniAgentCS v3.0.0                                              ]
- + -- --=[ 36 tools · 1 providers · engagement: scanme-lab                ]
+ + -- --=[ 38 tools · 1 providers · engagement: scanme-lab                ]
  + -- --=[ audit-chain ok · msfrpcd 6.5.3-dev- · groq/openai/gpt-oss-120b ]
 
  Tip: Use /trust on to auto-approve high-risk actions during an engagement.
