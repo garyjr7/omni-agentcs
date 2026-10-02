@@ -50,19 +50,17 @@ def main(argv=None) -> int:
 
             return run_doctor(paths, config, as_json=args.json)
         if args.setup:
-            import json as _json
+            from nexus_core.cli.setup import run_setup
 
-            from nexus_core.provisioner.readiness import assess_environment, render_report
-
-            # Reflect config-derived secrets (scope signing, provider keys) in
-            # the assessment, not only what the shell already exported.
-            apply_environment(config, paths)
-            report = assess_environment()
-            if args.json:
-                print(_json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
-            else:
-                print(render_report(report))
-            return 0
+            # run_setup reflects config-derived secrets (scope signing, provider
+            # keys) before assessing, not only what the shell already exported.
+            return run_setup(
+                paths,
+                config,
+                install=args.install,
+                assume_yes=args.yes,
+                as_json=args.json,
+            )
         if args.json:
             print("--json requiere --doctor o --setup", file=sys.stderr)
             return 2

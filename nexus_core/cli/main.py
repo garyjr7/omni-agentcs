@@ -59,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     for flag, help_text in (
         ("doctor", "diagnóstico del sistema"), ("json", "salida JSON para --doctor/--setup"),
         ("setup", "verifica e informa del entorno ofensivo (binarios y servicios)"),
+        ("install", "con --setup: instala los componentes que falten"),
+        ("yes", "auto-aprueba la ejecución de los planes de instalación"),
         ("config", "editar config global"), ("config-path", "imprimir ruta de config"),
         ("no-wizard", "omitir onboarding interactivo"), ("reset-config", "respaldar config y reiniciar onboarding"),
     ):

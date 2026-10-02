@@ -67,6 +67,8 @@ omni --doctor --no-wizard                  # diagnóstico local
 omni --doctor --json                       # diagnóstico JSON, sin secretos
 omni --setup                               # verifica el entorno ofensivo
 omni --setup --json                        # idem, salida JSON
+omni --setup --install                     # plan de instalación (no ejecuta)
+omni --setup --install --yes               # aplica el plan aprobado
 omni --config                             # editar con $EDITOR
 omni --config-path                        # ruta del config
 omni --list-engagements
@@ -95,6 +97,13 @@ configuraciones (operator config de Sliver, plantillas de nuclei, diccionarios,
 secreto de firma del alcance), y para cada carencia imprime el paso de
 instalación/configuración concreto. Los binarios se instalan con el flujo
 aprobado `nexus.system.install_tool`; los servicios se documentan como comando.
+
+`omni --setup --install` genera el plan de instalación de cada binario ausente
+(no ejecuta nada sin `--yes`); `omni --setup --install --yes` aplica los planes
+por el mismo bucle aprobado detectar → plan → ejecutar → verificar. Los
+binarios de terceros que no están en un gestor (Sliver) **no** se instalan con
+un `curl | sh` a ciegas: se reportan con la ruta oficial verificable, y el
+operator config se genera una vez que `sliver-server` existe.
 
 Doctor muestra sistema, herramientas, gestores, rutas, SQLite, últimos eventos
 de auditoría y puerto/systemd de msfrpcd. El sondeo del puerto no autentica RPC.
