@@ -541,6 +541,17 @@ class OmniSession:
             self._usage_local = [a + b for a, b in zip(self._usage_local, amounts)]
         self._update_status_bar()
 
+    def _facts_count(self) -> int | None:
+        """Distinct blackboard facts for the active engagement (best effort)."""
+        if self.engagement is None:
+            return None
+        try:
+            from nexus_core.kernel.blackboard import Blackboard
+
+            return Blackboard(self.store).count(self.tenant_id, self.engagement_id)
+        except Exception:  # presentation must not fail
+            return None
+
     def _update_status_bar(self, *, force=False) -> None:
         if not self._tui.use_tui and not force:
             return
@@ -562,6 +573,7 @@ class OmniSession:
             tokens_input=int(totals[0]), tokens_output=int(totals[1]),
             cost_usd=totals[2], cost_known=self._cost_known,
             audit_chain_valid=self._verify_audit_chain(),
+            facts_count=self._facts_count(),
         )
         if self._tui.use_tui:
             self._tui.set_status(**fields)

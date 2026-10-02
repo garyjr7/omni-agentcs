@@ -29,6 +29,15 @@ def test_status_renders_tokens_and_cost():
     assert "2.3k tok" in text and "$0.0200" in text
 
 
+def test_status_renders_facts_count():
+    assert "3 facts" in render_status_plain(StatusState(facts_count=3))
+
+
+def test_status_hides_facts_when_zero_or_unknown():
+    assert "facts" not in render_status_plain(StatusState(facts_count=0))
+    assert "facts" not in render_status_plain(StatusState())
+
+
 def test_status_renders_elapsed_human_seconds():
     with patch("time.monotonic", return_value=105):
         assert StatusState(started_at=100).elapsed_human == "5s"

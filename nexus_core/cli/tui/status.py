@@ -24,6 +24,8 @@ class StatusState:
     started_at: float = field(default_factory=time.monotonic)
     audit_chain_valid: bool = True
     msfrpcd_version: str | None = None
+    #: Distinct facts recorded in the engagement blackboard (None = unknown).
+    facts_count: int | None = None
     busy: bool = False
     busy_message: str = ""
     busy_started_at: float = field(default_factory=time.monotonic)
@@ -58,6 +60,8 @@ def _parts(state: StatusState):
     tokens = state.tokens_input + state.tokens_output
     parts.append(("ansigreen", f"{tokens / 1000:.1f}k tok" if tokens >= 1000 else f"{tokens} tok"))
     parts.append(("ansigreen", f"~${state.cost_usd:.4f}" if state.cost_known else "$—"))
+    if state.facts_count:
+        parts.append(("ansiblue", f"{state.facts_count} facts"))
     parts.append(("dim", state.elapsed_human))
     if state.busy:
         elapsed = max(0, int(time.monotonic() - state.busy_started_at))

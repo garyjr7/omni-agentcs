@@ -81,6 +81,15 @@ def test_unknown_fact_type_is_rejected(board):
                           key="k", value={}, source="x", created_by="op")
 
 
+def test_count_counts_distinct_facts(board):
+    blackboard, _ = board
+    blackboard.record(tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="service",
+                      key="s1", value={}, source="x", created_by="op")
+    blackboard.record(tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="user",
+                      key="lin", value={}, source="x", created_by="op")
+    assert blackboard.count(TENANT, ENGAGEMENT) == 2
+
+
 def test_render_returns_prompt_lines(board):
     blackboard, _ = board
     blackboard.record(tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="service",

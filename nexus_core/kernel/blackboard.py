@@ -131,6 +131,18 @@ class Blackboard:
                 continue
         return list(latest.values())
 
+    def count(self, tenant_id: str, engagement_id: str) -> int:
+        """Number of distinct facts recorded for an engagement (cheap)."""
+        prefix = f"{SOURCE_URI_PREFIX}/{engagement_id}/%"
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(DISTINCT source_uri) AS n
+                FROM kernel_knowledge_documents
+                WHERE tenant_id=? AND source_uri LIKE ?""",
+                (tenant_id, prefix),
+            ).fetchone()
+        return int(row["n"]) if row is not None else 0
+
     def render(self, tenant_id: str, engagement_id: str, *, limit: int = 40) -> str:
         """Render a compact, prompt-ready list of facts ('' when empty)."""
         facts = self.list_facts(tenant_id, engagement_id, limit=limit)

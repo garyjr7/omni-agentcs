@@ -370,7 +370,7 @@ scanme-lab · groq/openai/gpt-oss-120b · 2.3k tok · ~$0.0200 · 5m12s
 ```
 
 La barra muestra engagement, sesión adjunta, trust, proveedor/modelo, tokens,
-coste estimado y tiempo. En reposo se refresca cada dos segundos; la aplicación corre
+coste estimado, número de hechos del blackboard y tiempo. En reposo se refresca cada dos segundos; la aplicación corre
 en un hilo dedicado, así que permanece activa durante llamadas síncronas.
 El spinner de stderr se desactiva en TUI: una línea sobre el prompt muestra
 la operación y su duración. Se anima a 4 Hz y se oculta al terminar.
