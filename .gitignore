@@ -18,6 +18,12 @@ __pycache__/
 *.save
 *.save.*
 
+# Artefactos de empaquetado Python
+*.egg-info/
+build/
+dist/
+node_modules/
+
 # Archivos de base de datos o cache
 *.sqlite3
 *.db

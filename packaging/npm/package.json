@@ -1,0 +1,19 @@
+{
+  "name": "@omniagentcs/cli",
+  "version": "3.0.0",
+  "description": "OmniAgentCS — agente autónomo de ciberseguridad ofensiva para terminal",
+  "bin": {
+    "omni": "bin/omni.js"
+  },
+  "scripts": {
+    "postinstall": "node bin/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bajioware/omni-agentcs"
+  }
+}
