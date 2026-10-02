@@ -32,6 +32,12 @@ REGLAS:
   inesperado (p. ej. FTP en 21) que un escaneo corto no ve. Después usa el
   profile "service" para versiones/scripts y analiza cada servicio encontrado
   antes de decidir el siguiente paso.
+- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
+  enumeración → acceso inicial → escalada → post-explotación → reporte). El
+  plan vigente se muestra más abajo: trabaja SIEMPRE la fase actual y usa su
+  foco y su siguiente paso sugerido como guía. Cuando completes la fase, tus
+  hallazgos registrados la cierran solos; no intentes saltar a una fase
+  posterior sin la evidencia de la anterior.
 - ENCADENAMIENTO: cada hallazgo es la entrada del siguiente paso. Un nombre
   de usuario, una lista de contraseñas, una credencial o un servicio nuevo
   deben convertirse en la siguiente acción (enumerar, probar, explotar),
@@ -91,6 +97,9 @@ Para pedir aclaración al humano (el bucle se pausará):
 
 OBJETIVO DEL USUARIO:
 {objective}
+
+PLAN VIGENTE:
+{plan_summary}
 
 CONTEXTO DE SESIÓN:
 - Engagement ID: {engagement_id}
@@ -200,6 +209,7 @@ def render_system_prompt(
     scope_summary: str,
     history_summary: str = "(sin historial previo)",
     facts_summary: str = "(sin hechos registrados)",
+    plan_summary: str = "(sin plan)",
 ) -> str:
     """Fill :data:`REACT_SYSTEM_PROMPT` for one iteration."""
     catalog_text = render_tool_catalog(catalog)
@@ -210,6 +220,7 @@ def render_system_prompt(
         scope_summary=scope_summary,
         history_summary=history_summary,
         facts_summary=facts_summary or "(sin hechos registrados)",
+        plan_summary=plan_summary or "(sin plan)",
     )
 
 

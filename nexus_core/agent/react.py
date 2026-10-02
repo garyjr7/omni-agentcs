@@ -101,6 +101,8 @@ class ReActResult:
     conversation_id: str
     actions: list[dict[str, Any]] = field(default_factory=list)
     question: str | None = None
+    #: Final plan snapshot (``Plan.to_dict()``) when the loop produced one.
+    plan: dict[str, Any] | None = None
 
 
 # --------------------------------------------------------------------- helpers
@@ -117,15 +119,32 @@ def _cancellation_requested(store: Any, tenant_id: str, run_id: str) -> bool:
 
 def _blackboard_facts(store: Any, tenant_id: str, engagement_id: str | None) -> str:
     """Render the engagement blackboard for the prompt (never raises)."""
+    return _blackboard_view(store, tenant_id, engagement_id)[1]
+
+
+def _blackboard_view(
+    store: Any, tenant_id: str, engagement_id: str | None
+) -> tuple[Any, str]:
+    """Return ``(plan, facts_text)`` for one iteration (never raises).
+
+    The plan is derived deterministically from the blackboard summary, so the
+    model plans inside a stable frame; the rendered facts stay in the prompt as
+    before. Memory failures degrade to an empty plan instead of aborting.
+    """
+    from .planner import build_plan, plan_from_summary
+
+    empty = "(sin hechos registrados)"
     if not engagement_id or store is None:
-        return "(sin hechos registrados)"
+        return build_plan(engagement_id=engagement_id), empty
     try:
         from nexus_core.kernel.blackboard import Blackboard
 
-        rendered = Blackboard(store).render(tenant_id, engagement_id)
+        board = Blackboard(store)
+        summary = board.summary(tenant_id, engagement_id)
+        rendered = board.render(tenant_id, engagement_id)
     except Exception:  # noqa: BLE001 - memory must never kill a run
-        return "(sin hechos registrados)"
-    return rendered or "(sin hechos registrados)"
+        return build_plan(engagement_id=engagement_id), empty
+    return plan_from_summary(summary, engagement_id=engagement_id), (rendered or empty)
 
 
 def _audit_step(
@@ -436,6 +455,8 @@ async def run_react_loop(
     findings: list[dict[str, Any]] = []
     question: str | None = None
     consecutive_failures = 0
+    last_phase: str | None = None
+    last_plan: Any = None
 
     while iteration < config.max_iterations:
         used = _budget_used(store, tenant_id, run_id) if budget else 0
@@ -495,13 +516,30 @@ async def run_react_loop(
                 f"{base}\n\nObjetivos previos de esta sesión de trabajo:\n{bullets}"
             )
 
+        plan, facts_text = _blackboard_view(store, tenant_id, engagement_id)
+        last_plan = plan
+        if plan.current != last_phase:
+            store.append_run_event(
+                tenant_id,
+                run_id,
+                "orchestrator.plan",
+                {
+                    "phase": plan.current,
+                    "previous": last_phase,
+                    "progress": list(plan.progress),
+                    "facts_total": plan.facts_total,
+                    "iteration": iteration,
+                },
+            )
+            last_phase = plan.current
         system_prompt = render_system_prompt(
             catalog=catalog,
             objective=objective,
             engagement_id=engagement_id,
             scope_summary=describe_scope(scope),
             history_summary=history_summary or "(sin historial previo)",
-            facts_summary=_blackboard_facts(store, tenant_id, engagement_id),
+            facts_summary=facts_text,
+            plan_summary=plan.render(),
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
         messages.extend(
@@ -874,6 +912,7 @@ async def run_react_loop(
         conversation_id=conversation_id,
         actions=actions,
         question=question,
+        plan=last_plan.to_dict() if last_plan is not None else None,
     )
 
 
