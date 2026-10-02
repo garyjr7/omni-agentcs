@@ -81,6 +81,22 @@ def test_unknown_fact_type_is_rejected(board):
                           key="k", value={}, source="x", created_by="op")
 
 
+def test_render_returns_prompt_lines(board):
+    blackboard, _ = board
+    blackboard.record(tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="service",
+                      key="10.0.0.5:21/tcp", value={"anonymous": True},
+                      source="nexus.recon.nmap", created_by="op")
+    text = blackboard.render(TENANT, ENGAGEMENT)
+    assert "[service]" in text
+    assert "verificado" in text
+    assert "nexus.recon.nmap" in text
+
+
+def test_render_empty_when_no_facts(board):
+    blackboard, _ = board
+    assert blackboard.render(TENANT, ENGAGEMENT) == ""
+
+
 def test_summary_counts_by_type(board):
     blackboard, _ = board
     blackboard.record(tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="service",

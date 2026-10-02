@@ -115,6 +115,19 @@ def _cancellation_requested(store: Any, tenant_id: str, run_id: str) -> bool:
     return any(event.get("event_type") == CANCEL_EVENT_TYPE for event in events)
 
 
+def _blackboard_facts(store: Any, tenant_id: str, engagement_id: str | None) -> str:
+    """Render the engagement blackboard for the prompt (never raises)."""
+    if not engagement_id or store is None:
+        return "(sin hechos registrados)"
+    try:
+        from nexus_core.kernel.blackboard import Blackboard
+
+        rendered = Blackboard(store).render(tenant_id, engagement_id)
+    except Exception:  # noqa: BLE001 - memory must never kill a run
+        return "(sin hechos registrados)"
+    return rendered or "(sin hechos registrados)"
+
+
 def _audit_step(
     audit: AuditWriter,
     *,
@@ -488,6 +501,7 @@ async def run_react_loop(
             engagement_id=engagement_id,
             scope_summary=describe_scope(scope),
             history_summary=history_summary or "(sin historial previo)",
+            facts_summary=_blackboard_facts(store, tenant_id, engagement_id),
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
         messages.extend(

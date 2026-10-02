@@ -131,6 +131,23 @@ class Blackboard:
                 continue
         return list(latest.values())
 
+    def render(self, tenant_id: str, engagement_id: str, *, limit: int = 40) -> str:
+        """Render a compact, prompt-ready list of facts ('' when empty)."""
+        facts = self.list_facts(tenant_id, engagement_id, limit=limit)
+        if not facts:
+            return ""
+        lines: list[str] = []
+        for fact in facts:
+            value = json.dumps(fact.get("value") or {}, sort_keys=True)
+            if len(value) > 200:
+                value = value[:197] + "..."
+            mark = "verificado" if fact.get("verified") else "sin verificar"
+            source = fact.get("source", "?")
+            lines.append(
+                f"- [{fact['fact_type']}] {fact['key']} ({mark}, via {source}): {value}"
+            )
+        return "\n".join(lines)
+
     def summary(self, tenant_id: str, engagement_id: str) -> dict[str, Any]:
         """Return counts per fact type for prompt/planner consumption."""
         facts = self.list_facts(tenant_id, engagement_id)

@@ -96,6 +96,9 @@ CONTEXTO DE SESIÓN:
 - Engagement ID: {engagement_id}
 - Scope: {scope_summary}
 - Historial de acciones previas: {history_summary}
+- Hallazgos registrados en el blackboard (usa esto para decidir el siguiente
+  paso y no repetir trabajo):
+{facts_summary}
 """
 
 # Prompt used when the loop has to fold a long history into one message.
@@ -196,6 +199,7 @@ def render_system_prompt(
     engagement_id: str | None,
     scope_summary: str,
     history_summary: str = "(sin historial previo)",
+    facts_summary: str = "(sin hechos registrados)",
 ) -> str:
     """Fill :data:`REACT_SYSTEM_PROMPT` for one iteration."""
     catalog_text = render_tool_catalog(catalog)
@@ -205,6 +209,7 @@ def render_system_prompt(
         engagement_id=engagement_id or "(ninguno)",
         scope_summary=scope_summary,
         history_summary=history_summary,
+        facts_summary=facts_summary or "(sin hechos registrados)",
     )
 
 

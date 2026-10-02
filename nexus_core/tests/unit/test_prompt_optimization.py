@@ -35,6 +35,17 @@ def test_prompt_no_catalog_duplication(catalog):
     assert prompt.count("nexus.recon.nmap") == 1
 
 
+def test_prompt_includes_blackboard_facts(catalog):
+    prompt = render_system_prompt(
+        catalog=catalog,
+        objective="encadena",
+        engagement_id="eng-1",
+        scope_summary="s",
+        facts_summary="- [service] 10.0.0.5:21/tcp (verificado, via nmap): {}",
+    )
+    assert "[service] 10.0.0.5:21/tcp" in prompt
+
+
 def test_prompt_requires_full_tcp_recon(catalog):
     prompt = _prompt(catalog)
     assert "METODOLOGÍA DE RECONOCIMIENTO" in prompt
