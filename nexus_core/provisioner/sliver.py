@@ -197,6 +197,86 @@ def team_server_running(
     return bool(port_open(host, port, timeout))
 
 
+#: Name of the per-user systemd unit that keeps the team server alive.
+USER_SERVICE_NAME = "omni-sliver.service"
+
+
+def user_unit_path() -> Path:
+    """Path of the user unit, honouring ``XDG_CONFIG_HOME``."""
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "systemd" / "user" / USER_SERVICE_NAME
+
+
+def user_unit_text(binary: str) -> str:
+    """The systemd **user** unit for the team server (no root required)."""
+    return (
+        "[Unit]\n"
+        "Description=Sliver C2 team server (OmniAgentCS)\n"
+        "After=network.target\n\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"ExecStart={binary} daemon\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def user_service_available(*, run=subprocess.run) -> bool:
+    """Whether a usable ``systemctl --user`` instance exists."""
+    try:
+        outcome = run(
+            ["systemctl", "--user", "is-system-running"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # "running" (0) and "degraded" (1) are both usable; "offline"/"unknown" fail.
+    state = (getattr(outcome, "stdout", "") or "").strip().splitlines()[:1]
+    return bool(state) and state[0] in {"running", "degraded"}
+
+
+def install_user_service(
+    *,
+    binary: str | None = None,
+    path: Path | None = None,
+    which=shutil.which,
+    run=subprocess.run,
+    linger: bool = True,
+    echo=lambda *a: None,
+) -> bool:
+    """Install and enable a per-user systemd unit for the team server."""
+    binary = binary or which("sliver-server")
+    if not binary or not user_service_available(run=run):
+        return False
+    unit = Path(path) if path is not None else user_unit_path()
+    try:
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text(user_unit_text(binary), encoding="utf-8")
+    except OSError:
+        return False
+    for argv in (
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "--now", USER_SERVICE_NAME],
+    ):
+        try:
+            outcome = run(argv, capture_output=True, text=True, check=False, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if getattr(outcome, "returncode", 1) != 0:
+            return False
+    if linger:
+        # Best effort: keep the service running after logout. Needs no root.
+        try:
+            run(["loginctl", "enable-linger"], capture_output=True, text=True,
+                check=False, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    echo(f"[sliver] servicio de usuario {USER_SERVICE_NAME} habilitado")
+    return True
+
+
 def start_team_server(
     *,
     binary: str | None = None,
@@ -207,18 +287,30 @@ def start_team_server(
     attempts: int = 30,
     sleep=time.sleep,
     which=shutil.which,
+    service_installer=None,
     echo=lambda *a: None,
 ) -> bool:
-    """Start ``sliver-server daemon`` in the background and wait for the port."""
+    """Start the team server, preferring a persistent user service.
+
+    Falls back to a detached ``sliver-server daemon`` when there is no user
+    systemd instance, so a bare container still works.
+    """
     binary = binary or which("sliver-server")
     if not binary:
         return False
     if team_server_running(host=host, port=port, port_open=port_open):
         return True
+    installer = install_user_service if service_installer is None else service_installer
+    started = False
     try:
-        spawn([binary, "daemon"])
-    except OSError:
-        return False
+        started = bool(installer(binary=binary, which=which, echo=echo))
+    except Exception:  # noqa: BLE001 - a broken unit must not abort setup
+        started = False
+    if not started:
+        try:
+            spawn([binary, "daemon"])
+        except OSError:
+            return False
     for _ in range(max(1, attempts)):
         if team_server_running(host=host, port=port, port_open=port_open):
             echo("[sliver] team server escuchando en el puerto {}…".format(port))
@@ -269,11 +361,16 @@ __all__ = [
     "STATUS_SIGNATURE_INVALID",
     "STATUS_UNSUPPORTED",
     "SliverInstall",
+    "USER_SERVICE_NAME",
     "ensure_operator_config",
     "install_plan_text",
     "install_sliver_verified",
+    "install_user_service",
     "platform_tag",
     "sliver_urls",
     "start_team_server",
     "team_server_running",
+    "user_service_available",
+    "user_unit_path",
+    "user_unit_text",
 ]

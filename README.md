@@ -111,12 +111,27 @@ válida**, levanta el team server en el puerto 31337 y genera el operator config
 en `~/.config/omni/sliver/operator.cfg`. Si falta `minisign`, se instala primero
 con su receta (y aparece como componente de `--setup`).
 
-**msfrpcd** se instala/repare como servicio systemd con
+El team server se instala como **servicio systemd de usuario**
+(`~/.config/systemd/user/omni-sliver.service`, `enable --now` + `loginctl
+enable-linger`), así que **sobrevive al logout y al reinicio sin root**. Si no
+hay instancia `systemd --user` (contenedor), cae en un `sliver-server daemon`
+desacoplado.
+
+**msfrpcd** se instala/repara como servicio systemd con
 `scripts/install_msfrpcd_service.sh`. La contraseña nunca viaja en `argv`: se
 escribe en un fichero temporal `0600` y el script siembra `/etc/default/msfrpcd`
-(600 `root:root`). La ejecución es no interactiva (`sudo -n`), de modo que sin
-sudo sin contraseña obtienes el comando exacto para ejecutarlo a mano en vez de
-un prompt colgado.
+(600 `root:root`). Con una terminal (`stdin` es TTY) usa `sudo` normal para que
+escribas la contraseña; sin TTY usa `sudo -n` y, si falta sudo sin contraseña,
+obtienes el comando exacto para ejecutarlo a mano en vez de un prompt colgado.
+
+### Instalación del CLI (un comando, sin depender de PyPI)
+
+`scripts/install.sh` resuelve su fuente en este orden: `$OMNI_SOURCE` → el
+**checkout local** si el script vive dentro de un repo con `pyproject.toml` →
+`$OMNI_GIT_URL` (por defecto `git+https://github.com/garyjr7/NEXUS.git`) →
+PyPI. Así el one-liner funciona hoy contra el repositorio y no solo si el
+paquete está publicado. `bash scripts/install.sh --dry-run` muestra la fuente y
+el plan sin instalar nada.
 
 Doctor muestra sistema, herramientas, gestores, rutas, SQLite, últimos eventos
 de auditoría y puerto/systemd de msfrpcd. El sondeo del puerto no autentica RPC.

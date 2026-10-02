@@ -176,18 +176,30 @@ def run_bootstrap(
     return actions
 
 
-def _bootstrap_msfrpcd(component, *, assume_yes: bool, echo, run=None, env=None) -> BootstrapAction:
+def _bootstrap_msfrpcd(
+    component, *, assume_yes: bool, echo, run=None, env=None, interactive=None
+) -> BootstrapAction:
     """Install/repair the msfrpcd systemd unit through the exact fixed script.
 
     The credential never reaches ``argv``: it is written to a 0600 temp file and
-    the script seeds the root-owned ``/etc/default/msfrpcd`` from it. Execution
-    is non-interactive (``sudo -n``), so an operator without passwordless sudo
-    gets the exact command to run instead of a hung prompt.
+    the script seeds the root-owned ``/etc/default/msfrpcd`` from it. When stdin
+    is a terminal, plain ``sudo`` is used so the operator can type the password;
+    otherwise ``sudo -n`` keeps automation from hanging and the exact command is
+    reported instead.
     """
-    if run is None:
-        from .installer import probe_command
+    import subprocess
+    import sys
 
-        run = probe_command
+    if interactive is None:
+        interactive = sys.stdin.isatty()
+    if run is None:
+        if interactive:
+            def run(argv, timeout=None):  # noqa: E306 - local interactive runner
+                return subprocess.run(list(argv), timeout=timeout, check=False)
+        else:
+            from .installer import probe_command
+
+            run = probe_command
     script = Path(__file__).resolve().parents[2] / "scripts" / "install_msfrpcd_service.sh"
     command = "sudo bash scripts/install_msfrpcd_service.sh"
     if not script.exists():
@@ -211,8 +223,9 @@ def _bootstrap_msfrpcd(component, *, assume_yes: bool, echo, run=None, env=None)
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(f"MSFRPC_PASSWORD={password}\n")
+        sudo_prefix = ["sudo"] if interactive else ["sudo", "-n"]
         outcome = run(
-            ["sudo", "-n", "bash", str(script), "--password-file", temp_path],
+            [*sudo_prefix, "bash", str(script), "--password-file", temp_path],
             timeout=180,
         )
         ok = getattr(outcome, "returncode", 1) == 0

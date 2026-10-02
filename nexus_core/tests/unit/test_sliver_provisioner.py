@@ -12,6 +12,12 @@ from nexus_core.provisioner import sliver
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _isolated_xdg(tmp_path, monkeypatch):
+    """Never let a test write to the real ~/.config/systemd/user."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+
 # --------------------------------------------------------------- platform/urls
 def test_platform_tag_maps_common_arches():
     assert sliver.platform_tag("x86_64", "Linux") == "linux-amd64"
@@ -132,6 +138,7 @@ def test_team_server_starts_and_waits_for_port():
         binary="/x/sliver-server",
         port_open=lambda *a: state["open"],
         spawn=_spawn,
+        service_installer=lambda **k: False,  # no user systemd in the test
         attempts=3,
         sleep=lambda *_: None,
     )
@@ -144,6 +151,7 @@ def test_team_server_never_opens_reports_false():
         binary="/x/sliver-server",
         port_open=lambda *a: False,
         spawn=lambda argv: None,
+        service_installer=lambda **k: False,  # never touch the real user systemd
         attempts=2,
         sleep=lambda *_: None,
     )
@@ -153,6 +161,66 @@ def test_team_server_never_opens_reports_false():
 def test_team_server_without_binary_returns_false():
     assert sliver.start_team_server(
         binary=None, spawn=lambda a: None, which=lambda n: None
+    ) is False
+
+
+def test_team_server_prefers_user_service():
+    used = {"service": False, "spawn": False}
+    state = {"open": False}
+
+    def _port_open(*a):
+        return state["open"]
+
+    def _installer_opens(**kwargs):
+        used["service"] = True
+        state["open"] = True
+        return True
+
+    ok = sliver.start_team_server(
+        binary="/x/sliver-server",
+        port_open=_port_open,
+        spawn=lambda a: used.__setitem__("spawn", True),
+        service_installer=_installer_opens,
+        attempts=2,
+        sleep=lambda *_: None,
+    )
+    assert ok is True and used["service"] is True and used["spawn"] is False
+
+
+# ------------------------------------------------------------ user service
+def test_user_unit_text_is_a_user_service():
+    text = sliver.user_unit_text("/home/operator/.local/bin/sliver-server")
+    assert "ExecStart=/home/operator/.local/bin/sliver-server daemon" in text
+    assert "WantedBy=default.target" in text
+    assert "User=" not in text  # it is a --user unit
+
+
+def test_install_user_service_writes_and_enables(tmp_path):
+    unit = tmp_path / "omni-sliver.service"
+    calls = []
+
+    def _run(argv, **kwargs):
+        calls.append(argv)
+        if argv[:3] == ["systemctl", "--user", "is-system-running"]:
+            return SimpleNamespace(returncode=0, stdout="running\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    ok = sliver.install_user_service(
+        binary="/home/operator/.local/bin/sliver-server", path=unit, run=_run
+    )
+    assert ok is True
+    assert unit.exists() and "sliver-server daemon" in unit.read_text()
+    flat = [" ".join(c) for c in calls]
+    assert any("enable --now " + sliver.USER_SERVICE_NAME in line for line in flat)
+    assert any(line.startswith("loginctl enable-linger") for line in flat)
+
+
+def test_install_user_service_without_systemd(tmp_path):
+    def _run(argv, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="offline\n", stderr="")
+
+    assert sliver.install_user_service(
+        binary="/x/sliver-server", path=tmp_path / "u.service", run=_run
     ) is False
 
 
