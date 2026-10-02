@@ -119,6 +119,26 @@ def test_cmd_clear_rotates_work_session_not_engagement(session, capsys):
     assert commands._work_conversations(session)[0]["id"] != durable_conversation
 
 
+def test_cmd_plan_renders_phases(session, capsys):
+    commands.cmd_plan(session, [])
+    out = capsys.readouterr().out
+    assert "PLAN DE ENGAGEMENT" in out
+    assert "Reconocimiento" in out
+    assert "fase actual" in out
+
+
+def test_cmd_panel_toggles_panel(session, capsys):
+    commands.cmd_panel(session, ["on"])
+    assert "panel de plan: ON" in capsys.readouterr().out
+    commands.cmd_panel(session, ["off"])
+    assert "panel de plan: OFF" in capsys.readouterr().out
+
+
+def test_cmd_panel_rejects_bad_argument(session, capsys):
+    commands.cmd_panel(session, ["maybe"])
+    assert "uso: /panel" in capsys.readouterr().out
+
+
 def test_cmd_export_writes_markdown(session, capsys, tmp_path):
     commands.cmd_export(session, [])
     out = capsys.readouterr().out

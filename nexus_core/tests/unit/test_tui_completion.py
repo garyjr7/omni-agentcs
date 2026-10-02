@@ -143,9 +143,14 @@ def test_completion_can_be_disabled_in_tui(tui_factory):
 
 def test_completion_menu_can_use_space_above_prompt(tui_factory):
     from prompt_toolkit.layout import FloatContainer
+    from prompt_toolkit.layout.menus import MultiColumnCompletionsMenu
 
     ui = tui_factory()
     root = ui.session._session.app.layout.container
     assert isinstance(root, FloatContainer)
-    assert len(root.floats) == 1
+    # The completion menu is an overlay Float; the plan side panel is a second
+    # one (hidden by default) and never adds a region.
+    menus = [f for f in root.floats if isinstance(f.content, MultiColumnCompletionsMenu)]
+    assert len(menus) == 1
+    assert ui.session._panel_float in root.floats
     assert len(root.content.children) == 4

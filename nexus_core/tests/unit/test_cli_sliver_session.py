@@ -111,7 +111,15 @@ def test_detach_resets_backend(session):
 
 def test_run_session_command_routes_to_sliver_exec(session):
     _attach(session)
-    payload = {"success": True, "output": {"status": "ok", "stdout": "uid=0\n"}}
+    # Real ``invoke_tool`` shape: the handler payload nests under output.output.
+    payload = {
+        "tool_id": "nexus.c2.sliver_exec",
+        "output": {
+            "success": True,
+            "verification_method": "sliver_exec_ok",
+            "output": {"status": "ok", "stdout": "uid=0\n"},
+        },
+    }
     with mock.patch.object(OmniSession, "invoke_tool", return_value=payload) as invoke:
         assert session.run_session_command("id") is True
     invoke.assert_called_once_with(
@@ -141,12 +149,16 @@ def test_cmd_sessions_sliver_lists(session, capsys):
 
 def test_cmd_sliver_reports_version(session, capsys):
     payload = {
-        "success": True,
+        "tool_id": "nexus.c2.sliver_server",
         "output": {
-            "version": "1.6.2",
-            "operators_count": 1,
-            "jobs_count": 2,
-            "operators": [{"name": "nexus", "online": True}],
+            "success": True,
+            "verification_method": "sliver_server_ok",
+            "output": {
+                "version": "1.6.2",
+                "operators_count": 1,
+                "jobs_count": 2,
+                "operators": [{"name": "nexus", "online": True}],
+            },
         },
     }
     with mock.patch.object(OmniSession, "invoke_tool", return_value=payload) as invoke:
@@ -158,7 +170,14 @@ def test_cmd_sliver_reports_version(session, capsys):
 
 
 def test_cmd_sliver_reports_unavailable(session, capsys):
-    payload = {"success": False, "verification_method": "sliver_unavailable", "output": {}}
+    payload = {
+        "tool_id": "nexus.c2.sliver_server",
+        "output": {
+            "success": False,
+            "verification_method": "sliver_unavailable",
+            "output": {},
+        },
+    }
     with mock.patch.object(OmniSession, "invoke_tool", return_value=payload):
         commands_module.run_command(session, "/sliver")
     assert "no está disponible" in capsys.readouterr().out
@@ -166,12 +185,16 @@ def test_cmd_sliver_reports_unavailable(session, capsys):
 
 def test_cmd_implants_lists_counts(session, capsys):
     payload = {
-        "success": True,
+        "tool_id": "nexus.c2.sliver_implants",
         "output": {
-            "builds": {"beacon-x": {"Name": "beacon-x"}},
-            "profiles": [{"Name": "windows-beacon"}],
-            "builds_count": 1,
-            "profiles_count": 1,
+            "success": True,
+            "verification_method": "sliver_implants_ok",
+            "output": {
+                "builds": {"beacon-x": {"Name": "beacon-x"}},
+                "profiles": [{"Name": "windows-beacon"}],
+                "builds_count": 1,
+                "profiles_count": 1,
+            },
         },
     }
     with mock.patch.object(OmniSession, "invoke_tool", return_value=payload):

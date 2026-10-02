@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from nexus_core.kernel.approvals import ApprovalService
 
 from . import render
+from .tool_result import tool_method, tool_payload, tool_success
 from .tui.markdown import DEFAULT_READING_WIDTH
 from .tui.output import routed
 
@@ -490,6 +491,45 @@ def cmd_facts(session: "OmniSession", args: list[str]) -> None:
     render.write(f"Resumen: {summary['counts']}")
 
 
+def cmd_plan(session: "OmniSession", args: list[str]) -> None:
+    """Muestra el plan por fases; /plan on|off abre el panel lateral (F2)."""
+    if args and args[0] in {"on", "off"}:
+        cmd_panel(session, args)
+        return
+    if session.engagement is None:
+        render.render_error("no hay engagement activo (usa /scope)")
+        return
+    from nexus_core.agent.planner import plan_from_summary
+    from nexus_core.kernel.blackboard import Blackboard
+
+    try:
+        summary = Blackboard(session.store).summary(session.tenant_id, session.engagement_id)
+    except Exception as exc:  # noqa: BLE001 - never break the REPL
+        render.render_error(f"no se pudo calcular el plan: {type(exc).__name__}: {exc}")
+        return
+    plan = plan_from_summary(summary, engagement_id=session.engagement_id)
+    session._tui.set_plan(plan.to_dict())
+    render.write(plan.render())
+    render.write("  (usa /plan on o F2 para el panel lateral en vivo)")
+
+
+def cmd_panel(session: "OmniSession", args: list[str]) -> None:
+    """Muestra u oculta el panel lateral del plan: /panel [on|off]."""
+    if len(args) > 1 or (args and args[0] not in {"on", "off"}):
+        render.render_error("uso: /panel [on|off]")
+        return
+    if args:
+        enabled = session._tui.set_panel(args[0] == "on")
+    elif not session._tui.use_tui:
+        enabled = session._tui.set_panel(True)
+    else:
+        enabled = session._tui.set_panel(not session._tui.panel_enabled)
+    render.write(
+        f"panel de plan: {'ON' if enabled else 'OFF'}"
+        + (" · F2 lo alterna" if session._tui.use_tui else " (solo TUI)")
+    )
+
+
 def cmd_report(session: "OmniSession", args: list[str]) -> None:
     """Genera el reporte del engagement: /report [export <dir>] [--llm-cvss]."""
     if not args:
@@ -882,12 +922,12 @@ def cmd_sliver(session: "OmniSession", args: list[str]) -> None:
     if result is None:
         render.render_error("no se pudo consultar el team server de Sliver")
         return
-    output = result.get("output") or {}
-    if not result.get("success"):
+    if not tool_success(result):
         render.render_error(
-            f"Sliver no está disponible: {result.get('verification_method') or 'error'}"
+            f"Sliver no está disponible: {tool_method(result) or 'error'}"
         )
         return
+    output = tool_payload(result)
     render.write(render.paint(f"Sliver {output.get('version') or '?'}", render.BOLD))
     render.write(
         f"  operadores: {output.get('operators_count', 0)}  "
@@ -906,12 +946,12 @@ def cmd_implants(session: "OmniSession", args: list[str]) -> None:
     if result is None:
         render.render_error("no se pudo consultar el team server de Sliver")
         return
-    output = result.get("output") or {}
-    if not result.get("success"):
+    if not tool_success(result):
         render.render_error(
-            f"Sliver no está disponible: {result.get('verification_method') or 'error'}"
+            f"Sliver no está disponible: {tool_method(result) or 'error'}"
         )
         return
+    output = tool_payload(result)
     builds = output.get("builds") or {}
     profiles = output.get("profiles") or []
     render.write(
@@ -956,6 +996,8 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/kill-session": cmd_kill_session,
     "/findings": cmd_findings,
     "/facts": cmd_facts,
+    "/plan": cmd_plan,
+    "/panel": cmd_panel,
     "/report": cmd_report,
     "/timeline": cmd_timeline,
     "/ask": cmd_ask,
@@ -1012,6 +1054,8 @@ __all__ = [
     "cmd_help",
     "cmd_history",
     "cmd_implants",
+    "cmd_panel",
+    "cmd_plan",
     "cmd_report",
     "cmd_sliver",
     "cmd_scope",

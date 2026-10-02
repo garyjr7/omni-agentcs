@@ -69,6 +69,8 @@ class TuiSession:
         self._auto_scroll = True
         self._cancel_event = threading.Event()
         self._error = None
+        self._plan: dict[str, Any] | None = None
+        self.panel_enabled = False
         if self.use_tui:
             self._build(history_path, prompt_style, input, output)
 
@@ -145,6 +147,10 @@ class TuiSession:
             self._auto_scroll = False
             self._scrollback.cursor_up(count=max(1, self._session.output.get_size().rows - 5))
 
+        @keys.add("f2", eager=True)
+        def toggle_panel(event):
+            self.set_panel(not self.panel_enabled)
+
         @keys.add("pagedown")
         def page_down(event):
             self._scrollback.cursor_down(count=max(1, self._session.output.get_size().rows - 5))
@@ -187,6 +193,22 @@ class TuiSession:
             from dataclasses import replace
             fragments = render_status_bar(replace(self._status, busy=False), width=self._session.output.get_size().columns)
         return [("", text) for _, text in fragments] if self.no_color else fragments
+
+    def set_plan(self, plan: dict | None) -> None:
+        """Store the latest engagement plan for the side panel."""
+        self._plan = plan if isinstance(plan, dict) else None
+        self.invalidate()
+
+    def set_panel(self, enabled: bool) -> bool:
+        """Show/hide the plan side panel; returns the new state."""
+        self.panel_enabled = bool(enabled)
+        self.invalidate()
+        return self.panel_enabled
+
+    def _panel_formatted(self):
+        from .panels import panel_lines
+
+        return [(style, text) for style, text in panel_lines(self._plan, width=44)]
 
     def set_status_bar_enabled(self, enabled: bool):
         self.status_bar_enabled = bool(enabled)

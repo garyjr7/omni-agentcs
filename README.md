@@ -83,9 +83,10 @@ Usa un ID listado por `--list-engagements`. Un checkout nuevo no incluye
 engagements ni credenciales: créalos en el wizard con tu alcance autorizado.
 En el REPL, `/help` muestra comandos; `/ask`, `/scope`, `/tools`, `/history`,
 `/approvals`, `/trust`, `/sessions`, `/session`, `/detach`, `/kill-session`,
-`/findings`, `/facts`, `/report`, `/timeline` y `/exit` permiten inspeccionar y
-controlar la sesión. `/facts` lista el blackboard del engagement
-(`/facts <tipo>` filtra por tipo de hecho).
+`/findings`, `/facts`, `/plan`, `/panel`, `/report`, `/timeline` y `/exit`
+permiten inspeccionar y controlar la sesión. `/facts` lista el blackboard del
+engagement (`/facts <tipo>` filtra por tipo de hecho) y `/plan` muestra el plan
+por fases del engagement (`/plan on|off` o **F2** abren el panel lateral).
 
 ### Entorno operativo (`--setup`)
 
@@ -344,6 +345,22 @@ metodología (toolkit usado), hallazgos (con CVSS, MITRE ATT&CK, CWE/CVE y
 evidencia), intentos fallidos, cronología completa y chain of custody (hash
 SHA256 de cada evidencia y del reporte).
 
+### Plan por fases (planner)
+
+El agente no improvisa la metodología en cada iteración: un **planner
+determinista** deriva del blackboard la fase del *kill chain* (reconocimiento →
+enumeración → acceso inicial → escalada → post-explotación → movimiento
+lateral → reporte) y la inyecta en cada prompt junto a su siguiente paso
+sugerido. No usa el LLM para decidir la fase, así que es auditable y repetible:
+cada transición se registra como evento `orchestrator.plan`. El movimiento
+lateral es **opcional** y el reporte solo lo cierra el `task_complete`.
+
+- Barra de estado: `▸ <fase actual> <n>/<total>`.
+- `/plan` — imprime el plan completo de la fase actual.
+- `/plan on|off` o **F2** — panel lateral superpuesto (fase, pipeline y desglose
+del blackboard). Puedes cambiar de fase registrando hechos con
+`nexus.knowledge.record_fact`.
+
 ### Comandos
 
 - `/findings` — lista resumida de hallazgos del engagement activo.
@@ -392,7 +409,10 @@ scanme-lab · groq/openai/gpt-oss-120b · 2.3k tok · ~$0.0200 · 5m12s
 ```
 
 La barra muestra engagement, sesión adjunta, trust, proveedor/modelo, tokens,
-coste estimado, número de hechos del blackboard y tiempo. En reposo se refresca cada dos segundos; la aplicación corre
+coste estimado, la **fase actual del plan** (con su progreso), el número de
+hechos del blackboard y el tiempo. El panel lateral (F2 o `/panel`) superpone el
+plan completo por fases y el desglose del blackboard sin salir del prompt.
+En reposo se refresca cada dos segundos; la aplicación corre
 en un hilo dedicado, así que permanece activa durante llamadas síncronas.
 El spinner de stderr se desactiva en TUI: una línea sobre el prompt muestra
 la operación y su duración. Se anima a 4 Hz y se oculta al terminar.

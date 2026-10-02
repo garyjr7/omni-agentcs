@@ -30,6 +30,7 @@ from . import render
 from .approval import default_operator_id, make_approval_callback
 from .tui.session import TuiSession, should_use_tui
 from .tui.history import history_path as tui_history_path
+from .tool_result import tool_method, tool_payload, tool_success
 from .tui.output import PlainOutput, TuiOutput, routed
 from .tui.status import load_status_preference
 
@@ -541,16 +542,23 @@ class OmniSession:
             self._usage_local = [a + b for a, b in zip(self._usage_local, amounts)]
         self._update_status_bar()
 
-    def _facts_count(self) -> int | None:
-        """Distinct blackboard facts for the active engagement (best effort)."""
+    def _blackboard_status(self):
+        """``(facts_count, plan)`` for the active engagement (best effort)."""
         if self.engagement is None:
-            return None
+            return None, None
         try:
+            from nexus_core.agent.planner import plan_from_summary
             from nexus_core.kernel.blackboard import Blackboard
 
-            return Blackboard(self.store).count(self.tenant_id, self.engagement_id)
+            summary = Blackboard(self.store).summary(self.tenant_id, self.engagement_id)
         except Exception:  # presentation must not fail
-            return None
+            return None, None
+        plan = plan_from_summary(summary, engagement_id=self.engagement_id)
+        return int(summary.get("total") or 0), plan
+
+    def _facts_count(self) -> int | None:
+        """Distinct blackboard facts for the active engagement (best effort)."""
+        return self._blackboard_status()[0]
 
     def _update_status_bar(self, *, force=False) -> None:
         if not self._tui.use_tui and not force:
@@ -573,10 +581,17 @@ class OmniSession:
             tokens_input=int(totals[0]), tokens_output=int(totals[1]),
             cost_usd=totals[2], cost_known=self._cost_known,
             audit_chain_valid=self._verify_audit_chain(),
-            facts_count=self._facts_count(),
         )
+        facts_count, plan = self._blackboard_status()
+        fields["facts_count"] = facts_count
+        if plan is not None:
+            done, total = plan.progress
+            fields["plan_phase"] = plan.phase.label
+            fields["plan_progress"] = f"{done}/{total}"
         if self._tui.use_tui:
             self._tui.set_status(**fields)
+            if plan is not None:
+                self._tui.set_plan(plan.to_dict())
         else:
             for key, value in fields.items():
                 setattr(self._tui._status, key, value)
@@ -605,9 +620,9 @@ class OmniSession:
         unreachable team server for "no sessions".
         """
         result = self.invoke_tool(SLIVER_SESSIONS_TOOL, {"kind": "both"})
-        if not isinstance(result, dict) or not result.get("success"):
+        if not tool_success(result):
             return None
-        payload = result.get("output") or {}
+        payload = tool_payload(result)
         records: dict[str, dict] = {}
         for item in list(payload.get("sessions") or []) + list(payload.get("beacons") or []):
             if isinstance(item, dict) and item.get("session_id"):
@@ -887,18 +902,18 @@ class OmniSession:
                 session_uuid, command, run_id, "denied", tool_id=SLIVER_EXEC_TOOL
             )
             return True
-        output = result.get("output") or {}
-        status = str(output.get("status") or "")
+        payload = tool_payload(result)
+        status = str(payload.get("status") or "")
         self.audit_session_command(
             session_uuid, command, run_id, status or "unknown", tool_id=SLIVER_EXEC_TOOL
         )
-        if not result.get("success"):
+        if not tool_success(result):
             render.render_error(
-                f"el comando no se verificó: {result.get('verification_method') or 'error'}"
+                f"el comando no se verificó: {tool_method(result) or 'error'}"
             )
-        text = str(output.get("stdout") or "")
-        if not text and output.get("stderr"):
-            text = str(output.get("stderr"))
+        text = str(payload.get("stdout") or "")
+        if not text and payload.get("stderr"):
+            text = str(payload.get("stderr"))
         render.render_session_output(text)
         self.session_commands_sent += 1
         return True

@@ -26,6 +26,9 @@ class StatusState:
     msfrpcd_version: str | None = None
     #: Distinct facts recorded in the engagement blackboard (None = unknown).
     facts_count: int | None = None
+    #: Current kill-chain phase label and "done/total" progress (planner).
+    plan_phase: str | None = None
+    plan_progress: str | None = None
     busy: bool = False
     busy_message: str = ""
     busy_started_at: float = field(default_factory=time.monotonic)
@@ -60,6 +63,9 @@ def _parts(state: StatusState):
     tokens = state.tokens_input + state.tokens_output
     parts.append(("ansigreen", f"{tokens / 1000:.1f}k tok" if tokens >= 1000 else f"{tokens} tok"))
     parts.append(("ansigreen", f"~${state.cost_usd:.4f}" if state.cost_known else "$—"))
+    if state.plan_phase:
+        progress = f" {state.plan_progress}" if state.plan_progress else ""
+        parts.append(("ansicyan bold", f"▸ {state.plan_phase}{progress}"))
     if state.facts_count:
         parts.append(("ansiblue", f"{state.facts_count} facts"))
     parts.append(("dim", state.elapsed_human))
