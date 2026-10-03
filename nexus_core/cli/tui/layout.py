@@ -33,7 +33,7 @@ class RegionApplication(Application):
         self.create_background_task(refresh())
 
 
-def build_layout(ui, keys, history, prompt_style, input, output):
+def build_layout(ui, keys, history, prompt_style, input, output, full_screen=False):
     from .lexer import OmniLexer
 
     class ScrollbackLexer(Lexer):
@@ -68,7 +68,7 @@ def build_layout(ui, keys, history, prompt_style, input, output):
     ui._regions = [ui._scrollback_window, ui._busy_window, ui._input_window, ui._status_window]
     # The engagement plan is an overlay Float, not a fifth region: the
     # four-region invariant of the inline layout stays intact.
-    from .panels import panel_style
+    from .panels import approval_style, panel_style
 
     ui._panel_window = Window(
         FormattedTextControl(ui._panel_formatted), width=D(46), wrap_lines=True,
@@ -80,15 +80,30 @@ def build_layout(ui, keys, history, prompt_style, input, output):
         ),
         top=1, right=0, width=46,
     )
+    # The approval request is a modal Float: it only appears while a HIGH/
+    # DESTRUCTIVE tool waits for the operator and never becomes a fifth region.
+    ui._approval_window = Window(
+        FormattedTextControl(ui._approval_formatted), width=D(64), wrap_lines=True,
+        height=lambda: min(20, max(3, len(ui._approval_formatted()))),
+    )
+    ui._approval_float = Float(
+        content=ConditionalContainer(
+            ui._approval_window, filter=Condition(lambda: bool(ui.approval_active))
+        ),
+        top=2, right=2, width=64,
+    )
     root = FloatContainer(HSplit(ui._regions), [
         Float(xcursor=True, ycursor=True, content=MultiColumnCompletionsMenu(show_meta=True)),
         ui._panel_float,
+        ui._approval_float,
     ])
     ui._app = RegionApplication(
-        layout=Layout(root, focused_element=editor), full_screen=False,
+        layout=Layout(root, focused_element=editor), full_screen=bool(full_screen),
         mouse_support=False, refresh_interval=None, min_redraw_interval=0.25,
         key_bindings=keys, input=input, output=output,
-        style=Style.from_dict({**panel_style(), "busy": "ansiyellow", **(prompt_style or {})}),
+        style=Style.from_dict({
+            **panel_style(), **approval_style(), "busy": "ansiyellow", **(prompt_style or {}),
+        }),
         color_depth=ColorDepth.DEPTH_1_BIT if ui.no_color else None,
     )
     ui._app.ttimeoutlen = 0.1

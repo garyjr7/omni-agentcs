@@ -211,6 +211,7 @@ class OmniSession:
         status_bar_enabled: bool = True,
         output=None,
         engagement_names: list[str] | None = None,
+        fullscreen: bool = False,
     ) -> None:
         self.store = store
         self.tenant_id = tenant_id
@@ -256,6 +257,7 @@ class OmniSession:
             status_bar_enabled=status_bar_enabled and load_status_preference(),
             tools=commands_module._tool_catalog(self) if tui_enabled else {},
             engagements=engagement_names or ([self.engagement.name] if self.engagement else []),
+            full_screen=fullscreen,
         )
         self._output = output or (TuiOutput(self._tui) if self._tui.use_tui else PlainOutput())
         self._usage_by_run: dict[str, tuple[int, int, float]] = {}
@@ -779,7 +781,11 @@ class OmniSession:
         self.record_tool_result(run_id, tool_id, dict(arguments or {}), result)
         if self._tui.use_tui:
             from .tui.stream import render_tool_result
-            self._output.write(render_tool_result(result.get("output") or {}))
+            self._output.write(
+                render_tool_result(
+                    result.get("output") or {}, expanded=self._tui.expand_cards
+                )
+            )
         return result
 
     def record_tool_result(
@@ -1127,7 +1133,7 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
     for message in messages[state["messages"] :]:
         if session._tui.use_tui:
             from .tui.stream import render_message
-            text = render_message(message)
+            text = render_message(message, expanded=session._tui.expand_cards)
             if text:
                 session._output.write(text)
         else:
@@ -1146,7 +1152,9 @@ def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
             result = payload.get("tool_result") or payload
             if event_type == "tool.failed":
                 result = {**result, "success": False}
-            session._output.write(render_tool_result(result))
+            session._output.write(
+                render_tool_result(result, expanded=session._tui.expand_cards)
+            )
     if event_type == "react.parse_error":
         render.render_error(f"respuesta no parseable del LLM: {payload.get('error')}")
     elif event_type == "react.scope_violation":

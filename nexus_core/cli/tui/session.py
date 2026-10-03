@@ -43,9 +43,11 @@ class TuiSession:
         enable_completion: bool = True,
         commands: dict | None = None, tools: dict | None = None,
         engagements: list[str] | None = None,
-        input=None, output=None,
+        input=None, output=None, full_screen: bool = False,
     ):
         self.use_tui = bool(use_tui)
+        #: ``--fullscreen``: use the terminal's alternate screen (opt-in).
+        self.full_screen = bool(full_screen)
         self.status_bar_enabled = status_bar_enabled
         self.no_color = no_color or "NO_COLOR" in os.environ
         self.prompt_text = "└─$ "
@@ -71,6 +73,9 @@ class TuiSession:
         self._error = None
         self._plan: dict[str, Any] | None = None
         self.panel_enabled = False
+        #: Collapse tool cards by default; F3 or ``/expand`` shows full output.
+        self.expand_cards = False
+        self._approval: dict[str, Any] | None = None
         if self.use_tui:
             self._build(history_path, prompt_style, input, output)
 
@@ -151,6 +156,10 @@ class TuiSession:
         def toggle_panel(event):
             self.set_panel(not self.panel_enabled)
 
+        @keys.add("f3", eager=True)
+        def toggle_expand(event):
+            self.set_expand(not self.expand_cards)
+
         @keys.add("pagedown")
         def page_down(event):
             self._scrollback.cursor_down(count=max(1, self._session.output.get_size().rows - 5))
@@ -158,7 +167,7 @@ class TuiSession:
                 self._auto_scroll = True
 
         build_layout(self, keys, file_history(history_path) if history_path else None,
-                     prompt_style, input, output)
+                     prompt_style, input, output, full_screen=self.full_screen)
 
     def _input_height(self):
         from prompt_toolkit.utils import get_cwidth
@@ -209,6 +218,32 @@ class TuiSession:
         from .panels import panel_lines
 
         return [(style, text) for style, text in panel_lines(self._plan, width=44)]
+
+    def set_expand(self, enabled: bool) -> bool:
+        """Expand/collapse tool cards; returns the new state."""
+        self.expand_cards = bool(enabled)
+        self.invalidate()
+        return self.expand_cards
+
+    @property
+    def approval_active(self) -> bool:
+        return self._approval is not None
+
+    def set_approval(self, payload: dict | None) -> bool:
+        """Show the approval modal for ``payload``; returns whether it is shown."""
+        self._approval = dict(payload) if isinstance(payload, dict) else None
+        self.invalidate()
+        return self.approval_active
+
+    def clear_approval(self) -> None:
+        """Hide the approval modal (called once the operator decided)."""
+        self._approval = None
+        self.invalidate()
+
+    def _approval_formatted(self):
+        from .panels import approval_lines
+
+        return [(style, text) for style, text in approval_lines(self._approval, width=62)]
 
     def set_status_bar_enabled(self, enabled: bool):
         self.status_bar_enabled = bool(enabled)

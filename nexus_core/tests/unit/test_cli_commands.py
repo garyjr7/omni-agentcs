@@ -139,6 +139,20 @@ def test_cmd_panel_rejects_bad_argument(session, capsys):
     assert "uso: /panel" in capsys.readouterr().out
 
 
+def test_cmd_expand_toggles_tool_cards(session, capsys):
+    commands.cmd_expand(session, ["on"])
+    assert "tarjetas de tool: expandidas" in capsys.readouterr().out
+    assert session._tui.expand_cards is True
+    commands.cmd_expand(session, ["off"])
+    assert "tarjetas de tool: plegadas" in capsys.readouterr().out
+    assert session._tui.expand_cards is False
+
+
+def test_cmd_expand_rejects_bad_argument(session, capsys):
+    commands.cmd_expand(session, ["maybe"])
+    assert "uso: /expand" in capsys.readouterr().out
+
+
 def test_cmd_export_writes_markdown(session, capsys, tmp_path):
     commands.cmd_export(session, [])
     out = capsys.readouterr().out

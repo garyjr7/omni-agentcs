@@ -30,6 +30,26 @@ def test_tool_failed_shows_error():
     assert "✗ timeout 120s · verification_method=nmap_timeout" in text
 
 
+def test_collapsed_card_reports_hidden_lines():
+    text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
+    assert "línea(s) oculta(s)" in text
+    assert "F3" in text
+
+
+def test_expanded_card_shows_every_line():
+    text = render_tool_result(
+        {"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))}, expanded=True
+    )
+    assert text.count("->") == 10
+    assert "oculta" not in text
+
+
+def test_expanded_card_has_no_ellipsis_marker():
+    text = render_tool_result({"success": True, "stdout": "a\nb\nc\nd"}, expanded=True)
+    assert "..." not in text
+    assert "✓" in text
+
+
 def test_no_run_in_terminal_calls():
     cli = Path(__file__).parents[2] / "cli"
     assert not [p for p in cli.rglob("*.py") if "run_in_terminal" in p.read_text()]

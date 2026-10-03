@@ -102,4 +102,54 @@ def panel_style() -> dict[str, str]:
     }
 
 
-__all__ = ["PANEL_FACT_ORDER", "panel_lines", "panel_style"]
+def approval_lines(payload: dict[str, Any] | None, *, width: int = 62) -> list[tuple[str, str]]:
+    """Render a HIGH/DESTRUCTIVE approval request as (style, text) fragments.
+
+    Shows the exact tool, its declared risk, the reason and every argument —
+    the durable-approval contract requires the operator to see what they sign.
+    """
+    inner = max(1, width - 2)
+    fragments: list[tuple[str, str]] = [
+        ("class:approval-title", " ⚠ APROBACIÓN HUMANA REQUERIDA")
+    ]
+    if not isinstance(payload, dict):
+        fragments.append(("class:approval", " (solicitud no disponible)"))
+        return fragments
+    tool_id = _safe(payload.get("tool_id") or "?")
+    risk = _safe(payload.get("risk") or "normal")
+    fragments.append(("class:approval", f" tool:   {tool_id}"))
+    fragments.append(("class:approval-risk", f" riesgo: {risk}"))
+    reason = payload.get("reason")
+    if reason:
+        fragments.extend(("class:approval", line) for line in _wrap(f" motivo: {reason}", inner))
+    arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+    if arguments:
+        fragments.append(("class:approval-title", " argumentos"))
+        for key in sorted(arguments):
+            fragments.extend(
+                ("class:approval", line)
+                for line in _wrap(f"  {key}: {arguments[key]}", inner)
+            )
+    fragments.append(
+        ("class:approval-options", " [y] aprobar  [n] rechazar  [e] editar  [?] definición")
+    )
+    return fragments
+
+
+def approval_style() -> dict[str, str]:
+    """prompt_toolkit style rules used by :func:`approval_lines`."""
+    return {
+        "approval": "bg:#2a1a1a #e0e0e0",
+        "approval-title": "bg:#2a1a1a #ffff5f bold",
+        "approval-risk": "bg:#2a1a1a #ff5f5f bold",
+        "approval-options": "bg:#2a1a1a #00d7d7",
+    }
+
+
+__all__ = [
+    "PANEL_FACT_ORDER",
+    "panel_lines",
+    "panel_style",
+    "approval_lines",
+    "approval_style",
+]

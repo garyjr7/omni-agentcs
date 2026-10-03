@@ -25,14 +25,12 @@ def _line(text, width=100):
     return text if len(text) <= width else text[:max(0, width - 1)] + "…"
 
 
-def truncate_output(output: str, max_lines: int = 3, *, width: int = 100) -> tuple[str, bool]:
-    """Keep head and tail data lines, with one extra omission marker.
+def data_lines(output: str, *, width: int = 100) -> tuple[list[str], bool]:
+    """Clean data lines of a tool output, plus whether any line was clipped.
 
-    max_lines counts data lines, not the marker. Width is bounded independently.
-    Empty/separator lines and adjacent duplicate progress lines are discarded.
+    Empty/separator lines and adjacent duplicate progress lines are discarded;
+    every kept line is bounded to ``width``.
     """
-    if max_lines < 1:
-        raise ValueError("max_lines must be positive")
     lines = []
     clipped = False
     for raw in str(output or "").splitlines():
@@ -43,6 +41,17 @@ def truncate_output(output: str, max_lines: int = 3, *, width: int = 100) -> tup
         line = _line(raw, width)
         clipped |= line != raw
         lines.append(line)
+    return lines, clipped
+
+
+def truncate_output(output: str, max_lines: int = 3, *, width: int = 100) -> tuple[str, bool]:
+    """Keep head and tail data lines, with one extra omission marker.
+
+    max_lines counts data lines, not the marker. Width is bounded independently.
+    """
+    if max_lines < 1:
+        raise ValueError("max_lines must be positive")
+    lines, clipped = data_lines(output, width=width)
     if len(lines) <= max_lines:
         return "\n".join(lines), clipped
     tail = lines[-(max_lines - 1):] if max_lines > 1 else []
@@ -102,11 +111,27 @@ def summarize_tool_result(result):
     return _line(" · ".join(parts) or str(result.get("verification_method") or "completado"))
 
 
-def render_tool_result(result):
-    text, _ = truncate_output(output_text(result))
-    lines = [("   ..." if line == "..." else "   -> " + line) for line in text.splitlines()]
-    lines.append(f"   {'✓' if result.get('success') else '✗'} {summarize_tool_result(result)}")
-    return "\n".join(lines)
+def render_tool_result(result, *, expanded: bool = False, max_lines: int = 3):
+    """Render one tool result as a collapsible card.
+
+    Collapsed (default) keeps ``max_lines`` head/tail data lines and reports how
+    many were hidden; ``expanded`` prints the whole output. Toggled with F3 or
+    ``/expand``; the summary and success marker are always shown.
+    """
+    output = output_text(result)
+    if expanded:
+        lines, _ = data_lines(output)
+        hidden = 0
+    else:
+        total = len(data_lines(output)[0])
+        text, _ = truncate_output(output, max_lines)
+        lines = text.splitlines()
+        hidden = max(0, total - (len(lines) - (1 if "..." in lines else 0)))
+    body = [("   ..." if line == "..." else "   -> " + line) for line in lines]
+    body.append(f"   {'✓' if result.get('success') else '✗'} {summarize_tool_result(result)}")
+    if hidden:
+        body.append(f"   ⤵ {hidden} línea(s) oculta(s) · F3 para expandir")
+    return "\n".join(body)
 
 
 def observation(message):
@@ -121,10 +146,10 @@ def observation(message):
     return result if isinstance(result, dict) else {"success": False}
 
 
-def render_message(message):
+def render_message(message, *, expanded: bool = False):
     meta = message.get("metadata") or {}
     if meta.get("kind") == "react.action" and meta.get("action") == "tool_call":
         return format_tool_invocation(meta.get("tool_id", "?"), meta.get("arguments", {}))
     if meta.get("kind") == "react.observation":
-        return render_tool_result(observation(message))
+        return render_tool_result(observation(message), expanded=expanded)
     return ""

@@ -134,22 +134,42 @@ def render_approval_prompt(
     arguments: dict[str, Any],
     decision: Any,
     reader: Callable[[str], str] | None = None,
+    risk: str = "",
 ) -> str:
-    """Show the human approval block and return the operator's raw answer."""
+    """Show the human approval request and return the operator's raw answer.
+
+    With the TUI the request becomes a dedicated modal overlay (exact tool,
+    risk, reason and arguments) instead of scrolling text; the answer is read
+    through the normal input bar and the modal is hidden right after.
+    """
     reason = getattr(decision, "reason", "") or ""
-    risk = getattr(decision, "requires_approval", False)
+    requires = getattr(decision, "requires_approval", False)
+    declared_risk = risk or ("alto (requiere aprobación)" if requires else "normal")
+    question = "   Opción [y/n/e/?]: "
+    tui = getattr(getattr(reader, "__self__", None), "use_tui", False)
+    if tui:
+        tui_session = reader.__self__
+        write(paint(f"⚠️  aprobación pendiente: {tool_id}", YELLOW, BOLD))
+        tui_session.set_approval({
+            "tool_id": tool_id,
+            "risk": declared_risk,
+            "reason": reason,
+            "arguments": dict(arguments or {}),
+        })
+        try:
+            return reader(question)
+        finally:
+            tui_session.clear_approval()
     write()
     write(paint("⚠️  APROBACIÓN HUMANA REQUERIDA", YELLOW, BOLD))
     write(f"   tool:   {tool_id}")
-    write(f"   riesgo: {'alto (requiere aprobación)' if risk else 'normal'}")
+    write(f"   riesgo: {declared_risk}")
     write(f"   motivo: {reason}")
     write(f"   args:   {json.dumps(arguments or {}, ensure_ascii=False, default=str)}")
     write("   opciones: [y] aprobar  [n] rechazar  [e] editar argumentos  [?] ver definición")
-    question = "   Opción [y/n/e/?]: "
     if reader is None:
         return input(question)
-    if not getattr(getattr(reader, "__self__", None), "use_tui", False):
-        write(question, end="", flush=True)
+    write(question, end="", flush=True)
     return reader(question)
 
 

@@ -6,8 +6,31 @@ def test_layout_has_four_regions(tui_factory):
     assert len(ui.session._app.layout.container.content.children) == 4
 
 
-def test_full_screen_false(tui_factory):
+def test_full_screen_false_by_default(tui_factory):
     assert tui_factory().session._app.full_screen is False
+
+
+def test_full_screen_opt_in(tui_factory):
+    assert tui_factory(full_screen=True).session._app.full_screen is True
+
+
+def test_full_screen_layout_renders(tui_factory):
+    ui = tui_factory(full_screen=True)
+    ui.pipe.send_text("hi\r")
+    assert ui.session.prompt() == "hi"
+    ui.session.set_status(engagement="lab")
+    ui.session.print("out")
+    ui.session.flush()
+    assert "out" in ui.session._scrollback.text
+    assert ui.session._app.full_screen is True
+
+
+def test_expand_cards_toggles(tui_factory):
+    ui = tui_factory()
+    assert ui.session.expand_cards is False
+    assert ui.session.set_expand(True) is True
+    assert ui.session.expand_cards is True
+    assert ui.session.set_expand(False) is False
 
 
 def test_status_bar_at_bottom(tui_factory):

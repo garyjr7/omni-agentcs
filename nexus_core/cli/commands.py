@@ -530,6 +530,23 @@ def cmd_panel(session: "OmniSession", args: list[str]) -> None:
     )
 
 
+def cmd_expand(session: "OmniSession", args: list[str]) -> None:
+    """Expande o pliega la salida de las tarjetas de tool: /expand [on|off]."""
+    if len(args) > 1 or (args and args[0] not in {"on", "off"}):
+        render.render_error("uso: /expand [on|off]")
+        return
+    if args:
+        enabled = session._tui.set_expand(args[0] == "on")
+    elif not session._tui.use_tui:
+        enabled = session._tui.set_expand(True)
+    else:
+        enabled = session._tui.set_expand(not session._tui.expand_cards)
+    render.write(
+        f"tarjetas de tool: {'expandidas' if enabled else 'plegadas'}"
+        + (" · F3 lo alterna" if session._tui.use_tui else " (solo TUI)")
+    )
+
+
 def cmd_report(session: "OmniSession", args: list[str]) -> None:
     """Genera el reporte del engagement: /report [export <dir>] [--llm-cvss]."""
     if not args:
@@ -998,6 +1015,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/facts": cmd_facts,
     "/plan": cmd_plan,
     "/panel": cmd_panel,
+    "/expand": cmd_expand,
     "/report": cmd_report,
     "/timeline": cmd_timeline,
     "/ask": cmd_ask,
@@ -1053,6 +1071,7 @@ __all__ = [
     "cmd_findings",
     "cmd_help",
     "cmd_history",
+    "cmd_expand",
     "cmd_implants",
     "cmd_panel",
     "cmd_plan",

@@ -42,6 +42,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-color", action="store_true", help="desactiva la salida ANSI")
     parser.add_argument("--no-tui", action="store_true", help="usa readline en lugar de la TUI")
     parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help=(
+            "usa la pantalla alternativa (alt-screen) de la TUI; opt-in, el "
+            "scrollback del terminal no queda accesible mientras corre"
+        ),
+    )
+    parser.add_argument(
         "--trust-mode",
         action="store_true",
         help=(
@@ -166,6 +174,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         no_color=args.no_color,
         use_tui=False if args.no_tui or args.objective else None,
         engagement_names=[scope.name for scope in engagements],
+        fullscreen=args.fullscreen,
     )
     if args.objective:
         result = session.run_objective(args.objective)

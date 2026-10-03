@@ -223,7 +223,8 @@ def make_approval_callback(
                     return ApprovalDecision(approved=False, reason="no valid install plan")
             try:
                 answer = render.render_approval_prompt(
-                    tool_id, arguments, decision, reader=reader
+                    tool_id, arguments, decision, reader=reader,
+                    risk=_risk_of(tenant_id, tool_id),
                 )
             except (EOFError, KeyboardInterrupt):
                 render.render_status("aprobación interrumpida: se trata como rechazo")

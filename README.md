@@ -83,10 +83,11 @@ Usa un ID listado por `--list-engagements`. Un checkout nuevo no incluye
 engagements ni credenciales: créalos en el wizard con tu alcance autorizado.
 En el REPL, `/help` muestra comandos; `/ask`, `/scope`, `/tools`, `/history`,
 `/approvals`, `/trust`, `/sessions`, `/session`, `/detach`, `/kill-session`,
-`/findings`, `/facts`, `/plan`, `/panel`, `/report`, `/timeline` y `/exit`
-permiten inspeccionar y controlar la sesión. `/facts` lista el blackboard del
-engagement (`/facts <tipo>` filtra por tipo de hecho) y `/plan` muestra el plan
-por fases del engagement (`/plan on|off` o **F2** abren el panel lateral).
+`/findings`, `/facts`, `/plan`, `/panel`, `/expand`, `/report`, `/timeline` y
+`/exit` permiten inspeccionar y controlar la sesión. `/facts` lista el blackboard
+del engagement (`/facts <tipo>` filtra por tipo de hecho) y `/plan` muestra el
+plan por fases del engagement (`/plan on|off` o **F2** abren el panel lateral;
+`/expand on|off` o **F3** despliegan la salida completa de las tarjetas de tool).
 
 ### Entorno operativo (`--setup`)
 
@@ -387,6 +388,12 @@ lateral es **opcional** y el reporte solo lo cierra el `task_complete`.
 - `/plan on|off` o **F2** — panel lateral superpuesto (fase, pipeline y desglose
 del blackboard). Puedes cambiar de fase registrando hechos con
 `nexus.knowledge.record_fact`.
+- `/expand on|off` o **F3** — las tarjetas de tool se muestran **plegadas** por
+defecto (cabecera + resumen + primeras/últimas líneas, con el número de líneas
+ocultas); al expandir se imprime la salida completa.
+- **Modal de aprobación** — las tools HIGH/DESTRUCTIVE no vuelven a volcar el
+bloque al scrollback: aparece un modal superpuesto con tool, riesgo, motivo y
+argumentos exactos, y se lee la respuesta `y/n/e/?` en la barra de entrada.
 
 ### Comandos
 
@@ -421,6 +428,13 @@ autocompletado mediante Tab. Se usa la pantalla principal (`full_screen=False`),
 sin borrar el terminal al arrancar ni cambiar a una pantalla alternativa.
 El banner aparece una vez; el ASCII usa el color predeterminado, sin negrita.
 
+Con `--fullscreen` la aplicación usa la **pantalla alternativa** (`alt-screen`)
+del terminal: es un modo *opt-in* pensado para sesiones largas. Mientras corre,
+el scrollback nativo del terminal no es accesible (PageUp/PageDown navegan el
+historial de la aplicación) y la selección/copia depende del emulador; al salir,
+la pantalla anterior se restaura intacta. Por defecto se usa la pantalla
+principal (`full_screen=False`), que conserva el scrollback.
+
 PageUp y PageDown recorren todo el historial del panel; al volver al final se
 reanuda el seguimiento automático. Se conserva en memoria toda la salida
 mostrada, sin el límite previo de 2000 líneas. El historial anterior del
@@ -439,6 +453,7 @@ La barra muestra engagement, sesión adjunta, trust, proveedor/modelo, tokens,
 coste estimado, la **fase actual del plan** (con su progreso), el número de
 hechos del blackboard y el tiempo. El panel lateral (F2 o `/panel`) superpone el
 plan completo por fases y el desglose del blackboard sin salir del prompt.
+**F3** (o `/expand`) alterna entre tarjetas de tool plegadas y expandidas.
 En reposo se refresca cada dos segundos; la aplicación corre
 en un hilo dedicado, así que permanece activa durante llamadas síncronas.
 El spinner de stderr se desactiva en TUI: una línea sobre el prompt muestra
@@ -542,7 +557,8 @@ NEXUS_NO_TUI=1 omni
 omni --no-tui
 ```
 
-También aceptan `true` y `yes` en `NEXUS_NO_TUI`. El fallback a `input()` y
+También aceptan `true` y `yes` en `NEXUS_NO_TUI`. `--fullscreen` es un modo de
+pantalla de la TUI (se ignora con `--no-tui`). El fallback a `input()` y
 readline es automático si **stdin o stdout** no es TTY, o si `prompt_toolkit`
 no se puede importar. Conserva el comportamiento anterior. En fallback
 sin TTY el banner se omite; en un terminal con `--no-tui` sigue apareciendo.
