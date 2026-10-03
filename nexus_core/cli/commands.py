@@ -530,6 +530,72 @@ def cmd_panel(session: "OmniSession", args: list[str]) -> None:
     )
 
 
+def cmd_playbook(session: "OmniSession", args: list[str]) -> None:
+    """Muestra los playbooks aplicables y su siguiente paso: /playbook [show <id>]."""
+    if session.engagement is None:
+        render.render_error("no hay engagement activo (usa /scope)")
+        return
+    from nexus_core.agent.playbooks import PLAYBOOKS, PRECONDITIONS, select_playbooks
+    from nexus_core.kernel.blackboard import Blackboard
+
+    try:
+        facts = Blackboard(session.store).list_facts(
+            session.tenant_id, session.engagement_id
+        )
+    except Exception as exc:  # noqa: BLE001 - never break the REPL
+        render.render_error(f"no se pudieron leer los hechos: {type(exc).__name__}: {exc}")
+        return
+    if args and args[0] == "show":
+        if len(args) < 2:
+            render.render_error("uso: /playbook show <playbook_id>")
+            return
+        playbook = next((item for item in PLAYBOOKS if item.playbook_id == args[1]), None)
+        if playbook is None:
+            render.render_error(f"playbook desconocido: {args[1]!r}")
+            return
+        render.write(f"PLAYBOOK {playbook.playbook_id} — {playbook.title} [{playbook.phase}]")
+        render.write(f"  requiere: {playbook.requires}")
+        for step in playbook.steps:
+            render.write(f"   → {step.step_id}: {step.title} ({step.tool_id})")
+        return
+    matches = select_playbooks(facts, only_ready=False)
+    if not matches:
+        render.write("(sin playbooks definidos)")
+        return
+    for match in matches:
+        ready = PRECONDITIONS[match.playbook.playbook_id](facts)
+        state = "listo" if ready else "no aplica (faltan hechos)"
+        render.write(f"  [{match.playbook.phase}] {match.playbook.playbook_id} — {state}")
+        if match.next_step is not None:
+            render.write(
+                f"      siguiente: {match.next_step.tool_id} — {match.next_step.title}"
+            )
+
+
+def cmd_loot(session: "OmniSession", args: list[str]) -> None:
+    """Lista el loot del team server con su SHA256 (cadena de custodia): /loot."""
+    result = session.invoke_tool("nexus.c2.sliver_loot", {"action": "list"})
+    if result is None:
+        return
+    if not tool_success(result):
+        render.render_error(
+            f"no se pudo listar el loot ({tool_method(result) or 'error'})"
+        )
+        return
+    payload = tool_payload(result)
+    entries = payload.get("loot") or []
+    if not entries:
+        render.write("(sin loot registrado en el team server)")
+        return
+    render.write(f"Loot ({len(entries)}):")
+    for entry in entries:
+        digest = str(entry.get("sha256") or "")[:16]
+        render.write(
+            f"  [{entry.get('kind')}] {entry.get('name')} "
+            f"sha256={digest} size={entry.get('size')}"
+        )
+
+
 def cmd_expand(session: "OmniSession", args: list[str]) -> None:
     """Expande o pliega la salida de las tarjetas de tool: /expand [on|off]."""
     if len(args) > 1 or (args and args[0] not in {"on", "off"}):
@@ -1016,6 +1082,8 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/plan": cmd_plan,
     "/panel": cmd_panel,
     "/expand": cmd_expand,
+    "/playbook": cmd_playbook,
+    "/loot": cmd_loot,
     "/report": cmd_report,
     "/timeline": cmd_timeline,
     "/ask": cmd_ask,
@@ -1073,8 +1141,10 @@ __all__ = [
     "cmd_history",
     "cmd_expand",
     "cmd_implants",
+    "cmd_loot",
     "cmd_panel",
     "cmd_plan",
+    "cmd_playbook",
     "cmd_report",
     "cmd_sliver",
     "cmd_scope",

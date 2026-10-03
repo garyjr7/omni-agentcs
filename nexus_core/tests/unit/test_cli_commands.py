@@ -153,6 +153,37 @@ def test_cmd_expand_rejects_bad_argument(session, capsys):
     assert "uso: /expand" in capsys.readouterr().out
 
 
+def test_cmd_playbook_lists_applicable(session, capsys):
+    from nexus_core.kernel.blackboard import Blackboard
+
+    Blackboard(session.store).record(
+        tenant_id="system", engagement_id=session.engagement_id, fact_type="service",
+        key="10.0.0.5:21/tcp", value={"port": 21, "product": "vsftpd"},
+        source="test", created_by="tester",
+    )
+    commands.cmd_playbook(session, [])
+    out = capsys.readouterr().out
+    assert "ftp_anon_to_cred" in out and "siguiente" in out
+
+
+def test_cmd_playbook_show_prints_steps(session, capsys):
+    commands.cmd_playbook(session, ["show", "linux_privesc"])
+    out = capsys.readouterr().out
+    assert "linux_privesc" in out and "enum_system" in out
+
+
+def test_cmd_playbook_show_unknown(session, capsys):
+    commands.cmd_playbook(session, ["show", "nope"])
+    assert "playbook desconocido" in capsys.readouterr().out
+
+
+def test_cmd_loot_fail_closed_without_sliver(session, capsys, monkeypatch):
+    monkeypatch.delenv("SLIVER_OPERATOR_CONFIG", raising=False)
+    commands.cmd_loot(session, [])
+    out = capsys.readouterr().out
+    assert "sliver_loot" in out and "sliver_auth_missing" in out
+
+
 def test_cmd_export_writes_markdown(session, capsys, tmp_path):
     commands.cmd_export(session, [])
     out = capsys.readouterr().out

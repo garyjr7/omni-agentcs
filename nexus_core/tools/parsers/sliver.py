@@ -8,12 +8,15 @@ them stable against minor proto renames and easy to unit-test with fixtures.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
 SESSION_KINDS = ("session", "beacon")
+LOOT_KINDS = ("file", "credential")
 EXEC_STATUSES = ("ok", "timeout", "error")
 
 
@@ -93,6 +96,23 @@ class SliverExecResult:
     stderr: str
     duration_seconds: float
     raw_sha256: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SliverLootInfo:
+    """One loot entry, with a content hash for chain of custody."""
+
+    loot_id: str
+    name: str
+    kind: str
+    file_type: str
+    size: int
+    sha256: str
+    username: str
+    has_content: bool
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -232,6 +252,59 @@ def parse_sliver_exec(raw: dict, session_id: str, command: str) -> SliverExecRes
         duration_seconds=duration,
         raw_sha256=_sha(raw),
     )
+
+
+def _file_bytes(record: dict) -> bytes:
+    """Decode the loot file payload (base64 from MessageToDict) if present."""
+    file = _pick(record, "File", "file", default=None)
+    if not isinstance(file, dict):
+        return b""
+    data = file.get("Data")
+    if isinstance(data, str) and data:
+        try:
+            return base64.b64decode(data)
+        except (binascii.Error, ValueError):
+            return data.encode("utf-8", errors="replace")
+    return b""
+
+
+def parse_sliver_loot(raw: Any) -> tuple[SliverLootInfo, ...]:
+    """Normalize Sliver loot entries (single object or ``AllLoot`` list).
+
+    The custody hash is the SHA256 of the file payload when the server sends it
+    (``LootContent``) and otherwise the SHA256 of the loot descriptor, so every
+    entry carries a stable, comparable digest.
+    """
+    if isinstance(raw, dict):
+        if "Loot" in raw or "loot" in raw:
+            records = raw.get("Loot") or raw.get("loot") or []
+        else:
+            records = [raw]
+    else:
+        records = list(raw or [])
+    result: list[SliverLootInfo] = []
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("loot record must be an object")
+        payload = _file_bytes(record)
+        loot_type = _text(_pick(record, "Type", "type")).upper()
+        credential = _pick(record, "Credential", "credential", default={})
+        credential = credential if isinstance(credential, dict) else {}
+        kind = "credential" if "CREDENTIAL" in loot_type else "file"
+        result.append(
+            SliverLootInfo(
+                loot_id=_text(_pick(record, "LootID", "loot_id", "ID", "id")),
+                name=_text(_pick(record, "Name", "name")),
+                kind=kind,
+                file_type=_text(_pick(record, "FileType", "file_type")),
+                size=len(payload) if payload else _int(_pick(record, "FileSize", "size"), 0),
+                sha256=hashlib.sha256(payload).hexdigest() if payload else _sha(record),
+                username=_text(_pick(credential, "User", "user")),
+                has_content=bool(payload),
+            )
+        )
+    result.sort(key=lambda item: (item.kind, item.name, item.loot_id))
+    return tuple(result)
 
 
 def _split_host_port(value: str) -> tuple[str, int]:

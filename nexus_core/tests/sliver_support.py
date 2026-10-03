@@ -107,6 +107,36 @@ class FakeSliverClient:
                 "duration_seconds": 0.3,
             }
         )
+        self.generate_implant = AsyncMock(
+            return_value=(
+                {
+                    "name": "implant",
+                    "filename": "implant",
+                    "size": 4,
+                    "sha256": "d34db33f",
+                    "format": "executable",
+                    "os": "linux",
+                    "arch": "amd64",
+                    "beacon": False,
+                    "persistent": False,
+                },
+                b"\x7fELF",
+            )
+        )
+        self.upload_file = AsyncMock(return_value={"path": "/tmp/implant"})
+        self.execute_path = AsyncMock(
+            return_value={
+                "path": "/tmp/implant",
+                "status_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "pid": 123,
+            }
+        )
+        self.loot_list = AsyncMock(return_value=[])
+        self.loot_get = AsyncMock(return_value={"Loot": []})
+        self.loot_add_file = AsyncMock(return_value={})
+        self.loot_add_credential = AsyncMock(return_value={})
         self.is_available = AsyncMock(return_value=True)
 
     async def __aenter__(self):

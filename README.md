@@ -83,8 +83,8 @@ Usa un ID listado por `--list-engagements`. Un checkout nuevo no incluye
 engagements ni credenciales: créalos en el wizard con tu alcance autorizado.
 En el REPL, `/help` muestra comandos; `/ask`, `/scope`, `/tools`, `/history`,
 `/approvals`, `/trust`, `/sessions`, `/session`, `/detach`, `/kill-session`,
-`/findings`, `/facts`, `/plan`, `/panel`, `/expand`, `/report`, `/timeline` y
-`/exit` permiten inspeccionar y controlar la sesión. `/facts` lista el blackboard
+`/findings`, `/facts`, `/plan`, `/panel`, `/expand`, `/playbook`, `/loot`,
+`/report`, `/timeline` y `/exit` permiten inspeccionar y controlar la sesión. `/facts` lista el blackboard
 del engagement (`/facts <tipo>` filtra por tipo de hecho) y `/plan` muestra el
 plan por fases del engagement (`/plan on|off` o **F2** abren el panel lateral;
 `/expand on|off` o **F3** despliegan la salida completa de las tarjetas de tool).
@@ -141,7 +141,7 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **38 herramientas**:
+El catálogo durable contiene **42 herramientas**:
 
 - `nexus.system.status`, `nexus.workspace.search`.
 - `nexus.knowledge.record_fact`, `nexus.knowledge.query_facts` — blackboard
@@ -170,7 +170,12 @@ El catálogo durable contiene **38 herramientas**:
   `nexus.attack.impacket_psexec` (DESTRUCTIVE, ejecucion remota RemComSvc).
 - `nexus.session.list`, `nexus.session.interact`, `nexus.session.kill`.
 - `nexus.c2.sliver_server`, `nexus.c2.sliver_implants`, `nexus.c2.sliver_sessions`,
-  `nexus.c2.sliver_exec` (HIGH), `nexus.c2.sliver_pivot` (HIGH).
+  `nexus.c2.sliver_exec` (HIGH), `nexus.c2.sliver_pivot` (HIGH),
+  `nexus.c2.sliver_generate` (HIGH, compila implantes, nunca devuelve los bytes),
+  `nexus.c2.sliver_deploy` (DESTRUCTIVE, movimiento lateral upload+execute),
+  `nexus.c2.sliver_loot` (LOW, loot y cadena de custodia).
+- `nexus.orchestrator.playbook` (READ_ONLY): sugiere el siguiente paso gated de
+  los playbooks deterministas.
 - `nexus.report.generate`.
 - `nexus.system.check_env`, `nexus.system.install_tool`.
 
@@ -312,7 +317,7 @@ que no registra fila en `kernel_sessions`.
 
 ### Sliver C2
 
-Cinco tools integran el C2 moderno **Sliver** vía gRPC (`sliver-py`), sin
+Ocho tools integran el C2 moderno **Sliver** vía gRPC (`sliver-py`), sin
 subprocess: el bridge habla mTLS con el *multiplayer* del team server usando el
 operator config que indica `SLIVER_OPERATOR_CONFIG`.
 
@@ -326,6 +331,18 @@ operator config que indica `SLIVER_OPERATOR_CONFIG`.
   conjunto de comandos destructivos (`shutdown`, `mkfs`, `format`, ...).
 - `nexus.c2.sliver_pivot` (HIGH, scope): pivoting (`portfwd`, `socks5`, `list`,
   `kill`).
+- `nexus.c2.sliver_generate` (HIGH): compila un implante (`os`, `arch`,
+  `format`, `beacon`, `interval`/`jitter`) para `session` o `beacon`. Con
+  `persistent=true` genera un implante de servicio que arranca al cargar
+  (`IsService`+`RunAtLoad`). Nunca devuelve los bytes: solo nombre, tamaño y
+  SHA256.
+- `nexus.c2.sliver_deploy` (DESTRUCTIVE, scope): **movimiento lateral**;
+  genera un implante, lo sube (`Upload`) a un host nuevo a través de una session
+  propia y lo ejecuta (`Execute`). La nueva session aparece en
+  `nexus.c2.sliver_sessions`, que la registra como evidencia del salto.
+- `nexus.c2.sliver_loot` (LOW): lista el loot del team server, lee una entrada
+  y con `record` persiste un hecho `loot` del engagement con su **SHA256** — la
+  cadena de custodia que el reporte convierte en evidencia verificable.
 
 Todas fallan cerrado: si el team server no responde o el config no existe,
 devuelven `verified=false` (`sliver_unavailable` / `sliver_auth_missing`) en vez
@@ -333,7 +350,19 @@ de un error. En el REPL, `/sliver` muestra el estado del server, `/implants`
 lista builds y profiles y `/sessions --sliver` lista las sessions del engagement;
 `attach_session` es vía `/session attach <id>` desde esa lista. El prompt de modo
 sesión las marca con el prefijo `[sliver:<id>/<kind>]` y los comandos se
-enrutan por `nexus.c2.sliver_exec`.
+enrutan por `nexus.c2.sliver_exec`. `/loot` lista el loot con su SHA256 y
+`/playbook` muestra los playbooks aplicables y su siguiente paso.
+
+### Playbooks deterministas
+
+Un **playbook** es una secuencia ordenada de pasos gated cuyo encaje se decide
+solo con el blackboard (sin LLM): `ftp_anon_to_cred` (servicio FTP anónimo →
+descarga → credenciales), `linux_privesc` (acceso Linux → enumeración →
+GTFOBins → root) y `lateral_movement` (acceso + otro servicio → generar
+implante → desplegar → registrar la session). La tool
+`nexus.orchestrator.playbook` y el comando `/playbook` devuelven qué playbook
+aplica y el `tool_id` exacto del siguiente paso; ningún paso se ejecuta solo:
+el gateway sigue aplicando scope, aprobación y auditoría a cada llamada.
 
 ### Trust mode
 
@@ -661,7 +690,7 @@ modelo resuelto.
    A G E N T C S   ·   C L I
 
        =[ OmniAgentCS v3.0.0                                              ]
- + -- --=[ 38 tools · 1 providers · engagement: scanme-lab                ]
+ + -- --=[ 42 tools · 1 providers · engagement: scanme-lab                ]
  + -- --=[ audit-chain ok · msfrpcd 6.5.3-dev- · groq/openai/gpt-oss-120b ]
 
  Tip: Use /trust on to auto-approve high-risk actions during an engagement.

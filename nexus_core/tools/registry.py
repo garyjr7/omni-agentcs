@@ -99,6 +99,16 @@ def durable_tool_definitions(
     )
     from .handlers.sliver_exec import sliver_exec_definition, sliver_exec_handler
     from .handlers.sliver_pivot import sliver_pivot_definition, sliver_pivot_handler
+    from .handlers.sliver_generate import (
+        sliver_generate_definition,
+        sliver_generate_handler,
+    )
+    from .handlers.sliver_deploy import (
+        sliver_deploy_definition,
+        sliver_deploy_handler,
+    )
+    from .handlers.sliver_loot import sliver_loot_definition, sliver_loot_handler
+    from .handlers.playbook import playbook_definition, playbook_handler
 
     catalog = {
         "nexus.system.check_env": (check_env_definition(tenant_id), check_env_handler),
@@ -184,6 +194,19 @@ def durable_tool_definitions(
         ),
         "nexus.c2.sliver_exec": (sliver_exec_definition(tenant_id), sliver_exec_handler),
         "nexus.c2.sliver_pivot": (sliver_pivot_definition(tenant_id), sliver_pivot_handler),
+        "nexus.c2.sliver_generate": (
+            sliver_generate_definition(tenant_id),
+            sliver_generate_handler,
+        ),
+        "nexus.c2.sliver_deploy": (
+            sliver_deploy_definition(tenant_id),
+            sliver_deploy_handler,
+        ),
+        "nexus.c2.sliver_loot": (sliver_loot_definition(tenant_id), sliver_loot_handler),
+        "nexus.orchestrator.playbook": (
+            playbook_definition(tenant_id),
+            playbook_handler,
+        ),
     }
     return catalog
 

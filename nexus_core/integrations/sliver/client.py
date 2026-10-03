@@ -434,6 +434,199 @@ class SliverClient:
         await self._stub_call("CloseSocks", request, timeout=timeout_seconds)
         return {"tunnel_id": int(tunnel_id), "closed": True}
 
+    # ------------------------------------------------------------ implants
+    # sliver-py exposes no high-level Generate/Upload/Execute/Loot helpers, so
+    # these go through the generated gRPC stub. Nothing here runs locally.
+    OUTPUT_FORMATS = {
+        "shared": "SHARED_LIB",
+        "shellcode": "SHELLCODE",
+        "executable": "EXECUTABLE",
+        "service": "SERVICE",
+    }
+
+    @staticmethod
+    def _output_format(value: str) -> int:
+        from sliver.protobuf import client_pb2
+
+        name = SliverClient.OUTPUT_FORMATS.get(str(value or "executable").lower())
+        if name is None:
+            raise ValueError("unsupported implant format")
+        return int(getattr(client_pb2, name))
+
+    async def generate_implant(
+        self,
+        *,
+        os_name: str,
+        arch: str,
+        format: str = "executable",
+        beacon: bool = False,
+        interval: int = 60,
+        jitter: int = 30,
+        name: str = "",
+        persistent: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> tuple[dict, bytes]:
+        """Build one implant; returns (redacted info, implant bytes).
+
+        ``persistent`` maps to a service implant that starts at load
+        (``IsService`` + ``RunAtLoad``); the implant bytes are returned so the
+        caller can deploy them without a second round-trip, and are never put
+        in a tool result.
+        """
+        import hashlib
+
+        from sliver.protobuf import client_pb2 as clientpb
+        from sliver.protobuf import common_pb2
+
+        config = clientpb.ImplantConfig(
+            GOOS=str(os_name),
+            GOARCH=str(arch),
+            Format=self._output_format(format),
+            IsBeacon=bool(beacon),
+            BeaconInterval=int(interval),
+            BeaconJitter=int(jitter),
+            Name=str(name or ""),
+            IsService=bool(persistent),
+            RunAtLoad=bool(persistent),
+        )
+        result = await self._stub_call(
+            "Generate", clientpb.GenerateReq(Config=config), timeout=timeout_seconds
+        )
+        file = getattr(result, "File", None) or common_pb2.File()
+        data = bytes(getattr(file, "Data", b"") or b"")
+        filename = _decode(getattr(file, "Name", "")) or str(name or os_name)
+        return (
+            {
+                "name": str(name or os_name),
+                "filename": filename,
+                "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "format": str(format),
+                "os": str(os_name),
+                "arch": str(arch),
+                "beacon": bool(beacon),
+                "persistent": bool(persistent),
+            },
+            data,
+        )
+
+    async def upload_file(
+        self,
+        session_id: str,
+        remote_path: str,
+        data: bytes,
+        *,
+        kind: str = "session",
+        is_ioc: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> dict:
+        """Upload ``data`` to ``remote_path`` on an owned session's host."""
+        from sliver.protobuf import sliver_pb2
+
+        request = self._bind_request(
+            sliver_pb2.UploadReq(
+                Path=str(remote_path), Data=bytes(data), IsIOC=bool(is_ioc)
+            ),
+            session_id,
+            kind,
+        )
+        result = await self._stub_call("Upload", request, timeout=timeout_seconds)
+        return {"path": _decode(getattr(result, "Path", remote_path))}
+
+    async def execute_path(
+        self,
+        session_id: str,
+        path: str,
+        args: tuple[str, ...] | list[str] = (),
+        *,
+        kind: str = "session",
+        output: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> dict:
+        """Execute an uploaded binary on the session's host (no shell)."""
+        from sliver.protobuf import sliver_pb2
+
+        request = self._bind_request(
+            sliver_pb2.ExecuteReq(
+                Path=str(path), Args=[str(arg) for arg in args], Output=bool(output)
+            ),
+            session_id,
+            kind,
+        )
+        result = await self._stub_call("Execute", request, timeout=timeout_seconds)
+        return {
+            "path": str(path),
+            "status_code": int(getattr(result, "Status", 0) or 0),
+            "stdout": _decode(getattr(result, "Stdout", b"")),
+            "stderr": _decode(getattr(result, "Stderr", b"")),
+            "pid": int(getattr(result, "Pid", 0) or 0),
+        }
+
+    # ----------------------------------------------------------------- loot
+    async def loot_list(self, *, timeout_seconds: float | None = None) -> list[dict]:
+        from sliver.protobuf import common_pb2
+
+        result = await self._stub_call(
+            "LootAll", common_pb2.Empty(), timeout=timeout_seconds
+        )
+        return [self._to_dict(item) for item in (getattr(result, "Loot", []) or [])]
+
+    async def loot_get(
+        self, loot_id: str = "", *, name: str = "", timeout_seconds: float | None = None
+    ) -> dict:
+        from sliver.protobuf import client_pb2 as clientpb
+
+        result = await self._stub_call(
+            "LootContent",
+            clientpb.Loot(LootID=str(loot_id), Name=str(name)),
+            timeout=timeout_seconds,
+        )
+        return self._to_dict(result)
+
+    async def loot_add_file(
+        self, name: str, data: bytes, *, timeout_seconds: float | None = None
+    ) -> dict:
+        from sliver.protobuf import client_pb2 as clientpb
+        from sliver.protobuf import common_pb2
+
+        result = await self._stub_call(
+            "LootAdd",
+            clientpb.Loot(
+                Type=clientpb.LOOT_FILE,
+                Name=str(name),
+                FileType=clientpb.BINARY,
+                File=common_pb2.File(Name=str(name), Data=bytes(data)),
+            ),
+            timeout=timeout_seconds,
+        )
+        return self._to_dict(result)
+
+    async def loot_add_credential(
+        self,
+        name: str,
+        *,
+        user: str = "",
+        password: str = "",
+        api_key: str = "",
+        timeout_seconds: float | None = None,
+    ) -> dict:
+        from sliver.protobuf import client_pb2 as clientpb
+
+        credential_type = clientpb.API_KEY if api_key else clientpb.USER_PASSWORD
+        result = await self._stub_call(
+            "LootAdd",
+            clientpb.Loot(
+                Type=clientpb.LOOT_CREDENTIAL,
+                Name=str(name),
+                CredentialType=credential_type,
+                Credential=clientpb.Credential(
+                    User=str(user), Password=str(password), APIKey=str(api_key)
+                ),
+            ),
+            timeout=timeout_seconds,
+        )
+        return self._to_dict(result)
+
     # ------------------------------------------------------------- health
     async def is_available(self) -> bool:
         """Best-effort ping. Never raises."""

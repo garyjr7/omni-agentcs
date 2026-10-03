@@ -66,6 +66,10 @@ def test_check_env_registered_in_catalog():
         "nexus.c2.sliver_sessions",
         "nexus.c2.sliver_exec",
         "nexus.c2.sliver_pivot",
+        "nexus.c2.sliver_generate",
+        "nexus.c2.sliver_deploy",
+        "nexus.c2.sliver_loot",
+        "nexus.orchestrator.playbook",
         "nexus.recon.ftp",
         "nexus.cred.bruteforce",
         "nexus.post.ssh_exec",
@@ -74,4 +78,4 @@ def test_check_env_registered_in_catalog():
         "nexus.knowledge.record_fact",
         "nexus.knowledge.query_facts",
     } <= set(catalog)
-    assert len(catalog) == 38
+    assert len(catalog) == 42
