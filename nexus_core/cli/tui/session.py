@@ -17,6 +17,11 @@ from .fallback import fallback_prompt
 from .status import StatusState, render_status_bar
 
 
+def alt_screen_enabled() -> bool:
+    """False when ``NEXUS_NO_ALT_SCREEN`` opts out of the dedicated screen."""
+    return os.getenv("NEXUS_NO_ALT_SCREEN", "").strip().lower() not in {"1", "true", "yes"}
+
+
 def should_use_tui() -> bool:
     if os.getenv("NEXUS_NO_TUI", "").strip().lower() in {"1", "true", "yes"}:
         return False
@@ -43,11 +48,15 @@ class TuiSession:
         enable_completion: bool = True,
         commands: dict | None = None, tools: dict | None = None,
         engagements: list[str] | None = None,
-        input=None, output=None, full_screen: bool = False,
+        input=None, output=None, full_screen: bool = True,
     ):
         self.use_tui = bool(use_tui)
-        #: ``--fullscreen``: use the terminal's alternate screen (opt-in).
-        self.full_screen = bool(full_screen)
+        #: Own the terminal's alternate screen by default, like the top coding
+        #: CLIs: ``omni`` opens on a clean dedicated screen and the shell prompt
+        #: is restored on exit. ``--no-fullscreen`` (or
+        #: ``NEXUS_NO_ALT_SCREEN``) keeps the inline layout so the terminal
+        #: scrollback stays visible.
+        self.full_screen = bool(full_screen) and alt_screen_enabled()
         self.status_bar_enabled = status_bar_enabled
         self.no_color = no_color or "NO_COLOR" in os.environ
         self.prompt_text = "└─$ "
@@ -66,22 +75,35 @@ class TuiSession:
         self._accepting = False
         self._lines: list[str] = []
         self._styled_lines = [[]]
-        self._write_queue: list[str] = []
+        #: Ordered transcript segments (text or tool card) for in-place redraw.
+        self._segments: list[dict[str, Any]] = []
+        self._write_queue: list[dict[str, Any]] = []
         self._flush_scheduled = False
+        #: Per-block accordion: card state, toggle-line index and id counter.
+        self._cards: dict[int, dict[str, Any]] = {}
+        self._toggle_rows: dict[int, int] = {}
+        self._next_card_id = 1
+        #: Live ReAct "thinking" text shown while the model streams a turn.
+        self._thought_text: str | None = None
         self._auto_scroll = True
         self._cancel_event = threading.Event()
         self._error = None
         self._plan: dict[str, Any] | None = None
         self.panel_enabled = False
-        #: Collapse tool cards by default; F3 or ``/expand`` shows full output.
+        #: Collapse tool cards to 5 lines by default; the footer click (or
+        #: ``/expand``) shows the full output.
         self.expand_cards = False
         self._approval: dict[str, Any] | None = None
+        #: Accumulated text of an answer streaming into the live overlay.
+        self._answer_text: str | None = None
+        self._answer_cache: tuple[Any, list[str]] | None = None
         if self.use_tui:
             self._build(history_path, prompt_style, input, output)
 
     def _build(self, history_path, prompt_style, input, output):
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.filters import Condition
+        from prompt_toolkit.keys import Keys
         from ..commands import COMMANDS
         from .completion import OmniCompleter
         from .history import file_history
@@ -147,24 +169,25 @@ class TuiSession:
         def cancel(event):
             self._cancel_event.set()
 
-        @keys.add("pageup")
+        @keys.add("pageup", eager=True)
         def page_up(event):
-            self._auto_scroll = False
-            self._scrollback.cursor_up(count=max(1, self._session.output.get_size().rows - 5))
+            self.scroll_transcript(-self._page_lines())
+
+        @keys.add("pagedown", eager=True)
+        def page_down(event):
+            self.scroll_transcript(self._page_lines())
+
+        @keys.add(Keys.ScrollUp, eager=True)
+        def wheel_up(event):
+            self.scroll_transcript(-3)
+
+        @keys.add(Keys.ScrollDown, eager=True)
+        def wheel_down(event):
+            self.scroll_transcript(3)
 
         @keys.add("f2", eager=True)
         def toggle_panel(event):
             self.set_panel(not self.panel_enabled)
-
-        @keys.add("f3", eager=True)
-        def toggle_expand(event):
-            self.set_expand(not self.expand_cards)
-
-        @keys.add("pagedown")
-        def page_down(event):
-            self._scrollback.cursor_down(count=max(1, self._session.output.get_size().rows - 5))
-            if self._scrollback.document.is_cursor_at_the_end:
-                self._auto_scroll = True
 
         build_layout(self, keys, file_history(history_path) if history_path else None,
                      prompt_style, input, output, full_screen=self.full_screen)
@@ -201,7 +224,16 @@ class TuiSession:
         with self._lock:
             from dataclasses import replace
             fragments = render_status_bar(replace(self._status, busy=False), width=self._session.output.get_size().columns)
-        return [("", text) for _, text in fragments] if self.no_color else fragments
+        parts = [("", text) for _, text in fragments] if self.no_color else list(fragments)
+        if not self._auto_scroll:
+            # Visible affordance: the transcript is paused above the live tail.
+            parts = [("class:scroll", "▲ historial · PgDn/Fin"), ("class:scroll", " · ")] + parts
+        return parts
+
+    def update_engagement_names(self, names: list[str]) -> None:
+        """Refresh the ``@engagement`` completion candidates in place."""
+        if self._completer is not None:
+            self._completer.engagements = tuple(sorted(set(names)))
 
     def set_plan(self, plan: dict | None) -> None:
         """Store the latest engagement plan for the side panel."""
@@ -219,8 +251,105 @@ class TuiSession:
 
         return [(style, text) for style, text in panel_lines(self._plan, width=44)]
 
+    @property
+    def answer_active(self) -> bool:
+        """True while an answer is streaming into the live overlay."""
+        return self._answer_text is not None
+
+    def begin_answer(self) -> None:
+        """Open the live answer overlay (streaming starts)."""
+        self._answer_text = ""
+        self._answer_cache = None
+        self.invalidate()
+
+    def append_answer(self, chunk: str) -> None:
+        """Append a streamed chunk; the overlay re-renders the whole answer."""
+        if self._answer_text is None:
+            self._answer_text = ""
+        self._answer_text += str(chunk)
+        self._answer_cache = None
+        self.invalidate()
+
+    def end_answer(self) -> str:
+        """Close the overlay and return the accumulated answer."""
+        text = self._answer_text or ""
+        self._answer_text = None
+        self._answer_cache = None
+        self.invalidate()
+        return text
+
+    def _answer_lines(self) -> list[str]:
+        """Markdown-rendered lines of the in-progress answer (cached per width)."""
+        if self._answer_text is None:
+            return []
+        from .markdown import DEFAULT_READING_WIDTH, render_markdown
+
+        columns = self._session.output.get_size().columns
+        width = max(20, min(DEFAULT_READING_WIDTH, columns - 4))
+        key = (self._answer_text, width)
+        if self._answer_cache is not None and self._answer_cache[0] == key:
+            return self._answer_cache[1]
+        body = render_markdown(self._answer_text, no_color=self.no_color, max_width=width)
+        lines = ["OmniAgent ·"]
+        lines += [("  " + line) if line.strip() else "" for line in body.splitlines()]
+        self._answer_cache = (key, lines)
+        return lines
+
+    def answer_height(self) -> int:
+        """Height of the live overlay: the tail of the answer, capped to the screen."""
+        if not self.answer_active:
+            return 0
+        rows = self._session.output.get_size().rows
+        return max(1, min(len(self._answer_lines()), max(1, rows - 6)))
+
+    def _answer_formatted(self):
+        lines = self._answer_lines()
+        limit = self.answer_height()
+        if limit and len(lines) > limit:
+            lines = lines[-limit:]
+        return self._formatted("\n".join(lines))
+
+    @property
+    def thought_active(self) -> bool:
+        """True while the model's reasoning is streaming into the live overlay."""
+        return self._thought_text is not None
+
+    def set_thought(self, text: str) -> None:
+        """Show the partial ``thought`` of the current ReAct turn (streaming)."""
+        with self._lock:
+            self._thought_text = str(text or "…")
+        self.invalidate()
+
+    def end_thought(self) -> None:
+        """Close the live reasoning overlay (iteración terminada)."""
+        with self._lock:
+            self._thought_text = None
+        self.invalidate()
+
+    def _thought_formatted(self):
+        from prompt_toolkit.utils import get_cwidth
+
+        with self._lock:
+            text = self._thought_text or ""
+        try:
+            columns = self._session.output.get_size().columns
+        except Exception:  # noqa: BLE001 - cosmetic sizing only
+            columns = 80
+        prefix = "💭 "
+        width = max(10, columns - get_cwidth(prefix) - 2)
+        line = " ".join(text.split())
+        if get_cwidth(line) > width:
+            # Show the tail: what the model is reasoning about *now*.
+            line = line[-width:]
+        return self._formatted(prefix + line)
+
     def set_expand(self, enabled: bool) -> bool:
-        """Expand/collapse tool cards; returns the new state."""
+        """Expand/collapse every tool card; returns the new state.
+
+        Also sets the default for cards created afterwards. Individual cards are
+        toggled by clicking their "mostrar más/menos" footer through
+        :meth:`toggle_card_at_line`.
+        """
         self.expand_cards = bool(enabled)
         self.invalidate()
         return self.expand_cards
@@ -326,9 +455,11 @@ class TuiSession:
         if not self.use_tui:
             print(text, end="")
             return
+        segment = {"kind": "text", "text": str(text)}
         with self._lock:
-            self._lines.append(str(text))
-            self._write_queue.append(str(text))
+            self._lines.append(segment["text"])
+            self._segments.append(segment)
+            self._write_queue.append(segment)
             if self._flush_scheduled:
                 return
             self._flush_scheduled = True
@@ -337,25 +468,187 @@ class TuiSession:
         else:
             self._flush_scrollback()
 
+    def append_card(self, result: dict, *, expanded: bool | None = None) -> None:
+        """Append a tool-result card that expands/collapses on its own (click)."""
+        card = {
+            "kind": "card",
+            "id": self._next_card_id,
+            "result": result if isinstance(result, dict) else {},
+            "expanded": bool(self.expand_cards if expanded is None else expanded),
+        }
+        with self._lock:
+            self._next_card_id += 1
+            self._cards[card["id"]] = card
+            text = self._card_text(card)
+            self._lines.append(text)
+            self._segments.append(card)
+            self._write_queue.append(card)
+            if self._flush_scheduled:
+                return
+            self._flush_scheduled = True
+        if self._loop is not None and self._loop.is_running():
+            self._dispatch(lambda: self._loop.call_later(0.05, self._flush_scrollback))
+        else:
+            self._flush_scrollback()
+
+    def _card_text(self, card: dict[str, Any]) -> str:
+        from .stream import render_tool_result
+
+        return render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded"))) + "\n"
+
+    def _segment_text(self, segment: dict[str, Any]) -> str:
+        if segment.get("kind") == "card":
+            return self._card_text(segment)
+        return str(segment.get("text") or "")
+
+    @staticmethod
+    def _footer_line_index(styled: list[list]) -> int | None:
+        """Index of a card's toggle footer, or ``None`` when it has none.
+
+        The footer is the card's last non-empty logical line; a trailing newline
+        leaves an empty line after it, so scanning from the end is required.
+        """
+        from prompt_toolkit.formatted_text import fragment_list_to_text
+
+        for index in range(len(styled) - 1, -1, -1):
+            text = fragment_list_to_text(styled[index]).strip()
+            if not text:
+                continue
+            return index if "mostrar" in text else None
+        return None
+
+    def toggle_card_at_line(self, line: int) -> bool:
+        """Expand/collapse the card whose toggle footer is ``line`` (click/Enter)."""
+        with self._lock:
+            card_id = self._toggle_rows.get(int(line))
+            card = self._cards.get(card_id) if card_id is not None else None
+            if card is None:
+                return False
+            card["expanded"] = not bool(card["expanded"])
+            plain = self._rebuild_state_locked()
+            cursor = len(plain) if self._auto_scroll else min(
+                self._scrollback.cursor_position, len(plain)
+            )
+        self._dispatch(lambda: self._commit_transcript(plain, cursor))
+        return True
+
+    def _commit_transcript(self, plain: str, cursor: int) -> None:
+        from prompt_toolkit.document import Document
+
+        self._scrollback.set_document(Document(plain, cursor), bypass_readonly=True)
+        if self._auto_scroll:
+            self._scrollback_window.vertical_scroll = max(0, len(self._styled_lines) - 1)
+        self.invalidate()
+
+    def _rebuild_state_locked(self) -> str:
+        """Recompute styled lines, toggle rows and plain text from the segments.
+
+        Called while holding ``_lock``; the buffer commit happens on the UI loop
+        through :meth:`_commit_transcript`.
+        """
+        from prompt_toolkit.formatted_text import fragment_list_to_text
+        from prompt_toolkit.formatted_text.utils import split_lines
+
+        styled: list[list] = [[]]
+        toggle: dict[int, int] = {}
+        raw_lines: list[str] = []
+        for segment in self._segments:
+            text = self._segment_text(segment)
+            raw_lines.append(text)
+            if not text:
+                continue
+            lines = list(split_lines(self._formatted(text)))
+            if not lines:
+                continue
+            styled[-1].extend(lines[0])
+            styled.extend(lines[1:])
+            if segment.get("kind") == "card":
+                index = self._footer_line_index(styled)
+                if index is not None:
+                    toggle[index] = segment["id"]
+        plain = "\n".join(fragment_list_to_text(row) for row in styled)
+        self._styled_lines = styled
+        self._toggle_rows = toggle
+        self._lines = raw_lines
+        return plain
+
     def _flush_scrollback(self):
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import fragment_list_to_text
         from prompt_toolkit.formatted_text.utils import split_lines
 
         with self._lock:
-            text = "".join(self._write_queue)
-            self._write_queue.clear()
+            pending = self._write_queue
+            self._write_queue = []
             self._flush_scheduled = False
-        if not text:
+        if not pending:
             return
-        fragments = self._formatted(text)
-        lines = list(split_lines(fragments))
-        self._styled_lines[-1].extend(lines[0])
-        self._styled_lines.extend(lines[1:])
-        plain = self._scrollback.text + fragment_list_to_text(fragments)
+        plain_add: list[str] = []
+        for segment in pending:
+            text = self._segment_text(segment)
+            if not text:
+                continue
+            fragments = self._formatted(text)
+            lines = list(split_lines(fragments))
+            if not lines:
+                continue
+            self._styled_lines[-1].extend(lines[0])
+            self._styled_lines.extend(lines[1:])
+            if segment.get("kind") == "card":
+                # The footer is the click target for expanding just this card.
+                index = self._footer_line_index(self._styled_lines)
+                if index is not None:
+                    self._toggle_rows[index] = segment["id"]
+            plain_add.append(fragment_list_to_text(fragments))
+        if not plain_add:
+            return
+        plain = self._scrollback.text + "".join(plain_add)
         cursor = len(plain) if self._auto_scroll else self._scrollback.cursor_position
         self._scrollback.set_document(Document(plain, cursor), bypass_readonly=True)
         # BufferControl observes the document change; no explicit invalidation.
+
+    def _page_lines(self) -> int:
+        """Logical lines moved by PageUp/PageDown, sized to the visible region."""
+        try:
+            rows = int(self._session.output.get_size().rows)
+        except Exception:  # noqa: BLE001 - cosmetic sizing only
+            rows = 24
+        return max(1, rows - 5)
+
+    def _scroll_to(self, line: int) -> None:
+        """Put logical line ``line`` at the top of the transcript region."""
+        document = self._scrollback.document
+        line = max(0, min(int(line), max(0, document.line_count - 1)))
+        self._scrollback.cursor_position = document.translate_row_col_to_index(line, 0)
+        self._scrollback_window.vertical_scroll = line
+        self.invalidate()
+
+    def _follow_tail(self) -> None:
+        """Resume following new output (the view returns to the live tail)."""
+        self._auto_scroll = True
+        self._scrollback.cursor_position = len(self._scrollback.text)
+        self._scrollback_window.vertical_scroll = max(
+            0, self._scrollback.document.line_count - 1
+        )
+        self.invalidate()
+
+    def scroll_transcript(self, lines: int) -> None:
+        """Scroll the transcript by ``lines`` (negative scrolls up).
+
+        Moving the view directly (not just the buffer cursor) removes the
+        one-page lag of the old handler: the first PageUp already shows the
+        previous page. Reaching the bottom resumes automatic follow.
+        """
+        if lines < 0:
+            self._auto_scroll = False
+            self._scroll_to(self._scrollback_window.vertical_scroll + lines)
+            return
+        document = self._scrollback.document
+        target = self._scrollback_window.vertical_scroll + max(0, int(lines))
+        if target >= max(0, document.line_count - self._page_lines()):
+            self._follow_tail()
+        else:
+            self._scroll_to(target)
 
     def _render_busy(self):
         if not self._status.busy:

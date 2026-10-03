@@ -42,13 +42,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-color", action="store_true", help="desactiva la salida ANSI")
     parser.add_argument("--no-tui", action="store_true", help="usa readline en lugar de la TUI")
     parser.add_argument(
-        "--fullscreen",
-        action="store_true",
+        "--no-fullscreen",
+        dest="fullscreen",
+        action="store_false",
         help=(
-            "usa la pantalla alternativa (alt-screen) de la TUI; opt-in, el "
-            "scrollback del terminal no queda accesible mientras corre"
+            "modo inline: no usa la pantalla alternativa (alt-screen); conserva "
+            "el scrollback y el prompt del terminal a la vista"
         ),
     )
+    parser.add_argument("--fullscreen", dest="fullscreen", action="store_true", help=argparse.SUPPRESS)
+    parser.set_defaults(fullscreen=True)
     parser.add_argument(
         "--trust-mode",
         action="store_true",
@@ -62,6 +65,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--list-engagements", action="store_true", help="lista los engagements del tenant y sale"
+    )
+    parser.add_argument(
+        "--new-engagement", metavar="NOMBRE",
+        help="crea un engagement firmado con --scope y sale",
+    )
+    parser.add_argument(
+        "--scope", metavar="DOMINIOS/CIDRS",
+        help="alcance autorizado separado por comas, para --new-engagement",
+    )
+    parser.add_argument(
+        "--valid-hours", type=int, default=24, metavar="N",
+        help="validez en horas para --new-engagement (default: 24)",
     )
     parser.add_argument("--version", action="version", version=f"{PROGRAM} {PROGRAM_VERSION}")
     for flag, help_text in (
@@ -80,12 +95,16 @@ def select_engagement(
     engagements: Iterable[Any],
     requested: str | None = None,
     reader: Callable[[str], str] | None = None,
+    *,
+    announce: bool = True,
 ) -> tuple[Any, int]:
     """Pick the active engagement; return ``(scope, exit_code)``.
 
     ``exit_code`` is 0 when the caller may continue (even without an active
     engagement: tools that need a scope will be denied) and non-zero when the
-    selection itself failed.
+    selection itself failed. ``announce=False`` suppresses the auto-selection
+    notice on the terminal's main screen, so the TUI's dedicated screen opens
+    without a residual line above the banner.
     """
     scopes = list(engagements)
     by_id = {str(getattr(scope, "engagement_id", "")): scope for scope in scopes}
@@ -98,7 +117,8 @@ def select_engagement(
         render.render_error("no hay engagements en este tenant; usa --list-engagements")
         return None, 0
     if len(scopes) == 1:
-        render.render_status(f"engagement activo: {scopes[0].engagement_id}")
+        if announce:
+            render.render_status(f"engagement activo: {scopes[0].engagement_id}")
         return scopes[0], 0
 
     print("Engagements disponibles:")
@@ -150,7 +170,37 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         _list_engagements(engagements)
         return 0
 
-    engagement, exit_code = select_engagement(engagements, args.engagement)
+    if args.new_engagement:
+        if not args.scope:
+            render.render_error(
+                "--new-engagement requiere --scope (dominios/CIDRs separados por coma)"
+            )
+            return 2
+        from .engage import create_engagement
+
+        try:
+            created = create_engagement(
+                store, args.new_engagement, args.scope,
+                tenant_id=args.tenant, hours=args.valid_hours,
+            )
+        except ValueError as exc:
+            render.render_error(str(exc))
+            return 2
+        print(
+            f"engagement creado: {created.engagement_id} · {created.name} · "
+            f"cidrs={list(created.cidrs)} · dominios={list(created.domains)}"
+        )
+        return 0
+
+    # When the interactive TUI will own the screen, keep the terminal's main
+    # screen untouched before the alt-screen switch: no residual notice above
+    # the banner.
+    from .tui.session import should_use_tui
+
+    tui_expected = not (args.no_tui or args.objective) and should_use_tui()
+    engagement, exit_code = select_engagement(
+        engagements, args.engagement, announce=not tui_expected
+    )
     if exit_code:
         return exit_code
 

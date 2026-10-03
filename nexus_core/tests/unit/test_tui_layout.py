@@ -6,16 +6,22 @@ def test_layout_has_four_regions(tui_factory):
     assert len(ui.session._app.layout.container.content.children) == 4
 
 
-def test_full_screen_false_by_default(tui_factory):
+def test_full_screen_true_by_default(tui_factory):
+    # A clean dedicated screen (alt-screen) is the default, like the top CLIs.
+    assert tui_factory().session._app.full_screen is True
+
+
+def test_full_screen_inline_opt_in(tui_factory):
+    assert tui_factory(full_screen=False).session._app.full_screen is False
+
+
+def test_alt_screen_disabled_by_env(tui_factory, monkeypatch):
+    monkeypatch.setenv("NEXUS_NO_ALT_SCREEN", "1")
     assert tui_factory().session._app.full_screen is False
 
 
-def test_full_screen_opt_in(tui_factory):
-    assert tui_factory(full_screen=True).session._app.full_screen is True
-
-
 def test_full_screen_layout_renders(tui_factory):
-    ui = tui_factory(full_screen=True)
+    ui = tui_factory()
     ui.pipe.send_text("hi\r")
     assert ui.session.prompt() == "hi"
     ui.session.set_status(engagement="lab")
@@ -23,6 +29,16 @@ def test_full_screen_layout_renders(tui_factory):
     ui.session.flush()
     assert "out" in ui.session._scrollback.text
     assert ui.session._app.full_screen is True
+
+
+def test_inline_layout_renders(tui_factory):
+    ui = tui_factory(full_screen=False)
+    ui.pipe.send_text("hi\r")
+    assert ui.session.prompt() == "hi"
+    ui.session.print("out")
+    ui.session.flush()
+    assert "out" in ui.session._scrollback.text
+    assert ui.session._app.full_screen is False
 
 
 def test_expand_cards_toggles(tui_factory):
@@ -62,6 +78,52 @@ def test_layout_renders_all_regions(tui_factory):
     assert "Working" in fragment_list_to_text(ui.session._render_busy())
     assert "lab" in fragment_list_to_text(ui.session._toolbar())
     assert ui.session._app.layout.current_buffer is ui.session._input
+
+
+def test_scroll_transcript_moves_the_view_without_lag(tui_factory):
+    ui = tui_factory()
+    ui.pipe.send_text("start\r")
+    ui.session.prompt()
+    ui.session.append_scrollback("\n".join(f"line {n:03d}" for n in range(200)))
+    ui.session.flush()
+    import time
+    time.sleep(0.3)
+    before = ui.session._scrollback_window.vertical_scroll
+    ui.pipe.send_bytes(b"\x1b[5~")  # PageUp
+    time.sleep(0.3)
+    after = ui.session._scrollback_window.vertical_scroll
+    # The first PageUp already scrolls the view (the old handler lagged a page).
+    assert after < before
+    assert ui.session._auto_scroll is False
+
+
+def test_wheel_scrolls_three_lines(tui_factory):
+    ui = tui_factory()
+    ui.pipe.send_text("start\r")
+    ui.session.prompt()
+    ui.session.append_scrollback("\n".join(f"line {n:03d}" for n in range(200)))
+    ui.session.flush()
+    import time
+    time.sleep(0.3)
+    before = ui.session._scrollback_window.vertical_scroll
+    ui.pipe.send_bytes(b"\x1b[62~")  # mouse wheel up maps to ScrollUp
+    time.sleep(0.3)
+    assert ui.session._scrollback_window.vertical_scroll == before - 3
+    assert ui.session._auto_scroll is False
+
+
+def test_answer_overlay_streams_and_commits(tui_factory):
+    ui = tui_factory()
+    ui.session.begin_answer()
+    assert ui.session.answer_active is True
+    ui.session.append_answer("# Hola\n")
+    ui.session.append_answer("una **prueba**")
+    assert ui.session.answer_height() >= 2
+    assert "OmniAgent" in "".join(part[1] for part in ui.session._answer_formatted())
+    text = ui.session.end_answer()
+    assert text == "# Hola\nuna **prueba**"
+    assert ui.session.answer_active is False
+    assert ui.session.answer_height() == 0
 
 
 def test_pageup_preserves_history_and_pauses_follow(tui_factory):

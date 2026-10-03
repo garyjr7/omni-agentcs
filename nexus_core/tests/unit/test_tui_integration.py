@@ -137,7 +137,8 @@ def test_status_live_toggle_and_fixed_input(tui_factory, monkeypatch):
     cmd_status(session, ["on"])
     ui.session.flush()
     assert callable(ui.session._session.bottom_toolbar)
-    assert not ui.session._session.app.full_screen
+    # The dedicated screen (alt-screen) is on by default.
+    assert ui.session._session.app.full_screen
     assert len(ui.session._session.app.layout.container.content.children) == 4
 
 

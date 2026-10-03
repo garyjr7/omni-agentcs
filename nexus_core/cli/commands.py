@@ -102,6 +102,119 @@ def cmd_scope(session: "OmniSession", args: list[str]) -> None:
         render.write("   (las tools que exigen scope serán denegadas hasta fijar uno)")
 
 
+def _engage_list(session: "OmniSession", engage) -> None:
+    scopes = engage.list_engagements(session.store, session.tenant_id)
+    if not scopes:
+        render.write(
+            "(no hay engagements; crea uno con "
+            "/engage_create <nombre> <dominios/CIDRs>)"
+        )
+        return
+    active = session.engagement_id
+    for scope in scopes:
+        marker = render.paint("*", render.GREEN) if scope.engagement_id == active else " "
+        render.write(f" {marker} {scope.engagement_id}  {render.paint(scope.name, render.YELLOW)}")
+        cidrs = ", ".join(scope.cidrs) or "(ninguno)"
+        domains = ", ".join(scope.domains) or "(ninguno)"
+        render.write(f"     cidrs={cidrs} · dominios={domains} · hasta {scope.valid_until}")
+
+
+def _engage_create(session: "OmniSession", engage, rest: list[str]) -> None:
+    usage = "uso: /engage_create <nombre> <dominios/CIDRs> [--hours N]"
+    hours = engage.DEFAULT_VALID_HOURS
+    if "--hours" in rest:
+        index = rest.index("--hours")
+        try:
+            hours = int(rest[index + 1])
+        except (IndexError, ValueError):
+            render.render_error(usage)
+            return
+        del rest[index : index + 2]
+    if len(rest) < 2:
+        render.render_error(usage)
+        return
+    name, entries = rest[0], " ".join(rest[1:])
+    try:
+        scope = engage.create_engagement(
+            session.store, name, entries, tenant_id=session.tenant_id, hours=hours
+        )
+    except ValueError as exc:
+        render.render_error(f"no se pudo crear el engagement: {exc}")
+        return
+    render.render_status(
+        f"engagement creado: {scope.engagement_id} · {scope.name} · "
+        f"cidrs={list(scope.cidrs)} · dominios={list(scope.domains)}"
+    )
+    session.set_engagement(scope)
+    render.render_status(f"engagement activo: {scope.engagement_id} ({scope.name})")
+
+
+def _engage_use(session: "OmniSession", engage, rest: list[str]) -> None:
+    if not rest:
+        render.render_error("uso: /engage_use <engagement_id>")
+        return
+    scope = engage.get_engagement(session.store, session.tenant_id, rest[0])
+    if scope is None:
+        render.render_error(f"engagement no encontrado: {rest[0]}")
+        return
+    session.set_engagement(scope)
+    render.render_status(f"engagement activo: {scope.engagement_id} ({scope.name})")
+
+
+def cmd_engage_list(session: "OmniSession", args: list[str]) -> None:
+    """Lista los engagements del tenant: /engage_list."""
+    from . import engage as engage_module
+
+    _engage_list(session, engage_module)
+
+
+def cmd_engage_create(session: "OmniSession", args: list[str]) -> None:
+    """Crea y activa un engagement: /engage_create <nombre> <dominios/CIDRs> [--hours N]."""
+    from . import engage as engage_module
+
+    _engage_create(session, engage_module, list(args))
+
+
+def cmd_engage_use(session: "OmniSession", args: list[str]) -> None:
+    """Activa un engagement existente: /engage_use <engagement_id>."""
+    from . import engage as engage_module
+
+    _engage_use(session, engage_module, list(args))
+
+
+def cmd_engage_current(session: "OmniSession", args: list[str]) -> None:
+    """Muestra el engagement activo (scope firmado): /engage_current."""
+    render.render_engagement(session.engagement)
+    if session.engagement is None:
+        render.write(
+            "   (las tools que exigen scope serán denegadas hasta fijar uno; "
+            "usa /engage_create o /engage_use)"
+        )
+
+
+def cmd_engage(session: "OmniSession", args: list[str]) -> None:
+    """Gestiona engagements (dispatcher): /engage [list | create | use | current].
+
+    Prefer the top-level ``/engage_list``, ``/engage_create``, ``/engage_use`` and
+    ``/engage_current``: they are individually discoverable in autocomplete. This
+    dispatcher stays for backward compatibility.
+    """
+    action = args[0].lower() if args else "list"
+    if action in {"list", "ls"}:
+        cmd_engage_list(session, [])
+    elif action in {"create", "new"}:
+        cmd_engage_create(session, list(args[1:]))
+    elif action in {"use", "switch", "select"}:
+        cmd_engage_use(session, list(args[1:]))
+    elif action in {"current", "show"}:
+        cmd_engage_current(session, [])
+    else:
+        render.render_error(
+            "uso: /engage [list | create <nombre> <dominios/CIDRs> [--hours N] | use <id>] "
+            "(o usa /engage_list, /engage_create, /engage_use, /engage_current)"
+        )
+
+
 def cmd_tools(session: "OmniSession", args: list[str]) -> None:
     """Lista las tools durables con su riesgo y si exigen scope."""
     catalog = _tool_catalog(session)
@@ -597,7 +710,7 @@ def cmd_loot(session: "OmniSession", args: list[str]) -> None:
 
 
 def cmd_expand(session: "OmniSession", args: list[str]) -> None:
-    """Expande o pliega la salida de las tarjetas de tool: /expand [on|off]."""
+    """Expande/pliega todas las tarjetas: /expand [on|off] (clic = una tarjeta)."""
     if len(args) > 1 or (args and args[0] not in {"on", "off"}):
         render.render_error("uso: /expand [on|off]")
         return
@@ -609,7 +722,11 @@ def cmd_expand(session: "OmniSession", args: list[str]) -> None:
         enabled = session._tui.set_expand(not session._tui.expand_cards)
     render.write(
         f"tarjetas de tool: {'expandidas' if enabled else 'plegadas'}"
-        + (" · F3 lo alterna" if session._tui.use_tui else " (solo TUI)")
+        + (
+            " · clic en el pie (▼/▲) de una tarjeta para una sola"
+            if session._tui.use_tui
+            else " (solo TUI)"
+        )
     )
 
 
@@ -898,6 +1015,11 @@ def _ask_messages(session: "OmniSession", question: str) -> list[Any]:
     return messages
 
 
+def _supports_streaming(client) -> bool:
+    """True when the client can emit real token deltas (not a single dump)."""
+    return bool(getattr(client, "supports_streaming", False)) and hasattr(client, "stream")
+
+
 def cmd_ask(session: "OmniSession", args: list[str]) -> None:
     """Pregunta al LLM sin ejecutar tools: /ask <pregunta en lenguaje natural>."""
     question = " ".join(str(part) for part in args).strip()
@@ -918,23 +1040,41 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
     from .spinner import Spinner, spinner_enabled
 
     messages = _ask_messages(session, question)
+    metered = session._metered_client(llm, durable=False)
+    # Stream token by token into the live overlay when the TUI is active and the
+    # provider supports it; otherwise keep the single complete() call.
+    streaming = session._tui.use_tui and _supports_streaming(metered)
     try:
         with session._busy("Consultando al modelo"), Spinner(
             "Consultando al modelo",
             enabled=not session._tui.use_tui and spinner_enabled(),
             use_ascii=not session._supports_unicode(),
         ):
-            response = asyncio.run(session._with_cancel(
-                session._metered_client(llm, durable=False).complete(messages),
-                None, cooperative=False,
-            ))
+            if streaming:
+                tui = session._tui
+                tui.begin_answer()
+                collected: list[str] = []
+
+                async def consume():
+                    async for chunk in metered.stream(messages):
+                        collected.append(chunk)
+                        tui.append_answer(chunk)
+
+                asyncio.run(session._with_cancel(consume(), None, cooperative=False))
+                answer = "".join(collected)
+            else:
+                response = asyncio.run(session._with_cancel(
+                    metered.complete(messages), None, cooperative=False,
+                ))
+                answer = str(getattr(response, "content", response) or "")
     except asyncio.CancelledError:
+        session._tui.end_answer()
         render.render_status("consulta cancelada")
         return
     except Exception as exc:  # noqa: BLE001 - the REPL survives a failed call
+        session._tui.end_answer()
         render.render_error(f"la consulta falló: {type(exc).__name__}: {exc}")
         return
-    answer = str(getattr(response, "content", response) or "")
     _persist_ask(session, question, answer)
     max_width = None
     if session._tui.use_tui:
@@ -944,6 +1084,8 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
         answer, no_color=session.no_color, markdown=session._tui.use_tui,
         max_width=max_width,
     )
+    # Commit is done: hide the live overlay so the transcript shows the answer.
+    session._tui.end_answer()
 
 
 def cmd_chat(session: "OmniSession", args: list[str]) -> None:
@@ -1056,7 +1198,7 @@ def cmd_help(session: "OmniSession", args: list[str]) -> None:
     render.write(render.paint("Comandos disponibles:", render.BOLD))
     for name in sorted(COMMANDS):
         doc = (COMMANDS[name].__doc__ or "").strip().splitlines()
-        render.write(f"  {name:<12} {doc[0] if doc else ''}")
+        render.write(f"  {name:<16} {doc[0] if doc else ''}")
     render.write("  (cualquier otra línea se envía como objetivo al agente)")
 
 
@@ -1068,6 +1210,11 @@ def cmd_exit(session: "OmniSession", args: list[str]) -> None:
 
 COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/scope": cmd_scope,
+    "/engage": cmd_engage,
+    "/engage_list": cmd_engage_list,
+    "/engage_create": cmd_engage_create,
+    "/engage_use": cmd_engage_use,
+    "/engage_current": cmd_engage_current,
     "/tools": cmd_tools,
     "/history": cmd_history,
     "/clear": cmd_clear,
@@ -1134,6 +1281,11 @@ __all__ = [
     "cmd_chat",
     "cmd_facts",
     "cmd_clear",
+    "cmd_engage",
+    "cmd_engage_create",
+    "cmd_engage_current",
+    "cmd_engage_list",
+    "cmd_engage_use",
     "cmd_exit",
     "cmd_export",
     "cmd_findings",

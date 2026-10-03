@@ -8,19 +8,26 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Callable, Iterable
 
+from .theme import (
+    AQUA,
+    AQUA_DIM,
+    BLUE,
+    BOLD,
+    CYAN,
+    DIM,
+    GREEN,
+    MAGENTA,  # noqa: F401 - re-exported: the prompt and commands use render.MAGENTA
+    OFFWHITE,
+    RED,
+    RED_DIM,
+    RESET,
+    WHITE,
+    YELLOW,
+)
 from .tui.output import write
-
-RESET = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-RED = "\033[31m"
-GREEN = "\033[32m"
-YELLOW = "\033[33m"
-BLUE = "\033[34m"
-MAGENTA = "\033[35m"
-CYAN = "\033[36m"
 
 #: Noise levels of the offensive tools, mapped to a traffic-light colour.
 NOISE_COLORS = {
@@ -69,8 +76,8 @@ def _first_line(text: str, limit: int = 200) -> str:
 
 
 def render_thought(text: str) -> None:
-    """Show the model reasoning of one iteration."""
-    write(paint(f"💭 {_first_line(text, 400)}", DIM))
+    """Show the model reasoning of one iteration (agent thinking, in red)."""
+    write(paint(f"💭 {_first_line(text, 400)}", RED))
 
 
 def render_tool_call(tool_id: str, arguments: dict[str, Any], noise_level: str = "") -> None:
@@ -186,36 +193,71 @@ def render_trust_mode(tool_id: str, arguments: dict[str, Any], operator: str) ->
     write(paint("   se ejecuta sin pausa; la aprobación durable queda auditada", RED))
 
 
+#: SGR sequences, so box padding counts visible cells, not escape bytes.
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
 def _box_line(text: str, width: int) -> str:
-    return "│ " + str(text)[: width - 2].ljust(width - 2) + " │"
+    """One box row, truncated and padded by *visible* width (ANSI-aware)."""
+    limit = max(0, width - 2)
+    source = str(text)
+    pieces: list[str] = []
+    visible = 0
+    index = 0
+    while index < len(source):
+        match = _ANSI_RE.match(source, index)
+        if match is not None:
+            pieces.append(match.group())
+            index = match.end()
+            continue
+        if visible >= limit:
+            break
+        pieces.append(source[index])
+        visible += 1
+        index += 1
+    body = "".join(pieces)
+    if "\033[" in body:
+        body += RESET
+    return "│ " + body + " " * (limit - visible) + " │"
+
+
+#: Severity → palette, shared by the summary box and findings lists.
+SEVERITY_COLORS = {
+    "critical": RED,
+    "high": RED_DIM,
+    "medium": YELLOW,
+    "low": GREEN,
+    "info": AQUA_DIM,
+}
 
 
 def render_summary(text: str, findings: Iterable[dict[str, Any]] = ()) -> None:
-    """Print the final summary of a run inside a box."""
+    """Print the final summary of a run inside a coloured box (Markdown-aware)."""
     findings = list(findings or [])
     width = 68
     border = "├" + "─" * width + "┤"
     write()
-    write(paint("┌" + "─" * width + "┐", BOLD))
-    write(_box_line(paint("RESULTADO", BOLD), width))
-    write(paint(border, BOLD))
+    write(paint("┌" + "─" * width + "┐", AQUA, BOLD))
+    write(_box_line(paint("RESULTADO · OmniAgentCS", AQUA, BOLD), width))
+    write(paint(border, AQUA, BOLD))
     for line in str(text or "(sin resumen)").splitlines() or [""]:
-        write(_box_line(line, width))
+        write(_box_line(paint(line, OFFWHITE) if line.strip() else "", width))
     if findings:
-        write(paint(border, BOLD))
+        write(paint(border, AQUA, BOLD))
         for finding in findings:
             if not isinstance(finding, dict):
                 continue
             severity = str(finding.get("severity") or "info")
             title = str(finding.get("title") or finding.get("summary") or "")
-            write(_box_line(paint(f"[{severity}]", YELLOW) + f" {title}", width))
-    write(paint("└" + "─" * width + "┘", BOLD))
+            tag = paint(f"[{severity}]", SEVERITY_COLORS.get(severity.lower(), YELLOW), BOLD)
+            write(_box_line(f"{tag} {paint(title, WHITE)}", width))
+    write(paint("└" + "─" * width + "┘", AQUA, BOLD))
 
 
 def render_answer(text: str, *, no_color: bool = False, markdown: bool = False, max_width=None) -> None:
     """Print a conversational ``/ask`` answer, preserving its paragraphs."""
     write()
-    write(paint("OmniAgent", CYAN, BOLD) + paint(" ·", DIM))
+    write(paint("OmniAgent", AQUA, BOLD) + paint(" ·", DIM))
     body = str(text or "(sin respuesta)")
     if markdown:
         from .tui.markdown import render_markdown

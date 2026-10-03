@@ -9,6 +9,7 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.layout import ConditionalContainer, Float, FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.dimension import D
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.layout.menus import MultiColumnCompletionsMenu
 from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.output import ColorDepth
@@ -33,6 +34,29 @@ class RegionApplication(Application):
         self.create_background_task(refresh())
 
 
+class ScrollbackControl(BufferControl):
+    """Read-only transcript that turns a click on a card footer into a toggle.
+
+    ``prompt_toolkit`` translates the absolute mouse coordinates to the content
+    row before calling the control's ``mouse_handler``, so ``position.y`` is the
+    logical transcript line. Only a left click on a registered toggle footer is
+    consumed; every other event falls back to the buffer (selection/scroll).
+    """
+
+    def __init__(self, *args, on_line_click=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_line_click = on_line_click
+
+    def mouse_handler(self, mouse_event):
+        if (
+            self._on_line_click is not None
+            and mouse_event.event_type == MouseEventType.MOUSE_DOWN
+            and self._on_line_click(int(mouse_event.position.y))
+        ):
+            return None
+        return super().mouse_handler(mouse_event)
+
+
 def build_layout(ui, keys, history, prompt_style, input, output, full_screen=False):
     from .lexer import OmniLexer
 
@@ -51,7 +75,10 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
     )
     lexer = OmniLexer(no_color=ui.no_color)
     ui._scrollback_window = Window(
-        BufferControl(ui._scrollback, lexer=ScrollbackLexer(), focusable=False),
+        ScrollbackControl(
+            ui._scrollback, lexer=ScrollbackLexer(), focusable=False,
+            on_line_click=ui.toggle_card_at_line,
+        ),
         wrap_lines=True, always_hide_cursor=True,
     )
     ui._busy_window = Window(FormattedTextControl(ui._render_busy),
@@ -92,17 +119,46 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
         ),
         top=2, right=2, width=64,
     )
+    # The streaming answer is a live overlay above the input bar: it re-renders
+    # the markdown of the growing answer and is committed to the scrollback when
+    # the stream ends. Like the panel and the modal, it is not a fifth region.
+    ui._answer_window = Window(
+        FormattedTextControl(ui._answer_formatted), wrap_lines=True,
+        height=lambda: max(1, ui.answer_height()),
+    )
+    ui._answer_float = Float(
+        content=ConditionalContainer(
+            ui._answer_window, filter=Condition(lambda: bool(ui.answer_active))
+        ),
+        bottom=3, left=1, right=1,
+    )
+    # Live ReAct "thinking": one or two wrapped lines above the input bar,
+    # showing the model's reasoning as it streams. Not a fifth region.
+    ui._thought_window = Window(
+        FormattedTextControl(ui._thought_formatted), wrap_lines=True, height=2,
+    )
+    ui._thought_float = Float(
+        content=ConditionalContainer(
+            ui._thought_window, filter=Condition(lambda: bool(ui.thought_active))
+        ),
+        bottom=3, left=1, right=1,
+    )
     root = FloatContainer(HSplit(ui._regions), [
         Float(xcursor=True, ycursor=True, content=MultiColumnCompletionsMenu(show_meta=True)),
         ui._panel_float,
         ui._approval_float,
+        ui._answer_float,
+        ui._thought_float,
     ])
     ui._app = RegionApplication(
         layout=Layout(root, focused_element=editor), full_screen=bool(full_screen),
-        mouse_support=False, refresh_interval=None, min_redraw_interval=0.25,
+        # Mouse capture is required for the wheel to scroll the transcript in
+        # alt-screen; text selection then needs Shift (terminal-level).
+        mouse_support=True, refresh_interval=None, min_redraw_interval=0.25,
         key_bindings=keys, input=input, output=output,
         style=Style.from_dict({
-            **panel_style(), **approval_style(), "busy": "ansiyellow", **(prompt_style or {}),
+            **panel_style(), **approval_style(), "busy": "#00e5ff",
+            "scroll": "#00e5ff", **(prompt_style or {}),
         }),
         color_depth=ColorDepth.DEPTH_1_BIT if ui.no_color else None,
     )

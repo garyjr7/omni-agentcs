@@ -136,6 +136,10 @@ class BaseLLMClient(abc.ABC):
     """
     Abstract base class for all LLM clients.
     """
+    #: Providers that emit real token deltas override ``stream`` and set this
+    #: to True; the CLI only enables the streaming UI when it is True.
+    supports_streaming = False
+
     def __init__(self, config: LLMConfig):
         self.config = config
         self._logger = get_logger(f"LLMClient.{self.config.provider.value}")
@@ -155,6 +159,22 @@ class BaseLLMClient(abc.ABC):
             An LLMResponse object with the completion details.
         """
         raise NotImplementedError
+
+    async def stream(self, messages: List[LLMMessage], **kwargs: Any):
+        """Yield the response content in chunks.
+
+        The default implementation delegates to :meth:`complete` and yields the
+        whole answer once, so every provider keeps working. Providers with real
+        token streaming override it and set ``supports_streaming = True``.
+        """
+        response = await self.complete(messages, **kwargs)
+        self._last_stream_response = response
+        yield response.content
+
+    @property
+    def last_stream_response(self) -> Optional[LLMResponse]:
+        """Usage of the most recent :meth:`stream` call, when the provider reports it."""
+        return getattr(self, "_last_stream_response", None)
 
     @abc.abstractmethod
     def is_available(self) -> bool:
@@ -191,6 +211,9 @@ class BaseLLMClient(abc.ABC):
 
 class OpenAIClient(BaseLLMClient):
     """LLM client for OpenAI models."""
+
+    #: OpenAI, Groq and compatible endpoints all support SSE token streaming.
+    supports_streaming = True
 
     def __init__(self, config: LLMConfig):
         super().__init__(config)
@@ -258,6 +281,59 @@ class OpenAIClient(BaseLLMClient):
         
         # This line should not be reachable
         raise NexusLLMError("OpenAI request failed after all retries.")
+
+    async def stream(self, messages: List[LLMMessage], **kwargs: Any):
+        """Yield token deltas as they arrive (SSE streaming).
+
+        Usage is captured from the final chunk when the endpoint supports
+        ``stream_options`` (OpenAI and Groq do); otherwise output tokens are
+        approximated from the received text so the status bar stays meaningful.
+        """
+        start_time = time.perf_counter()
+        api_messages = [{"role": m.role, "content": m.content} for m in messages]
+        if self.config.system_prompt and api_messages[0]["role"] != "system":
+            api_messages.insert(0, {"role": "system", "content": self.config.system_prompt})
+
+        request_params: Dict[str, Any] = {
+            "model": self.config.model,
+            "messages": api_messages,
+            "temperature": kwargs.get("temperature", self.config.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            "stream": True,
+        }
+        if self.config.provider in (LLMProvider.OPENAI, LLMProvider.GROQ):
+            request_params["stream_options"] = {"include_usage": True}
+
+        collected: List[str] = []
+        usage_input = usage_output = 0
+        try:
+            response = await self.client.chat.completions.create(**request_params)
+            async for chunk in response:
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    usage_input = getattr(usage, "prompt_tokens", 0) or usage_input
+                    usage_output = getattr(usage, "completion_tokens", 0) or usage_output
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                content = getattr(delta, "content", None) if delta is not None else None
+                if content:
+                    collected.append(content)
+                    yield content
+        except openai.APIError as e:
+            self._logger.error(f"OpenAI streaming error: {e}")
+            raise NexusLLMError(f"OpenAI API error: {e}") from e
+
+        text = "".join(collected)
+        self._last_stream_response = LLMResponse(
+            content=text,
+            model=self.config.model,
+            provider=self.config.provider,
+            tokens_input=usage_input,
+            tokens_output=usage_output or max(1, len(text.split())),
+            duration_ms=(time.perf_counter() - start_time) * 1000,
+        )
 
 
 class GeminiClient(BaseLLMClient):
@@ -622,6 +698,24 @@ class NexusLLM:
                     raise NexusLLMError("Both primary and fallback LLM providers failed.") from fallback_error
             else:
                 raise NexusLLMError("Primary LLM provider failed and no fallback is configured.") from primary_error
+
+    @property
+    def supports_streaming(self) -> bool:
+        """True when the primary provider can emit real token deltas."""
+        return bool(getattr(self.primary, "supports_streaming", False))
+
+    async def stream(self, messages: List[LLMMessage], **kwargs: Any):
+        """Stream from the primary provider.
+
+        No mid-stream fallback: once bytes reach the operator, restarting on
+        another provider would duplicate the visible answer.
+        """
+        async for chunk in self.primary.stream(messages, **kwargs):
+            yield chunk
+
+    @property
+    def last_stream_response(self) -> Optional[LLMResponse]:
+        return getattr(self.primary, "last_stream_response", None)
 
     async def ask(self, system_prompt: str, user_message: str) -> str:
         """

@@ -94,11 +94,11 @@ def panel_lines(plan: dict[str, Any] | None, *, width: int = 44) -> list[tuple[s
 def panel_style() -> dict[str, str]:
     """prompt_toolkit style rules used by :func:`panel_lines`."""
     return {
-        "panel": "bg:#1c1c1c #d0d0d0",
-        "panel-title": "bg:#1c1c1c #00afff bold",
-        "panel-current": "bg:#1c1c1c #ffff5f bold",
-        "panel-done": "bg:#1c1c1c #5fd75f",
-        "panel-pending": "bg:#1c1c1c #808080",
+        "panel": "bg:#0d1117 #d0d4da",
+        "panel-title": "bg:#0d1117 #00e5ff bold",
+        "panel-current": "bg:#0d1117 #ffc950 bold",
+        "panel-done": "bg:#0d1117 #56e696",
+        "panel-pending": "bg:#0d1117 #6a6f76",
     }
 
 
@@ -139,10 +139,10 @@ def approval_lines(payload: dict[str, Any] | None, *, width: int = 62) -> list[t
 def approval_style() -> dict[str, str]:
     """prompt_toolkit style rules used by :func:`approval_lines`."""
     return {
-        "approval": "bg:#2a1a1a #e0e0e0",
-        "approval-title": "bg:#2a1a1a #ffff5f bold",
-        "approval-risk": "bg:#2a1a1a #ff5f5f bold",
-        "approval-options": "bg:#2a1a1a #00d7d7",
+        "approval": "bg:#1a0d11 #e0e4ea",
+        "approval-title": "bg:#1a0d11 #ffc950 bold",
+        "approval-risk": "bg:#1a0d11 #ff4054 bold",
+        "approval-options": "bg:#1a0d11 #00e5ff",
     }
 
 

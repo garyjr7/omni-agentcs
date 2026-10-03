@@ -1,17 +1,10 @@
 """First-run onboarding. No unattended installations or partial config writes."""
 
-from dataclasses import asdict, replace
-from datetime import datetime, timedelta, timezone
+from dataclasses import asdict
 import getpass
-import hashlib
-import hmac
-import ipaddress
 import os
-import re
 import secrets
-import socket
 import sys
-from uuid import uuid4
 
 from nexus_core.config.loader import config_exists, effective_db_path, load_config, save_config
 from nexus_core.config.schema import DEFAULT_MODELS, OmniConfig, PROVIDERS
@@ -43,46 +36,10 @@ def _yes(prompt):
 
 
 def _initial_scope(name, entries, secret):
-    from nexus_core.scope import EngagementScope
+    """Build and sign the onboarding engagement (shared with ``/engage``)."""
+    from nexus_core.cli.engage import build_scope
 
-    cidrs, domains = set(), []
-    for entry in entries.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        try:
-            cidrs.add(str(ipaddress.ip_network(entry, strict=False)))
-        except ValueError:
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}", entry):
-                raise ValueError("scope debe contener dominios concretos o CIDRs") from None
-            domains.append(entry.lower())
-            for info in socket.getaddrinfo(entry, None, type=socket.SOCK_STREAM):
-                addr = ipaddress.ip_address(info[4][0])
-                cidrs.add(f"{addr}/{addr.max_prefixlen}")
-    if not cidrs:
-        raise ValueError("scope vacío")
-    now = datetime.now(timezone.utc)
-    scope = EngagementScope(
-        engagement_id="eng-" + uuid4().hex[:12],
-        tenant_id="system",
-        name=name,
-        client="onboarding",
-        owner_id="operator:" + getpass.getuser(),
-        valid_from=now.isoformat(),
-        valid_until=(now + timedelta(days=1)).isoformat(),
-        cidrs=tuple(sorted(cidrs)),
-        domains=tuple(domains),
-        urls=(),
-        exclusions=(),
-        # created_at is part of the signed canonical form, so it must be set
-        # before signing; otherwise EngagementStore.create() fills it later and
-        # invalidates the signature (scope signature is invalid).
-        created_at=now.isoformat(),
-    )
-    signature = hmac.new(
-        secret.encode(), scope.canonical_form().encode(), hashlib.sha256
-    ).hexdigest()
-    return replace(scope, signature=signature)
+    return build_scope(name, entries, secret, tenant_id="system", client="onboarding")
 
 
 def run_wizard(paths) -> OmniConfig:

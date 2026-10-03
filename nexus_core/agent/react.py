@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -88,6 +89,14 @@ class ReActConfig:
     #: observation and continues (a human refusal is not a tool failure). Without
     #: a callback, the gateway fails the call with ``PermissionError`` as before.
     on_approval_needed: Callable[[str, dict[str, Any], Any], ApprovalDecision | None] | None = None
+    #: Live reasoning hook: receives the partial ``thought`` text as the model
+    #: writes it, so the CLI can stream the cognitive loop. Only used when the
+    #: client reports ``supports_streaming``; otherwise the loop calls
+    #: ``complete`` exactly as before.
+    on_thought: Callable[[str], None] | None = None
+    #: Called once when a streamed turn ends (success, error or fallback), so the
+    #: live indicator closes before the durable thought is rendered.
+    on_thought_done: Callable[[], None] | None = None
 
 
 @dataclass
@@ -334,6 +343,80 @@ def _budget_used(store: Any, tenant_id: str, run_id: str) -> int:
         return 0
 
 
+#: First string value of the ``thought`` field of a (possibly partial) JSON object.
+_THOUGHT_RE = re.compile(r'"thought"\s*:\s*"((?:[^"\\]|\\.)*)')
+
+
+def extract_partial_thought(raw: str) -> str:
+    """Best-effort ``thought`` value from a partial/incomplete ReAct JSON reply.
+
+    The loop asks for ``{"thought": "...", ...}`` with ``thought`` first, so the
+    value can be surfaced while the JSON is still being generated. Incomplete
+    escapes fall back to a light unescape instead of failing.
+    """
+    match = _THOUGHT_RE.search(str(raw or ""))
+    if match is None:
+        return ""
+    fragment = match.group(1)
+    try:
+        return json.loads(f'"{fragment}"')
+    except (ValueError, TypeError):
+        return fragment.replace('\\"', '"').replace("\\n", "\n")
+
+
+def _notify(callback: Callable[..., None] | None, *args: Any) -> None:
+    """Call a UI hook without ever letting it break the run."""
+    if callback is None:
+        return
+    try:
+        callback(*args)
+    except Exception:  # noqa: BLE001 - presentation must not abort the loop
+        pass
+
+
+async def _complete_turn(llm_client: Any, messages: list[Any], config: ReActConfig) -> Any:
+    """One model turn, streaming the reasoning when a hook and provider allow it.
+
+    Falls back to a plain ``complete`` on any streaming error so the reasoning
+    UI can never turn into a dead end. ``CancelledError`` propagates untouched.
+    """
+    can_stream = (
+        config.on_thought is not None
+        and bool(getattr(llm_client, "supports_streaming", False))
+        and hasattr(llm_client, "stream")
+    )
+    if not can_stream:
+        return await llm_client.complete(messages)
+    collected: list[str] = []
+    last = ""
+    try:
+        async for chunk in llm_client.stream(messages):
+            collected.append(chunk)
+            thought = extract_partial_thought("".join(collected))
+            if thought and thought != last:
+                last = thought
+                _notify(config.on_thought, thought)
+    except Exception:  # noqa: BLE001 - retry the whole turn without streaming
+        _notify(config.on_thought_done)
+        return await llm_client.complete(messages)
+    finally:
+        _notify(config.on_thought_done)
+    response = getattr(llm_client, "last_stream_response", None)
+    if response is not None:
+        return response
+    # A provider that streams without reporting usage: synthesize a response so
+    # token recording and parsing stay identical to the non-streaming path.
+    from nexus_core.llm.abstraction import LLMProvider, LLMResponse
+
+    text = "".join(collected)
+    return LLMResponse(
+        content=text,
+        model=str(getattr(getattr(llm_client, "config", None), "model", "") or ""),
+        provider=LLMProvider.GROQ,
+        tokens_output=max(1, len(text.split())),
+    )
+
+
 def _record_response_tokens(
     store: Any, tenant_id: str, run_id: str, response: Any
 ) -> int:
@@ -549,7 +632,7 @@ async def run_react_loop(
             and memory.message_kind(message) not in memory.COMPACTION_KINDS
         )
 
-        response = await llm_client.complete(messages)
+        response = await _complete_turn(llm_client, messages, config)
         _record_response_tokens(store, tenant_id, run_id, response)
         raw_response = str(getattr(response, "content", "") or "")
 

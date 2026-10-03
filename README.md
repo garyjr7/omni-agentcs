@@ -37,6 +37,15 @@ herramientas, ofrece instalaciones, pide proveedor/modelo/API key y permite
 crear un engagement firmado de 24 horas con dominios/CIDRs autorizados.
 No se repite si existe config, ni se ejecuta en CI, tests o con `--no-wizard`.
 
+Puedes crear y **cambiar de engagement sin repetir el onboarding**, desde la
+propia CLI: no interactivo con `omni --new-engagement <nombre> --scope
+"1.2.3.0/24, scanme.nmap.org"` (y sale), o dentro del REPL con
+`/engage_create <nombre> <dominios/CIDRs>`. Cada engagement se firma con
+`scope.signing_secret` y lleva su ventana de validez (`--valid-hours`, 24 h por
+defecto). `/engage_list` los lista y `/engage_use <id>` cambia el activo en
+caliente, sin reiniciar. (El comando con subcomandos `/engage list|create|use`
+sigue disponible por compatibilidad.)
+
 Proveedores: Groq, OpenAI, Anthropic, Gemini, Ollama y Fake. Los proveedores
 cloud requieren su API key; Fake funciona offline. Ollama necesita un servidor
 local y un modelo disponible. Sin clave del proveedor seleccionado se usa Fake.
@@ -72,6 +81,8 @@ omni --setup --install --yes               # aplica el plan aprobado
 omni --config                             # editar con $EDITOR
 omni --config-path                        # ruta del config
 omni --list-engagements
+omni --new-engagement scanme-lab --scope "scanme.nmap.org"   # firma y sale
+omni --new-engagement lab --scope "10.0.0.1/24" --valid-hours 72
 omni --engagement eng-scanme --objective "Busca módulos MSF para MS17-010"
 omni --engagement eng-scanme --trust-mode --objective "Explota el host autorizado"
 omni --no-wizard                          # modo sin onboarding
@@ -81,13 +92,17 @@ python nexus_worker.py                    # worker durable
 
 Usa un ID listado por `--list-engagements`. Un checkout nuevo no incluye
 engagements ni credenciales: créalos en el wizard con tu alcance autorizado.
-En el REPL, `/help` muestra comandos; `/ask`, `/scope`, `/tools`, `/history`,
-`/approvals`, `/trust`, `/sessions`, `/session`, `/detach`, `/kill-session`,
-`/findings`, `/facts`, `/plan`, `/panel`, `/expand`, `/playbook`, `/loot`,
-`/report`, `/timeline` y `/exit` permiten inspeccionar y controlar la sesión. `/facts` lista el blackboard
+En el REPL, `/help` muestra comandos; `/ask`, `/scope`, `/engage_list`,
+`/engage_create`, `/tools`,
+`/history`, `/approvals`, `/trust`, `/sessions`, `/session`, `/detach`,
+`/kill-session`, `/findings`, `/facts`, `/plan`, `/panel`, `/expand`,
+`/playbook`, `/loot`, `/report`, `/timeline` y `/exit` permiten inspeccionar y
+controlar la sesión. `/facts` lista el blackboard
 del engagement (`/facts <tipo>` filtra por tipo de hecho) y `/plan` muestra el
-plan por fases del engagement (`/plan on|off` o **F2** abren el panel lateral;
-`/expand on|off` o **F3** despliegan la salida completa de las tarjetas de tool).
+plan por fases del engagement (`/plan on|off` o **F2** abren el panel lateral; la
+salida de las tarjetas de tool se despliega **haciendo clic** en su pie
+`▼ mostrar N líneas más` / `▲ mostrar menos`; `/expand on|off` las despliega
+todas).
 
 ### Entorno operativo (`--setup`)
 
@@ -417,15 +432,26 @@ lateral es **opcional** y el reporte solo lo cierra el `task_complete`.
 - `/plan on|off` o **F2** — panel lateral superpuesto (fase, pipeline y desglose
 del blackboard). Puedes cambiar de fase registrando hechos con
 `nexus.knowledge.record_fact`.
-- `/expand on|off` o **F3** — las tarjetas de tool se muestran **plegadas** por
-defecto (cabecera + resumen + primeras/últimas líneas, con el número de líneas
-ocultas); al expandir se imprime la salida completa.
+- **Acordeón por bloque (clic)** — la salida de cada tool se muestra **plegada**
+por defecto: **5 líneas** (cabeza + cola) + resumen, con un pie clicable
+`▼ mostrar N líneas más`. Un clic despliega o contrae *solo* esa tarjeta
+(`▲ mostrar menos`) redibujando el transcript en su sitio sin duplicar el
+historial. `/expand on|off` las despliega todas por texto. Sin F3.
 - **Modal de aprobación** — las tools HIGH/DESTRUCTIVE no vuelven a volcar el
 bloque al scrollback: aparece un modal superpuesto con tool, riesgo, motivo y
 argumentos exactos, y se lee la respuesta `y/n/e/?` en la barra de entrada.
 
 ### Comandos
 
+- `/engage_list` — lista los engagements firmados con su `cidrs`, dominios y
+  validez (`/engage list` sigue funcionando).
+- `/engage_create <nombre> <dominios/CIDRs> [--hours N]` — firma un engagement
+  nuevo y lo activa (`--hours` es opcional, 24 h por defecto).
+- `/engage_use <id>` — cambia el engagement activo en caliente (nuevo contexto de
+  trabajo, sin reiniciar el REPL) y actualiza `@` en el autocompletado.
+- `/engage_current` — muestra el engagement activo (equivale a `/scope`).
+  Estos comandos son de primer nivel a propósito: el autocompletado los lista
+  uno a uno en cuanto escribes `/`.
 - `/findings` — lista resumida de hallazgos del engagement activo.
 - `/report` — genera Markdown + HTML + JSON del engagement actual.
 - `/report --llm-cvss` — pide al LLM un vector CVSS 3.1 (validado y puntuado
@@ -453,24 +479,45 @@ se genera igualmente y se marca visiblemente como **NO VERIFICADA**.
 En terminales interactivos, OmniAgentCS usa una Application de `prompt_toolkit`
 con cuatro regiones: historial de salida, indicador de trabajo, entrada
 multilínea y barra de estado. El prompt y la barra permanecen abajo, con
-autocompletado mediante Tab. Se usa la pantalla principal (`full_screen=False`),
-sin borrar el terminal al arrancar ni cambiar a una pantalla alternativa.
-El banner aparece una vez; el ASCII usa el color predeterminado, sin negrita.
+autocompletado mediante Tab.
 
-Con `--fullscreen` la aplicación usa la **pantalla alternativa** (`alt-screen`)
-del terminal: es un modo *opt-in* pensado para sesiones largas. Mientras corre,
-el scrollback nativo del terminal no es accesible (PageUp/PageDown navegan el
-historial de la aplicación) y la selección/copia depende del emulador; al salir,
-la pantalla anterior se restaura intacta. Por defecto se usa la pantalla
-principal (`full_screen=False`), que conserva el scrollback.
+Al arrancar, la TUI entra en la **pantalla alternativa** (`alt-screen`) del
+terminal por defecto, como los CLIs de referencia (Codex, Claude Code): `omni`
+abre una pantalla limpia y dedicada, sin el prompt del shell ni la salida
+previa a la vista, y al salir restaura la pantalla anterior intacta. El banner
+aparece una vez como portada; el ASCII usa el color predeterminado, sin negrita.
+Mientras corre, el scrollback nativo del terminal no es accesible (PageUp/PageDown
+navegan el historial de la aplicación) y la selección/copia depende del emulador.
 
-PageUp y PageDown recorren todo el historial del panel; al volver al final se
-reanuda el seguimiento automático. Se conserva en memoria toda la salida
-mostrada, sin el límite previo de 2000 líneas. El historial anterior del
-terminal permanece intacto, pero su rueda de scroll no sustituye a PageUp:
-el contenido que el panel desplaza se conserva en el buffer de la aplicación,
-no se duplica en el scrollback nativo. Usa `/history` o `/export` para consultar
-o guardar la conversación antes de cerrar la CLI.
+El modo inline sigue disponible con `--no-fullscreen` (o `NEXUS_NO_ALT_SCREEN=1`),
+que usa la pantalla principal (`full_screen=False`) y conserva el scrollback del
+terminal a la vista.
+
+PageUp y PageDown **y la rueda del ratón** recorren todo el historial del panel;
+al volver al final se reanuda el seguimiento automático. El primer PageUp ya
+muestra la página anterior (sin el retardo de antes) y, mientras el transcript
+está desplazado, la barra de estado muestra `▲ historial · PgDn/Fin` para
+indicar que la vista está pausada. Se conserva en memoria toda la salida
+mostrada, sin el límite previo de 2000 líneas. Con la captura de ratón activa
+(necesaria para la rueda en alt-screen), la selección de texto con el ratón
+requiere mantener **Shift**. Usa `/history` o `/export` para consultar o
+guardar la conversación antes de cerrar la CLI.
+
+### Respuestas en streaming
+
+`/ask` (y `/chat`) muestra la respuesta **token a token** en un panel en vivo
+sobre la barra de entrada, con el Markdown renderizado al vuelo, en vez de
+imprimirla entera de golpe. Al terminar, la respuesta se consolida en el
+historial para poder desplazarla. El streaming usa SSE del proveedor
+(`OpenAI`/`Groq`); si el proveedor o el modelo no lo soportan, la CLI cae de
+forma transparente a una única respuesta.
+
+El **pensamiento** del bucle ReAct (el campo `thought` que el modelo emite antes
+de cada acción) también se transmite en vivo: una línea `💭 …` sobre la barra de
+entrada muestra el razonamiento según se genera (extrayendo el valor del JSON
+parcial), y al cerrar la iteración se consolida en el historial como bloque de
+pensamiento. Si el proveedor no soporta streaming, el `💭` aparece al terminar
+la iteración en lugar de token a token.
 
 ```text
 ┌──(OmniAgentCS)─[scanme-lab]
@@ -482,7 +529,23 @@ La barra muestra engagement, sesión adjunta, trust, proveedor/modelo, tokens,
 coste estimado, la **fase actual del plan** (con su progreso), el número de
 hechos del blackboard y el tiempo. El panel lateral (F2 o `/panel`) superpone el
 plan completo por fases y el desglose del blackboard sin salir del prompt.
-**F3** (o `/expand`) alterna entre tarjetas de tool plegadas y expandidas.
+La salida de cada tool se pliega a **5 líneas** con un pie clicable
+`▼ mostrar N líneas más` / `▲ mostrar menos`; el clic expande/contrae esa tarjeta
+en su sitio (`/expand on|off` las despliega todas).
+
+### Tema (ciberpunk: rojo + aqua + blanco)
+
+Paleta única en `nexus_core/cli/theme.py` (truecolor ANSI):
+
+- **Aqua** (`#00e5ff`) — comandos (`$ nmap -sV -p- 10.0.0.1`), estructura,
+títulos, barra lateral y pies clicables.
+- **Rojo** (`#ff4054`) — el **pensamiento** del agente (`💭`), riesgo y fallos.
+- **Blanco opaco** (`#d0d4da`) — el **resultado** de los comandos y el cuerpo de
+la respuesta.
+- Verde/amarillo — veredictos (éxito) y severidad de hallazgos.
+
+El resumen final del run se imprime en una caja coloreada estilo Markdown
+(`RESULTADO · OmniAgentCS`) y `--no-color`/`NO_COLOR` degrada todo a texto.
 En reposo se refresca cada dos segundos; la aplicación corre
 en un hilo dedicado, así que permanece activa durante llamadas síncronas.
 El spinner de stderr se desactiva en TUI: una línea sobre el prompt muestra
@@ -554,7 +617,8 @@ vacías, separadores y progreso idéntico consecutivo. Las líneas largas se
 recortan a 100 caracteres. El resumen usa las métricas y la verificación
 disponibles; no inventa duración, ruido ni comandos. Para herramientas cuyo
 argv depende del handler se muestra la solicitud durable con sus argumentos.
-El polling obtiene acciones y resultados cada 0,5 s; no hay streaming de tokens
+El polling obtiene acciones y resultados cada 0,5 s; el pensamiento sí llega en
+streaming de tokens durante cada iteración (ver arriba), pero
 ni acceso al stdout de un proceso mientras la herramienta todavía se ejecuta.
 
 `/timeline` muestra auditoría, no stdout completo. `/history` permite consultar
@@ -586,8 +650,9 @@ NEXUS_NO_TUI=1 omni
 omni --no-tui
 ```
 
-También aceptan `true` y `yes` en `NEXUS_NO_TUI`. `--fullscreen` es un modo de
-pantalla de la TUI (se ignora con `--no-tui`). El fallback a `input()` y
+También aceptan `true` y `yes` en `NEXUS_NO_TUI`. `--no-fullscreen` (o
+`NEXUS_NO_ALT_SCREEN`) desactiva la pantalla alternativa y usa el modo inline
+(se ignora con `--no-tui`). El fallback a `input()` y
 readline es automático si **stdin o stdout** no es TTY, o si `prompt_toolkit`
 no se puede importar. Conserva el comportamiento anterior. En fallback
 sin TTY el banner se omite; en un terminal con `--no-tui` sigue apareciendo.

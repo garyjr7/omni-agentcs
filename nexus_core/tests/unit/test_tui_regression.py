@@ -55,6 +55,11 @@ def test_no_tui_flag_parsed():
     assert build_parser().parse_args(["--no-tui"]).no_tui
 
 
+def test_fullscreen_on_by_default_with_inline_opt_out():
+    assert build_parser().parse_args([]).fullscreen is True
+    assert build_parser().parse_args(["--no-fullscreen"]).fullscreen is False
+
+
 def test_fallback_never_imports_prompt_toolkit():
     import builtins
 

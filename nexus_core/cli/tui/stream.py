@@ -4,6 +4,8 @@ import json
 import re
 import shlex
 
+from ..theme import AQUA, AQUA_DIM, GRAY, GREEN, OFFWHITE, RED, RESET
+
 PREFIXES = {
     "nexus.recon.nmap": "Recon-NMAP", "nexus.recon.subfinder": "Recon-Subfinder",
     "nexus.recon.httpx": "Web-HTTPS", "nexus.web.nuclei": "Web-Nuclei",
@@ -58,6 +60,18 @@ def truncate_output(output: str, max_lines: int = 3, *, width: int = 100) -> tup
     return "\n".join([lines[0], "...", *tail]), True
 
 
+def render_thought(text, *, width: int = 180):
+    """The model's reasoning of one ReAct iteration (agent thinking, in red).
+
+    The thought is durable (``react.action`` metadata) and is emitted *before*
+    the tool it justifies, so the human sees the intent before the action.
+    """
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    return f"{RED}💭 {_line(text, width)}{RESET}"
+
+
 def format_tool_invocation(tool_id, arguments):
     args = arguments if isinstance(arguments, dict) else {}
     if tool_id == "nexus.recon.nmap":
@@ -69,7 +83,8 @@ def format_tool_invocation(tool_id, arguments):
         # Other handlers may transform arguments. Display the durable request
         # honestly rather than inventing a shell command they may not execute.
         text = str(tool_id) + " " + json.dumps(args, ensure_ascii=False, default=str)
-    return _line(f"⚙️  {tool_prefix(tool_id)} {text}")
+    # Commands run in aqua, like a shell prompt; the tool tag stays dim.
+    return f"{AQUA}${RESET}{AQUA_DIM} {tool_prefix(tool_id)}{RESET} {AQUA}{_line(text)}{RESET}"
 
 
 def output_text(result):
@@ -111,26 +126,36 @@ def summarize_tool_result(result):
     return _line(" · ".join(parts) or str(result.get("verification_method") or "completado"))
 
 
-def render_tool_result(result, *, expanded: bool = False, max_lines: int = 3):
-    """Render one tool result as a collapsible card.
+def render_tool_result(result, *, expanded: bool = False, max_lines: int = 5):
+    """Render one tool result as a collapsible card (show more / show less).
 
     Collapsed (default) keeps ``max_lines`` head/tail data lines and reports how
-    many were hidden; ``expanded`` prints the whole output. Toggled with F3 or
-    ``/expand``; the summary and success marker are always shown.
+    many were hidden; ``expanded`` prints the whole output. The last line is a
+    clickable footer so the TUI can expand just this card; the summary and
+    success marker are always shown. Output is off-white, structure is aqua.
     """
     output = output_text(result)
+    total = len(data_lines(output)[0])
     if expanded:
         lines, _ = data_lines(output)
         hidden = 0
     else:
-        total = len(data_lines(output)[0])
         text, _ = truncate_output(output, max_lines)
         lines = text.splitlines()
         hidden = max(0, total - (len(lines) - (1 if "..." in lines else 0)))
-    body = [("   ..." if line == "..." else "   -> " + line) for line in lines]
-    body.append(f"   {'✓' if result.get('success') else '✗'} {summarize_tool_result(result)}")
+    body = []
+    for line in lines:
+        if line == "...":
+            body.append(f"{GRAY}   ...{RESET}")
+        else:
+            body.append(f"{OFFWHITE}   -> {line}{RESET}")
+    ok = bool(result.get("success"))
+    summary = summarize_tool_result(result)
+    body.append(f"{GREEN if ok else RED}   {'✓' if ok else '✗'} {summary}{RESET}")
     if hidden:
-        body.append(f"   ⤵ {hidden} línea(s) oculta(s) · F3 para expandir")
+        body.append(f"{AQUA}   ▼ mostrar {hidden} línea(s) más{RESET}")
+    elif expanded and total > max_lines:
+        body.append(f"{AQUA}   ▲ mostrar menos{RESET}")
     return "\n".join(body)
 
 
@@ -148,8 +173,15 @@ def observation(message):
 
 def render_message(message, *, expanded: bool = False):
     meta = message.get("metadata") or {}
-    if meta.get("kind") == "react.action" and meta.get("action") == "tool_call":
-        return format_tool_invocation(meta.get("tool_id", "?"), meta.get("arguments", {}))
-    if meta.get("kind") == "react.observation":
+    kind = meta.get("kind")
+    if kind == "react.action":
+        thought = render_thought(str(meta.get("thought") or ""))
+        if meta.get("action") == "tool_call":
+            call = format_tool_invocation(meta.get("tool_id", "?"), meta.get("arguments", {}))
+            return f"{thought}\n{call}" if thought else call
+        # task_complete / request_clarification carry reasoning too: show it so
+        # the cognitive loop is visible even when no tool runs.
+        return thought
+    if kind == "react.observation":
         return render_tool_result(observation(message), expanded=expanded)
     return ""

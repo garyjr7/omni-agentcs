@@ -211,7 +211,7 @@ class OmniSession:
         status_bar_enabled: bool = True,
         output=None,
         engagement_names: list[str] | None = None,
-        fullscreen: bool = False,
+        fullscreen: bool = True,
     ) -> None:
         self.store = store
         self.tenant_id = tenant_id
@@ -330,6 +330,35 @@ class OmniSession:
         self.resume_run_id = None
         self.last_result = None
         self.last_question = None
+
+    def set_engagement(self, scope) -> None:
+        """Switch the active engagement in place (no REPL restart).
+
+        The durable work session is per engagement, so the local run/thread is
+        dropped: the next objective opens the new engagement's context instead
+        of mixing scopes. The prompt, the status bar and the ``@`` completion
+        follow immediately.
+        """
+        self.engagement = scope
+        self._work_session_id = None
+        self.reset_context()
+        self.reload_engagement_names()
+        self._update_status_bar(force=True)
+        self._tui.invalidate()
+
+    def reload_engagement_names(self) -> None:
+        """Refresh the ``@engagement`` completion list from the store."""
+        if self.store is None:
+            return
+        try:
+            from nexus_core.scope import EngagementStore
+
+            names = [
+                scope.name for scope in EngagementStore(self.store).list_for_tenant(self.tenant_id)
+            ]
+        except Exception:  # noqa: BLE001 - listing must never break the REPL
+            return
+        self._tui.update_engagement_names(names)
 
     # ------------------------------------------------------------ work session
     def _ensure_work_session(self) -> str | None:
@@ -780,12 +809,9 @@ class OmniSession:
             return None
         self.record_tool_result(run_id, tool_id, dict(arguments or {}), result)
         if self._tui.use_tui:
-            from .tui.stream import render_tool_result
-            self._output.write(
-                render_tool_result(
-                    result.get("output") or {}, expanded=self._tui.expand_cards
-                )
-            )
+            # Per-block accordion: the card remembers its own state and can be
+            # expanded by clicking its footer.
+            self._tui.append_card(result.get("output") or {})
         return result
 
     def record_tool_result(
@@ -968,6 +994,9 @@ class OmniSession:
             on_approval_needed=make_approval_callback(
                 self, self.store, self.tenant_id, run_id, trust_mode=self.trust_mode
             ),
+            # Stream the model's reasoning into the live overlay (TUI only).
+            on_thought=self._tui.set_thought if self._tui.use_tui else None,
+            on_thought_done=self._tui.end_thought if self._tui.use_tui else None,
         )
         stop_event = threading.Event()
         streamer = threading.Thread(
@@ -1043,10 +1072,14 @@ class OmniSession:
         try:
             with stdout_patch:
                 self._show_banner()
-                render.render_status(
-                    f"omni listo · tenant={self.tenant_id} · "
-                    f"engagement={self.engagement_id or '(ninguno)'} · /help para comandos"
-                )
+                if not self._tui.use_tui:
+                    # On the dedicated screen the banner and the status bar
+                    # already carry the tenant, engagement, provider and cost:
+                    # no second "ready" line.
+                    render.render_status(
+                        f"omni listo · tenant={self.tenant_id} · "
+                        f"engagement={self.engagement_id or '(ninguno)'} · /help para comandos"
+                    )
                 self._update_status_bar()
                 while not self.should_exit:
                     self.check_active_session()
@@ -1132,10 +1165,13 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
         return
     for message in messages[state["messages"] :]:
         if session._tui.use_tui:
-            from .tui.stream import render_message
-            text = render_message(message, expanded=session._tui.expand_cards)
-            if text:
-                session._output.write(text)
+            from .tui.stream import observation, render_message
+            if (message.get("metadata") or {}).get("kind") == "react.observation":
+                session._tui.append_card(observation(message))
+            else:
+                text = render_message(message, expanded=session._tui.expand_cards)
+                if text:
+                    session._output.write(text)
         else:
             _render_message(message)
     state["messages"] = len(messages)
@@ -1145,16 +1181,16 @@ def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
     event_type = str(event.get("event_type") or event.get("action") or "")
     payload = event.get("payload") or {}
     if session._tui.use_tui:
-        from .tui.stream import format_tool_invocation, render_tool_result
+        from .tui.stream import format_tool_invocation
+
         if event_type == "react.action" and "arguments" in payload:
             session._output.write(format_tool_invocation(payload.get("tool_id", "?"), payload["arguments"]))
         elif event_type in {"tool.complete", "tool.failed"}:
             result = payload.get("tool_result") or payload
             if event_type == "tool.failed":
                 result = {**result, "success": False}
-            session._output.write(
-                render_tool_result(result, expanded=session._tui.expand_cards)
-            )
+            # Same per-block card the observation path uses (click to expand).
+            session._tui.append_card(result)
     if event_type == "react.parse_error":
         render.render_error(f"respuesta no parseable del LLM: {payload.get('error')}")
     elif event_type == "react.scope_violation":

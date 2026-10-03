@@ -17,6 +17,14 @@ class MeteredClient:
         self._callback(response)
         return response
 
+    async def stream(self, *args, **kwargs):
+        """Yield chunks while recording the usage the provider reports at the end."""
+        async for chunk in self._client.stream(*args, **kwargs):
+            yield chunk
+        response = getattr(self._client, "last_stream_response", None)
+        if response is not None:
+            self._callback(response)
+
 
 def response_usage(response):
     incoming = max(0, int(getattr(response, "tokens_input", 0) or 0))

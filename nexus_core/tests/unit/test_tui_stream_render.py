@@ -1,23 +1,31 @@
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
 from nexus_core.cli.tui.stream import format_tool_invocation, render_tool_result, render_message
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text):
+    return ANSI.sub("", text)
+
 
 def test_tool_invocation_shown_as_single_line():
     text = format_tool_invocation("nexus.recon.nmap", {"target": "lab", "flags": ["-sV", "-p", "80"]})
-    assert "[Recon-NMAP] nmap -sV -p 80 -oX - lab" in text
-    assert "\n" not in text and len(text) <= 100
+    plain = _plain(text)
+    assert "[Recon-NMAP] nmap -sV -p 80 -oX - lab" in plain
+    assert "\n" not in text and len(plain) <= 100
 
 
-def test_tool_complete_shows_three_lines_max():
+def test_tool_complete_shows_five_lines_max():
     text = render_tool_result({"success": True, "stdout": "a\nb\nc\nd\ne"})
-    assert len([line for line in text.splitlines() if "->" in line]) == 3
+    assert len([line for line in text.splitlines() if "->" in line]) == 5
 
 
 def test_tool_complete_shows_ellipsis_when_truncated():
-    assert render_tool_result({"stdout": "a\nb\nc\nd"}).count("...") == 1
+    assert render_tool_result({"stdout": "\n".join(f"l{n}" for n in range(9))}).count("...") == 1
 
 
 def test_tool_complete_summary_line():
@@ -32,8 +40,9 @@ def test_tool_failed_shows_error():
 
 def test_collapsed_card_reports_hidden_lines():
     text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
-    assert "línea(s) oculta(s)" in text
-    assert "F3" in text
+    assert "línea(s) más" in text
+    assert "mostrar" in text
+    assert "F3" not in text
 
 
 def test_expanded_card_shows_every_line():
@@ -70,6 +79,23 @@ def test_scrollback_not_invalidated_per_write(tui_factory):
         for _ in range(20):
             ui.session.append_scrollback("event\n")
     redraw.assert_not_called()
+
+
+def test_thought_is_rendered_before_the_tool_call():
+    message = {"metadata": {"kind": "react.action", "action": "tool_call", "thought": "escaneo los web", "tool_id": "nexus.recon.nmap", "arguments": {"target": "lab"}}}
+    text = render_message(message)
+    assert _plain(text).splitlines()[0].startswith("💭 escaneo los web")
+    assert "[Recon-NMAP]" in _plain(text)
+
+
+def test_thought_is_rendered_for_task_complete():
+    message = {"metadata": {"kind": "react.action", "action": "task_complete", "thought": "ya tengo la evidencia"}}
+    assert _plain(render_message(message)) == "💭 ya tengo la evidencia"
+
+
+def test_missing_thought_produces_no_line():
+    message = {"metadata": {"kind": "react.action", "action": "tool_call", "tool_id": "nexus.recon.nmap", "arguments": {}}}
+    assert not render_message(message).startswith("💭")
 
 
 def test_durable_observation_uses_real_body():
