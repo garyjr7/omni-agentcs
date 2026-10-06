@@ -86,7 +86,17 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
     header = Window(FormattedTextControl(lambda: ui._formatted(
         "\n".join(ui.prompt_text.splitlines()[:-1]))),
         height=lambda: max(0, len(ui.prompt_text.splitlines()) - 1))
-    editor = Window(BufferControl(ui._input, lexer=lexer), wrap_lines=True,
+    # While a secure prompt is active the input is masked through a conditional
+    # ``PasswordProcessor``, so a secret is never rendered to the screen (see
+    # ``TuiSession.prompt_secret``).
+    from prompt_toolkit.layout.processors import ConditionalProcessor, PasswordProcessor
+
+    ui._secret_mask = ConditionalProcessor(
+        PasswordProcessor(char="•"), Condition(lambda: ui._secret_mode)
+    )
+    editor = Window(BufferControl(
+        ui._input, lexer=lexer, input_processors=[ui._secret_mask]
+    ), wrap_lines=True,
                     get_line_prefix=lambda line, wrapped: ui._formatted(
                         ui.prompt_text.splitlines()[-1] if line == 0 and wrapped == 0 else "  · "))
     ui._input_window = HSplit([header, editor], height=ui._input_height)

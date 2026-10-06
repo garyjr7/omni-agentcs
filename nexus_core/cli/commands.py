@@ -1194,6 +1194,19 @@ def cmd_implants(session: "OmniSession", args: list[str]) -> None:
         render.write(f"  profile {profile.get('Name') or profile.get('name') or '?'}")
 
 
+def _read_secret(session: "OmniSession" | None, prompt: str) -> str:
+    """Read a secret without echoing it or leaking it into shell history.
+
+    Prefers the session's own secure input (TUI-aware, so it cannot deadlock
+    against the running interface); falls back to ``getpass`` when there is no
+    session, e.g. a headless or test call.
+    """
+    reader = getattr(session, "secure_input", None)
+    if callable(reader):
+        return str(reader(prompt))
+    return getpass.getpass(prompt)
+
+
 def cmd_secrets(session: "OmniSession", args: list[str]) -> None:
     """Gestiona secretos (API keys) fuera del .env: list|set|rotate|delete|import-env."""
     from nexus_core.config.secrets import SecretStore, import_from_env
@@ -1214,12 +1227,29 @@ def cmd_secrets(session: "OmniSession", args: list[str]) -> None:
             render.render_error("uso: /secrets set NOMBRE")
             return
         name = args[1]
-        value = getpass.getpass(f"valor para {name}: ")
+        existing = name in store.names()
+        # The value is read through the session's secure input: masked in the
+        # TUI, never printed, never in readline/prompt_toolkit history.
+        value = _read_secret(session, f"valor para {name}: ")
         if not value:
-            render.render_error("valor vacío; nada guardado")
+            render.render_error(f"valor vacío; {name} no se modificó")
             return
-        store.set(name, value)
-        render.write(render.paint(f"✓ {name} guardado en {store.backend_name}", render.GREEN))
+        try:
+            store.set(name, value)
+        except Exception as exc:  # noqa: BLE001 - report, never crash the REPL
+            render.render_error(
+                f"✗ no se pudo guardar {name}: {type(exc).__name__}: {exc}"
+            )
+            return
+        verb = "rotado" if action == "rotate" else "guardado"
+        render.write(
+            render.paint(
+                f"✓ Secreto {name} {verb} correctamente ({store.backend_name})",
+                render.GREEN,
+            )
+        )
+        if action == "rotate" and not existing:
+            render.write(f"  nota: {name} no existía antes; se ha creado.")
         render.write(
             "  si la clave estuvo expuesta, considérala comprometida: rota el valor "
             "en el proveedor y reinicia los procesos que la leyeron."
@@ -1250,6 +1280,18 @@ def cmd_secrets(session: "OmniSession", args: list[str]) -> None:
         render.write("  ahora puedes borrarlas del .env; el store tiene prioridad sobre él.")
         return
     render.render_error(f"acción desconocida: {action} (usa list|set|rotate|delete|import-env)")
+
+
+def cmd_roe(session: "OmniSession", args: list[str]) -> None:
+    """Muestra las Reglas de Encuentro (RoE) y controla su kill switch."""
+    from .roe_cli import run_roe_action
+
+    action = args[0].lower() if args else "show"
+    code, lines = run_roe_action(action, getattr(session, "engagement_id", None))
+    for line in lines:
+        render.write(line)
+    if code:
+        render.render_error("uso: /roe [show|kill|arm|path]")
 
 
 def cmd_help(session: "OmniSession", args: list[str]) -> None:
@@ -1297,6 +1339,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/trust": cmd_trust,
     "/status": cmd_status,
     "/secrets": cmd_secrets,
+    "/roe": cmd_roe,
     "/exploit": cmd_exploit,
     "/sliver": cmd_sliver,
     "/implants": cmd_implants,

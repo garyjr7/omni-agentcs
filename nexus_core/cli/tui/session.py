@@ -73,6 +73,9 @@ class TuiSession:
         self._ready = threading.Event()
         self._answers: Queue = Queue()
         self._accepting = False
+        #: While True the input buffer is masked and its content is never echoed
+        #: to the transcript (secure secret entry).
+        self._secret_mode = False
         self._lines: list[str] = []
         self._styled_lines = [[]]
         #: Ordered transcript segments (text or tool card) for in-place redraw.
@@ -390,7 +393,9 @@ class TuiSession:
     def _accept(self, buffer):
         if self._can_edit:
             text = buffer.text
-            self.print(self.prompt_text + text)
+            # A secret is never echoed to the transcript: show a fixed mask so
+            # the operator still sees that the input was taken.
+            self.print(self.prompt_text + ("••••••" if self._secret_mode else text))
             self._answer(text)
         return False
 
@@ -444,6 +449,34 @@ class TuiSession:
         if isinstance(result, BaseException):
             raise result
         return result
+
+    def prompt_secret(self, prompt_text: str = "└─🔒 valor oculto: ") -> str:
+        """Read one line masked: never echoed, never kept in any history.
+
+        Uses the session's own input buffer so it cannot fight the running TUI
+        application the way a bare ``getpass`` would (``getpass`` writes straight
+        to the terminal while ``prompt_toolkit`` owns it, which is what froze
+        ``/secrets``). For the duration of the read the persistent history is
+        swapped for an empty in-memory one, so the secret never reaches the
+        on-disk history file, and the prompt is restored afterwards.
+        """
+        if not self.use_tui:
+            import getpass
+
+            return getpass.getpass(prompt_text)
+        from prompt_toolkit.history import InMemoryHistory
+
+        previous_history = self._input.history
+        previous_prompt = self.prompt_text
+        self._input.history = InMemoryHistory()
+        self._secret_mode = True
+        try:
+            return str(self.prompt(prompt_text))
+        finally:
+            self._secret_mode = False
+            self._input.history = previous_history
+            self.prompt_text = previous_prompt
+            self.invalidate()
 
     def print(self, text: str, *, end: str = "\n") -> None:
         if not self.use_tui:

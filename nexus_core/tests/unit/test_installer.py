@@ -79,9 +79,23 @@ def test_execute_install_timeout_returns_failure(managers):
 
 def test_update_shell_path_idempotent(managers):
     path = str(managers.home / "bin with space/nmap")
-    assert update_shell_path(path)
-    assert not update_shell_path(path)
+    assert update_shell_path(path, home=managers.home, shell="/bin/bash")
+    assert not update_shell_path(path, home=managers.home, shell="/bin/bash")
     assert (managers.home / ".bashrc").read_text().count("omni provisioner") == 1
+
+
+def test_update_shell_path_targets_zshrc_for_zsh(managers):
+    # The rc file follows the login shell; pinning $SHELL keeps this deterministic.
+    path = str(managers.home / "bin/nmap")
+    assert update_shell_path(path, home=managers.home, shell="/usr/bin/zsh")
+    assert (managers.home / ".zshrc").read_text().count("omni provisioner") == 1
+    assert not (managers.home / ".bashrc").exists()
+
+
+def test_update_shell_path_rejects_control_characters(managers):
+    # The control character must live in a directory component, not the basename.
+    with pytest.raises(ValueError):
+        update_shell_path("/tmp/bad\ndir/nmap", home=managers.home, shell="/bin/bash")
 
 
 def test_manufactured_plan_cannot_execute(managers):

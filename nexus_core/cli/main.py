@@ -67,6 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-engagements", action="store_true", help="lista los engagements del tenant y sale"
     )
     parser.add_argument(
+        "--roe",
+        nargs="?",
+        const="show",
+        metavar="ACCION",
+        help=(
+            "Reglas de Encuentro del engagement: show (default), path, kill "
+            "(arma el kill switch) o arm (lo desarma) y sale"
+        ),
+    )
+    parser.add_argument(
         "--new-engagement", metavar="NOMBRE",
         help="crea un engagement firmado con --scope y sale",
     )
@@ -246,6 +256,17 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     )
     if exit_code:
         return exit_code
+
+    if args.roe:
+        if engagement is None:
+            render.render_error("--roe requiere un engagement activo")
+            return 2
+        from .roe_cli import run_roe_action
+
+        code, lines = run_roe_action(args.roe, engagement.engagement_id)
+        for line in lines:
+            print(line)
+        return code
 
     try:
         llm_client = build_llm_client()

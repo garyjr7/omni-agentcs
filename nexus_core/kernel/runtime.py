@@ -236,7 +236,8 @@ async def execute_evaluation(payload: dict, context: ExecutionContext) -> dict:
 
 async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
     """Invoke only first-party tools through the policy-enforced gateway."""
-    from nexus_core.scope import make_scope_validator
+    from nexus_core.scope import make_roe_validator, make_scope_validator
+    from nexus_core.scope.roe import load_enforcer
     from nexus_core.tools.registry import durable_tool_definitions
 
     from .approvals import ApprovalService
@@ -248,11 +249,17 @@ async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
     tool_id = str(payload.get("tool_id") or "")
     arguments = payload.get("arguments") or {}
     run_context = _build_run_context(payload, context)
+    # Rules of Engagement are opt-in per engagement; absent one, the signed
+    # scope alone governs. Present, they narrow it and can halt everything.
+    roe_enforcer = load_enforcer(
+        getattr(getattr(run_context, "scope", None), "engagement_id", None)
+    )
     gateway = ToolGateway(
         PolicyEngine(context.store),
         AuditWriter(context.store),
         ApprovalService(context.store),
         scope_validator=make_scope_validator(signing_secret=scope_signing_secret()),
+        roe_validator=make_roe_validator(roe_enforcer) if roe_enforcer else None,
     )
 
     catalog = durable_tool_definitions(context.tenant_id)

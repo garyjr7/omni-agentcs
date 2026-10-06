@@ -28,6 +28,7 @@ from nexus_core.scope import ScopeViolation
 
 from . import memory
 from .injection import render_for_model, scan_untrusted_text
+from .subagents import filter_catalog, select_for_plan
 from .parser import (
     ACTION_REQUEST_CLARIFICATION,
     ACTION_TASK_COMPLETE,
@@ -53,6 +54,9 @@ STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 STATUS_SCOPE_VIOLATION = "scope_violation_aborted"
 STATUS_BUDGET_EXCEEDED = "budget_exceeded"
+#: A subagent exhausted its own iteration/token allowance.
+STATUS_SUBAGENT_BUDGET = "subagent_budget_exceeded"
+SUBAGENT_EVENT_TYPE = "orchestrator.subagent"
 BUDGET_EVENT_TYPE = "react.budget_exceeded"
 #: Subject under which the loop books its own token spend.
 BUDGET_SUBJECT_TYPE = "model_route"
@@ -113,6 +117,8 @@ class ReActResult:
     question: str | None = None
     #: Final plan snapshot (``Plan.to_dict()``) when the loop produced one.
     plan: dict[str, Any] | None = None
+    #: Subagent that owned the last iteration (audited in the action log).
+    subagent_id: str | None = None
 
 
 # --------------------------------------------------------------------- helpers
@@ -166,8 +172,14 @@ def _audit_step(
     iteration: int,
     action: str,
     decision: str,
+    subagent_id: str | None = None,
     **payload: Any,
 ) -> None:
+    body = {"iteration": iteration, "action": action}
+    if subagent_id:
+        # Every step is attributable to the subagent that proposed it (3C).
+        body["subagent_id"] = subagent_id
+    body.update(payload)
     audit.append(
         tenant_id=tenant_id,
         trace_id=run_id,
@@ -175,7 +187,7 @@ def _audit_step(
         action="react.step",
         resource_type="run",
         resource_id=run_id,
-        payload={"iteration": iteration, "action": action, **payload},
+        payload=body,
         decision=decision,
     )
 
@@ -332,16 +344,28 @@ def _budget_tokens(payload: dict[str, Any], explicit: int | None) -> int:
         return 0
 
 
-def _budget_used(store: Any, tenant_id: str, run_id: str) -> int:
-    """Tokens the loop already booked for this run (0 when unreadable)."""
+def _budget_used(
+    store: Any, tenant_id: str, run_id: str, subject_id: str = BUDGET_SUBJECT_ID
+) -> int:
+    """Tokens the loop already booked for this run/subject (0 when unreadable).
+
+    The run total is booked under ``BUDGET_SUBJECT_ID``; each subagent also
+    books its own lane (``react:<subagent_id>``) so one phase cannot drain
+    another phase's allowance.
+    """
     try:
         return int(
             store.usage_total(
-                tenant_id, run_id, BUDGET_SUBJECT_TYPE, BUDGET_SUBJECT_ID, BUDGET_METRIC
+                tenant_id, run_id, BUDGET_SUBJECT_TYPE, subject_id, BUDGET_METRIC
             )
         )
     except Exception:  # noqa: BLE001 - accounting must not abort a run
         return 0
+
+
+def subagent_budget_subject(subagent_id: str) -> str:
+    """Usage lane a subagent books its tokens under."""
+    return f"{BUDGET_SUBJECT_ID}:{subagent_id}"
 
 
 #: First string value of the ``thought`` field of a (possibly partial) JSON object.
@@ -425,19 +449,30 @@ async def _complete_turn(llm_client: Any, messages: list[Any], config: ReActConf
 
 
 def _record_response_tokens(
-    store: Any, tenant_id: str, run_id: str, response: Any
+    store: Any,
+    tenant_id: str,
+    run_id: str,
+    response: Any,
+    *,
+    subject_ids: tuple[str, ...] = (BUDGET_SUBJECT_ID,),
 ) -> int:
-    """Book the tokens of one model response; returns the amount recorded."""
+    """Book the tokens of one model response; returns the amount recorded.
+
+    The amount is booked once under every lane in ``subject_ids`` (the run total
+    plus the active subagent), so the same spend is visible run-wide and per
+    phase without double-counting within a lane.
+    """
     amount = int(getattr(response, "total_tokens", 0) or 0)
     if amount <= 0:
         return 0
-    try:
-        store.record_usage(
-            tenant_id, run_id, BUDGET_SUBJECT_TYPE, BUDGET_SUBJECT_ID, BUDGET_METRIC,
-            amount, {"source": "react-loop"},
-        )
-    except Exception:  # noqa: BLE001 - accounting must not abort a run
-        return 0
+    for subject_id in subject_ids:
+        try:
+            store.record_usage(
+                tenant_id, run_id, BUDGET_SUBJECT_TYPE, subject_id, BUDGET_METRIC,
+                amount, {"source": "react-loop"},
+            )
+        except Exception:  # noqa: BLE001 - accounting must not abort a run
+            continue
     return amount
 
 
@@ -505,6 +540,8 @@ async def run_react_loop(
     payload = _task_payload(context)
     agent_id = str(payload.get("agent_id") or DEFAULT_AGENT_ID)
     catalog = tool_catalog if tool_catalog is not None else durable_tool_definitions(tenant_id)
+    # An operator may pin the profile; the model never picks its own subagent.
+    subagent_override = payload.get("subagent") or None
     audit = AuditWriter(store)
     scope = load_engagement_scope(store, tenant_id, engagement_id)
 
@@ -547,6 +584,23 @@ async def run_react_loop(
     consecutive_failures = 0
     last_phase: str | None = None
     last_plan: Any = None
+    last_subagent_id: str | None = None
+    active_subagent_id: str | None = None
+    subagent_iterations = 0
+
+    def audit_step(*, iteration: int, action: str, decision: str, **extra: Any) -> None:
+        """Audit one step, always tagged with the active subagent (3C)."""
+        _audit_step(
+            audit,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            agent_id=agent_id,
+            subagent_id=active_subagent_id,
+            iteration=iteration,
+            action=action,
+            decision=decision,
+            **extra,
+        )
 
     while iteration < config.max_iterations:
         used = _budget_used(store, tenant_id, run_id) if budget else 0
@@ -608,6 +662,48 @@ async def run_react_loop(
 
         plan, facts_text = _blackboard_view(store, tenant_id, engagement_id)
         last_plan = plan
+        subagent = select_for_plan(plan, override=subagent_override)
+        active_subagent_id = subagent.id
+        if subagent.id != last_subagent_id:
+            subagent_iterations = 0
+            store.append_run_event(
+                tenant_id,
+                run_id,
+                SUBAGENT_EVENT_TYPE,
+                {
+                    "subagent_id": subagent.id,
+                    "previous": last_subagent_id,
+                    "phase": plan.current,
+                    "read_only": subagent.read_only,
+                    "token_budget": subagent.token_budget,
+                    "iteration": iteration,
+                },
+            )
+            last_subagent_id = subagent.id
+        subagent_iterations += 1
+        # Fail closed on a subagent that exhausted its own allowance: the next
+        # phase (or a human) picks up, instead of one profile burning the run.
+        if subagent_iterations > subagent.max_iterations:
+            status = STATUS_SUBAGENT_BUDGET
+            final_summary = (
+                f"subagent '{subagent.id}' exceeded its iteration budget "
+                f"({subagent.max_iterations})"
+            )
+            break
+        if subagent.token_budget:
+            spent = _budget_used(
+                store, tenant_id, run_id, subagent_budget_subject(subagent.id)
+            )
+            if spent >= subagent.token_budget:
+                status = STATUS_SUBAGENT_BUDGET
+                final_summary = (
+                    f"subagent '{subagent.id}' exhausted its token budget: "
+                    f"{spent} >= {subagent.token_budget}"
+                )
+                break
+        # The loop may only draw from the active profile's subset; the full
+        # catalog stays around to tell an invented tool from a denied one.
+        allowed_catalog = filter_catalog(subagent, catalog)
         if plan.current != last_phase:
             store.append_run_event(
                 tenant_id,
@@ -618,18 +714,20 @@ async def run_react_loop(
                     "previous": last_phase,
                     "progress": list(plan.progress),
                     "facts_total": plan.facts_total,
+                    "subagent_id": subagent.id,
                     "iteration": iteration,
                 },
             )
             last_phase = plan.current
         system_prompt = render_system_prompt(
-            catalog=catalog,
+            catalog=allowed_catalog,
             objective=objective,
             engagement_id=engagement_id,
             scope_summary=describe_scope(scope),
             history_summary=history_summary or "(sin historial previo)",
             facts_summary=facts_text,
             plan_summary=plan.render(),
+            subagent_summary=subagent.describe(),
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
         messages.extend(
@@ -642,7 +740,13 @@ async def run_react_loop(
         )
 
         response = await _complete_turn(llm_client, messages, config)
-        _record_response_tokens(store, tenant_id, run_id, response)
+        _record_response_tokens(
+            store,
+            tenant_id,
+            run_id,
+            response,
+            subject_ids=(BUDGET_SUBJECT_ID, subagent_budget_subject(subagent.id)),
+        )
         raw_response = str(getattr(response, "content", "") or "")
 
         try:
@@ -677,11 +781,7 @@ async def run_react_loop(
                 {"kind": "react.correction", "iteration": iteration, "run_id": run_id},
             )
             context.event("react.parse_error", iteration=iteration, error=str(exc)[:300])
-            _audit_step(
-                audit,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                agent_id=agent_id,
+            audit_step(
                 iteration=iteration,
                 action="parse_error",
                 decision="deny",
@@ -746,11 +846,7 @@ async def run_react_loop(
                     "run_id": run_id,
                 },
             )
-            _audit_step(
-                audit,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                agent_id=agent_id,
+            audit_step(
                 iteration=iteration,
                 action=action.action,
                 decision="allow",
@@ -782,11 +878,7 @@ async def run_react_loop(
             store.append_run_event(
                 tenant_id, run_id, "react.clarification_requested", {"question": question}
             )
-            _audit_step(
-                audit,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                agent_id=agent_id,
+            audit_step(
                 iteration=iteration,
                 action=action.action,
                 decision="allow",
@@ -801,11 +893,7 @@ async def run_react_loop(
             actions.append(
                 _action_entry(iteration, str(action.action), unsupported=True)
             )
-            _audit_step(
-                audit,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                agent_id=agent_id,
+            audit_step(
                 iteration=iteration,
                 action=str(action.action),
                 decision="deny",
@@ -834,13 +922,16 @@ async def run_react_loop(
             entry["tool_result"] = observation
             actions.append(entry)
             _inject_observation(
-                store, tenant_id, conversation_id, run_id, iteration, action, observation
+                store,
+                tenant_id,
+                conversation_id,
+                run_id,
+                iteration,
+                action,
+                observation,
+                subagent_id=active_subagent_id,
             )
-            _audit_step(
-                audit,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                agent_id=agent_id,
+            audit_step(
                 iteration=iteration,
                 action=action.action,
                 decision="deny",
@@ -852,6 +943,48 @@ async def run_react_loop(
                 final_summary = (
                     f"aborted after {consecutive_failures} consecutive tool failures "
                     f"(last: unknown tool '{action.tool_id}')"
+                )
+                break
+            continue
+
+        # A tool that exists but sits outside the active subagent's subset is
+        # refused exactly like an invented one (fail-closed) and audited with the
+        # profile that refused it. The full catalog decides "invented"; the subset
+        # decides "not mine".
+        if not subagent.allows(action.tool_id):
+            observation = {
+                "success": False,
+                "error": (
+                    f"tool '{action.tool_id}' is outside subagent '{subagent.id}' subset"
+                ),
+                "subagent_id": subagent.id,
+                "available_tools": sorted(allowed_catalog),
+            }
+            consecutive_failures += 1
+            entry["tool_result"] = observation
+            actions.append(entry)
+            _inject_observation(
+                store,
+                tenant_id,
+                conversation_id,
+                run_id,
+                iteration,
+                action,
+                observation,
+                subagent_id=active_subagent_id,
+            )
+            audit_step(
+                iteration=iteration,
+                action=action.action,
+                decision="deny",
+                tool_id=action.tool_id,
+                reason="subagent_tool_denied",
+            )
+            if consecutive_failures >= MAX_CONSECUTIVE_TOOL_FAILURES:
+                status = STATUS_FAILED
+                final_summary = (
+                    f"aborted after {consecutive_failures} consecutive tool failures "
+                    f"(last: '{action.tool_id}' outside subagent '{subagent.id}')"
                 )
                 break
             continue
@@ -877,13 +1010,16 @@ async def run_react_loop(
                 entry["tool_result"] = denial
                 actions.append(entry)
                 _inject_observation(
-                    store, tenant_id, conversation_id, run_id, iteration, action, denial
+                    store,
+                    tenant_id,
+                    conversation_id,
+                    run_id,
+                    iteration,
+                    action,
+                    denial,
+                    subagent_id=active_subagent_id,
                 )
-                _audit_step(
-                    audit,
-                    tenant_id=tenant_id,
-                    run_id=run_id,
-                    agent_id=agent_id,
+                audit_step(
                     iteration=iteration,
                     action=action.action,
                     decision="deny",
@@ -911,7 +1047,14 @@ async def run_react_loop(
             entry["tool_result"] = observation
             actions.append(entry)
             _inject_observation(
-                store, tenant_id, conversation_id, run_id, iteration, action, observation
+                store,
+                tenant_id,
+                conversation_id,
+                run_id,
+                iteration,
+                action,
+                observation,
+                subagent_id=active_subagent_id,
             )
             store.append_run_event(
                 tenant_id,
@@ -919,11 +1062,7 @@ async def run_react_loop(
                 "react.scope_violation",
                 {"iteration": iteration, "tool_id": action.tool_id, "error": str(exc)[:500]},
             )
-            _audit_step(
-                audit,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                agent_id=agent_id,
+            audit_step(
                 iteration=iteration,
                 action=action.action,
                 decision="deny",
@@ -961,13 +1100,16 @@ async def run_react_loop(
         entry["tool_result"] = observation
         actions.append(entry)
         _inject_observation(
-            store, tenant_id, conversation_id, run_id, iteration, action, observation
+            store,
+            tenant_id,
+            conversation_id,
+            run_id,
+            iteration,
+            action,
+            observation,
+            subagent_id=active_subagent_id,
         )
-        _audit_step(
-            audit,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            agent_id=agent_id,
+        audit_step(
             iteration=iteration,
             action=action.action,
             decision="allow" if observation.get("success") else "deny",
@@ -995,6 +1137,7 @@ async def run_react_loop(
         iterations=iteration,
         conversation_id=conversation_id,
         findings_count=len(findings),
+        subagent_id=last_subagent_id,
     )
     return ReActResult(
         status=status,
@@ -1005,6 +1148,7 @@ async def run_react_loop(
         actions=actions,
         question=question,
         plan=last_plan.to_dict() if last_plan is not None else None,
+        subagent_id=last_subagent_id,
     )
 
 
@@ -1016,6 +1160,8 @@ def _inject_observation(
     iteration: int,
     action: ReActAction,
     observation: dict[str, Any],
+    *,
+    subagent_id: str | None = None,
 ) -> None:
     """Feed a tool outcome (success or error) back to the model as history.
 
@@ -1047,5 +1193,6 @@ def _inject_observation(
             "truncated": truncated,
             "injection_signals": scan_untrusted_text(content),
             "run_id": run_id,
+            **({"subagent_id": subagent_id} if subagent_id else {}),
         },
     )

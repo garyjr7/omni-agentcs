@@ -134,11 +134,22 @@ def execute_install(plan: InstallPlan, *, dry_run: bool = False) -> InstallResul
     )
 
 
-def update_shell_path(installs_to: str) -> bool:
+def update_shell_path(
+    installs_to: str, *, home: Path | None = None, shell: str | None = None
+) -> bool:
+    """Append the install directory to the user's shell rc file, idempotently.
+
+    The target rc file depends on the login shell (``.zshrc`` for zsh, otherwise
+    ``.bashrc``) inside ``home``. Both ``home`` and ``shell`` default to the real
+    environment; they are injectable so callers and tests can pin the target rc
+    file regardless of the host's ``$SHELL``.
+    """
     directory = str(Path(installs_to).expanduser().resolve().parent)
     if any(c in directory for c in "\n\r\x00"):
         raise ValueError("invalid installation path")
-    rc = Path.home() / (".zshrc" if Path(os.getenv("SHELL", "")).name == "zsh" else ".bashrc")
+    base = Path(home) if home is not None else Path.home()
+    shell_name = Path(shell if shell is not None else os.getenv("SHELL", "")).name
+    rc = base / (".zshrc" if shell_name == "zsh" else ".bashrc")
     line = f'export PATH={shlex.quote(directory)}:"$PATH" # omni provisioner'
     text = rc.read_text() if rc.exists() else ""
     changed = line not in text.splitlines()

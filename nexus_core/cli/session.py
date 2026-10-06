@@ -1068,6 +1068,23 @@ class OmniSession:
         )
         return result
 
+    def secure_input(self, prompt: str) -> str:
+        """Read a secret: masked, never echoed, never written to history.
+
+        Routes through, in order: the operator-injected ``input_reader`` (tests
+        and embedded clients), the TUI's own masked prompt, and finally
+        ``getpass`` for a bare ``--no-tui`` REPL. Centralising it here keeps
+        ``getpass`` -- which fights the TUI for the terminal -- out of the meta
+        commands.
+        """
+        if self.input_reader is not None:
+            return str(self.input_reader(prompt))
+        if self._tui.use_tui:
+            return str(self._tui.prompt_secret(prompt))
+        import getpass
+
+        return getpass.getpass(prompt)
+
     # ----------------------------------------------------------------- repl
     @routed
     def run_repl(self) -> None:

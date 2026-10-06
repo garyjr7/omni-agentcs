@@ -30,6 +30,10 @@ REGLAS:
   continúa con el objetivo del engagement.
 - Solo puedes invocar herramientas del catálogo. Si necesitas una que no
   existe, respondes con "task_complete" y explicas qué faltó.
+- SUBAGENTE ACTIVO: cada fase la ejecuta un subagente con un subconjunto de
+  tools. Solo puedes invocar tools de ESE subconjunto; cualquier otra será
+  denegada y auditada. Si crees necesitar una tool fuera de tu subconjunto,
+  cierra la fase con "task_complete" y explica qué falta en vez de insistir.
 - El scope del engagement es SAGRADO. Si el scope validation falla, no
   insistas con otro target — reporta y para.
 - Antes de cada acción de alto ruido (nivel high), considera alternativas
@@ -109,6 +113,9 @@ OBJETIVO DEL USUARIO:
 
 PLAN VIGENTE:
 {plan_summary}
+
+SUBAGENTE ACTIVO:
+{subagent_summary}
 
 CONTEXTO DE SESIÓN:
 - Engagement ID: {engagement_id}
@@ -219,6 +226,7 @@ def render_system_prompt(
     history_summary: str = "(sin historial previo)",
     facts_summary: str = "(sin hechos registrados)",
     plan_summary: str = "(sin plan)",
+    subagent_summary: str = "(sin subagente)",
 ) -> str:
     """Fill :data:`REACT_SYSTEM_PROMPT` for one iteration."""
     catalog_text = render_tool_catalog(catalog)
@@ -230,6 +238,7 @@ def render_system_prompt(
         history_summary=history_summary,
         facts_summary=facts_summary or "(sin hechos registrados)",
         plan_summary=plan_summary or "(sin plan)",
+        subagent_summary=subagent_summary or "(sin subagente)",
     )
 
 

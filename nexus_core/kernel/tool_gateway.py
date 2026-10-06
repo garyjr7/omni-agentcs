@@ -28,11 +28,14 @@ class ToolGateway:
         approvals: ApprovalService | None = None,
         scope_validator: Callable[[RunContext, ToolDefinition, Dict[str, Any]], None]
         | None = None,
+        roe_validator: Callable[[RunContext, ToolDefinition, Dict[str, Any]], None]
+        | None = None,
     ):
         self.policy = policy
         self.audit = audit
         self.approvals = approvals
         self.scope_validator = scope_validator
+        self.roe_validator = roe_validator
         self._definitions: Dict[str, ToolDefinition] = {}
         self._handlers: Dict[str, ToolHandler] = {}
 
@@ -102,6 +105,27 @@ class ToolGateway:
                             decision="deny",
                         )
                         raise
+            if self.roe_validator is not None:
+                # Rules of Engagement run after the signed scope and can only
+                # narrow it: the kill switch, a forbidden target or a rate limit
+                # denies the call before policy, approval or execution.
+                try:
+                    self.roe_validator(context, definition, arguments)
+                except Exception as exc:
+                    self.audit.append(
+                        tenant_id=context.tenant_id,
+                        trace_id=context.trace_id,
+                        actor_id=context.identity.subject_id,
+                        action="roe.denied",
+                        resource_type="tool",
+                        resource_id=tool_id,
+                        payload={
+                            "reason": type(exc).__name__,
+                            "detail": str(exc)[:500],
+                        },
+                        decision="deny",
+                    )
+                    raise
             decision = self.policy.decide(
                 context.identity,
                 "execute:tool",
