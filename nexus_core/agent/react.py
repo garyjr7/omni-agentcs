@@ -27,6 +27,7 @@ from nexus_core.llm.abstraction import LLMMessage
 from nexus_core.scope import ScopeViolation
 
 from . import memory
+from .injection import render_for_model, scan_untrusted_text
 from .parser import (
     ACTION_REQUEST_CLARIFICATION,
     ACTION_TASK_COMPLETE,
@@ -409,10 +410,16 @@ async def _complete_turn(llm_client: Any, messages: list[Any], config: ReActConf
     from nexus_core.llm.abstraction import LLMProvider, LLMResponse
 
     text = "".join(collected)
+    # Never claim a provider we cannot prove: report the client's own configured
+    # provider (the previous code hardcoded GROQ regardless of the real one).
+    # ``FAKE`` marks a synthesized response whose origin is unknown.
+    provider = getattr(getattr(llm_client, "config", None), "provider", None)
+    if not isinstance(provider, LLMProvider):
+        provider = LLMProvider.FAKE
     return LLMResponse(
         content=text,
         model=str(getattr(getattr(llm_client, "config", None), "model", "") or ""),
-        provider=LLMProvider.GROQ,
+        provider=provider,
         tokens_output=max(1, len(text.split())),
     )
 
@@ -626,7 +633,9 @@ async def run_react_loop(
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
         messages.extend(
-            LLMMessage(role=str(message["role"]), content=str(message["content"]))
+            # Tool output is untrusted data: observation messages are wrapped in
+            # the untrusted-output delimiters at the model boundary (H1).
+            LLMMessage(role=str(message["role"]), content=render_for_model(message))
             for message in history
             if message.get("role") in {"user", "assistant"}
             and memory.message_kind(message) not in memory.COMPACTION_KINDS
@@ -1008,7 +1017,14 @@ def _inject_observation(
     action: ReActAction,
     observation: dict[str, Any],
 ) -> None:
-    """Feed a tool outcome (success or error) back to the model as history."""
+    """Feed a tool outcome (success or error) back to the model as history.
+
+    The stored ``content`` stays pure JSON (the report extractor and the TUI read
+    it back); the untrusted-output delimiters are applied when the message is
+    handed to the model (see :func:`nexus_core.agent.injection.render_for_model`).
+    Suspicious phrases are flagged here and persisted as ``injection_signals`` so
+    the boundary can warn the model without ever hiding the raw evidence.
+    """
     content, truncated = _truncate_observation(
         {"tool_id": action.tool_id, **observation}
     )
@@ -1029,6 +1045,7 @@ def _inject_observation(
                 if key not in {"evidence", "output"}
             },
             "truncated": truncated,
+            "injection_signals": scan_untrusted_text(content),
             "run_id": run_id,
         },
     )

@@ -402,7 +402,20 @@ class OllamaClient(BaseLLMClient):
         self.base_url = self.config.base_url or "http://localhost:11434"
         self.client = httpx.AsyncClient(base_url=self.base_url, timeout=self.config.timeout)
 
-    async def is_available(self) -> bool:
+    def is_available(self) -> bool:
+        """True when an Ollama endpoint is configured.
+
+        This is synchronous on purpose: it matches
+        :meth:`BaseLLMClient.is_available`, which callers use as a plain boolean.
+        Reachability is not probed here because a blocking HTTP call must never
+        run on the event loop; ``complete``/``stream`` surface an unreachable
+        server as :class:`NexusLLMError` instead. Use :meth:`ping` when an async
+        caller explicitly wants a reachability check.
+        """
+        return bool(self.base_url)
+
+    async def ping(self) -> bool:
+        """Async reachability probe against ``/api/tags`` (never raises)."""
         try:
             response = await self.client.get("/api/tags", timeout=5)
             return response.status_code == 200

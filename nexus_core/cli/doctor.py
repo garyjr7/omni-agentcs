@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from nexus_core.config.loader import config_exists, effective_db_path
 from nexus_core.config.schema import DEFAULT_MODELS, PROVIDERS, model_env_name
+from nexus_core.kernel.sandbox import sandbox_path, tool_bin_dir
 from nexus_core.kernel.sandbox_modes import active_mode, guarantees_for
 from nexus_core.provisioner.detector import check_all_tools, detect_managers, detect_os
 from nexus_core.provisioner.installer import probe_command
@@ -104,6 +105,8 @@ def run_doctor(paths, config, *, as_json=False) -> int:
         },
         "sandbox": {
             "mode": active_mode().value,
+            "path": sandbox_path(),
+            "tool_bin_dir": str(tool_bin_dir()) if tool_bin_dir() else None,
             **guarantees_for().to_dict(),
         },
         "managers": list(detect_managers()),
@@ -159,6 +162,8 @@ def run_doctor(paths, config, *, as_json=False) -> int:
                     )
             elif key == "sandbox":
                 print(f"  modo:              {value['mode']}")
+                print(f"  PATH:              {value['path']}")
+                print(f"  bin de usuario:    {value['tool_bin_dir'] or '(no resoluble)'}")
                 print(f"  aislamiento FS:    {'sí' if value['filesystem_isolation'] else 'no'}")
                 print(f"  aislamiento red:   {'sí' if value['network_isolation'] else 'no'}")
                 print(f"  process isolation: {'sí' if value['process_isolation'] else 'no'}")

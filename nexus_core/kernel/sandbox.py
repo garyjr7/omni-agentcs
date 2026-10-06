@@ -30,6 +30,44 @@ SANDBOX_BASE_ENV: dict[str, str] = {
     "TZ": "UTC",
 }
 
+#: Overrides the extra directory prepended to the sandbox PATH.
+TOOL_BIN_DIR_ENV = "NEXUS_TOOL_BIN_DIR"
+
+
+def tool_bin_dir() -> Path | None:
+    """Directory holding user-installed tools (``pipx`` / ``pip --user``).
+
+    ``NEXUS_TOOL_BIN_DIR`` overrides the default ``~/.local/bin``. Returns
+    ``None`` when no home directory can be resolved.
+    """
+    override = os.getenv(TOOL_BIN_DIR_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    try:
+        return Path.home() / ".local" / "bin"
+    except (RuntimeError, OSError):  # pragma: no cover - no home resolvable
+        return None
+
+
+def sandbox_path(base: str | None = None) -> str:
+    """PATH of sandboxed children: the minimal base **plus** the user tool dir.
+
+    The ephemeral HOME keeps tool config out of the real home, but the
+    *executables* installed by ``pipx``/``pip --user`` live in the operator's
+    ``~/.local/bin``. Without it, a binary the detector calls "present" is not
+    runnable from the sandbox (audit H3). A non-existent directory on PATH is
+    harmless, so it is always prepended for a deterministic result.
+    """
+    resolved = base if base is not None else SANDBOX_BASE_ENV["PATH"]
+    extra = tool_bin_dir()
+    if extra is None:
+        return resolved
+    text = str(extra)
+    entries = resolved.split(":")
+    if text in entries:
+        return resolved
+    return ":".join([text, *entries])
+
 
 @dataclass(frozen=True)
 class SandboxResult:
@@ -159,6 +197,9 @@ class LocalSandbox:
             else self.sandbox_home
         )
         env = dict(SANDBOX_BASE_ENV)
+        # Include the operator's user bin dir so tools installed by pipx are
+        # runnable (audit H3); the ephemeral HOME above is set afterwards.
+        env["PATH"] = sandbox_path()
         env["HOME"] = str(resolved_home)
         env["XDG_CONFIG_HOME"] = str(resolved_home / ".config")
         env["XDG_CACHE_HOME"] = str(resolved_home / ".cache")

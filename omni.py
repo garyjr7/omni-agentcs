@@ -18,6 +18,12 @@ def main(argv=None) -> int:
     configure_logging()
     # No files, wizard, or environment mutation at import time.
     load_dotenv(ROOT / ".env", override=False)
+    # Fill API keys from the user's secret store (OS keyring, or a 0600 file)
+    # for any variable the shell/.env left unset, so keys need not live in clear
+    # text in .env (audit H2). Explicit values always win.
+    from nexus_core.config.secrets import load_secrets_into_env
+
+    load_secrets_into_env()
     # Respect a log-level preference from .env before onboarding or clients.
     configure_logging()
     from nexus_core.cli.main import build_parser, main as cli_main

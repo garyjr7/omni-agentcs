@@ -19,6 +19,11 @@ def durable_tool_definitions(
     Importa handlers perezosamente para no acoplar el kernel al paquete
     tools en tiempo de import. ``tenant_id`` fija el tenant dueño de las
     definiciones (el runtime pasa el tenant de la task).
+
+    Los builtins de abajo son la base; encima se fusionan las herramientas
+    auto-registradas con ``@register_tool`` / entry-points ``nexus.tools``
+    (H7), de modo que un plugin puede añadir una tool **sin tocar este módulo**.
+    Un builtin gana salvo que el registro pida ``replace=True``.
     """
     from .handlers.ffuf import ffuf_definition, ffuf_handler
     from .handlers.httpx import httpx_definition, httpx_handler
@@ -208,6 +213,17 @@ def durable_tool_definitions(
             playbook_handler,
         ),
     }
+    # Additive overlay: decorator/entry-point registrations never shadow a
+    # builtin unless they explicitly opt in. Discovery is cached and non-fatal.
+    from .registration import discovered_registrations
+
+    for tool_id, registration in discovered_registrations().items():
+        if tool_id in catalog and not registration.replace:
+            continue
+        catalog[tool_id] = (
+            registration.resolve_definition(tenant_id),
+            registration.handler,
+        )
     return catalog
 
 

@@ -7,6 +7,7 @@ audit and the persisted conversation are never modified by a meta command.
 
 from __future__ import annotations
 
+import getpass
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -1193,6 +1194,64 @@ def cmd_implants(session: "OmniSession", args: list[str]) -> None:
         render.write(f"  profile {profile.get('Name') or profile.get('name') or '?'}")
 
 
+def cmd_secrets(session: "OmniSession", args: list[str]) -> None:
+    """Gestiona secretos (API keys) fuera del .env: list|set|rotate|delete|import-env."""
+    from nexus_core.config.secrets import SecretStore, import_from_env
+
+    store = SecretStore()
+    action = (args[0].lower() if args else "list")
+    if action in {"list", "ls"}:
+        render.write(render.paint(f"backend de secretos: {store.backend_name}", render.BOLD))
+        names = store.names()
+        if not names:
+            render.write("  (sin secretos guardados)")
+        for name in names:
+            render.write(f"  {name}")
+        render.write("  usa /secrets set NOMBRE (el valor se pide oculto, nunca se imprime)")
+        return
+    if action in {"set", "rotate"}:
+        if len(args) < 2:
+            render.render_error("uso: /secrets set NOMBRE")
+            return
+        name = args[1]
+        value = getpass.getpass(f"valor para {name}: ")
+        if not value:
+            render.render_error("valor vacío; nada guardado")
+            return
+        store.set(name, value)
+        render.write(render.paint(f"✓ {name} guardado en {store.backend_name}", render.GREEN))
+        render.write(
+            "  si la clave estuvo expuesta, considérala comprometida: rota el valor "
+            "en el proveedor y reinicia los procesos que la leyeron."
+        )
+        return
+    if action in {"delete", "rm"}:
+        if len(args) < 2:
+            render.render_error("uso: /secrets delete NOMBRE")
+            return
+        if store.delete(args[1]):
+            render.write(f"✓ {args[1]} eliminado del store")
+        else:
+            render.write(f"  {args[1]} no estaba guardado")
+        return
+    if action == "import-env":
+        imported = import_from_env()
+        if not imported:
+            render.write("  no había claves conocidas en el entorno para importar")
+            return
+        render.write(
+            render.paint(
+                f"✓ importadas {len(imported)} claves al store ({store.backend_name}):",
+                render.GREEN,
+            )
+        )
+        for name in imported:
+            render.write(f"  {name}")
+        render.write("  ahora puedes borrarlas del .env; el store tiene prioridad sobre él.")
+        return
+    render.render_error(f"acción desconocida: {action} (usa list|set|rotate|delete|import-env)")
+
+
 def cmd_help(session: "OmniSession", args: list[str]) -> None:
     """Muestra esta ayuda."""
     render.write(render.paint("Comandos disponibles:", render.BOLD))
@@ -1237,6 +1296,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/chat": cmd_chat,
     "/trust": cmd_trust,
     "/status": cmd_status,
+    "/secrets": cmd_secrets,
     "/exploit": cmd_exploit,
     "/sliver": cmd_sliver,
     "/implants": cmd_implants,

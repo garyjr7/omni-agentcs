@@ -12,9 +12,12 @@ from unittest import mock
 import pytest
 
 from nexus_core.kernel.sandbox import (
+    SANDBOX_BASE_ENV,
     SANDBOX_HOME_DIRNAME,
     LocalSandbox,
     OCISandbox,
+    sandbox_path,
+    tool_bin_dir,
 )
 
 SKIP_WITHOUT_PYTHON3 = pytest.mark.skipif(
@@ -70,12 +73,30 @@ def test_local_sandbox_env_does_not_leak_real_home(tmp_path, monkeypatch):
     assert env["HOME"].startswith(str(tmp_path))
 
 
-def test_sandbox_env_keeps_the_minimal_base_variables(tmp_path):
+def test_sandbox_env_keeps_the_minimal_base_variables(tmp_path, monkeypatch):
+    monkeypatch.delenv("NEXUS_TOOL_BIN_DIR", raising=False)
     env = LocalSandbox(tmp_path)._sandbox_env(None)
-    assert env["PATH"] == "/usr/local/bin:/usr/bin:/bin"
+    # PATH keeps the minimal base and adds the user tool dir (audit H3).
+    assert env["PATH"].endswith(SANDBOX_BASE_ENV["PATH"])
     assert env["NEXUS_SANDBOX"] == "1"
     assert env["TZ"] == "UTC"
     assert "PYTHONPATH" not in env and "LD_PRELOAD" not in env
+
+
+def test_sandbox_path_prepends_the_user_bin_dir(monkeypatch):
+    monkeypatch.setenv("NEXUS_TOOL_BIN_DIR", "/opt/tools/bin")
+    assert sandbox_path() == "/opt/tools/bin:" + SANDBOX_BASE_ENV["PATH"]
+
+
+def test_sandbox_path_is_idempotent_when_already_present(monkeypatch):
+    monkeypatch.setenv("NEXUS_TOOL_BIN_DIR", "/usr/bin")
+    assert sandbox_path() == SANDBOX_BASE_ENV["PATH"]
+
+
+def test_sandbox_path_defaults_to_local_bin(monkeypatch):
+    monkeypatch.delenv("NEXUS_TOOL_BIN_DIR", raising=False)
+    assert tool_bin_dir() == Path.home() / ".local" / "bin"
+    assert sandbox_path().startswith(str(Path.home() / ".local" / "bin") + ":")
 
 
 def test_resolve_workspace_blocks_sandbox_home_traversal(tmp_path):
