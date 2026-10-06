@@ -75,13 +75,12 @@ def test_repl_sends_plain_lines_to_the_react_loop(session, monkeypatch, capsys):
     assert "(sin engagement activo)" in capsys.readouterr().out
 
 
-def test_prompt_shows_engagement_name(tmp_path):
+def test_prompt_is_minimal_and_engagement_stays_durable(tmp_path):
     store = ControlStore(tmp_path / "prompt.db")
     store.initialize()
     plain = OmniSession(store=store, tenant_id="system")
-    assert "(sin engagement)" in plain.prompt
-    assert plain.prompt.startswith("┌──(OmniAgentCS)─[")
-    assert plain.prompt.endswith("└─$ ")
+    # The engagement lives in the compact header, not the prompt.
+    assert plain.prompt == "└─$ "
 
     scope = EngagementStore(store).create(
         EngagementScope(
@@ -99,5 +98,5 @@ def test_prompt_shows_engagement_name(tmp_path):
         )
     )
     named = OmniSession(store=store, tenant_id="system", engagement=scope)
-    assert named.prompt == "┌──(OmniAgentCS)─[scanme-test]\n└─$ "
+    assert named.prompt == "└─$ "
     assert named.engagement_id == "eng-prompt"

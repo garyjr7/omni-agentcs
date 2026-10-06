@@ -83,8 +83,8 @@ def format_tool_invocation(tool_id, arguments):
         # Other handlers may transform arguments. Display the durable request
         # honestly rather than inventing a shell command they may not execute.
         text = str(tool_id) + " " + json.dumps(args, ensure_ascii=False, default=str)
-    # Commands run in aqua, like a shell prompt; the tool tag stays dim.
-    return f"{AQUA}${RESET}{AQUA_DIM} {tool_prefix(tool_id)}{RESET} {AQUA}{_line(text)}{RESET}"
+    # Tool calls: gear glyph in aqua, dim tool tag, aqua command line.
+    return f"{AQUA}⚙{RESET}{AQUA_DIM} {tool_prefix(tool_id)}{RESET} {AQUA}{_line(text)}{RESET}"
 
 
 def output_text(result):

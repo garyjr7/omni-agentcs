@@ -1,6 +1,17 @@
-# NEXUS PRO — Changelog
+# OmniAgentCS — Changelog
 
-## v2.0.0 — 2026-03-19 (ACTUAL)
+## v3.0.0 — 2026-10-02 (ACTUAL)
+
+Rename del producto a **OmniAgentCS** (BAJIOWARE). El núcleo de gobernanza se
+mantiene: alcance firmado con HMAC, cadena de auditoría encadenada por hash,
+aprobaciones durables y la regla de oro "un modelo propone, nunca afirma éxito".
+Cadena ofensiva completa (recon → explotación → post-explotación → C2 Sliver →
+reporte), planner determinista por fases y playbooks. Interfaz de terminal con
+cabecera compacta de marca BAJIOWARE / Team Red.
+
+---
+
+## v2.0.0 — 2026-03-19 (lineage NEXUS)
 
 ### Nuevas funcionalidades
 - **Junior Agent** autónomo con GPT-4o — ejecuta objetivos en lenguaje natural

@@ -68,7 +68,8 @@ def test_banner_does_not_show_fake_when_real_available(groq_env):
     ):
         session._show_banner()
     output = buffer.getvalue()
-    assert "groq/openai/gpt-oss-120b" in output
+    # The model moved to the status bar, so the compact header must not
+    # advertise the stale fake provider anywhere.
     assert "fake" not in output
 
 

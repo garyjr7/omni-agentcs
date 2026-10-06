@@ -494,7 +494,9 @@ class TuiSession:
     def _card_text(self, card: dict[str, Any]) -> str:
         from .stream import render_tool_result
 
-        return render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded"))) + "\n"
+        # A trailing blank line gives each result room to breathe, so turns are
+        # visually separated instead of a flat wall of output.
+        return render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded"))) + "\n\n"
 
     def _segment_text(self, segment: dict[str, Any]) -> str:
         if segment.get("kind") == "card":

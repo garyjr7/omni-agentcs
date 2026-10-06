@@ -54,10 +54,57 @@ def test_status_renders_elapsed_human_hours():
 
 
 def test_status_truncates_to_width():
-    state = StatusState(engagement_name="界" * 20)
+    # The provider is high priority, so it is kept and cell-truncated at 11 cols.
+    state = StatusState(provider_model="界" * 20)
     text = fragment_list_to_text(render_status_bar(state, width=11))
     assert get_cwidth(text) <= 11
     assert text == "界" * 5
+
+
+def test_status_drops_engagement_first_when_narrow():
+    state = StatusState(engagement_name="very-long-engagement-name", provider_model="groq/m")
+    text = fragment_list_to_text(render_status_bar(state, width=16))
+    assert "groq/m" in text
+    assert "very-long-engagement-name" not in text
+
+
+def _alert_and_phase_state() -> StatusState:
+    """A dense state with an alert, a phase and every droppable segment."""
+    return StatusState(
+        trust_mode=True,
+        plan_phase="Recon",
+        plan_progress="1/5",
+        provider_model="groq/" + "x" * 40,
+        tokens_input=123_456,
+        tokens_output=7_890,
+        cost_usd=1.2345,
+        facts_count=42,
+        engagement_name="very-long-engagement-name",
+    )
+
+
+def test_status_alert_and_phase_survive_every_width():
+    """Property: alert (TRUST) and phase are never dropped, only truncated."""
+    state = _alert_and_phase_state()
+    minimum = get_cwidth("TRUST · ▸ Recon 1/5")  # both protected segments fit
+    for width in range(minimum, 121):
+        text = fragment_list_to_text(render_status_bar(state, width=width))
+        assert "TRUST" in text, f"alert dropped at width={width}"
+        assert "▸ Recon 1/5" in text, f"phase dropped at width={width}"
+
+
+def test_status_never_exceeds_width_for_any_width():
+    state = _alert_and_phase_state()
+    for width in range(0, 201):
+        text = fragment_list_to_text(render_status_bar(state, width=width))
+        assert get_cwidth(text) <= width, f"overflow at width={width}"
+
+
+def test_status_drops_droppable_before_protected():
+    state = StatusState(trust_mode=True, plan_phase="Recon", provider_model="p" * 60)
+    text = fragment_list_to_text(render_status_bar(state, width=20))
+    assert "TRUST" in text and "▸ Recon" in text
+    assert "pppp" not in text
 
 
 def test_status_plain_version_no_ansi():

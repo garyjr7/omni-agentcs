@@ -26,15 +26,15 @@ def test_banner_render_unchanged_in_fallback(monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_prompt_string_unchanged():
+def test_prompt_is_minimal_with_contextual_chips():
     render.set_color_enabled(False)
     try:
         session = OmniSession(store=None, use_tui=False)
-        assert session.prompt == "┌──(OmniAgentCS)─[(sin engagement)]\n└─$ "
+        assert session.prompt == "└─$ "
         session.trust_mode = True
         session.active_session_uuid = "abc"
         session.active_session_info = {"type": "shell"}
-        assert session.prompt == "┌──(OmniAgentCS)─[(sin engagement)]─[TRUST MODE]─[session abc/shell]\n└─$ "
+        assert session.prompt == "[TRUST MODE]─[session abc/shell]\n└─$ "
     finally:
         render.set_color_enabled(True)
 

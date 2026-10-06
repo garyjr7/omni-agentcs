@@ -16,7 +16,7 @@ from nexus_core.cli.session import OmniSession
 
 pytestmark = pytest.mark.usefixtures("onboarding_env")
 
-MARKER = "A G E N T C S"
+MARKER = "BAJIOWARE"
 
 
 class _Feed:
@@ -84,8 +84,8 @@ def _run_repl(session: OmniSession) -> str:
 def test_banner_shown_on_repl_start():
     output = _run_repl(_session())
     assert MARKER in output
-    assert "OmniAgentCS v" in output
-    assert "audit-chain" in output
+    assert "OMNIAGENTCS" in output
+    assert "audit" in output
 
 
 def test_banner_not_shown_when_env_flag_set(monkeypatch):
@@ -120,7 +120,7 @@ def test_no_color_flag_renders_plain_ascii_banner():
         session._show_banner()
     output = buffer.getvalue()
     assert MARKER in output
-    assert "audit-chain ok" in output
+    assert "audit ok" in output
     assert "\033[" not in output
 
 
@@ -135,7 +135,25 @@ def test_banner_survives_broken_tool_catalog():
     ):
         session.run_repl()
     assert MARKER in buffer.getvalue()
-    assert "0 tools" in buffer.getvalue()
+
+
+def test_about_and_banner_flags_parse():
+    from nexus_core.cli.main import build_parser
+
+    assert build_parser().parse_args(["--about"]).about is True
+    assert build_parser().parse_args(["--banner"]).banner is True
+    assert build_parser().parse_args([]).about is False
+    assert build_parser().parse_args([]).banner is False
+
+
+def test_render_about_prints_legacy_art(capsys):
+    from nexus_core.cli.main import _render_about, build_parser
+
+    args = build_parser().parse_args(["--about", "--no-color"])
+    _render_about([], args)
+    output = capsys.readouterr().out
+    assert "A G E N T C S" in output
+    assert "audit-chain ok" in output
 
 
 def test_no_banner_in_objective_mode():
