@@ -731,26 +731,57 @@ def cmd_expand(session: "OmniSession", args: list[str]) -> None:
     )
 
 
+#: Formats ``nexus.report.generate`` accepts (kept in sync with the handler).
+REPORT_FORMATS = ("markdown", "html", "both", "sarif")
+REPORT_FORMAT_USAGE = "|".join(REPORT_FORMATS)
+
+
 def cmd_report(session: "OmniSession", args: list[str]) -> None:
-    """Genera el reporte del engagement: /report [export <dir>] [--llm-cvss]."""
+    """Genera el reporte: /report [export <dir>] [--llm-cvss] [--format F].
+
+    ``--format sarif`` emite SARIF 2.1.0 (GitHub Advanced Security, SonarQube,
+    VS Code SARIF Viewer); ``--format`` también aplica a ``export``.
+    """
+    args = list(args)
+    output_format = "both"
+    if "--format" in args:
+        index = args.index("--format")
+        if index + 1 >= len(args) or args[index + 1].lower() not in REPORT_FORMATS:
+            render.render_error(
+                f"uso: /report [export <dir>] [--llm-cvss] [--format {REPORT_FORMAT_USAGE}]"
+            )
+            return
+        output_format = args[index + 1].lower()
+        del args[index:index + 2]
+    llm_cvss = "--llm-cvss" in args
+    args = [item for item in args if item != "--llm-cvss"]
     if not args:
-        _report_generate(session, [], llm_cvss=False)
+        _report_generate(session, llm_cvss=llm_cvss, output_format=output_format)
         return
     verb = str(args[0]).lower()
     if verb == "export":
         if len(args) < 2:
-            render.render_error("uso: /report export <directorio>")
+            render.render_error(
+                f"uso: /report export <directorio> [--llm-cvss] [--format {REPORT_FORMAT_USAGE}]"
+            )
             return
-        _report_export(session, args[1], llm_cvss="--llm-cvss" in args)
+        _report_export(
+            session, args[1], llm_cvss=llm_cvss, output_format=output_format
+        )
         return
-    if verb == "--llm-cvss":
-        _report_generate(session, [], llm_cvss=True)
-        return
-    render.render_error(f"subcomando desconocido: {args[0]!r} (usa /report, /report export <dir>)")
+    render.render_error(
+        f"subcomando desconocido: {args[0]!r} "
+        "(usa /report, /report export <dir>, /report --format sarif)"
+    )
 
 
-def _report_arguments(session: "OmniSession", output_dir: str | None, llm_cvss: bool) -> dict:
-    arguments: dict = {"engagement_id": session.engagement_id, "format": "both"}
+def _report_arguments(
+    session: "OmniSession",
+    output_dir: str | None,
+    llm_cvss: bool,
+    output_format: str = "both",
+) -> dict:
+    arguments: dict = {"engagement_id": session.engagement_id, "format": output_format}
     if output_dir:
         arguments["output_dir"] = output_dir
     if llm_cvss:
@@ -778,13 +809,17 @@ def _run_report_tool(session: "OmniSession", arguments: dict) -> dict | None:
     return tool_result
 
 
-def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool) -> None:
+def _report_generate(
+    session: "OmniSession", *, llm_cvss: bool, output_format: str = "both"
+) -> None:
     """Generate the report for the active engagement and print the summary."""
     if session.engagement is None:
         render.render_error("no hay engagement activo (usa /scope)")
         return
     render.write(f"Generating report for engagement {session.engagement.name}...")
-    result = _run_report_tool(session, _report_arguments(session, None, llm_cvss))
+    result = _run_report_tool(
+        session, _report_arguments(session, None, llm_cvss, output_format)
+    )
     if result is None:
         return
     output = result.get("output") or {}
@@ -830,6 +865,7 @@ def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool
         ("report_path_md", "report.md"),
         ("report_path_html", "report.html"),
         ("report_path_json", "report.json"),
+        ("report_path_sarif", "report.sarif"),
     ):
         if output.get(key):
             render.write(f"  - {name}")
@@ -853,14 +889,22 @@ def _report_generate(session: "OmniSession", extra: list[str], *, llm_cvss: bool
             render.render_status("No se pudo abrir la vista Markdown; consulta el artefacto generado.")
 
 
-def _report_export(session: "OmniSession", directory: str, *, llm_cvss: bool) -> None:
+def _report_export(
+    session: "OmniSession",
+    directory: str,
+    *,
+    llm_cvss: bool,
+    output_format: str = "both",
+) -> None:
     """Write the report plus a verifiable manifest to a deliverable directory."""
     if session.engagement is None:
         render.render_error("no hay engagement activo (usa /scope)")
         return
     target = Path(directory).expanduser()
     render.write(f"Exporting {session.engagement.name} report to {target}...")
-    result = _run_report_tool(session, _report_arguments(session, str(target), llm_cvss))
+    result = _run_report_tool(
+        session, _report_arguments(session, str(target), llm_cvss, output_format)
+    )
     if result is None:
         return
     output = result.get("output") or {}
@@ -869,6 +913,7 @@ def _report_export(session: "OmniSession", directory: str, *, llm_cvss: bool) ->
         ("report_path_md", "report.md"),
         ("report_path_html", "report.html"),
         ("report_path_json", "report.json"),
+        ("report_path_sarif", "report.sarif"),
     ):
         if output.get(key):
             render.write(f"  ✓ {name}")

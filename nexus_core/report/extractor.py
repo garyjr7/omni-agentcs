@@ -35,7 +35,10 @@ from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.models import utc_now
 from nexus_core.scope import EngagementScope, EngagementStore
 
+from . import cve_enrichment as cve_module
 from . import cvss as cvss_module
+from . import cvss4 as cvss4_module
+from . import frameworks as frameworks_module
 from . import mitre, severity
 from .models import (
     EngagementReport,
@@ -1610,9 +1613,10 @@ def attach_cvss(
 ) -> tuple[Finding, ...]:
     """Resolve the CVSS of every finding (explicit, LLM-assisted or heuristic).
 
-    ``llm_client`` is only used when it is callable; the score is always
-    recomputed locally from the resulting vector, so a model can never inject a
-    number into the report.
+    Both CVSS v3.1 and v4.0 are computed: the score is always recomputed locally
+    from the resulting vector, so a model can never inject a number into the
+    report. ``llm_client`` is only used when it is callable and may return either
+    a 3.1 or a 4.0 vector (each scorer extracts the vector of its own version).
     """
     from dataclasses import replace
 
@@ -1622,17 +1626,20 @@ def attach_cvss(
         answer = llm_client(prompt)
         return answer if isinstance(answer, str) else None
 
+    ask = _ask if callable(llm_client) else None
     resolved: list[Finding] = []
     for finding in findings:
-        score, vector, source = cvss_module.estimate_cvss_with_source(
-            finding, _ask if callable(llm_client) else None
-        )
+        score, vector, source = cvss_module.estimate_cvss_with_source(finding, ask)
+        score4, vector4, source4 = cvss4_module.estimate_cvss4_with_source(finding, ask)
         resolved.append(
             replace(
                 finding,
                 cvss_score=score,
                 cvss_vector=vector,
                 cvss_source=source,
+                cvss4_score=score4,
+                cvss4_vector=vector4,
+                cvss4_source=source4,
             )
         )
     return tuple(resolved)
@@ -1647,20 +1654,27 @@ async def build_report(
     llm_client: Any = None,
     llm_cvss: bool = False,
     include_failed_attempts: bool = True,
+    enrich_cves: bool = True,
+    cve_cache_dir: Any = None,
 ) -> EngagementReport:
     """Assemble a complete, content-addressed :class:`EngagementReport`.
 
     ``llm_cvss`` asks the model for a CVSS vector per finding; the *score* is
     always recomputed locally and any failure degrades to the deterministic
-    heuristic, so the report is produced either way.
+    heuristic, so the report is produced either way. ``enrich_cves`` merges the
+    **cached** CVE intelligence (never the network) and the framework mappings;
+    both are pipeline steps that can never fail the report.
     """
     metadata = await extract_engagement_metadata(store, tenant_id, engagement_id)
     collection = _collect(store, tenant_id, engagement_id, run_ids)
     findings, failed = await extract_findings(store, tenant_id, engagement_id, run_ids)
+    if enrich_cves:
+        findings = list(cve_module.enrich_findings(findings, root=cve_cache_dir))
     inventories, references, surfaces, evidences = await extract_report_items(
         store, tenant_id, engagement_id, run_ids
     )
     scored = attach_cvss(findings, llm_client if llm_cvss else None)
+    scored = frameworks_module.attach_frameworks(scored)
 
     tools_used: list[str] = []
     for observation in collection.observations:

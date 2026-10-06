@@ -27,9 +27,10 @@ from nexus_core.kernel.schema_validation import validate
 from nexus_core.report.extractor import attach_cvss, build_report
 from nexus_core.report.html import render_html
 from nexus_core.report.markdown import render_markdown, render_markdown_json
+from nexus_core.report.sarif import render_sarif
 
 REPORT_AUDIT_ACTION = "report.generated"
-FORMATS = ("markdown", "html", "both")
+FORMATS = ("markdown", "html", "both", "sarif")
 #: Per-finding budget for the optional LLM CVSS pass.
 CVSS_LLM_TIMEOUT_SECONDS = 60
 _ENGAGEMENT_PATTERN = r"[A-Za-z0-9._:-]{1,128}"
@@ -58,6 +59,7 @@ def report_generate_definition(tenant_id: str = "system") -> ToolDefinition:
                 "include_failed_attempts": {"type": "boolean"},
                 "output_dir": {"type": "string", "maxLength": 4096},
                 "llm_cvss": {"type": "boolean"},
+                "enrich_cves": {"type": "boolean"},
             },
             "required": ["engagement_id"],
             "additionalProperties": False,
@@ -142,6 +144,7 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
     include_failed = bool(arguments.get("include_failed_attempts", True))
     requested_dir = arguments.get("output_dir")
     llm_cvss = bool(arguments.get("llm_cvss", False))
+    enrich_cves = bool(arguments.get("enrich_cves", True))
     store = context.store
     if store is None:
         return ToolResult(verification_method="report_store_missing")
@@ -152,6 +155,7 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             context.tenant_id,
             engagement_id,
             include_failed_attempts=include_failed,
+            enrich_cves=enrich_cves,
         )
     except KeyError:
         return ToolResult(
@@ -175,6 +179,7 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
     markdown_text = render_markdown(report)
     html_text = render_html(report)
     json_text = render_markdown_json(report)
+    sarif_text = render_sarif(report)
 
     directory = Path(requested_dir).expanduser() if requested_dir else report_directory(
         report.engagement_name
@@ -190,6 +195,8 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             payloads.append(("report.md", markdown_text, "text/markdown"))
         if output_format in {"html", "both"}:
             payloads.append(("report.html", html_text, "text/html"))
+        if output_format == "sarif":
+            payloads.append(("report.sarif", sarif_text, "application/sarif+json"))
         artifact_store = LocalArtifactStore(store, default_artifact_root())
         for name, text, media_type in payloads:
             target = directory / name
@@ -222,6 +229,7 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             "format": output_format,
             "include_failed_attempts": include_failed,
             "llm_cvss": llm_cvss,
+            "enrich_cves": enrich_cves,
             "findings_count": len(report.findings),
             "severity_breakdown": counts,
             "audit_events_used": report.audit_events_total,
@@ -239,6 +247,7 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             "report_path_md": str(files.get("report.md", "")),
             "report_path_html": str(files.get("report.html", "")),
             "report_path_json": str(files.get("report.json", "")),
+            "report_path_sarif": str(files.get("report.sarif", "")),
             "directory": str(directory),
             "findings_count": len(report.findings),
             "severity_breakdown": counts,
@@ -249,6 +258,7 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             "json_size_bytes": len(json_text.encode("utf-8")),
             "markdown_size_bytes": len(markdown_text.encode("utf-8")),
             "html_size_bytes": len(html_text.encode("utf-8")),
+            "sarif_size_bytes": len(sarif_text.encode("utf-8")),
         },
         # The post-condition is that the deliverables were produced from the
         # durable record and written to disk. Whether the trail itself still
@@ -268,6 +278,7 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             "artifact_sha256": {item["name"]: item["sha256"] for item in artifacts},
             "files": {name: str(path) for name, path in files.items()},
             "llm_cvss": llm_cvss,
+            "enrich_cves": enrich_cves,
         },
     )
 

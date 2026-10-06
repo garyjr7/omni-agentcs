@@ -15,10 +15,12 @@ from .models import (
     Evidence,
     FailedAttempt,
     Finding,
+    FrameworkMapping,
 )
 from .extractor import extract_engagement_metadata, extract_findings
 from .markdown import render_markdown, render_markdown_json
 from .html import render_html
+from .sarif import render_sarif
 
 __all__ = [
     "SEVERITY_ORDER",
@@ -26,9 +28,11 @@ __all__ = [
     "Evidence",
     "FailedAttempt",
     "Finding",
+    "FrameworkMapping",
     "extract_engagement_metadata",
     "extract_findings",
     "render_html",
     "render_markdown",
     "render_markdown_json",
+    "render_sarif",
 ]

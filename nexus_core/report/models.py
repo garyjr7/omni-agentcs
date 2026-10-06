@@ -20,6 +20,25 @@ def severity_rank(severity: str) -> int:
 
 
 @dataclass(frozen=True)
+class FrameworkMapping:
+    """One finding's place in a control/testing framework (PTES/WSTG/...).
+
+    ``framework`` is a stable slug (``"PTES"``, ``"OWASP-WSTG"``,
+    ``"NIST-SP-800-115"``, ``"MITRE-D3FEND"``), ``technique_id`` the framework's
+    own identifier and ``name`` its human-readable label. Nothing here is
+    inferred at render time: the mapping tables are curated offline.
+    """
+
+    framework: str
+    technique_id: str
+    name: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable representation of the mapping."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class Evidence:
     """One durable pointer backing a finding (chain of custody).
 
@@ -64,6 +83,19 @@ class Finding:
     reproductions: int = 1
     #: Whether CVSS came from the tool, the LLM or the deterministic heuristic.
     cvss_source: str = "heuristic"
+    #: CVSS v4.0 base score/vector and where the vector came from. Source is one
+    #: of ``tool``/``llm``/``heuristic``/``nvd``/``none``.
+    cvss4_score: float | None = None
+    cvss4_vector: str | None = None
+    cvss4_source: str = "none"
+    #: EPSS exploit-probability (0.0-1.0) when the CVE cache knows it.
+    epss_score: float | None = None
+    #: Whether the CVE is in the CISA Known Exploited Vulnerabilities catalog.
+    kev: bool = False
+    #: Short CVE description, filled only from a cached authoritative source.
+    cve_description: str = ""
+    #: Framework mappings (PTES, WSTG, NIST SP 800-115, MITRE D3FEND).
+    frameworks: tuple[FrameworkMapping, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation of the finding."""
@@ -71,6 +103,7 @@ class Finding:
         value["mitre_techniques"] = list(self.mitre_techniques)
         value["affected_targets"] = list(self.affected_targets)
         value["reproduction_steps"] = list(self.reproduction_steps)
+        value["frameworks"] = [item.to_dict() for item in self.frameworks]
         return value
 
 
@@ -245,6 +278,7 @@ __all__ = [
     "Evidence",
     "FailedAttempt",
     "Finding",
+    "FrameworkMapping",
     "ReportItem",
     "TimelineEntry",
     "canonical_body",

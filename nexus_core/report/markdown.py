@@ -16,6 +16,7 @@ from .models import (
     Finding,
     severity_rank,
 )
+from .frameworks import FRAMEWORKS
 from .mitre import technique_name, technique_tactic, techniques_for_tool
 
 SEVERITY_LABEL = {
@@ -82,6 +83,31 @@ def render_markdown(report: EngagementReport) -> str:
     if report.notes:
         lines.append(f"- Nota: {report.notes}")
     lines.append("")
+
+    priorities = [
+        finding for finding in report.findings if finding.severity in {"critical", "high"}
+    ]
+    if priorities:
+        lines += ["### Hallazgos prioritarios (para dirección)", ""]
+        lines.append(
+            "Los siguientes hallazgos requieren atención prioritaria; el detalle "
+            "técnico está más abajo, en la sección *Hallazgos*."
+        )
+        lines.append("")
+        for finding in sorted(
+            priorities, key=lambda item: (severity_rank(item.severity), item.title)
+        ):
+            flags = []
+            if finding.kev:
+                flags.append("**explotado en el wild (CISA KEV)**")
+            if finding.epss_score is not None:
+                flags.append(f"EPSS {finding.epss_score:.2f}")
+            suffix = f" — {', '.join(flags)}" if flags else ""
+            lines.append(
+                f"- **[{SEVERITY_LABEL.get(finding.severity, finding.severity.upper())}]** "
+                f"{finding.title} (CVSS máx. {_max_cvss(finding)}){suffix}"
+            )
+        lines.append("")
 
     lines += ["## Alcance", "", f"Resumen: {_value(report.scope_summary)}.", ""]
     scope = report.scope_full or {}
@@ -203,6 +229,19 @@ def render_markdown(report: EngagementReport) -> str:
                 f"| {_escape_cell(technique_id)} | {_escape_cell(technique_name(technique_id))} "
                 f"| {_escape_cell(technique_tactic(technique_id))} |"
             )
+    lines += ["", "### Cobertura de marcos", ""]
+    coverage: dict[str, int] = {}
+    for finding in report.findings:
+        for mapping in finding.frameworks:
+            coverage[mapping.framework] = coverage.get(mapping.framework, 0) + 1
+    if not coverage:
+        lines.append("_Ningún hallazgo mapeó a un marco de referencia._")
+    else:
+        lines.append("| Marco | Hallazgos mapeados |")
+        lines.append("| --- | --- |")
+        for name in FRAMEWORKS:
+            if name in coverage:
+                lines.append(f"| {name} | {coverage[name]} |")
     lines += ["", "### Distribución por severidad", ""]
     lines.append("| Severidad | Nº |")
     lines.append("| --- | --- |")
@@ -276,16 +315,36 @@ def _render_finding(finding: Finding) -> list[str]:
     lines = [
         f"### [{SEVERITY_LABEL.get(finding.severity, finding.severity.upper())}] {finding.title}",
         "",
-        f"**CVSS:** {_cvss_text(finding)}",
+        f"**CVSS v3.1:** {_cvss_text(finding)}",
+        f"**CVSS v4.0:** {_cvss4_text(finding)}",
         f"**MITRE ATT&CK:** {', '.join(finding.mitre_techniques) or 'n/d'}",
     ]
     if finding.cwe:
         lines.append(f"**CWE:** {finding.cwe}")
     if finding.cve:
         lines.append(f"**CVE:** {finding.cve}")
+    if finding.cve_description:
+        lines.append(f"**Descripción CVE:** {finding.cve_description}")
+    if finding.epss_score is not None:
+        lines.append(
+            f"**EPSS:** {finding.epss_score:.4f} (probabilidad de explotación a 30 días)"
+        )
+    if finding.kev:
+        lines.append("**CISA KEV:** ✓ explotado en el wild (catálogo CISA)")
     if finding.owasp_category:
         lines.append(f"**OWASP Top 10:** {finding.owasp_category}")
     lines.append(f"**Afectados:** {_join(finding.affected_targets)}")
+    if finding.frameworks:
+        lines.append("")
+        lines.append("**Mapeo de marcos:**")
+        lines.append("")
+        lines.append("| Marco | ID | Nombre |")
+        lines.append("| --- | --- | --- |")
+        for mapping in finding.frameworks:
+            lines.append(
+                f"| {_escape_cell(mapping.framework)} | {_escape_cell(mapping.technique_id)} "
+                f"| {_escape_cell(mapping.name)} |"
+            )
     lines.append(f"**Descubierto por:** `{_value(finding.discovered_by_tool)}`")
     lines.append(f"**Fecha:** {_value(finding.discovered_at)}")
     lines.append(f"**Finding id:** `{_value(finding.finding_id)}`")
@@ -318,9 +377,28 @@ def _render_finding(finding: Finding) -> list[str]:
 
 def _cvss_text(finding: Finding) -> str:
     if finding.cvss_vector is None:
-        return f"{finding.cvss_score if finding.cvss_score is not None else 0.0} (informativo, sin vector)"
+        score = finding.cvss_score if finding.cvss_score is not None else 0.0
+        return f"{score} (informativo, sin vector)"
     score = finding.cvss_score if finding.cvss_score is not None else "n/d"
     return f"{score} (`{finding.cvss_vector}`, origen: {finding.cvss_source})"
+
+
+def _cvss4_text(finding: Finding) -> str:
+    if finding.cvss4_vector is None:
+        if finding.cvss4_score is None:
+            return "no disponible (unknown)"
+        return f"{finding.cvss4_score} (sin vector)"
+    score = finding.cvss4_score if finding.cvss4_score is not None else "n/d"
+    return f"{score} (`{finding.cvss4_vector}`, origen: {finding.cvss4_source})"
+
+
+def _max_cvss(finding: Finding) -> str:
+    """Highest locally-computed CVSS value across the supported versions."""
+    candidates = [
+        value for value in (finding.cvss4_score, finding.cvss_score)
+        if isinstance(value, (int, float))
+    ]
+    return f"{max(candidates):.1f}" if candidates else "n/d"
 
 
 def _quote(text: str, limit: int = 800) -> list[str]:

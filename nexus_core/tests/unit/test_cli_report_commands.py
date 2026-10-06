@@ -230,3 +230,31 @@ def test_repl_prompt_shows_report_path_after_generation(seeded):
 def test_report_commands_registered():
     for name in ("/findings", "/report", "/timeline"):
         assert name in commands_module.COMMANDS
+
+
+def test_cmd_report_format_sarif(seeded, tmp_path):
+    session, _engagement, _run_id = seeded
+    with mock.patch.object(
+        OmniSession, "invoke_tool", return_value=_invoke_result(tmp_path / "r")
+    ) as invoke:
+        commands_module.cmd_report(session, ["--format", "sarif"])
+    _tool_id, arguments = invoke.call_args.args
+    assert arguments["format"] == "sarif"
+
+
+def test_cmd_report_invalid_format(seeded, capsys):
+    session, _engagement, _run_id = seeded
+    commands_module.cmd_report(session, ["--format", "pdf"])
+    assert "uso: /report" in capsys.readouterr().out
+
+
+def test_cmd_report_export_with_format(seeded, tmp_path):
+    session, _engagement, _run_id = seeded
+    target = tmp_path / "deliverable"
+    with mock.patch.object(
+        OmniSession, "invoke_tool", return_value=_invoke_result(target)
+    ) as invoke:
+        commands_module.cmd_report(session, ["export", str(target), "--format", "sarif"])
+    _tool_id, arguments = invoke.call_args.args
+    assert arguments["format"] == "sarif"
+    assert arguments["output_dir"] == str(target)

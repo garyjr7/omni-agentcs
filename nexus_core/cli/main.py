@@ -104,6 +104,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--valid-hours", type=int, default=24, metavar="N",
         help="validez en horas para --new-engagement (default: 24)",
     )
+    parser.add_argument(
+        "--format",
+        choices=["markdown", "html", "both", "sarif"],
+        metavar="FMT",
+        help="con 'report': formato del entregable (default: both)",
+    )
+    parser.add_argument(
+        "--output", metavar="DIR", help="con 'report': directorio de salida"
+    )
     parser.add_argument("--version", action="version", version=f"{PROGRAM} {PROGRAM_VERSION}")
     for flag, help_text in (
         ("doctor", "diagnóstico del sistema"), ("json", "salida JSON para --doctor/--setup"),
@@ -154,6 +163,66 @@ def _render_about(scopes: list[Any], args) -> None:
         compact=False,
     )
     render_banner(text, no_color=args.no_color)
+
+
+def _run_report_command(
+    store: Any, args: Any, engagement: Any, *, output_format: str, output_dir: str | None
+) -> int:
+    """Handle ``omni report [--format FMT] [--output DIR]`` through the gateway."""
+    from . import commands as commands_module
+
+    if engagement is None:
+        render.render_error("omni report requiere un engagement activo (usa --engagement)")
+        return 2
+    session = OmniSession(
+        store=store,
+        tenant_id=args.tenant,
+        engagement=engagement,
+        no_color=args.no_color,
+        use_tui=False,
+    )
+    if output_dir:
+        commands_module.cmd_report(
+            session, ["export", output_dir, "--format", output_format]
+        )
+        return 0 if session.last_report_directory else 2
+    commands_module.cmd_report(session, ["--format", output_format])
+    return 0 if session.last_report_sha256 else 2
+
+
+def _run_cve_command(args: Any, store: Any, tenant: str, engagement: Any) -> int:
+    """Handle ``omni cve update [CVE...]`` (explicit, cache-filling update)."""
+    from nexus_core.report import cve_enrichment
+
+    command = list(args.command[1:])
+    if not command or command[0].lower() != "update":
+        render.render_error("uso: omni cve update [CVE-AAAA-NNNN ...]")
+        return 2
+    raw = command[1:]
+    invalid = [item for item in raw if cve_enrichment.normalize_cve(item) is None]
+    if invalid:
+        render.render_error(f"CVE inválido: {invalid[0]}")
+        return 2
+    cves = [cve_enrichment.normalize_cve(item) or item for item in raw]
+    if not cves and engagement is not None and store is not None:
+        from nexus_core.report.extractor import extract_findings_sync
+
+        findings, _ = extract_findings_sync(store, tenant, engagement.engagement_id)
+        cves = cve_enrichment.collect_cves(findings)
+    if not cves:
+        render.render_error(
+            "omni cve update requiere ids CVE o un engagement con hallazgos CVE"
+        )
+        return 2
+    render.render_status(f"actualizando {len(cves)} CVE(s) desde NVD/EPSS/CISA KEV...")
+    summary = cve_enrichment.update_cves(cves)
+    render.render_status(
+        f"NVD {summary['nvd_updated']} · EPSS {summary['epss_updated']} · "
+        f"KEV {'ok' if summary['kev_updated'] else 'no'}"
+    )
+    for error in summary["errors"]:
+        render.write(f"  ! {error}")
+    return 1 if summary["errors"] else 0
 
 
 def select_engagement(
@@ -228,12 +297,15 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     # rather than a real subparser (see docs/missions/FASE3B_ECOSYSTEM.md §7).
     objective = args.objective
     headless_mode: str | None = None
+    subcommand: str | None = None
     if args.command:
-        if args.command[0] != "run":
-            render.render_error(f"subcomando desconocido: {args.command[0]}")
+        subcommand = str(args.command[0])
+        if subcommand == "run":
+            objective = " ".join(args.command[1:]).strip() or objective
+            headless_mode = "stream" if args.stream_json else "json"
+        elif subcommand not in {"report", "cve"}:
+            render.render_error(f"subcomando desconocido: {subcommand}")
             return 2
-        objective = " ".join(args.command[1:]).strip() or objective
-        headless_mode = "stream" if args.stream_json else "json"
     elif args.stream_json and objective:
         headless_mode = "stream"
     elif args.json and objective:
@@ -282,7 +354,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     # the banner.
     from .tui.session import should_use_tui
 
-    tui_expected = not (args.no_tui or objective) and should_use_tui()
+    tui_expected = not (args.no_tui or objective or subcommand) and should_use_tui()
     engagement, exit_code = select_engagement(
         engagements, args.engagement, announce=not tui_expected
     )
@@ -299,6 +371,16 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         for line in lines:
             print(line)
         return code
+
+    # ``omni report`` / ``omni cve update``: subcommands that do not need a
+    # model client. Both go through the durable gateway like everything else.
+    if subcommand == "report":
+        return _run_report_command(
+            store, args, engagement,
+            output_format=args.format or "both", output_dir=args.output,
+        )
+    if subcommand == "cve":
+        return _run_cve_command(args, store, args.tenant, engagement)
 
     try:
         llm_client = build_llm_client()

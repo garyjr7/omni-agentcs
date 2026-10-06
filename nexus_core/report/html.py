@@ -13,7 +13,8 @@ from typing import Any, Iterable
 
 from .markdown import SEVERITY_LABEL
 from .mitre import technique_name, technique_tactic, techniques_for_tool
-from .models import SEVERITY_ORDER, EngagementReport, FailedAttempt, Finding
+from .frameworks import FRAMEWORKS
+from .models import SEVERITY_ORDER, EngagementReport, FailedAttempt, Finding, severity_rank
 
 BRAND = "Bajioware · OmniAgentCS"
 
@@ -150,7 +151,27 @@ def render_html(report: EngagementReport) -> str:
     ]
     if report.notes:
         parts.append(f"<li>{_e(report.notes)}</li>")
-    parts += ["</ul></section>"]
+    parts += ["</ul>"]
+    priorities = [
+        item for item in report.findings if item.severity in {"critical", "high"}
+    ]
+    if priorities:
+        parts.append("<h3>Hallazgos prioritarios</h3><ul>")
+        for finding in sorted(
+            priorities, key=lambda item: (severity_rank(item.severity), item.title)
+        ):
+            flags = []
+            if finding.kev:
+                flags.append("<strong>explotado en el wild (CISA KEV)</strong>")
+            if finding.epss_score is not None:
+                flags.append(f"EPSS {finding.epss_score:.2f}")
+            suffix = f" — {', '.join(flags)}" if flags else ""
+            parts.append(
+                f"<li><strong>{_e(finding.severity.upper())}</strong> "
+                f"{_e(finding.title)} (CVSS máx. {_e(_max_cvss(finding))}){suffix}</li>"
+            )
+        parts.append("</ul>")
+    parts += ["</section>"]
 
     scope = report.scope_full or {}
     parts += [
@@ -270,6 +291,19 @@ def render_html(report: EngagementReport) -> str:
                 "</tr>"
             )
         parts += ["</tbody></table>"]
+    coverage: dict[str, int] = {}
+    for finding in report.findings:
+        for mapping in finding.frameworks:
+            coverage[mapping.framework] = coverage.get(mapping.framework, 0) + 1
+    parts.append("<h3>Cobertura de marcos</h3>")
+    if not coverage:
+        parts.append("<p>Ningún hallazgo mapeó a un marco de referencia.</p>")
+    else:
+        parts.append("<table><thead><tr><th>Marco</th><th>Hallazgos</th></tr></thead><tbody>")
+        for name in FRAMEWORKS:
+            if name in coverage:
+                parts.append(f"<tr><td>{_e(name)}</td><td>{coverage[name]}</td></tr>")
+        parts += ["</tbody></table>"]
     parts.append("</section>")
 
     parts += [
@@ -333,8 +367,27 @@ def _render_item(item: Any) -> str:
     return "".join(parts)
 
 
+def _max_cvss(finding: Finding) -> str:
+    candidates = [
+        value for value in (finding.cvss4_score, finding.cvss_score)
+        if isinstance(value, (int, float))
+    ]
+    return f"{max(candidates):.1f}" if candidates else "n/d"
+
+
 def _render_finding(finding: Finding) -> str:
     level = _sev_class(finding.severity)
+    cvss31 = f"{_e(finding.cvss_score if finding.cvss_score is not None else 0.0)}"
+    cvss31 += (
+        f" <code>{_e(finding.cvss_vector)}</code> ({_e(finding.cvss_source)})"
+        if finding.cvss_vector else " (informativo)"
+    )
+    cvss40 = (
+        f"{_e(finding.cvss4_score if finding.cvss4_score is not None else 0.0)}"
+        + f" <code>{_e(finding.cvss4_vector)}</code> ({_e(finding.cvss4_source)})"
+        if finding.cvss4_vector
+        else "no disponible (unknown)"
+    )
     parts = [
         f'<article class="finding {level}" id="{_e(finding.finding_id)}">',
         '<div class="head">',
@@ -342,15 +395,23 @@ def _render_finding(finding: Finding) -> str:
         f"<h3>{_e(finding.title)}</h3>",
         "</div>",
         '<dl class="props">',
-        f"<dt>CVSS</dt><dd>{_e(finding.cvss_score if finding.cvss_score is not None else 0.0)}"
-        + (f" <code>{_e(finding.cvss_vector)}</code> ({_e(finding.cvss_source)})" if finding.cvss_vector else " (informativo)")
-        + "</dd>",
+        f"<dt>CVSS v3.1</dt><dd>{cvss31}</dd>",
+        f"<dt>CVSS v4.0</dt><dd>{cvss40}</dd>",
         f"<dt>MITRE ATT&CK</dt><dd>{_list(finding.mitre_techniques)}</dd>",
     ]
     if finding.cwe:
         parts.append(f"<dt>CWE</dt><dd>{_e(finding.cwe)}</dd>")
     if finding.cve:
         parts.append(f"<dt>CVE</dt><dd>{_e(finding.cve)}</dd>")
+    if finding.cve_description:
+        parts.append(f"<dt>Descripción CVE</dt><dd>{_e(finding.cve_description)}</dd>")
+    if finding.epss_score is not None:
+        parts.append(
+            f"<dt>EPSS</dt><dd>{finding.epss_score:.4f} "
+            "(probabilidad de explotación)</dd>"
+        )
+    if finding.kev:
+        parts.append("<dt>CISA KEV</dt><dd>✓ explotado en el wild</dd>")
     if finding.owasp_category:
         parts.append(f"<dt>OWASP Top 10</dt><dd>{_e(finding.owasp_category)}</dd>")
     parts += [
@@ -362,6 +423,18 @@ def _render_finding(finding: Finding) -> str:
     if finding.reproductions > 1:
         parts.append(f"<dt>Reproducciones</dt><dd>{finding.reproductions}</dd>")
     parts += ["</dl>"]
+    if finding.frameworks:
+        parts.append("<h4>Mapeo de marcos</h4>")
+        parts.append(
+            "<table><thead><tr><th>Marco</th><th>ID</th><th>Nombre</th></tr></thead><tbody>"
+        )
+        for mapping in finding.frameworks:
+            parts.append(
+                f"<tr><td>{_e(mapping.framework)}</td>"
+                f"<td><code>{_e(mapping.technique_id)}</code></td>"
+                f"<td>{_e(mapping.name)}</td></tr>"
+            )
+        parts.append("</tbody></table>")
     parts.append(f"<p>{_e(finding.description)}</p>")
     steps = "".join(f"<li>{_e(step)}</li>" for step in finding.reproduction_steps)
     if steps:

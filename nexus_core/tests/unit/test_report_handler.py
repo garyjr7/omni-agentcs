@@ -272,3 +272,37 @@ def test_report_artifact_store_is_content_addressed(env, tmp_path):
     root = LocalArtifactStore(store, module.default_artifact_root()).root
     for row in rows:
         assert Path(row["storage_uri"]).parent.parent == root / support.TENANT
+
+
+def test_report_sarif_format_writes_sarif(env):
+    """``format=sarif`` emits a valid SARIF 2.1.0 document and nothing else."""
+    from nexus_core.report.sarif import validate_sarif
+
+    store, engagement, _run_id, gateway = env
+    result = _invoke(
+        gateway, {"engagement_id": engagement.engagement_id, "format": "sarif"}, store
+    )
+    output = result["output"]
+    assert output["report_path_sarif"].endswith("report.sarif")
+    assert output["report_path_md"] == ""
+    assert not Path(output["directory"], "report.md").exists()
+    document = json.loads(Path(output["report_path_sarif"]).read_text())
+    assert document["version"] == "2.1.0"
+    assert validate_sarif(document) == []
+    assert len(document["runs"][0]["results"]) == output["findings_count"]
+    assert output["sarif_size_bytes"] > 0
+
+
+def test_report_json_carries_dual_cvss_and_frameworks(env):
+    store, engagement, _run_id, gateway = env
+    result = _invoke(gateway, {"engagement_id": engagement.engagement_id}, store)
+    payload = json.loads(Path(result["output"]["report_path_json"]).read_text())
+    assert payload["findings"]
+    for finding in payload["findings"]:
+        assert finding["cvss4_source"] in {"tool", "llm", "heuristic", "nvd", "none"}
+        assert isinstance(finding["frameworks"], list)
+        assert finding["frameworks"]
+    markdown = Path(result["output"]["report_path_md"]).read_text()
+    assert "CVSS v3.1" in markdown and "CVSS v4.0" in markdown
+    assert "Mapeo de marcos" in markdown
+    assert "Cobertura de marcos" in markdown
