@@ -86,9 +86,48 @@ def build_parser() -> argparse.ArgumentParser:
         ("yes", "auto-aprueba la ejecución de los planes de instalación"),
         ("config", "editar config global"), ("config-path", "imprimir ruta de config"),
         ("no-wizard", "omitir onboarding interactivo"), ("reset-config", "respaldar config y reiniciar onboarding"),
+        ("about", "muestra el banner ASCII completo con las stats y sale"),
+        ("banner", "usa el banner ASCII completo en el arranque del REPL"),
     ):
         parser.add_argument("--" + flag, action="store_true", help=help_text)
     return parser
+
+
+def _render_about(scopes: list[Any], args) -> None:
+    """Print the full ASCII banner with live stats (``omni --about``)."""
+    from .banner import build_banner, render_banner
+    from .llm_env import provider_summary
+
+    try:
+        from nexus_core.tools.registry import durable_tool_definitions
+
+        tools_count = len(durable_tool_definitions(args.tenant))
+    except Exception:  # noqa: BLE001 - a broken catalog must not hide --about
+        tools_count = 0
+    summary, providers_count = provider_summary()
+    if args.engagement:
+        engagement = next(
+            (
+                scope
+                for scope in scopes
+                if str(getattr(scope, "engagement_id", "")) == args.engagement
+            ),
+            None,
+        )
+    else:
+        engagement = scopes[0] if scopes else None
+    text = build_banner(
+        version=PROGRAM_VERSION,
+        tools_count=tools_count,
+        providers_count=providers_count,
+        engagement_name=getattr(engagement, "name", None),
+        audit_chain_valid=True,
+        msfrpcd_version=None,
+        llm_summary=summary,
+        no_color=args.no_color,
+        compact=False,
+    )
+    render_banner(text, no_color=args.no_color)
 
 
 def select_engagement(
@@ -170,6 +209,10 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         _list_engagements(engagements)
         return 0
 
+    if args.about:
+        _render_about(engagements, args)
+        return 0
+
     if args.new_engagement:
         if not args.scope:
             render.render_error(
@@ -225,6 +268,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         use_tui=False if args.no_tui or args.objective else None,
         engagement_names=[scope.name for scope in engagements],
         fullscreen=args.fullscreen,
+        show_art_banner=args.banner,
     )
     if args.objective:
         result = session.run_objective(args.objective)

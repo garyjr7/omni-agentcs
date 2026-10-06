@@ -1,0 +1,39 @@
+OmniAgentCS — Authorized Use Only License
+Copyright (c) 2026 BAJIOWARE. All rights reserved.
+
+THIS SOFTWARE IS PROVIDED FOR AUTHORIZED SECURITY TESTING ONLY.
+
+1. AUTHORIZED USE ONLY
+   OmniAgentCS is an offensive security tool intended exclusively for lawful,
+   authorized penetration testing, red-team engagements and security research
+   performed on systems you own or for which you hold explicit, written
+   permission from the system owner.
+
+2. PROHIBITED USE
+   You must not use this software to access, scan, disrupt or exfiltrate data
+   from any system without prior written authorization. Doing so may violate
+   computer-misuse, privacy and data-protection laws and is strictly prohibited.
+   The scope (engagement) signed with this tool is the technical boundary of the
+   authorization you attest to hold; it does not grant you any legal permission.
+
+3. OPERATOR RESPONSIBILITY
+   You are solely responsible for the engagements you create and sign, for the
+   targets you select, and for complying with all applicable laws and the rules
+   of engagement agreed with the client.
+
+4. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. RUNNING OFFENSIVE TOOLS
+   CAN DISRUPT OR DAMAGE TARGET SYSTEMS.
+
+5. LIMITATION OF LIABILITY
+   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+   SOFTWARE OR ITS USE, INCLUDING ANY UNAUTHORIZED OR UNLAWFUL USE.
+
+6. DISTRIBUTION
+   Redistribution and modification are permitted only with this notice retained
+   and only for authorized security-testing purposes.
+
+For licensing questions, contact BAJIOWARE.

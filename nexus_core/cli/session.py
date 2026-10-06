@@ -39,8 +39,6 @@ DEFAULT_AGENT_ID = "omni"
 DEFAULT_MAX_ITERATIONS = 12
 STREAM_INTERVAL_SECONDS = 0.5
 STREAM_MESSAGE_WINDOW = 500
-#: Engagement names are truncated in the prompt so the line never wraps.
-MAX_PROMPT_ENGAGEMENT_NAME = 30
 
 #: Tool that sends one command into an open session.
 SESSION_INTERACT_TOOL = "nexus.session.interact"
@@ -212,6 +210,7 @@ class OmniSession:
         output=None,
         engagement_names: list[str] | None = None,
         fullscreen: bool = True,
+        show_art_banner: bool = False,
     ) -> None:
         self.store = store
         self.tenant_id = tenant_id
@@ -230,6 +229,9 @@ class OmniSession:
         self.trust_mode = bool(trust_mode)
         #: ``--no-color``: the banner still renders, only plain ASCII.
         self.no_color = bool(no_color)
+        #: ``--about``/``--banner``: show the big ASCII art instead of the
+        #: compact three-line header at startup.
+        self.show_art_banner = bool(show_art_banner)
         self.worker_id = f"cli:{self.operator_id}"
         self.history: list[str] = []
         self.run_id = run_id
@@ -389,13 +391,15 @@ class OmniSession:
 
     @property
     def prompt(self) -> str:
-        """Prompt with the four states: normal, session, trust and both.
+        """Minimal prompt with contextual chips only when they apply.
 
-        Colour is applied *around* each token, never inside it, so the plain
-        substrings (``[TRUST MODE]``, ``[session <uuid>/<type>]``) stay intact
-        and remain greppable from a transcript.
+        The engagement (and the model) live in the compact header, shown once,
+        so the prompt stays a bare ``└─$ ``. Transient state that changes during
+        the session (trust, attached session, last report) appears as chips on a
+        line above it, and only when present. Colour is applied *around* each
+        token, never inside it, so the plain substrings (``[TRUST MODE]``,
+        ``[session <uuid>/<type>]``) stay intact and remain greppable.
         """
-        name = (getattr(self.engagement, "name", None) or "(sin engagement)")[:MAX_PROMPT_ENGAGEMENT_NAME]
         trust = "─" + render.paint("[TRUST MODE]", render.RED, render.BOLD) if self.trust_mode else ""
         session = ""
         if self.active_session_uuid:
@@ -412,8 +416,8 @@ class OmniSession:
             report = "─" + render.paint(
                 f"[report {Path(self.last_report_directory).name}]", render.BLUE
             )
-        header = "┌──(" + render.paint("OmniAgentCS", render.CYAN) + ")─["
-        return f"{header}{render.paint(name, render.YELLOW)}]{trust}{session}{report}\n└─$ "
+        chips = f"{trust}{session}{report}".lstrip("─")
+        return f"{chips}\n└─$ " if chips else "└─$ "
 
     # ------------------------------------------------------------ presentation
     def _verify_audit_chain(self) -> bool:
@@ -463,16 +467,21 @@ class OmniSession:
             tools_count = len(durable_tool_definitions(self.tenant_id))
         except Exception:  # noqa: BLE001 - a broken catalog must not hide the banner
             tools_count = 0
+        from .banner import describe_scope
+
         llm_summary, providers_count = self._llm_stats()
         banner_text = build_banner(
                 version=PROGRAM_VERSION,
                 tools_count=tools_count,
                 providers_count=providers_count,
                 engagement_name=getattr(self.engagement, "name", None),
+                scope_summary=describe_scope(self.engagement),
+                valid_until=getattr(self.engagement, "valid_until", None),
                 audit_chain_valid=self._verify_audit_chain(),
                 msfrpcd_version=_detect_msfrpcd_version(),
                 llm_summary=llm_summary,
                 no_color=self.no_color,
+                compact=not self.show_art_banner,
         )
         if self._tui.use_tui:
             self._output.write(banner_text, end="")
@@ -1014,7 +1023,7 @@ class OmniSession:
             from .spinner import Spinner
 
             if self._tui.use_tui:
-                self._output.write(f"🤖 [OmniAgent]: {objective}")
+                self._output.write("\n" + render.paint(f"❯ {objective}", render.WHITE))
             with self._busy("Working"), Spinner(
                 f"Ejecutando objetivo: {objective[:80]}",
                 enabled=self._spinner_enabled(),

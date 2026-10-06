@@ -267,26 +267,24 @@ ella desde el REPL. Todo lo que **no** empieza por `/` se envía a la sesión
 adjunta; los comandos meta siguen funcionando igual.
 
 ```text
-┌──(OmniAgentCS)─[scanme-lab]
 └─$ /sessions
 
 UUID       Type          Peer             Via                    User
 abc123     meterpreter   10.0.0.1:51234   ms17_010_eternalblue   NT AUTHORITY\SYSTEM
 
-┌──(OmniAgentCS)─[scanme-lab]
 └─$ /session attach abc123
 Attached to session abc123 (meterpreter)
 Target: 10.0.0.1
 User:   NT AUTHORITY\SYSTEM
 Escribe comandos directamente, /help para los comandos de Omni, /detach para salir.
 
-┌──(OmniAgentCS)─[scanme-lab]─[session abc123/meterpreter]
+[session abc123/meterpreter]
 └─$ sysinfo
 Computer        : WIN-DC-01
 OS              : Windows Server 2019
 ...
 
-┌──(OmniAgentCS)─[scanme-lab]─[session abc123/meterpreter]
+[session abc123/meterpreter]
 └─$ /detach
 Detached from session abc123. Session remains active.
 ```
@@ -394,7 +392,6 @@ capa de reporte lee el audit trail y los `ToolResult` persistidos y **nunca
 inventa un hallazgo**: solo transcribe lo que el toolkit verificó.
 
 ```text
-┌──(OmniAgentCS)─[scanme-lab]
 └─$ /report
 
 Generating report for engagement scanme-lab...
@@ -520,14 +517,15 @@ pensamiento. Si el proveedor no soporta streaming, el `💭` aparece al terminar
 la iteración en lugar de token a token.
 
 ```text
-┌──(OmniAgentCS)─[scanme-lab]
 └─$ _
-scanme-lab · groq/openai/gpt-oss-120b · 2.3k tok · ~$0.0200 · 5m12s
+groq/openai/gpt-oss-120b · 2.3k tok · ~$0.0200 · 5m12s
 ```
 
-La barra muestra engagement, sesión adjunta, trust, proveedor/modelo, tokens,
-coste estimado, la **fase actual del plan** (con su progreso), el número de
-hechos del blackboard y el tiempo. El panel lateral (F2 o `/panel`) superpone el
+La barra de estado es **consciente de prioridad**: muestra alerta (trust/sesión),
+fase del plan, proveedor/modelo, tokens, coste y tiempo, y **descarta primero el
+segmento menos importante** cuando la terminal es estrecha —la alerta y la fase
+nunca se truncan. El engagement vive en la cabecera compacta (una sola vez), no
+en la barra. El panel lateral (F2 o `/panel`) superpone el
 plan completo por fases y el desglose del blackboard sin salir del prompt.
 La salida de cada tool se pliega a **5 líneas** con un pie clicable
 `▼ mostrar N líneas más` / `▲ mostrar menos`; el clic expande/contrae esa tarjeta
@@ -537,7 +535,7 @@ en su sitio (`/expand on|off` las despliega todas).
 
 Paleta única en `nexus_core/cli/theme.py` (truecolor ANSI):
 
-- **Aqua** (`#00e5ff`) — comandos (`$ nmap -sV -p- 10.0.0.1`), estructura,
+- **Aqua** (`#00e5ff`) — comandos (`⚙ nmap -sV -p- 10.0.0.1`), estructura,
 títulos, barra lateral y pies clicables.
 - **Rojo** (`#ff4054`) — el **pensamiento** del agente (`💭`), riesgo y fallos.
 - **Blanco opaco** (`#d0d4da`) — el **resultado** de los comandos y el cuerpo de
@@ -597,8 +595,8 @@ Ejemplo de una ejecución real; las líneas de nmap se derivan de su resultado
 estructurado, porque el mensaje durable no conserva el stdout crudo:
 
 ```text
-🤖 [OmniAgent]: Escanea scanme.nmap.org con nmap, puertos 22,80,443.
-⚙️  [Recon-NMAP] nmap -sT -p 22,80,443 -oX - scanme.nmap.org
+❯ Escanea scanme.nmap.org con nmap, puertos 22,80,443.
+⚙ [Recon-NMAP] nmap -sT -p 22,80,443 -oX - scanme.nmap.org
    -> Host up: 45.33.32.156
    ...
    -> Puerto 443/tcp filtered: https
@@ -606,9 +604,8 @@ estructurado, porque el mensaje durable no conserva el stdout crudo:
    ✓ 2 puertos abiertos · 1 hosts up · noise: high · 1.85s
 
  ⠹ Working... (29s · esc to interrupt)
-┌──(OmniAgentCS)─[scanme-lab]
 └─$ _
-scanme-lab · groq/openai/gpt-oss-120b · 6.3k tok · $— · 37s
+groq/openai/gpt-oss-120b · 6.3k tok · $— · 37s
 ```
 
 Cada tool muestra como máximo tres líneas de datos: primera y últimas dos,
@@ -738,28 +735,25 @@ Ctrl+C cierra la vista; al finalizar el job, Enter permite cerrarla.
 Sin terminal secundario, o en un pipeline, muestra una instantánea del estado.
 Un UUID inválido, inexistente o una consulta denegada no abre ninguna ventana.
 
-### Banner y actividad
+### Cabecera de arranque y actividad
 
-Al arrancar `omni` sin argumentos (modo REPL), se muestra un banner con el
-estado real del sistema: catálogo de tools, proveedores LLM configurados,
-engagement activo, validez de la cadena de auditoría, versión de msfrpcd y el
-modelo resuelto.
+Al arrancar `omni` sin argumentos (modo REPL), se muestra una **cabecera
+compacta de tres líneas** con la marca BAJIOWARE / Team Red, el engagement
+activo con su alcance y validez, el modo de sandbox (con su garantía) y la
+validez de la cadena de auditoría. Así el engagement vive en un solo sitio: ni
+el prompt ni la barra de estado lo repiten.
 
 ```text
- ██████╗ ███╗   ███╗███╗   ██╗██╗
-██╔═══██╗████╗ ████║████╗  ██║██║
-██║   ██║██╔████╔██║██╔██╗ ██║██║
-██║   ██║██║╚██╔╝██║██║╚██╗██║██║
-╚██████╔╝██║ ╚═╝ ██║██║ ╚████║██║
- ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝
-   A G E N T C S   ·   C L I
-
-       =[ OmniAgentCS v3.0.0                                              ]
- + -- --=[ 42 tools · 1 providers · engagement: scanme-lab                ]
- + -- --=[ audit-chain ok · msfrpcd 6.5.3-dev- · groq/openai/gpt-oss-120b ]
+╭─ BAJIOWARE · OMNIAGENTCS ── Team Red ◈ ── scanme-lab ───────────────╮
+│ scope  1 CIDR · 1 dominio · 0 URLs          hasta 2026-10-07T14:00Z │
+│ sandbox local_strict (sin aislamiento de red)            audit ✓ ok │
+╰──────────────────────────────────────────────────────────────────────╯
 
  Tip: Use /trust on to auto-approve high-risk actions during an engagement.
 ```
+
+El arte ASCII grande (`OMN AGENTCS`) se conserva como portada a demanda:
+`omni --about` lo imprime y sale; `omni --banner` lo usa al arrancar el REPL.
 
 En fallback interactivo, durante una operación larga el spinner
 escribe en **stderr**, con tiempo transcurrido, sin interferir con `readline`
@@ -775,20 +769,19 @@ Para dudas conversacionales ("qué puedo hacer", "explica este módulo") usa
 engagement ni la auditoría.
 
 ```text
-┌──(OmniAgentCS)─[scanme-lab]
 └─$ /ask para qué sirve el trust mode
 
 OmniAgent ·
   El trust mode auto-aprueba las tools de alto riesgo del engagement…
 ```
 
-El prompt resume el estado en una línea: engagement, sesión adjunta y trust
-mode, además del último reporte generado.
+El prompt es minimalista (`└─$ `); solo añade una línea de chips cuando hay
+estado transitorio: sesión adjunta, trust mode y/o último reporte generado. El
+engagement y el modelo no aparecen en él.
 
 ```text
-┌──(OmniAgentCS)─[scanme-lab]
 └─$ /report
-┌──(OmniAgentCS)─[scanme-lab]─[session a1b2c3d4/meterpreter]─[TRUST MODE]
+[TRUST MODE]─[session a1b2c3d4/meterpreter]
 └─$ id
 ```
 

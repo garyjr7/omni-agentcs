@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from nexus_core.cli import render
-from nexus_core.cli.session import MAX_PROMPT_ENGAGEMENT_NAME, OmniSession
+from nexus_core.cli.session import OmniSession
 
 
 class _Engagement:
@@ -27,13 +27,14 @@ def _plain():
 
 def test_prompt_normal_no_session_no_trust():
     prompt = _session().prompt
-    assert prompt == "┌──(OmniAgentCS)─[(sin engagement)]\n└─$ "
+    assert prompt == "└─$ "
 
 
-def test_prompt_with_engagement():
+def test_prompt_is_minimal_even_with_engagement():
+    # The engagement lives in the compact header, shown once, not in the prompt.
     prompt = _session(_Engagement()).prompt
-    assert prompt == "┌──(OmniAgentCS)─[scanme-lab]\n└─$ "
-    assert prompt.endswith("└─$ ")
+    assert prompt == "└─$ "
+    assert "scanme-lab" not in prompt
 
 
 def test_prompt_with_session():
@@ -69,12 +70,11 @@ def test_prompt_with_session_and_trust():
     assert prompt.endswith("└─$ ")
 
 
-def test_prompt_truncates_long_engagement_name():
+def test_prompt_ignores_long_engagement_name():
     name = "x" * 60
     prompt = _session(_Engagement(name)).prompt
     assert name not in prompt
-    assert name[:MAX_PROMPT_ENGAGEMENT_NAME] in prompt
-    assert len(name[:MAX_PROMPT_ENGAGEMENT_NAME]) == MAX_PROMPT_ENGAGEMENT_NAME
+    assert prompt == "└─$ "
 
 
 def test_prompt_no_color_strips_ansi():
@@ -90,12 +90,13 @@ def test_prompt_no_color_strips_ansi():
     assert "[session abc12345/shell]" in prompt
 
 
-def test_prompt_without_engagement():
+def test_prompt_without_engagement_shows_only_contextual_chips():
     session = _session()
     session.trust_mode = True
     prompt = session.prompt
-    assert "(sin engagement)" in prompt
+    assert "(sin engagement)" not in prompt
     assert "[TRUST MODE]" in prompt
+    assert prompt == "[TRUST MODE]\n└─$ "
 
 
 def test_prompt_shows_report_directory_when_set():

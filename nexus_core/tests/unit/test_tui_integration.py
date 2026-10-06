@@ -67,7 +67,7 @@ def test_repl_banner_shown_before_first_prompt(tui_factory, monkeypatch):
     monkeypatch.delenv("NEXUS_NO_BANNER", raising=False)
     feed(session, ui, ["/exit"])
     session.run_repl()
-    assert ui.session.transcript.index("OmniAgentCS v") < ui.session.transcript.index("└─$")
+    assert ui.session.transcript.index("OMNIAGENTCS") < ui.session.transcript.index("└─$")
 
 
 def test_repl_output_routed_through_tui_output(tui_factory, monkeypatch):

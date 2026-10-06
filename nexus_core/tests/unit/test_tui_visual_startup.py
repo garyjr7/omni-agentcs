@@ -71,6 +71,7 @@ def test_ascii_art_uses_terminal_default_color():
             version="test", tools_count=16, providers_count=1,
             engagement_name="lab", audit_chain_valid=True, msfrpcd_version=None,
             llm_summary="fake/model", width=120, no_color=False, include_tip=False,
+            compact=False,
         )
     finally:
         render.set_color_enabled(original)

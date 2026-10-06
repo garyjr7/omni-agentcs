@@ -49,6 +49,13 @@ def run_wizard(paths) -> OmniConfig:
     store = None
     try:
         print("Bienvenido a OmniAgentCS — configuración inicial")
+        print(
+            "  AVISO · USO AUTORIZADO ÚNICAMENTE\n"
+            "  OmniAgentCS es una herramienta de pruebas de penetración. Úsala solo\n"
+            "  sobre objetivos para los que tengas permiso escrito. Escanear o\n"
+            "  explotar sistemas sin autorización es ilegal. Tú eres responsable del\n"
+            "  alcance (scope) que firmes en cada engagement."
+        )
         config = OmniConfig()
         system = detect_os()
         config.provisioning.available_managers = list(detect_managers())
