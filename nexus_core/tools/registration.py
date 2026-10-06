@@ -127,6 +127,15 @@ def registered_tools() -> dict[str, ToolRegistration]:
     return dict(_REGISTRATIONS)
 
 
+def unregister(tool_id: str) -> bool:
+    """Remove one explicit registration; returns whether it existed.
+
+    Used by dynamic sources (MCP) that re-sync their catalog: a tool that is no
+    longer allowlisted must disappear instead of lingering from a previous sync.
+    """
+    return _REGISTRATIONS.pop(str(tool_id), None) is not None
+
+
 def clear_registrations() -> None:
     """Drop every registration and reset discovery state (tests)."""
     _REGISTRATIONS.clear()
@@ -215,4 +224,5 @@ __all__ = [
     "register_tool",
     "registered_tools",
     "reset_discovery",
+    "unregister",
 ]

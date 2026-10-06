@@ -294,6 +294,78 @@ def test_cli_path_lists_the_files(tmp_path):
     assert code == 0 and len(lines) == 2
 
 
+def test_cli_kill_switch_reaches_the_runtime_enforcer(tmp_path):
+    """Regression: the CLI sentinel and the enforcer must be the same file.
+
+    The signed RoE left ``kill_switch_file`` empty, so an enforcer that only
+    watched that field would ignore ``omni --roe kill`` entirely.
+    """
+    save_roe(RulesOfEngagement("eng-1", "system"), paths=tmp_path)
+    enforcer = load_enforcer("eng-1", paths=tmp_path)
+    assert enforcer.stopped is False
+    run_roe_action("kill", "eng-1", paths=tmp_path)
+    assert enforcer.stopped is True
+    with pytest.raises(RoEKillSwitch):
+        enforcer.ensure_alive()
+    run_roe_action("arm", "eng-1", paths=tmp_path)
+    assert enforcer.stopped is False
+
+
+def test_cli_kill_switch_is_reported_by_show(tmp_path):
+    save_roe(RulesOfEngagement("eng-1", "system"), paths=tmp_path)
+    run_roe_action("kill", "eng-1", paths=tmp_path)
+    code, lines = run_roe_action("show", "eng-1", paths=tmp_path)
+    assert code == 0
+    assert any("DETENIDA" in line for line in lines)
+
+
+async def test_execute_tool_honours_the_cli_kill_switch(monkeypatch, tmp_path):
+    """End-to-end: create engagement \u2192 RoE \u2192 CLI kill \u2192 tool denied + audited."""
+    from nexus_core.cli.engage import build_scope
+    from nexus_core.kernel.runtime import ExecutionContext, execute_tool
+    from nexus_core.scope import EngagementStore
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("NEXUS_SCOPE_SIGNING_SECRET", "e2e-secret")
+    store = ControlStore(tmp_path / "e2e.db")
+    store.initialize()
+    scope = build_scope("e2e", "127.0.0.1/32", "e2e-secret", hours=1)
+    EngagementStore(store).create(scope)
+    engagement_id = scope.engagement_id
+
+    save_roe(RulesOfEngagement(engagement_id, "system"))
+    run_roe_action("kill", engagement_id)
+
+    run_id = store.create_run("system", {})["id"]
+    task = {
+        "id": "task-roe-e2e",
+        "tenant_id": "system",
+        "run_id": run_id,
+        "task_type": "tool.invoke",
+        "payload": {"engagement_id": engagement_id},
+    }
+    context = ExecutionContext(store, task, "worker-roe")
+    payload = {
+        "tool_id": "nexus.knowledge.record_fact",
+        "arguments": {"fact_type": "service", "key": "k", "value": {"port": 80}},
+        "identity": {"subject_id": "operator-1", "roles": ["operator"]},
+        "permissions": [],
+        "engagement_id": engagement_id,
+        "trace_id": run_id,
+    }
+    with pytest.raises(RoEKillSwitch):
+        await execute_tool(payload, context)
+
+    actions = [row["action"] for row in AuditWriter(store).export("system", trace_id=run_id)]
+    assert "roe.denied" in actions
+    assert "tool.complete" not in actions  # the handler never ran
+
+    # Re-arm and the same call goes through the gateway normally.
+    run_roe_action("arm", engagement_id)
+    result = await execute_tool(payload, context)
+    assert result["output"]["success"] is True
+
+
 # ------------------------------------------------------------------ REPL /roe
 
 

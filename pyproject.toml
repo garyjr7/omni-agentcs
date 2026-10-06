@@ -27,11 +27,22 @@ dependencies = [
     "sliver-py>=0.0.19",
     "psycopg[binary]==3.3.4",
     "prompt_toolkit>=3.0,<4",
+    # Phase 3B: MCP client (official SDK; stdio + streamable HTTP transports).
+    "mcp>=2.3,<3",
+    # Phase 3B: OS-keyring backend for the secret store (config/secrets.py).
+    "keyring>=25.7,<26",
 ]
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]==3.3.4"]
-dev = ["pytest>=8.2.0", "pytest-asyncio>=0.23.7", "pytest-cov>=5.0.0", "ruff>=0.6,<1"]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.7",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6,<1",
+    # Phase 3B: static type checking (see docs/missions/FASE3B_ECOSYSTEM.md §8).
+    "mypy>=1.11,<3",
+]
 
 [project.scripts]
 omni = "omni:main"

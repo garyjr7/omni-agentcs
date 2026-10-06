@@ -67,8 +67,10 @@ def main(argv=None) -> int:
                 assume_yes=args.yes,
                 as_json=args.json,
             )
-        if args.json:
-            print("--json requiere --doctor o --setup", file=sys.stderr)
+        # ``--json`` is shared by ``--doctor``/``--setup`` and the headless run
+        # (``omni run "<objetivo>" --json``): only reject it when neither applies.
+        if args.json and not (args.command or args.objective or args.stream_json):
+            print("--json requiere --doctor, --setup o un objetivo headless", file=sys.stderr)
             return 2
         if should_run_wizard(paths, force_no_wizard=args.no_wizard):
             config = run_wizard(paths)

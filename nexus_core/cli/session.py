@@ -234,6 +234,8 @@ class OmniSession:
         self.show_art_banner = bool(show_art_banner)
         self.worker_id = f"cli:{self.operator_id}"
         self.history: list[str] = []
+        #: Skills the operator explicitly activated for this session (opt-in).
+        self.active_skills: list[str] = []
         self.run_id = run_id
         self.resume_run_id = run_id
         self.conversation_id: str | None = None
@@ -989,6 +991,7 @@ class OmniSession:
             "agent_id": self.agent_id,
             "identity": self.agent_identity_payload,
             "permissions": list(self.permissions),
+            "active_skills": list(self.active_skills),
         }
         task = {
             "id": f"cli-{run_id}",
@@ -1084,6 +1087,90 @@ class OmniSession:
         import getpass
 
         return getpass.getpass(prompt)
+
+    def fan_out_tool(
+        self,
+        tool_id: str,
+        targets: list[str],
+        *,
+        subagent_id: str | None = None,
+        concurrency: int | None = None,
+    ) -> list[Any]:
+        """Run one read-only tool across many targets, concurrently and bounded.
+
+        The classic case is a CIDR: the same enumeration across every host, at
+        once, instead of one turn per host. Fail-closed by construction —
+        :func:`gather_readonly` refuses any profile that is not ``parallel_safe``
+        *before* scheduling a single call, so an active phase can never be
+        parallelised by accident.
+
+        Every call still goes through the governed gateway (``execute_tool``), so
+        policy, the signed scope, the RoE gate and the audit chain apply to each
+        target independently. Results come back in the caller's order; a failing
+        target yields its exception in place instead of discarding the others.
+        """
+        from nexus_core.agent import subagents
+        from nexus_core.kernel import runtime as runtime_module
+
+        profile = (
+            subagents.SUBAGENTS_BY_ID[subagent_id]
+            if subagent_id
+            else subagents.select_subagent(None)
+        )
+        ordered = [str(target) for target in (targets or [])]
+        run_id = str(
+            self.store.create_run(
+                self.tenant_id, {"source": "omni-fanout", "tool_id": tool_id}
+            )["id"]
+        )
+        AuditWriter(self.store).append(
+            tenant_id=self.tenant_id,
+            trace_id=run_id,
+            actor_id=self.agent_id,
+            action="fanout.started",
+            resource_type="tool",
+            resource_id=str(tool_id),
+            payload={
+                "subagent_id": profile.id,
+                "read_only": profile.read_only,
+                "targets": ordered,
+                "concurrency": concurrency or subagents.DEFAULT_MAX_PARALLEL,
+            },
+            decision="allow",
+        )
+        task = {
+            "id": f"fanout-{run_id}",
+            "tenant_id": self.tenant_id,
+            "run_id": run_id,
+            "task_type": "tool.fanout",
+            "payload": {"engagement_id": self.engagement_id},
+        }
+        context = ExecutionContext(self.store, task, self.worker_id)
+
+        def make_call(target: str):
+            async def call() -> Any:
+                return await runtime_module.execute_tool(
+                    {
+                        "tool_id": str(tool_id),
+                        "arguments": {"target": target},
+                        "identity": self.agent_identity_payload,
+                        "permissions": list(self.permissions),
+                        "engagement_id": self.engagement_id,
+                        "trace_id": run_id,
+                    },
+                    context,
+                )
+
+            return call
+
+        calls = [make_call(target) for target in ordered]
+        return asyncio.run(
+            subagents.gather_readonly(
+                calls,
+                subagent=profile,
+                limit=concurrency or subagents.DEFAULT_MAX_PARALLEL,
+            )
+        )
 
     # ----------------------------------------------------------------- repl
     @routed

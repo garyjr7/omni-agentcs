@@ -51,7 +51,19 @@ def test_store_names_do_not_expose_values(tmp_path):
 
 
 def test_select_backend_falls_back_to_file_without_keyring(monkeypatch):
-    monkeypatch.setattr(sys, "modules", {**sys.modules, "keyring": None})
+    # ``sys.modules["keyring"] = None`` no longer simulates a missing module once
+    # keyring has been imported earlier in the process (it is a real dependency
+    # now), so make the *import itself* fail: that is the state we mean.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "keyring":
+            raise ImportError("simulated: keyring no instalado")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
     assert select_backend().name == "file"
 
 

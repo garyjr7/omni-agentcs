@@ -244,8 +244,12 @@ class RoEEnforcer:
         stop_event: threading.Event | None = None,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], datetime] | None = None,
+        paths: Any = None,
     ):
         self.roe = roe
+        #: XDG paths context, so the sentinel the CLI writes and the one the
+        #: enforcer watches are resolved identically (see ``_kill_switch_paths``).
+        self._paths = paths
         self._stop = stop_event or threading.Event()
         self._clock = clock
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
@@ -254,12 +258,26 @@ class RoEEnforcer:
         self._active = 0
 
     # -------------------------------------------------------------- kill switch
+    def _kill_switch_paths(self) -> tuple[str, ...]:
+        """Sentinel files that halt this engagement.
+
+        The operator-declared ``kill_switch_file`` (part of the signed RoE) *and*
+        the engagement's standard XDG sentinel. Both must be honoured: ``omni
+        --roe kill`` writes the standard one, and if the enforcer only watched
+        the declared path a CLI kill switch would be silently inert.
+        """
+        paths: list[str] = []
+        declared = str(self.roe.kill_switch_file or "").strip()
+        if declared:
+            paths.append(declared)
+        paths.append(str(kill_switch_path(self.roe.engagement_id, self._paths)))
+        return tuple(dict.fromkeys(paths))
+
     @property
     def stopped(self) -> bool:
         if self._stop.is_set():
             return True
-        path = self.roe.kill_switch_file
-        return bool(path) and os.path.exists(path)
+        return any(os.path.exists(path) for path in self._kill_switch_paths())
 
     def trigger_kill_switch(self) -> None:
         """Stop every action immediately (the sentinel file is the durable form)."""
@@ -471,7 +489,7 @@ def load_enforcer(engagement_id: str | None, paths: Any = None) -> RoEEnforcer |
     if not engagement_id:
         return None
     roe = load_roe(engagement_id, paths)
-    return RoEEnforcer(roe) if roe is not None else None
+    return RoEEnforcer(roe, paths=paths) if roe is not None else None
 
 
 __all__ = [

@@ -73,6 +73,16 @@ ACTIVE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+#: Tool-id prefixes that are *operator-authorized extensions* rather than
+#: kill-chain tools (currently the MCP bridge, ``mcp.<server>.<tool>``).
+#:
+#: Why they bypass the phase subset: they are not part of the kill chain, so they
+#: cannot be assigned to one phase, and their authorization already happened
+#: out-of-band — the operator allowlisted the server, policy approval-gates the
+#: dangerous ones, the RoE gate still applies, and their output is wrapped as
+#: untrusted data. Registration *is* the opt-in; nothing is registered otherwise.
+EXTERNAL_TOOL_PREFIXES: tuple[str, ...] = ("mcp.",)
+
 #: Hard ceiling on concurrent read-only fan-out. Defence in depth against a
 #: profile or caller asking to stampede a target.
 DEFAULT_MAX_PARALLEL = 4
@@ -106,6 +116,7 @@ class SubAgentDefinition:
         return self.read_only
 
     def allows(self, tool_id: str) -> bool:
+        """Whether the tool is in this profile's own subset (not external)."""
         return tool_id in self.tools
 
     def to_dict(self) -> dict[str, Any]:
@@ -345,14 +356,32 @@ def select_for_plan(plan: Any, *, override: str | None = None) -> SubAgentDefini
     )
 
 
+def is_external(tool_id: str) -> bool:
+    """Whether ``tool_id`` is an operator-authorized extension (e.g. MCP)."""
+    return str(tool_id).startswith(EXTERNAL_TOOL_PREFIXES)
+
+
+def permits(subagent: SubAgentDefinition, tool_id: str) -> bool:
+    """Whether the active profile may propose ``tool_id``.
+
+    A profile's own subset plus every external (operator-authorized) tool. This
+    is the single predicate the loop uses, so the prompt and the enforcement can
+    never disagree.
+    """
+    return subagent.allows(tool_id) or is_external(tool_id)
+
+
 def filter_catalog(
-    subagent: SubAgentDefinition, catalog: Mapping[str, Any]
+    subagent: SubAgentDefinition,
+    catalog: Mapping[str, Any],
+    *,
+    include_external: bool = True,
 ) -> dict[str, Any]:
     """Intersect a durable catalog with a profile's subset (order-preserving)."""
     return {
         tool_id: entry
         for tool_id, entry in catalog.items()
-        if subagent.allows(tool_id)
+        if (permits(subagent, tool_id) if include_external else subagent.allows(tool_id))
     }
 
 
@@ -445,6 +474,7 @@ __all__ = [
     "COMMON_TOOLS",
     "DEFAULT_MAX_PARALLEL",
     "DEFAULT_SUBAGENT_ID",
+    "EXTERNAL_TOOL_PREFIXES",
     "PHASE_SUBAGENT",
     "SUBAGENTS",
     "SUBAGENTS_BY_ID",
@@ -452,6 +482,8 @@ __all__ = [
     "SubAgentDefinition",
     "filter_catalog",
     "gather_readonly",
+    "is_external",
+    "permits",
     "select_for_plan",
     "select_subagent",
     "validate_registry",

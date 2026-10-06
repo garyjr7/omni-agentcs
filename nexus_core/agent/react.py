@@ -28,7 +28,9 @@ from nexus_core.scope import ScopeViolation
 
 from . import memory
 from .injection import render_for_model, scan_untrusted_text
-from .subagents import filter_catalog, select_for_plan
+from .project_context import load_project_instruction, render_project_instruction
+from .skills import activate_skills, render_skills
+from .subagents import filter_catalog, permits, select_for_plan
 from .parser import (
     ACTION_REQUEST_CLARIFICATION,
     ACTION_TASK_COMPLETE,
@@ -545,6 +547,35 @@ async def run_react_loop(
     audit = AuditWriter(store)
     scope = load_engagement_scope(store, tenant_id, engagement_id)
 
+    # Project instructions (OMNI.md) and activated skills are quasi-trusted
+    # prompt channels from files a cloned repository could poison. They are read
+    # once per run, delimited, scanned, and their provenance is audited so the
+    # exact bytes that shaped the run are provable afterwards.
+    project_root = payload.get("project_root") or None
+    project_instruction = load_project_instruction(project_root)
+    from nexus_core.kernel.scope_loader import scope_signing_secret
+
+    active_skills, refused_skills = activate_skills(
+        payload.get("active_skills") or [],
+        project_root,
+        secret=scope_signing_secret(),
+    )
+    if project_instruction is not None or active_skills or refused_skills:
+        audit.append(
+            tenant_id=tenant_id,
+            trace_id=run_id,
+            actor_id=agent_id,
+            action="project.context_loaded",
+            resource_type="run",
+            resource_id=run_id,
+            payload={
+                "project": project_instruction.to_dict() if project_instruction else None,
+                "skills": [skill.to_dict() for skill in active_skills],
+                "refused_skills": list(refused_skills),
+            },
+            decision="allow",
+        )
+
     conversation_id = conversation_id or memory.ensure_conversation(
         store, tenant_id, run_id, agent_id
     )
@@ -728,6 +759,8 @@ async def run_react_loop(
             facts_summary=facts_text,
             plan_summary=plan.render(),
             subagent_summary=subagent.describe(),
+            project_summary=render_project_instruction(project_instruction),
+            skills_summary=render_skills(active_skills),
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
         messages.extend(
@@ -951,7 +984,7 @@ async def run_react_loop(
         # refused exactly like an invented one (fail-closed) and audited with the
         # profile that refused it. The full catalog decides "invented"; the subset
         # decides "not mine".
-        if not subagent.allows(action.tool_id):
+        if not permits(subagent, action.tool_id):
             observation = {
                 "success": False,
                 "error": (

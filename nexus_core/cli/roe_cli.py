@@ -69,7 +69,9 @@ def run_roe_action(
             "  la RoE es opcional: sin ella manda solo el scope firmado",
             f"  ruta esperada: {roe_path(engagement_id, paths)}",
         ]
-    enforcer = RoEEnforcer(roe)
+    # Pass the same paths context the kill/arm branches use, so ``show`` reports
+    # the sentinel the CLI actually writes rather than a different location.
+    enforcer = RoEEnforcer(roe, paths=paths)
     snapshot = enforcer.snapshot()
     lines = roe.describe().splitlines()
     lines.append(

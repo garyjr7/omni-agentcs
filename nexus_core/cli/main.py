@@ -33,6 +33,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--objective", metavar="TEXTO", help="ejecuta un objetivo one-shot y sale (sin REPL)"
     )
     parser.add_argument(
+        "command",
+        nargs="*",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--stream-json",
+        action="store_true",
+        help="modo headless: emite NDJSON (un evento por línea) y sale",
+    )
+    parser.add_argument(
+        "--skill",
+        action="append",
+        metavar="NOMBRE",
+        help="activa una skill de .agents/skills/<NOMBRE>/SKILL.md (repetible)",
+    )
+    parser.add_argument(
         "--max-iterations",
         type=int,
         default=12,
@@ -207,6 +223,22 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     render.configure_color(no_color=args.no_color)
 
+    # ``omni run "<objetivo>" [--json|--stream-json]``: a light subcommand shim.
+    # The CLI is argparse-by-flags, so ``run`` is a positional we interpret
+    # rather than a real subparser (see docs/missions/FASE3B_ECOSYSTEM.md §7).
+    objective = args.objective
+    headless_mode: str | None = None
+    if args.command:
+        if args.command[0] != "run":
+            render.render_error(f"subcomando desconocido: {args.command[0]}")
+            return 2
+        objective = " ".join(args.command[1:]).strip() or objective
+        headless_mode = "stream" if args.stream_json else "json"
+    elif args.stream_json and objective:
+        headless_mode = "stream"
+    elif args.json and objective:
+        headless_mode = "json"
+
     from nexus_core.config.loader import effective_db_path, load_config
     from nexus_core.config.xdg import resolve_xdg_paths
     paths = paths or resolve_xdg_paths()
@@ -250,7 +282,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     # the banner.
     from .tui.session import should_use_tui
 
-    tui_expected = not (args.no_tui or args.objective) and should_use_tui()
+    tui_expected = not (args.no_tui or objective) and should_use_tui()
     engagement, exit_code = select_engagement(
         engagements, args.engagement, announce=not tui_expected
     )
@@ -286,13 +318,20 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         run_id=args.resume,
         trust_mode=args.trust_mode,
         no_color=args.no_color,
-        use_tui=False if args.no_tui or args.objective else None,
+        use_tui=False if args.no_tui or objective else None,
         engagement_names=[scope.name for scope in engagements],
         fullscreen=args.fullscreen,
         show_art_banner=args.banner,
     )
-    if args.objective:
-        result = session.run_objective(args.objective)
+    # Skills are opt-in per run: the operator names them, nothing is implicit.
+    session.active_skills = list(args.skill or [])
+
+    if objective and headless_mode:
+        from .headless import run_headless
+
+        return run_headless(session, objective, mode=headless_mode, max_iterations=args.max_iterations)
+    if objective:
+        result = session.run_objective(objective)
         if result is None:
             return 1
         return 0 if result.status in ACCEPTABLE_ONESHOT_STATUSES else 1

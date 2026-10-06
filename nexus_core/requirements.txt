@@ -7,6 +7,10 @@ google-genai>=1.30,<2
 msgpack>=1.2.1,<2
 # Sliver C2 gRPC client (nexus.c2.* durable tools).
 sliver-py>=0.0.19
+# MCP client: official SDK, allowlisted servers only (nexus_core/integrations/mcp/).
+mcp>=2.3,<3
+# OS-keyring secret backend (nexus_core/config/secrets.py).
+keyring>=25.7,<26
 # Existing optional PostgreSQL and telemetry backends.
 psycopg[binary]==3.3.4
 opentelemetry-api>=1.27,<2

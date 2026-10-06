@@ -1294,6 +1294,77 @@ def cmd_roe(session: "OmniSession", args: list[str]) -> None:
         render.render_error("uso: /roe [show|kill|arm|path]")
 
 
+def cmd_skills(session: "OmniSession", args: list[str]) -> None:
+    """Lista, previsualiza y activa skills (`.agents/skills/<nombre>/SKILL.md`)."""
+    from nexus_core.agent.skills import TRUST_SIGNED, discover_skills, load_skill
+    from nexus_core.kernel.scope_loader import scope_signing_secret
+
+    secret = scope_signing_secret()
+    action = args[0].lower() if args else "list"
+    if action in {"list", "ls"}:
+        found = discover_skills(secret=secret)
+        if not found:
+            render.write("  (sin skills en .agents/skills/)")
+            return
+        active = set(getattr(session, "active_skills", None) or [])
+        for name, skill in sorted(found.items()):
+            marker = "*" if name in active else " "
+            label = "firmada" if skill.trust == TRUST_SIGNED else skill.trust
+            render.write(f" {marker} {name:<18} {label:<9} {skill.sha256[:12]}…")
+        render.write("  /skills show NOMBRE para previsualizar · /skills use NOMBRE para activar")
+        return
+    if action in {"show", "preview"}:
+        if len(args) < 2:
+            render.render_error("uso: /skills show NOMBRE")
+            return
+        skill = load_skill(args[1], secret=secret)
+        if skill is None:
+            render.render_error(f"skill no encontrada: {args[1]}")
+            return
+        if not skill.usable:
+            render.render_error(
+                f"skill '{skill.name}': firma HMAC inválida; se rechaza y no se carga"
+            )
+            return
+        render.write(
+            render.paint(
+                f"skill {skill.name} · {skill.trust} · sha256={skill.sha256} · {skill.path}",
+                render.BOLD,
+            )
+        )
+        if skill.signals:
+            render.write(f"  ⚠ señales de inyección: {', '.join(skill.signals)}")
+        for line in skill.content.splitlines():
+            render.write(f"  {line}")
+        render.write(
+            "  se enviará al modelo delimitado como datos no confiables; "
+            "actívala con /skills use NOMBRE"
+        )
+        return
+    if action in {"use", "on"}:
+        if len(args) < 2:
+            render.render_error("uso: /skills use NOMBRE")
+            return
+        skill = load_skill(args[1], secret=secret)
+        if skill is None:
+            render.render_error(f"skill no encontrada: {args[1]}")
+            return
+        if not skill.usable:
+            render.render_error(f"skill '{skill.name}': firma inválida; no se activa")
+            return
+        active = list(getattr(session, "active_skills", None) or [])
+        if skill.name not in active:
+            active.append(skill.name)
+        session.active_skills = active
+        render.write(render.paint(f"✓ skill '{skill.name}' activada", render.GREEN))
+        return
+    if action in {"off", "clear", "reset"}:
+        session.active_skills = []
+        render.write("skills desactivadas")
+        return
+    render.render_error(f"acción desconocida: {action} (usa list|show|use|off)")
+
+
 def cmd_help(session: "OmniSession", args: list[str]) -> None:
     """Muestra esta ayuda."""
     render.write(render.paint("Comandos disponibles:", render.BOLD))
@@ -1340,6 +1411,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/status": cmd_status,
     "/secrets": cmd_secrets,
     "/roe": cmd_roe,
+    "/skills": cmd_skills,
     "/exploit": cmd_exploit,
     "/sliver": cmd_sliver,
     "/implants": cmd_implants,
