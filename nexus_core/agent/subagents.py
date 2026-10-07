@@ -101,6 +101,28 @@ DEFAULT_MAX_PARALLEL = 4
 #: restrictive read-only profile, so an unrecognised phase fails *closed*.
 DEFAULT_SUBAGENT_ID = "recon"
 
+#: Tools of the web-enumeration subset. ``web`` (the refinement) is exactly
+#: these; ``services`` (the enumeration entry profile) adds the non-web ones on
+#: top, so enumerating a target that exposes both HTTP and, say, FTP never needs
+#: a phase change to reach either (P0, Fase 3.7).
+WEB_ENUM_TOOLS: frozenset[str] = frozenset(
+    {
+        "nexus.recon.httpx",
+        "nexus.recon.gobuster",
+        "nexus.recon.whatweb",
+        "nexus.web.nuclei",
+        "nexus.web.ffuf",
+        "nexus.web.dalfox",
+    }
+)
+
+#: Iterations at the start of a new profile during which the previous profile's
+#: read-only tools stay available (P1, Fase 3.7). The planner closes ``recon``
+#: with the first ``service`` fact, so without this grace the agent loses in the
+#: very iteration it needs them the tools that are meant to enumerate that
+#: service - which is what made the FTP chain unreachable in the E2E #3.
+PHASE_GRACE_ITERATIONS = 2
+
 
 def _with_common(tools: Iterable[str]) -> frozenset[str]:
     return COMMON_TOOLS | frozenset(tools)
@@ -156,7 +178,7 @@ class SubAgentDefinition:
         )
 
 
-#: The eight profiles, in kill-chain order. Tool subsets are exact catalog ids
+#: The nine profiles, in kill-chain order. Tool subsets are exact catalog ids
 #: (a test asserts every id exists in the durable catalog).
 SUBAGENTS: tuple[SubAgentDefinition, ...] = (
     SubAgentDefinition(
@@ -185,19 +207,31 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         label="Enumeración web",
         phase="enumeration",
         focus="enumerar endpoints, tecnologías y vulnerabilidades web",
-        tools=_with_common(
-            {
-                "nexus.recon.httpx",
-                "nexus.recon.gobuster",
-                "nexus.recon.whatweb",
-                "nexus.web.nuclei",
-                "nexus.web.ffuf",
-                "nexus.web.dalfox",
-            }
-        ),
+        tools=_with_common(WEB_ENUM_TOOLS),
         token_budget=80_000,
         max_iterations=10,
         read_only=True,
+    ),
+    # P0 (Fase 3.7): the enumeration entry profile is *service*-aware, not
+    # web-only. It carries every read-only enumeration tool the catalog has -
+    # FTP and SMB (netexec) next to the web trio - so a target whose first fact is
+    # a non-web ``service`` can still be enumerated. ``web`` stays as the
+    # refinement once web-specific evidence (``endpoint``/``vulnerability``)
+    # exists, which tightens the subset back to just the web surface.
+    # ``nexus.recon.netexec`` is classified active, so this profile is not
+    # read-only: it therefore never fans out. Governance is untouched - a subset
+    # can only shrink the surface, never widen authority.
+    SubAgentDefinition(
+        id="services",
+        label="Enumeración de servicios",
+        phase="enumeration",
+        focus="enumerar cada servicio hallado (FTP, SMB, HTTP…) y registrar usuarios y pistas",
+        tools=_with_common(
+            WEB_ENUM_TOOLS | {"nexus.recon.ftp", "nexus.recon.netexec"}
+        ),
+        token_budget=80_000,
+        max_iterations=10,
+        read_only=False,
     ),
     SubAgentDefinition(
         id="cred",
@@ -310,9 +344,11 @@ SUBAGENTS_BY_ID: Mapping[str, SubAgentDefinition] = {item.id: item for item in S
 SUBAGENT_IDS: tuple[str, ...] = tuple(item.id for item in SUBAGENTS)
 
 #: Deterministic phase -> profile table. Mirrors the planner's phase ids.
+#: ``enumeration`` enters through ``services`` (any service), and ``_refine``
+#: narrows to ``web``/``cred`` as the blackboard gains web or credential facts.
 PHASE_SUBAGENT: Mapping[str, str] = {
     "recon": "recon",
-    "enumeration": "web",
+    "enumeration": "services",
     "exploitation": "exploit",
     "privilege_escalation": "privesc",
     "post_exploitation": "postexploit",
@@ -378,7 +414,10 @@ def _refine(phase: str, counts: Mapping[str, int]) -> str | None:
     """Blackboard-driven refinement of the default phase profile.
 
     Once credentials or users are on the board, enumeration is about *testing*
-    them, so the credential profile takes over; endpoints alone keep it on web.
+    them, so the credential profile takes over; web-specific evidence
+    (endpoints/vulnerabilities) narrows enumeration to the web profile. With no
+    such evidence the phase keeps the default ``services`` profile, which can
+    enumerate whatever service was found (P0, Fase 3.7).
     """
     if phase == "enumeration":
         if counts.get("credential") or counts.get("user"):
@@ -386,6 +425,30 @@ def _refine(phase: str, counts: Mapping[str, int]) -> str | None:
         if counts.get("endpoint") or counts.get("vulnerability"):
             return "web"
     return None
+
+
+def with_phase_grace(
+    subagent: SubAgentDefinition,
+    previous: SubAgentDefinition | None,
+    *,
+    iterations: int = 1,
+) -> SubAgentDefinition:
+    """Return ``subagent`` widened with the previous profile's read-only tools.
+
+    Only during the first ``PHASE_GRACE_ITERATIONS`` iterations of a profile, and
+    only with tools that are themselves read-only (``ACTIVE_TOOLS`` are never
+    inherited, so the grace can never widen authority). The result is a *derived
+    profile*, not a second permission check: the prompt the model sees and the
+    subset the loop enforces stay the same object (P1, Fase 3.7).
+    """
+    if previous is None or previous.id == subagent.id:
+        return subagent
+    if iterations > PHASE_GRACE_ITERATIONS:
+        return subagent
+    inherited = frozenset(previous.tools - ACTIVE_TOOLS)
+    if inherited <= subagent.tools:
+        return subagent
+    return replace(subagent, tools=subagent.tools | inherited)
 
 
 def select_for_plan(plan: Any, *, override: str | None = None) -> SubAgentDefinition:
@@ -516,12 +579,14 @@ __all__ = [
     "DEFAULT_MAX_PARALLEL",
     "DEFAULT_SUBAGENT_ID",
     "EXTERNAL_TOOL_PREFIXES",
+    "PHASE_GRACE_ITERATIONS",
     "PHASE_SUBAGENT",
     "SUBAGENTS",
     "SUBAGENTS_BY_ID",
     "SUBAGENT_IDS",
     "BUDGET_ENV_PREFIX",
     "SubAgentDefinition",
+    "WEB_ENUM_TOOLS",
     "apply_budget_overrides",
     "budget_env_name",
     "filter_catalog",
@@ -531,4 +596,5 @@ __all__ = [
     "select_for_plan",
     "select_subagent",
     "validate_registry",
+    "with_phase_grace",
 ]

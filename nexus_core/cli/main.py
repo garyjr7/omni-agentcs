@@ -55,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="máximo de iteraciones del bucle ReAct (default: 12)",
     )
+    # P2 (Fase 3.7): pin the subagent profile. The loop already accepted
+    # ``payload["subagent"]``; without a flag an operator whose profile lacked
+    # the right tool had no way to retry (``--resume``) with the right one.
+    from nexus_core.agent.subagents import SUBAGENT_IDS
+
+    parser.add_argument(
+        "--subagent",
+        metavar="ID",
+        choices=list(SUBAGENT_IDS),
+        help="fija el perfil de subagente del run (por defecto lo elige el planner)",
+    )
     parser.add_argument("--no-color", action="store_true", help="desactiva la salida ANSI")
     parser.add_argument("--no-tui", action="store_true", help="usa readline en lugar de la TUI")
     parser.add_argument(
@@ -404,6 +415,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         engagement_names=[scope.name for scope in engagements],
         fullscreen=args.fullscreen,
         show_art_banner=args.banner,
+        subagent=args.subagent,
     )
     # Skills are opt-in per run: the operator names them, nothing is implicit.
     session.active_skills = list(args.skill or [])

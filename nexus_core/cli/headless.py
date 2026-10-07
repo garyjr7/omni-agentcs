@@ -214,6 +214,9 @@ def run_headless(
             "identity": session.agent_identity_payload,
             "permissions": list(session.permissions),
             "active_skills": list(getattr(session, "active_skills", []) or []),
+            # P2 (Fase 3.7): the operator pin from ``--subagent``; ``None`` lets
+            # the planner choose.
+            "subagent": getattr(session, "subagent_override", None),
         },
     }
     context = ExecutionContext(session.store, task, session.worker_id)

@@ -211,6 +211,7 @@ class OmniSession:
         engagement_names: list[str] | None = None,
         fullscreen: bool = True,
         show_art_banner: bool = False,
+        subagent: str | None = None,
     ) -> None:
         self.store = store
         self.tenant_id = tenant_id
@@ -236,6 +237,10 @@ class OmniSession:
         self.history: list[str] = []
         #: Skills the operator explicitly activated for this session (opt-in).
         self.active_skills: list[str] = []
+        #: ``--subagent``/``/subagent``: an operator pin for the profile of the
+        #: next run (P2, Fase 3.7). ``None`` means "the planner decides"; an
+        #: unknown id is rejected by ``subagents.select_subagent``, fail-closed.
+        self.subagent_override: str | None = str(subagent) if subagent else None
         self.run_id = run_id
         self.resume_run_id = run_id
         self.conversation_id: str | None = None
@@ -992,6 +997,7 @@ class OmniSession:
             "identity": self.agent_identity_payload,
             "permissions": list(self.permissions),
             "active_skills": list(self.active_skills),
+            "subagent": self.subagent_override,
         }
         task = {
             "id": f"cli-{run_id}",

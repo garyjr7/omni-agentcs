@@ -36,6 +36,7 @@ def test_expected_profiles_exist():
     assert subagents.SUBAGENT_IDS == (
         "recon",
         "web",
+        "services",
         "cred",
         "exploit",
         "postexploit",
@@ -90,7 +91,7 @@ def test_read_only_profile_with_active_tool_is_reported(monkeypatch):
     ("phase", "expected"),
     [
         ("recon", "recon"),
-        ("enumeration", "web"),
+        ("enumeration", "services"),
         ("exploitation", "exploit"),
         ("privilege_escalation", "privesc"),
         ("post_exploitation", "postexploit"),
@@ -106,6 +107,41 @@ def test_selection_refines_to_credential_profile_when_a_user_is_known():
     assert subagents.select_subagent("enumeration", counts={"user": 1}).id == "cred"
     assert subagents.select_subagent("enumeration", counts={"credential": 2}).id == "cred"
     assert subagents.select_subagent("enumeration", counts={"endpoint": 3}).id == "web"
+
+
+def test_enumeration_with_only_a_service_fact_can_still_enumerate_it():
+    """P0 regression (E2E #3): a lone ``service`` fact must not select a subset
+    that cannot touch that service. It used to pick ``web`` (no FTP/SMB)."""
+    profile = subagents.select_subagent("enumeration", counts={"service": 1})
+    assert profile.id == "services"
+    assert "nexus.recon.ftp" in profile.tools
+    assert "nexus.recon.netexec" in profile.tools
+    # The web surface stays reachable from the same profile (no new dead end).
+    assert subagents.WEB_ENUM_TOOLS <= profile.tools
+    # The refinement still tightens once web-specific evidence exists.
+    assert "nexus.recon.ftp" not in subagents.SUBAGENTS_BY_ID["web"].tools
+
+
+def test_phase_grace_inherits_only_read_only_tools_for_two_iterations():
+    recon = subagents.SUBAGENTS_BY_ID["recon"]
+    cred = subagents.SUBAGENTS_BY_ID["cred"]  # active profile
+    graced = subagents.with_phase_grace(cred, recon, iterations=1)
+    assert "nexus.recon.ftp" in graced.tools
+    assert "nexus.recon.nmap" in graced.tools
+    assert not (graced.tools - cred.tools) & subagents.ACTIVE_TOOLS
+    assert graced.max_iterations == cred.max_iterations
+    # Past the grace window, or within the same profile, nothing changes.
+    assert subagents.with_phase_grace(cred, recon, iterations=3) is cred
+    assert subagents.with_phase_grace(recon, recon, iterations=1) is recon
+    assert subagents.with_phase_grace(recon, None) is recon
+
+
+def test_phase_grace_never_inherits_active_tools():
+    recon = subagents.SUBAGENTS_BY_ID["recon"]
+    lateral = subagents.SUBAGENTS_BY_ID["lateral"]
+    graced = subagents.with_phase_grace(recon, lateral, iterations=1)
+    assert not (graced.tools - recon.tools) & subagents.ACTIVE_TOOLS
+    assert "nexus.attack.impacket_psexec" not in graced.tools
 
 
 def test_unknown_phase_fails_closed_to_the_most_restrictive_profile():

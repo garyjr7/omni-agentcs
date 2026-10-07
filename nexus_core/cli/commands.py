@@ -1159,6 +1159,26 @@ def cmd_trust(session: "OmniSession", args: list[str]) -> None:
     )
 
 
+def cmd_subagent(session: "OmniSession", args: list[str]) -> None:
+    """/subagent [ID|auto]: fija o limpia el perfil de subagente del próximo run."""
+    from nexus_core.agent import subagents
+
+    value = str(args[0]).strip() if args else ""
+    if not value:
+        render.write(
+            f"subagente: {session.subagent_override or '(automático)'} · "
+            f"disponibles: {', '.join(subagents.SUBAGENT_IDS)}"
+        )
+    elif value.lower() in {"auto", "off", "none", "clear"}:
+        session.subagent_override = None
+        render.write("subagente: (automático, lo elige el planner)")
+    elif value in subagents.SUBAGENT_IDS:
+        session.subagent_override = value
+        render.write(f"subagente: {value} (se aplica al siguiente objetivo)")
+    else:
+        render.render_error(f"perfil desconocido: {value} (usa /subagent sin argumentos)")
+
+
 def cmd_status(session: "OmniSession", args: list[str]) -> None:
     """/status [on|off|show]: muestra u oculta la barra (preferencia persistente)."""
     from .tui.status import render_status_plain, save_status_preference
@@ -1453,6 +1473,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/ask": cmd_ask,
     "/chat": cmd_chat,
     "/trust": cmd_trust,
+    "/subagent": cmd_subagent,
     "/status": cmd_status,
     "/secrets": cmd_secrets,
     "/roe": cmd_roe,

@@ -34,7 +34,7 @@ from .observations import bounded_context, prepare_observation
 from .preflight import unavailable_tools_from_env
 from .project_context import load_project_instruction, render_project_instruction
 from .skills import activate_skills, render_skills
-from .subagents import filter_catalog, permits, select_for_plan
+from .subagents import filter_catalog, permits, select_for_plan, with_phase_grace
 from .parser import (
     ACTION_REQUEST_CLARIFICATION,
     ACTION_TASK_COMPLETE,
@@ -789,6 +789,8 @@ async def run_react_loop(
     last_phase: str | None = None
     last_plan: Any = None
     last_subagent_id: str | None = None
+    last_selected: Any = None
+    previous_profile: Any = None
     active_subagent_id: str | None = None
     subagent_iterations = 0
     # Degradation state (B3): a tool that keeps failing *as a tool* is retired
@@ -892,13 +894,27 @@ async def run_react_loop(
 
         plan, facts_text = _blackboard_view(store, tenant_id, engagement_id)
         last_plan = plan
-        subagent = select_for_plan(plan, override=subagent_override)
-        active_subagent_id = subagent.id
+        selected = select_for_plan(plan, override=subagent_override)
         if plan.current != last_phase:
             # A new phase gets a fresh wall-clock allowance.
             phase_started = time.monotonic()
-        if subagent.id != last_subagent_id:
+        changed = selected.id != last_subagent_id
+        if changed:
             subagent_iterations = 0
+            # The profile this one replaces. It stays frozen for the grace
+            # window, so the inherited read-only tools last more than the
+            # transition iteration itself.
+            previous_profile = last_selected
+        subagent_iterations += 1
+        # P1 (Fase 3.7): the first iterations of a new profile keep the previous
+        # profile's read-only tools, so the tools that discovered a service are
+        # not withdrawn in the very iteration that must enumerate it.
+        subagent = with_phase_grace(
+            selected, previous_profile, iterations=subagent_iterations
+        )
+        last_selected = selected
+        active_subagent_id = subagent.id
+        if changed:
             store.append_run_event(
                 tenant_id,
                 run_id,
@@ -909,11 +925,15 @@ async def run_react_loop(
                     "phase": plan.current,
                     "read_only": subagent.read_only,
                     "token_budget": subagent.token_budget,
+                    # P3 (Fase 3.7): the profile's subset, so a lock like the one
+                    # this phase fixes is visible live in the NDJSON (a binary
+                    # missing at preflight is announced separately, at
+                    # iteration 0, by ``react.tool_unavailable``).
+                    "tools": sorted(subagent.tools),
                     "iteration": iteration,
                 },
             )
-            last_subagent_id = subagent.id
-        subagent_iterations += 1
+            last_subagent_id = selected.id
         # Fail closed on a subagent that exhausted its own allowance: the next
         # phase (or a human) picks up, instead of one profile burning the run.
         if subagent_iterations > subagent.max_iterations:
