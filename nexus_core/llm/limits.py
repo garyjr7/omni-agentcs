@@ -87,6 +87,35 @@ def is_rate_limit_status(status: Any) -> bool:
         return False
 
 
+def mentions_output_token_limit(error: Any) -> bool:
+    """True when a 429 is about the *output* reservation, not the request rate.
+
+    Groq answers a ``max_tokens`` larger than the model's per-minute output
+    budget (OTPM) with **429**, not 413 (Fase 4.0: ``qwen/qwen3.8-27b`` has
+    OTPM 1000 while the ReAct default reserved 1536). The body names the output
+    limit, so the client can shrink the reservation exactly like the 413 path
+    instead of retrying the same oversized request forever.
+    """
+    text = str(error).lower()
+    return (
+        "output tokens per minute" in text
+        or "otpm" in text
+        or "reduce max_tokens" in text
+    )
+
+
+def mentions_input_token_limit(error: Any) -> bool:
+    """True when a 413 is about the *input* size, not the output reservation.
+
+    Free-tier Groq enforces a per-minute **input** budget (ITPM). Fase 4.0: with
+    ``qwen/qwen3.8-27b`` (ITPM 7000) the accumulated ReAct context reached 7136
+    and every retry failed, because shrinking ``max_tokens`` cannot shrink the
+    prompt. Detecting this lets the client trim the conversation instead.
+    """
+    text = str(error).lower()
+    return "input tokens per minute" in text or "itpm" in text
+
+
 def provider_tpm(provider: Any) -> int | None:
     """Reference TPM of a provider (``None`` when unknown; ``0`` means unlimited)."""
     key = str(getattr(provider, "value", provider) or "").strip().lower()
@@ -243,6 +272,8 @@ __all__ = [
     "backoff_base_seconds",
     "estimate_request_tokens",
     "is_rate_limit_status",
+    "mentions_input_token_limit",
+    "mentions_output_token_limit",
     "pace_request",
     "provider_tpm",
     "record_provider_usage",

@@ -73,6 +73,20 @@ def result_payload(result: Any, run_id: str) -> dict[str, Any]:
     }
 
 
+def llm_identity(session: Any) -> dict[str, str | None]:
+    """Provider/model actually used, for the ``run.complete`` record (Fase 4.0).
+
+    The run report needs to know which model produced a trace; the NDJSON did
+    not carry it. Defensive: an unbuildable client reports ``None``, never raises.
+    """
+    client = getattr(session, "llm_client", None)
+    config = getattr(client, "config", None) or getattr(
+        getattr(client, "primary", None), "config", None
+    )
+    provider = getattr(getattr(config, "provider", None), "value", None)
+    return {"provider": provider, "model": getattr(config, "model", None)}
+
+
 class _EventEmitter(threading.Thread):
     """Polls the durable run events and audit trail, emitting new NDJSON lines."""
 
@@ -257,6 +271,7 @@ def run_headless(
 
     payload = result_payload(result, run_id)
     payload["duration_seconds"] = round(time.monotonic() - started, 3)
+    payload.update(llm_identity(session))
     write_line(out, payload)
     return 0 if payload["status"] in {"completed", "max_iterations", "clarification"} else 1
 
@@ -275,6 +290,7 @@ def _trust_approval(session: Any):
 __all__ = [
     "STREAMED_AUDIT_ACTIONS",
     "STREAM_INTERVAL",
+    "llm_identity",
     "result_payload",
     "run_headless",
     "write_line",

@@ -52,6 +52,8 @@ from .limits import (
     backoff_base_seconds,
     estimate_request_tokens,
     is_rate_limit_status,
+    mentions_input_token_limit,
+    mentions_output_token_limit,
     pace_request,
     record_provider_usage,
 )
@@ -223,6 +225,24 @@ class BaseLLMClient(abc.ABC):
 
 # --- Concrete Client Implementations ---
 
+
+def trim_oldest_messages(
+    api_messages: List[Dict[str, Any]], *, keep: int = 6
+) -> List[Dict[str, Any]]:
+    """Drop the oldest non-system messages, keeping the system prompt.
+
+    Fase 4.0: when a provider rejects a request for exceeding its per-minute
+    *input* budget (Groq ITPM), only shrinking the prompt can help. The system
+    prompt already carries a summarised history block, so dropping the oldest
+    turns loses the least context.
+    """
+    system = [m for m in api_messages if m.get("role") == "system"]
+    rest = [m for m in api_messages if m.get("role") != "system"]
+    if len(rest) <= keep:
+        return api_messages
+    return system + rest[-keep:]
+
+
 class OpenAIClient(BaseLLMClient):
     """LLM client for OpenAI models."""
 
@@ -303,15 +323,31 @@ class OpenAIClient(BaseLLMClient):
                 if not is_rate_limit_status(status) or attempt + 1 == max_retries:
                     self._logger.error(f"OpenAI API error: {e}")
                     raise NexusLLMError(f"OpenAI API error: {e}") from e
-                if status == 413:
+                # 413 is "too large"; some providers (Groq) answer an oversized
+                # *output* reservation with 429/OTPM instead. Both mean "shrink
+                # the reservation", so treat them the same.
+                if status == 413 or (
+                    status == 429 and mentions_output_token_limit(e)
+                ):
                     shrunk = max(
                         MIN_COMPLETION_TOKENS, int(request_params["max_tokens"]) // 2
                     )
                     self._logger.warning(
-                        "Provider rejected the request as too large (413); "
+                        f"Provider rejected the request as too large (status {status}); "
                         f"shrinking max_tokens {request_params['max_tokens']} -> {shrunk}."
                     )
                     request_params["max_tokens"] = shrunk
+                # An *input*-token rejection cannot be fixed by shrinking the
+                # reservation: trim the oldest conversation turns instead.
+                if status == 413 and mentions_input_token_limit(e):
+                    trimmed = trim_oldest_messages(request_params["messages"])
+                    if len(trimmed) < len(request_params["messages"]):
+                        self._logger.warning(
+                            "Request exceeds the provider's input budget (ITPM); "
+                            f"trimming context {len(request_params['messages'])} -> "
+                            f"{len(trimmed)} messages."
+                        )
+                        request_params["messages"] = trimmed
                 wait_time = backoff_factor * (2 ** attempt)
                 self._logger.warning(
                     f"Provider rate/token limit (status {status}). "

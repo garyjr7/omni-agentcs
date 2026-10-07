@@ -224,6 +224,28 @@ def _blackboard_view(
     return plan_from_summary(summary, engagement_id=engagement_id), (rendered or empty)
 
 
+def _playbook_guidance(
+    store: Any, tenant_id: str, engagement_id: str | None
+) -> str:
+    """Render the applicable deterministic playbooks for the prompt.
+
+    Fase 4.0: the chains already existed (``nexus_core.agent.playbooks``) but
+    only reached the model through a tool it had to *choose* to call, so the E2E
+    #5 walked into the wrong service. Never raises: guidance must not kill a run.
+    """
+    if not engagement_id or store is None:
+        return ""
+    try:
+        from nexus_core.kernel.blackboard import Blackboard
+
+        from .playbooks import render_playbook_matches, select_playbooks
+
+        facts = Blackboard(store).list_facts(tenant_id, engagement_id)
+        return render_playbook_matches(select_playbooks(facts))
+    except Exception:  # noqa: BLE001 - guidance must never kill a run
+        return ""
+
+
 def _audit_step(
     audit: AuditWriter,
     *,
@@ -1053,6 +1075,7 @@ async def run_react_loop(
             subagent_summary=subagent.describe(),
             project_summary=render_project_instruction(project_instruction),
             skills_summary=render_skills(active_skills),
+            playbook_summary=_playbook_guidance(store, tenant_id, engagement_id),
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
         # Bound the raw history: a shared work session accumulates every prior

@@ -136,8 +136,9 @@ def gobuster_definition(tenant_id: str = "system") -> ToolDefinition:
         tenant_id=tenant_id,
         description=(
             "Brute force de directorios/ficheros o subdominios. Requiere "
-            "wordlist. Reemplaza/complementa a ffuf con mejor detección de "
-            "backups y extensiones comunes."
+            "wordlist (en el workspace o en un directorio de sistema, p. ej. "
+            "/usr/share/dirb/wordlists/common.txt). Reemplaza/complementa a ffuf "
+            "con mejor detección de backups y extensiones comunes."
         ),
         input_schema={
             "type": "object",

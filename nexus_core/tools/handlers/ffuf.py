@@ -31,6 +31,31 @@ FFUF_ALLOWED_METHODS = ("GET", "POST", "HEAD")
 #: Per-request HTTP timeout handed to ffuf itself.
 FFUF_REQUEST_TIMEOUT_SECONDS = 10
 
+#: Read-only system directories whose wordlists the tools may reference. The
+#: wordlist path is attacker-influenced, so the default rule is "inside the
+#: workspace"; but on a normal Kali the installed wordlists live under
+#: /usr/share and the tools were therefore unusable (E2E #5 burned three
+#: iterations on it). Allowing these read-only dirs keeps the boundary (still no
+#: arbitrary file reads) while letting the agent use a real wordlist. Override
+#: with NEXUS_WORDLIST_DIRS (os.pathsep-separated).
+WORDLIST_DIRS_ENV = "NEXUS_WORDLIST_DIRS"
+DEFAULT_SYSTEM_WORDLIST_DIRS = (
+    "/usr/share/dirb/wordlists",
+    "/usr/share/seclists",
+    "/usr/share/wordlists",
+)
+
+
+def system_wordlist_dirs() -> tuple[Path, ...]:
+    """Resolved, allowlisted system wordlist directories."""
+    raw = os.getenv(WORDLIST_DIRS_ENV)
+    values = raw.split(os.pathsep) if raw else DEFAULT_SYSTEM_WORDLIST_DIRS
+    return tuple(Path(value).resolve() for value in values if str(value).strip())
+
+
+def _inside(candidate: Path, root: Path) -> bool:
+    return candidate == root or root in candidate.parents
+
 #: Structural flags. They are always built by the handler from the validated
 #: arguments (never supplied by the model) because they define the target, the
 #: input file and the request volume of the run.
@@ -172,10 +197,12 @@ def validate_and_canonicalize_ffuf_flags(
 
 
 def resolve_wordlist(workspace_root: str | Path, wordlist: str) -> str:
-    """Resolve a wordlist path and require it to live inside the workspace.
+    """Resolve a wordlist path and require it to be inside an allowed root.
 
     The wordlist is attacker-influenced data (it comes from the model), so a
-    path traversal would turn ffuf into an arbitrary-file reader. The ephemeral
+    path traversal would turn ffuf into an arbitrary-file reader. The path must
+    therefore live inside the workspace *or* inside a read-only system wordlist
+    directory (:func:`system_wordlist_dirs`); never anywhere else. The ephemeral
     sandbox HOME lives inside the workspace but is sandbox plumbing, so it is
     off-limits too.
     """
@@ -184,11 +211,18 @@ def resolve_wordlist(workspace_root: str | Path, wordlist: str) -> str:
     if not candidate.is_absolute():
         candidate = root / candidate
     candidate = candidate.resolve()
-    if candidate != root and root not in candidate.parents:
-        raise ValueError("ffuf wordlist must live inside the workspace")
-    sandbox_home = root / SANDBOX_HOME_DIRNAME
-    if candidate == sandbox_home or sandbox_home in candidate.parents:
-        raise ValueError("ffuf wordlist must not live in the sandbox HOME")
+    in_workspace = _inside(candidate, root)
+    in_system = any(_inside(candidate, directory) for directory in system_wordlist_dirs())
+    if not in_workspace and not in_system:
+        allowed = ", ".join(str(directory) for directory in system_wordlist_dirs())
+        raise ValueError(
+            "ffuf wordlist must live inside the workspace or a configured "
+            f"system wordlist dir ({allowed})"
+        )
+    if in_workspace:
+        sandbox_home = root / SANDBOX_HOME_DIRNAME
+        if candidate == sandbox_home or sandbox_home in candidate.parents:
+            raise ValueError("ffuf wordlist must not live in the sandbox HOME")
     if not candidate.is_file():
         raise ValueError(f"ffuf wordlist does not exist: {candidate}")
     return str(candidate)
@@ -202,7 +236,9 @@ def ffuf_definition(tenant_id: str = "system") -> ToolDefinition:
         tenant_id=tenant_id,
         description=(
             "Fuzzing de rutas/directorios con wordlist. Ruidoso: SIEMPRE lleva "
-            "rate limit y threads acotados."
+            "rate limit y threads acotados. La wordlist debe estar en el "
+            "workspace o en un directorio de sistema, p. ej. "
+            "/usr/share/dirb/wordlists/common.txt."
         ),
         input_schema={
             "type": "object",

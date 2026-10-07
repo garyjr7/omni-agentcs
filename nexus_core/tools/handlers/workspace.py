@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 from pathlib import Path
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
@@ -43,6 +44,10 @@ def workspace_search_definition(tenant_id: str = "system") -> ToolDefinition:
         tool_id="nexus.workspace.search",
         name="Workspace search",
         tenant_id=tenant_id,
+        description=(
+            "Busca un patrón en el workspace del engagement. Usa ripgrep si "
+            "está instalado y, si no, GNU grep (mismo contrato)."
+        ),
         input_schema={
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -54,20 +59,42 @@ def workspace_search_definition(tenant_id: str = "system") -> ToolDefinition:
     )
 
 
+def search_argv(query: str, *, program: str | None = None) -> list[str]:
+    """Build the search argv, preferring ``rg`` and falling back to ``grep``.
+
+    ``rg`` was hardcoded and the E2E #5 failed this tool with
+    ``No such file or directory: 'rg'`` on a host that ships GNU grep but not
+    ripgrep. Both exit 1 for a verified empty result, so the contract is the same.
+    """
+    chosen = program or ("rg" if shutil.which("rg") else "grep")
+    if chosen == "rg":
+        return ["rg", "-n", "--max-count", "100", "--", query, "."]
+    return ["grep", "-rn", "-m", "100", "--", query, "."]
+
+
 async def workspace_search_handler(arguments: dict, context: RunContext) -> ToolResult:
     """Search the workspace through the sandbox and report verified matches."""
     query = str(arguments["query"])
-    sandbox = sandbox_for_environment(workspace_root())
-    result = await sandbox.run([ "rg", "-n", "--max-count", "100", "--", query, "."],
-                               timeout_seconds=20)
+    # Both binaries are allowlisted so the fallback never trips the sandbox's
+    # program policy, whichever one this host actually has.
+    sandbox = sandbox_for_environment(
+        workspace_root(), allowed_programs=("python3", "git", "rg", "grep")
+    )
+    program = "rg" if shutil.which("rg") else "grep"
+    try:
+        result = await sandbox.run(search_argv(query, program=program), timeout_seconds=20)
+    except FileNotFoundError:
+        # The chosen binary vanished from PATH between the check and the exec.
+        program = "grep" if program == "rg" else "rg"
+        result = await sandbox.run(search_argv(query, program=program), timeout_seconds=20)
     return ToolResult(
-        output={"matches": result.stdout},
+        output={"matches": result.stdout, "program": program},
         verified=result.exit_code in {0, 1} and not result.timed_out,
         verification_method="sandbox_exit_code",
-        evidence={"query": query, "exit_code": result.exit_code,
+        evidence={"query": query, "program": program, "exit_code": result.exit_code,
                   "timed_out": result.timed_out},
         exit_code=result.exit_code,
-        accepted_exit_codes=(0, 1),  # rg uses 1 for a verified empty result
+        accepted_exit_codes=(0, 1),  # rg/grep use 1 for a verified empty result
         stdout=result.stdout,
         stderr=result.stderr,
         timed_out=result.timed_out,

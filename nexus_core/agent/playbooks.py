@@ -247,8 +247,33 @@ def select_playbooks(
     return tuple(matches)
 
 
+def render_playbook_matches(matches: tuple[PlaybookMatch, ...]) -> str:
+    """Render the applicable playbooks and their next step for the prompt.
+
+    This is the piece that was missing: the deterministic chains existed and the
+    ``nexus.orchestrator.playbook`` tool exposed them, but the model had to
+    *choose* to call that tool. Putting the next step of every applicable chain
+    directly in the system prompt is what makes the agent prioritise the
+    service it can actually enter (E2E #5 walked into HTTP instead of FTP).
+    """
+    if not matches:
+        return "(ningún playbook aplica todavía)"
+    lines: list[str] = []
+    for match in matches:
+        step = match.next_step
+        if step is None:
+            lines.append(f"- {match.playbook.title} (fase {match.playbook.phase}): COMPLETADO")
+            continue
+        detail = f" → SIGUIENTE PASO: {step.title} [{step.tool_id}]"
+        if step.rationale:
+            detail += f" ({step.rationale})"
+        lines.append(f"- {match.playbook.title} (fase {match.playbook.phase}){detail}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "PLAYBOOKS",
+    "render_playbook_matches",
     "PRECONDITIONS",
     "Playbook",
     "PlaybookMatch",
