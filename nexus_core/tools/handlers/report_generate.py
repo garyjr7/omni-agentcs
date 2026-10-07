@@ -54,6 +54,10 @@ def report_generate_definition(tenant_id: str = "system") -> ToolDefinition:
                     "pattern": "^" + _ENGAGEMENT_PATTERN + "$",
                     "minLength": 1,
                     "maxLength": 128,
+                    "description": (
+                        "Engagement a reportar. Opcional: si se omite, se usa "
+                        "el engagement activo de la sesión."
+                    ),
                 },
                 "format": {"type": "string", "enum": list(FORMATS)},
                 "include_failed_attempts": {"type": "boolean"},
@@ -61,7 +65,7 @@ def report_generate_definition(tenant_id: str = "system") -> ToolDefinition:
                 "llm_cvss": {"type": "boolean"},
                 "enrich_cves": {"type": "boolean"},
             },
-            "required": ["engagement_id"],
+            "required": [],
             "additionalProperties": False,
         },
         risk=RiskLevel.READ_ONLY,
@@ -139,7 +143,17 @@ def _select_llm() -> Any:
 
 async def report_generate_handler(arguments: dict, context: RunContext) -> ToolResult:
     validate(arguments, report_generate_definition().input_schema)
-    engagement_id = str(arguments["engagement_id"])
+    # Inherit the active engagement when none is passed (H2): the session already
+    # carries a signed scope, so re-asking for it was an API inconsistency.
+    explicit = str(arguments.get("engagement_id") or "").strip()
+    scope = getattr(context, "scope", None)
+    engagement_id = explicit or str(getattr(scope, "engagement_id", "") or "")
+    if not engagement_id:
+        return ToolResult(
+            output={"status": "missing_engagement"},
+            verification_method="report_missing_engagement",
+            evidence={},
+        )
     output_format = str(arguments.get("format") or "both")
     include_failed = bool(arguments.get("include_failed_attempts", True))
     requested_dir = arguments.get("output_dir")

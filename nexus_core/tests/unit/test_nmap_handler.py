@@ -141,6 +141,61 @@ def test_handler_includes_raw_xml_sha256_in_evidence():
     assert result.evidence["ports_open_total"] == 2
 
 
+# ------------------------------------------------------------------- H1 stdout
+def _inflate(xml_text: str, target_bytes: int = 30_000) -> str:
+    """Grow the fixture with an XML comment so the raw scan exceeds 30 KB."""
+    padding = "<!--" + ("A" * target_bytes) + "-->"
+    head, separator, tail = xml_text.partition("?>")
+    if not separator:  # no XML declaration: just lead with the comment
+        return padding + xml_text
+    return head + separator + padding + tail
+
+
+def test_handler_truncates_raw_xml_stdout_when_scan_is_parsed():
+    xml_text = _inflate(_read("scan_single_host.xml"))
+    assert len(xml_text.encode("utf-8")) > 30_000
+    with _fake_sandbox(SandboxResult(0, xml_text, "")):
+        result = _run({"target": "203.0.113.10", "profile": "service"})
+    assert result.verified is True
+    assert len(result.stdout.encode("utf-8")) <= 500
+    assert result.output["stdout_truncated"] is True
+    assert result.evidence["stdout_truncated"] is True
+    # The parsed scan is untouched, and the digest still covers the full XML.
+    assert result.output["scan"]["hosts"]
+    assert result.evidence["raw_xml_sha256"] == hashlib.sha256(
+        xml_text.encode("utf-8")
+    ).hexdigest()
+
+
+SMALL_XML = (
+    '<?xml version="1.0"?>'
+    '<nmaprun scanner="nmap" args="nmap">'
+    '<host><status state="up"/><address addr="10.0.0.1" addrtype="ipv4"/>'
+    '<ports><port protocol="tcp" portid="80"><state state="open"/>'
+    '<service name="http"/></port></ports></host>'
+    '<runstats><hosts up="1" down="0"/></runstats></nmaprun>'
+)
+
+
+def test_handler_keeps_small_stdout_intact():
+    assert len(SMALL_XML.encode("utf-8")) <= 500
+    with _fake_sandbox(SandboxResult(0, SMALL_XML, "")):
+        result = _run({"target": "10.0.0.1"})
+    assert result.stdout == SMALL_XML
+    assert "stdout_truncated" not in result.output
+    assert result.evidence["stdout_truncated"] is False
+
+
+def test_truncate_stdout_is_byte_safe():
+    from nexus_core.tools.handlers.nmap import truncate_stdout
+
+    text, truncated = truncate_stdout("á" * 400, limit=500)
+    assert truncated is True
+    assert len(text.encode("utf-8")) <= 500
+    same, untouched = truncate_stdout("short", limit=500)
+    assert same == "short" and untouched is False
+
+
 def test_nmap_definition_declares_scope_requirements():
     definition = nmap_definition()
     assert definition.scope_target_field == "target"

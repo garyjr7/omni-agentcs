@@ -11,6 +11,7 @@ from __future__ import annotations
 from nexus_core.agent.preflight import (
     DEGRADED_TOOLS_ENV,
     preflight_binaries,
+    unavailable_tools_from_env,
 )
 from nexus_core.provisioner.binaries import (
     BINARY_IDENTITIES_BY_NAME,
@@ -19,6 +20,7 @@ from nexus_core.provisioner.binaries import (
     classify_identity,
     identity_problems,
 )
+from nexus_core.provisioner.runtime_deps import missing_python_modules
 from nexus_core.provisioner.readiness import assess_environment
 
 PYTHON_HTTPX = "Usage: httpx [OPTIONS] URL\n\nError: No such option: -e\n"
@@ -149,7 +151,9 @@ def test_preflight_passes_when_all_binaries_are_correct():
             "rg": (0, RIPGREP),
         }
     )
-    verdict = preflight_binaries(which=which, run=run, env={})
+    # Pin the module probe so this stays a binary-only assertion (H5 adds a
+    # runtime-module check that would otherwise depend on the test venv).
+    verdict = preflight_binaries(which=which, run=run, env={}, module_finder=lambda name: object())
     assert verdict.ok is True
     assert verdict.problems == ()
     assert verdict.unavailable_tools == ()
@@ -159,9 +163,46 @@ def test_missing_binary_retires_its_tool_without_blocking_the_run():
     """B6: a missing ``rg`` must not fail the preflight, just retire the tool."""
     which = lambda name: None if name == "rg" else f"/usr/bin/{name}"  # noqa: E731
     run = _runner({"httpx": (0, PD_HTTPX), "whatweb": (0, WHATWEB), "nmap": (0, NMAP)})
-    verdict = preflight_binaries(which=which, run=run, env={})
+    verdict = preflight_binaries(which=which, run=run, env={}, module_finder=lambda name: object())
     assert verdict.ok is True
     assert verdict.unavailable_tools == ("nexus.workspace.search",)
+
+
+# ------------------------------------------------- H5 runtime Python modules
+def test_missing_python_module_retires_its_tools():
+    """Without paramiko, the SSH post-exploitation tools are retired (H5)."""
+    assert missing_python_modules(find_spec=lambda name: None) == (
+        "nexus.post.enum_system",
+        "nexus.post.ssh_exec",
+    )
+    present = missing_python_modules(find_spec=lambda name: object())
+    assert present == ()
+
+
+def test_preflight_retires_ssh_tools_without_paramiko():
+    which = lambda name: f"/usr/bin/{name}"  # noqa: E731
+    run = _runner(
+        {"httpx": (0, PD_HTTPX), "whatweb": (0, WHATWEB), "nmap": (0, NMAP), "rg": (0, RIPGREP)}
+    )
+    verdict = preflight_binaries(which=which, run=run, env={}, module_finder=lambda name: None)
+    # A missing runtime module never blocks the run; it only retires tools.
+    assert verdict.ok is True
+    assert "nexus.post.ssh_exec" in verdict.unavailable_tools
+    assert "nexus.post.enum_system" in verdict.unavailable_tools
+
+
+def test_unavailable_tools_from_env_includes_missing_modules():
+    retired = unavailable_tools_from_env(
+        which=lambda name: f"/usr/bin/{name}", env={}, module_finder=lambda name: None
+    )
+    assert {"nexus.post.ssh_exec", "nexus.post.enum_system"} <= retired
+    # Missing binaries and missing modules compose.
+    composed = unavailable_tools_from_env(
+        which=lambda name: None if name == "rg" else f"/usr/bin/{name}",
+        env={},
+        module_finder=lambda name: None,
+    )
+    assert {"nexus.workspace.search", "nexus.post.ssh_exec"} <= composed
 
 
 def test_helper_retires_a_tool_whose_binary_is_absent():

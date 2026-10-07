@@ -28,6 +28,10 @@ from nexus_core.provisioner.binaries import (
     identity_problems,
     missing_tool_binaries,
 )
+from nexus_core.provisioner.runtime_deps import (
+    ModuleFinder,
+    missing_python_modules,
+)
 
 #: Operator opt-in to continue when a binary is present but wrong.
 DEGRADED_TOOLS_ENV = "NEXUS_ALLOW_DEGRADED_TOOLS"
@@ -86,12 +90,25 @@ class PreflightVerdict:
         return "\n".join(lines)
 
 
+def _unavailable_tools(
+    *,
+    which: Callable[[str], str | None],
+    identities: Iterable[BinaryIdentity],
+    module_finder: ModuleFinder | None,
+) -> tuple[str, ...]:
+    """Union of tools with an absent binary and tools with an absent module."""
+    retired = set(missing_tool_binaries(which=which, identities=identities))
+    retired.update(missing_python_modules(find_spec=module_finder))
+    return tuple(sorted(retired))
+
+
 def preflight_binaries(
     *,
     which: Callable[[str], str | None] = shutil.which,
     run: VersionRunner = default_version_runner,
     env: Mapping[str, str] | None = None,
     identities: Iterable[BinaryIdentity] = BINARY_IDENTITIES,
+    module_finder: ModuleFinder | None = None,
 ) -> PreflightVerdict:
     """Probe the critical binaries and decide whether a run may start."""
     environment = dict(os.environ if env is None else env)
@@ -101,7 +118,9 @@ def preflight_binaries(
     return PreflightVerdict(
         problems=problems,
         degraded=degraded,
-        unavailable_tools=missing_tool_binaries(which=which, identities=identities),
+        unavailable_tools=_unavailable_tools(
+            which=which, identities=identities, module_finder=module_finder
+        ),
     )
 
 
@@ -109,17 +128,25 @@ def unavailable_tools_from_env(
     *,
     which: Callable[[str], str | None] = shutil.which,
     env: Mapping[str, str] | None = None,
+    module_finder: ModuleFinder | None = None,
 ) -> set[str]:
-    """Tools the run must start without because their binary is absent (B6).
+    """Tools the run must start without because their binary/module is absent.
 
-    Honours ``NEXUS_PREFLIGHT_BINARIES=0`` so hermetic tests (and an operator who
-    knows better) can skip the probe. Only ``which`` lookups happen here: no
-    binary is ever executed.
+    Covers both host binaries (B6) and runtime Python modules (H5: a missing
+    ``paramiko`` retires ``nexus.post.*``). Honours ``NEXUS_PREFLIGHT_BINARIES=0``
+    so hermetic tests (and an operator who knows better) can skip the probe. Only
+    ``which``/``find_spec`` lookups happen here: no binary or module is loaded.
     """
     environment = dict(os.environ if env is None else env)
     if not env_flag(environment, PREFLIGHT_ENV, default=True):
         return set()
-    return set(missing_tool_binaries(which=which))
+    return set(
+        _unavailable_tools(
+            which=which,
+            identities=BINARY_IDENTITIES,
+            module_finder=module_finder,
+        )
+    )
 
 
 __all__ = [

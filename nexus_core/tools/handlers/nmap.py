@@ -61,6 +61,11 @@ NOISE_NAMES = ("low", "medium", "high")
 NMAP_ALLOWED_PROGRAMS = ("python3", "git", "rg", "nmap")
 NMAP_DEFAULT_TIMEOUT_SECONDS = 120
 NMAP_MAX_TIMEOUT_SECONDS = 600
+#: Hard cap on the raw XML handed back in ``stdout`` once it has been parsed.
+#: The full XML averages ~30 KB and only floods the agent context: the parsed
+#: ``output.scan`` + ``raw_xml_sha256`` carry the whole finding, so the raw text
+#: is kept only as a short forensic prefix (H1 of the RUN7 report).
+NMAP_STDOUT_MAX_BYTES = 500
 
 # Perfiles de reconocimiento: nombre -> (flags base, timeout recomendado).
 # El perfil se expande server-side, así que el modelo nunca inventa flags: pide
@@ -129,6 +134,22 @@ def validate_and_canonicalize_flags(raw_flags: list[str]) -> tuple[list[str], st
     if "-sS" in canonical:
         warnings.add("SYN scan may require elevated privileges inside the sandbox")
     return canonical, NOISE_NAMES[noise_rank], warnings
+
+
+def truncate_stdout(
+    stdout: str, limit: int = NMAP_STDOUT_MAX_BYTES
+) -> tuple[str, bool]:
+    """Clip raw stdout to ``limit`` UTF-8 bytes.
+
+    Returns ``(text, truncated)``. The cut is done on bytes and decoded
+    leniently so a multi-byte character straddling the boundary never raises and
+    the result is never longer than ``limit`` bytes.
+    """
+    raw = str(stdout or "")
+    encoded = raw.encode("utf-8", "replace")
+    if len(encoded) <= limit:
+        return raw, False
+    return encoded[:limit].decode("utf-8", "ignore"), True
 
 
 def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
@@ -246,15 +267,23 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
         1 for host in scan.hosts for port in host.ports if port["state"] == "open"
     )
     verified = result.exit_code in {0, 1}
+    # The XML is already parsed into ``output.scan``; do not ship the raw ~30 KB
+    # back in stdout (it only inflates the agent's context). Keep a short prefix
+    # and flag the truncation (H1).
+    stdout_text, stdout_truncated = truncate_stdout(result.stdout)
+    output: dict[str, Any] = {
+        "target": target,
+        "noise_level": noise_level,
+        "profile": profile_name,
+        "scan": scan.to_dict(),
+    }
+    if stdout_truncated:
+        output["stdout_truncated"] = True
     return ToolResult(
-        output={
-            "target": target,
-            "noise_level": noise_level,
-            "profile": profile_name,
-            "scan": scan.to_dict(),
-        },
+        output=output,
         verified=verified,
-        verification_method="nmap_xml_parsed",            evidence={
+        verification_method="nmap_xml_parsed",
+        evidence={
                 "noise_level": noise_level,
                 "profile": profile_name,
                 "host_count": len(scan.hosts),
@@ -263,9 +292,10 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
             "elapsed_seconds": scan.elapsed_seconds,
             "raw_xml_sha256": scan.raw_xml_sha256,
             "warnings": sorted(warnings),
+            "stdout_truncated": stdout_truncated,
         },
         exit_code=result.exit_code,
         accepted_exit_codes=(0, 1),
-        stdout=result.stdout,
+        stdout=stdout_text,
         stderr=result.stderr,
     )

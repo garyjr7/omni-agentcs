@@ -124,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output", metavar="DIR", help="con 'report': directorio de salida"
     )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="con 'tool': lista las tools durables del tenant y sale",
+    )
     parser.add_argument("--version", action="version", version=f"{PROGRAM} {PROGRAM_VERSION}")
     for flag, help_text in (
         ("doctor", "diagnóstico del sistema"), ("json", "salida JSON para --doctor/--setup"),
@@ -314,7 +319,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         if subcommand == "run":
             objective = " ".join(args.command[1:]).strip() or objective
             headless_mode = "stream" if args.stream_json else "json"
-        elif subcommand not in {"report", "cve"}:
+        elif subcommand not in {"report", "cve", "tool"}:
             render.render_error(f"subcomando desconocido: {subcommand}")
             return 2
     elif args.stream_json and objective:
@@ -329,6 +334,13 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     store = get_control_store(effective_db_path(config, paths))
     store.initialize()
     engagements = list(EngagementStore(store).list_for_tenant(args.tenant))
+
+    # ``omni tool --list`` is a catalog read: it needs no engagement, so answer
+    # it before the engagement selection (which would otherwise prompt).
+    if subcommand == "tool" and args.list:
+        from .tool import list_tools
+
+        return list_tools(args.tenant)
 
     if args.list_engagements:
         _list_engagements(engagements)
@@ -392,6 +404,23 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         )
     if subcommand == "cve":
         return _run_cve_command(args, store, args.tenant, engagement)
+
+    # ``omni tool``: invoke one governed tool without an LLM (manual operation).
+    if subcommand == "tool":
+        from .tool import run_tool_command
+
+        rest = list(args.command[1:])
+        if not rest:
+            render.render_error("uso: omni tool <tool_id> '<json>' | omni tool --list")
+            return 2
+        return run_tool_command(
+            store,
+            args.tenant,
+            engagement,
+            rest[0],
+            rest[1:],
+            trust_mode=args.trust_mode,
+        )
 
     try:
         llm_client = build_llm_client()

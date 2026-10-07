@@ -20,12 +20,12 @@ from nexus_core.tools.registry import register_durable_tools
 TOOL = "nexus.report.generate"
 
 
-def _context(store: object) -> RunContext:
-    """Agent identity with the store the handler reads (no engagement scope)."""
+def _context(store: object, scope: object = None) -> RunContext:
+    """Agent identity with the store the handler reads (scope optional)."""
     return RunContext(
         tenant_id=support.TENANT,
         identity=Identity("agent:omni", support.TENANT, kind="agent", roles=("operator",)),
-        scope=None,
+        scope=scope,
         store=store,
     )
 
@@ -48,16 +48,33 @@ def _execute(arguments, store=None):
     return asyncio.run(module.report_generate_handler(arguments, _context(store)))
 
 
-def test_report_requires_engagement_id(env):
+def test_report_validates_arguments(env):
     store, _engagement, _run_id, gateway = env
-    with pytest.raises(ValueError):
-        _invoke(gateway, {"format": "both"}, store)
     with pytest.raises(ValueError):
         _invoke(gateway, {"engagement_id": ""}, store)
     with pytest.raises(ValueError):
         _invoke(gateway, {"engagement_id": "eng-lab", "format": "pdf"}, store)
     with pytest.raises(ValueError):
         _invoke(gateway, {"engagement_id": "eng-lab", "unexpected": 1}, store)
+
+
+def test_report_inherits_active_engagement(env):
+    """H2: with no ``engagement_id`` argument, the active scope is used."""
+    store, engagement, _run_id, _gateway = env
+    result = asyncio.run(
+        module.report_generate_handler({}, _context(store, engagement))
+    )
+    assert result.verified is True
+    assert result.output["engagement_id"] == engagement.engagement_id
+    assert result.output["findings_count"] >= 6
+
+
+def test_report_without_engagement_is_not_verified(env):
+    store, _engagement, _run_id, _gateway = env
+    result = _execute({"format": "both"}, store)
+    assert result.verified is False
+    assert result.verification_method == "report_missing_engagement"
+    assert result.output["status"] == "missing_engagement"
 
 
 def test_report_unknown_engagement_is_not_verified(env):

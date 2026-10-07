@@ -2,3 +2,7 @@
 prompt_toolkit>=3.0,<4
 # Sliver C2 gRPC client (nexus.c2.* durable tools).
 sliver-py>=0.0.19
+# SSH post-exploitation (nexus.post.ssh_exec / enum_system in
+# nexus_core/tools/handlers/ssh_post.py). The run preflight retires those tools
+# when the module is absent (H5).
+paramiko>=3.4,<4

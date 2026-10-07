@@ -13,6 +13,7 @@ import json
 
 import pytest
 
+from nexus_core.kernel.blackboard import Blackboard
 from nexus_core.report import markdown as markdown_module
 from nexus_core.report.extractor import (
     build_report,
@@ -457,3 +458,69 @@ def test_markdown_renders_new_sections(tmp_path):
         assert section in text
     assert "Rutas descubiertas" in text
     assert json.loads(markdown_module.render_markdown_json(report))["schema"] == "nexus.engagement_report/2"
+
+
+# ------------------------------------------------------- blackboard facts (H3)
+#: The 8 facts the operator logged during RUN7 (Bounty Hacker).
+RUN7_FACTS = (
+    ("service", "10.67.155.239:21/tcp", {"product": "vsftpd 3.0.5", "anonymous": True}),
+    ("service", "10.67.155.239:22/tcp", {"product": "OpenSSH 8.2p1"}),
+    ("service", "10.67.155.239:80/tcp", {"product": "Apache httpd 2.4.41"}),
+    ("vulnerability", "vsftpd-3.0.5-backdoor", {"severity": "high", "service": "ftp"}),
+    ("user", "lin", {"username": "lin", "shell": "/bin/bash"}),
+    ("credential", "lin:ssh", {"username": "lin", "service": "ssh"}),
+    ("access", "lin@10.67.155.239", {"user": "lin", "method": "ssh"}),
+    ("privilege", "lin->root", {"vector": "sudo tar", "sudo": "(root) /bin/tar"}),
+)
+
+
+def _seed_facts(store, engagement_id: str = "eng-lab") -> None:
+    board = Blackboard(store)
+    for fact_type, key, value in RUN7_FACTS:
+        board.record(
+            tenant_id=support.TENANT,
+            engagement_id=engagement_id,
+            fact_type=fact_type,
+            key=key,
+            value=value,
+            source="nexus.recon.nmap",
+            created_by="operator-1",
+        )
+
+
+def test_facts_become_findings_and_inventory(tmp_path):
+    store, run_id = _setup(tmp_path)
+    _seed_facts(store)
+    report = _report(store, run_id)
+    # The 8 facts of RUN7 are 8 findings, none dropped.
+    assert len(report.findings) == 8
+    assert len({finding.finding_id for finding in report.findings}) == 8
+    by_kind = {finding.kind: finding for finding in report.findings}
+    assert {
+        "fact_service",
+        "fact_vulnerability",
+        "fact_user",
+        "fact_credential",
+        "fact_access",
+        "fact_privilege",
+    } <= set(by_kind)
+    assert by_kind["fact_privilege"].severity == "critical"
+    assert by_kind["fact_credential"].severity == "high"
+    assert by_kind["fact_service"].severity == "info"
+    # The inventory is populated from the facts.
+    assert report.inventories
+    inventory = report.inventories[0]
+    assert inventory.kind == "inventory"
+    assert inventory.detail["total"] == 8
+    assert inventory.detail["counts"]["service"] == 3
+    # ... and it reaches the deliverable.
+    text = markdown_module.render_markdown(report)
+    assert "Inventario del engagement (8 hecho(s))" in text
+    assert "no registró inventario" not in text
+
+
+def test_no_facts_means_no_inventory(tmp_path):
+    store, run_id = _setup(tmp_path)
+    report = _report(store, run_id)
+    assert report.inventories == ()
+    assert all(not finding.kind.startswith("fact_") for finding in report.findings)

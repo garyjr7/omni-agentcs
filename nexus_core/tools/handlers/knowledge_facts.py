@@ -8,8 +8,6 @@ tools discovered. This is the memory the planner chains on.
 
 from __future__ import annotations
 
-from typing import Any
-
 from nexus_core.kernel.blackboard import FACT_TYPES, Blackboard
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 

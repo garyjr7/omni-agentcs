@@ -24,6 +24,7 @@ from nexus_core.agent.react import ReActConfig, _operator_approval_gate, run_rea
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.models import Identity, RunContext
 from nexus_core.kernel.runtime import ExecutionContext, select_llm_client
+from nexus_core.scope import ScopeViolation
 
 from . import commands as commands_module
 from . import render
@@ -819,6 +820,15 @@ class OmniSession:
                 result = asyncio.run(self._with_cancel(execute_tool(payload, context), run_id, cooperative=False))
         except asyncio.CancelledError:
             render.render_status("operación cancelada")
+            return None
+        except ScopeViolation as exc:
+            # Fail-closed: the target was refused before anything ran. Render a
+            # clean, actionable message instead of a raw traceback (H7).
+            detail = getattr(exc, "reason", "") or str(exc)
+            target = getattr(exc, "target", "") or "n/d"
+            render.render_error(
+                f"{tool_id} bloqueado por scope: {detail} (target: {target})"
+            )
             return None
         except (PermissionError, ValueError, RuntimeError, KeyError, TypeError) as exc:
             render.render_error(f"{tool_id} falló: {type(exc).__name__}: {exc}")
