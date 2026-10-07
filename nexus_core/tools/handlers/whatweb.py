@@ -24,22 +24,44 @@ WHATWEB_DEFAULT_TIMEOUT_SECONDS = 600
 WHATWEB_MIN_TIMEOUT_SECONDS = 10
 WHATWEB_MAX_TIMEOUT_SECONDS = 600
 WHATWEB_DEFAULT_AGGRESSION = 1
+
+#: whatweb *only* accepts these aggression levels. Level 2 does not exist: the
+#: binary rejects it on stderr ("Agression level must be 1,3, or 4") **but exits
+#: 0 and writes a 2-byte log** (``["\n``), which used to surface as an opaque
+#: ``whatweb_parse_failed``. The schema must reject 2 before it reaches argv.
+WHATWEB_AGGRESSION_LEVELS: tuple[int, ...] = (1, 3, 4)
 WHATWEB_MAX_AGGRESSION = 4
-WHATWEB_EFFECTIVE_AGGRESSION = 3
+
+#: Human-readable profile of each valid level (see ``whatweb --help``): level 1
+#: is stealthy, 3 is aggressive, 4 is heavy and may make raw HTTP requests.
+WHATWEB_NOISE_BY_AGGRESSION: dict[int, str] = {
+    1: "stealth",
+    3: "aggressive",
+    4: "heavy",
+}
+
+#: A JSON log shorter than this cannot be a real scan result. ``[\n`` (2 bytes)
+#: is what whatweb writes for an invalid invocation; treating it as "valid but
+#: empty" hid a tool-preparation bug (B2 of the E2E report).
+MIN_VALID_JSONL_BYTES = 10
+
 WHATWEB_MAX_TARGETS = 50
 WHATWEB_MAX_THREADS = 10
 
-NOISE_LEVELS = {"low": 0, "medium": 1, "high": 2}
-NOISE_NAMES = ("low", "medium", "high")
-
 
 def whatweb_noise_level(aggression: int) -> str:
-    """Map an aggression level to the aggregate noise level."""
-    if aggression <= 1:
-        return "low"
-    if aggression == 2:
-        return "medium"
-    return "high"
+    """Map a *valid* aggression level to its noise profile name.
+
+    Level 2 does not exist in whatweb; anything outside ``(1, 3, 4)`` is a
+    caller error and fails closed instead of being silently coerced.
+    """
+    try:
+        return WHATWEB_NOISE_BY_AGGRESSION[int(aggression)]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"whatweb aggression must be one of {WHATWEB_AGGRESSION_LEVELS}, "
+            f"got {aggression!r}"
+        ) from exc
 
 
 def whatweb_definition(tenant_id: str = "system") -> ToolDefinition:
@@ -63,9 +85,13 @@ def whatweb_definition(tenant_id: str = "system") -> ToolDefinition:
                 },
                 "aggression": {
                     "type": "integer",
-                    "minimum": 1,
-                    "maximum": WHATWEB_MAX_AGGRESSION,
+                    "enum": list(WHATWEB_AGGRESSION_LEVELS),
                     "default": WHATWEB_DEFAULT_AGGRESSION,
+                    "description": (
+                        "Nivel de agresividad de whatweb: 1 (stealth), 3 "
+                        "(aggressive) o 4 (heavy). El nivel 2 no existe y es "
+                        "rechazado."
+                    ),
                 },
                 "timeout_seconds": {
                     "type": "integer",
@@ -92,13 +118,16 @@ async def whatweb_handler(arguments: dict, context: RunContext) -> ToolResult:
 
     raw_aggression = arguments.get("aggression")
     aggression = int(raw_aggression) if raw_aggression else WHATWEB_DEFAULT_AGGRESSION
-    aggression = max(1, min(WHATWEB_MAX_AGGRESSION, aggression))
-    warnings: set[str] = set()
-    if aggression > WHATWEB_EFFECTIVE_AGGRESSION:
-        aggression = WHATWEB_EFFECTIVE_AGGRESSION
-        warnings.add(
-            "aggression 4 forced to 3: level 4 makes heavy raw HTTP requests"
+    # Defense in depth: the schema already rejects anything outside the valid
+    # levels, but a direct handler call must fail closed too.
+    if aggression not in WHATWEB_AGGRESSION_LEVELS:
+        raise ValueError(
+            f"whatweb aggression must be one of {WHATWEB_AGGRESSION_LEVELS}, "
+            f"got {aggression!r}"
         )
+    warnings: set[str] = set()
+    if aggression == 4:
+        warnings.add("aggression 4 (heavy): makes raw HTTP requests")
 
     requested_timeout = arguments.get("timeout_seconds")
     timeout_seconds = min(
@@ -136,8 +165,8 @@ async def whatweb_handler(arguments: dict, context: RunContext) -> ToolResult:
     argv.extend(targets)
 
     noise_level = whatweb_noise_level(aggression)
-    if noise_level == "high":
-        warnings.add(f"high noise profile: aggression {aggression}")
+    if noise_level == "heavy":
+        warnings.add(f"heavy noise profile: aggression {aggression}")
     evidence: dict[str, Any] = {
         "noise_level": noise_level,
         "targets": list(targets),
@@ -182,6 +211,29 @@ async def whatweb_handler(arguments: dict, context: RunContext) -> ToolResult:
             },
             verified=False,
             verification_method="whatweb_no_log",
+            evidence=evidence,
+            exit_code=result.exit_code,
+            accepted_exit_codes=(0, 1),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+    # Identity of the *output*, not just its presence: whatweb exits 0 with a
+    # 2-byte ``[\n`` log when it rejects the command line. That is a broken
+    # invocation, never "a successful scan that found nothing".
+    if len(raw_json.encode("utf-8")) < MIN_VALID_JSONL_BYTES:
+        return ToolResult(
+            output={
+                "error": (
+                    "whatweb JSON log is too small to be a real scan "
+                    f"({len(raw_json.encode('utf-8'))} bytes < "
+                    f"{MIN_VALID_JSONL_BYTES})"
+                ),
+                "targets": list(targets),
+                "noise_level": noise_level,
+            },
+            verified=False,
+            verification_method="whatweb_output_too_small",
             evidence=evidence,
             exit_code=result.exit_code,
             accepted_exit_codes=(0, 1),

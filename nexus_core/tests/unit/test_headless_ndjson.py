@@ -44,6 +44,13 @@ def _timeline():
     )
 
 
+@pytest.fixture(autouse=True)
+def _disable_binaries_preflight(monkeypatch):
+    # These are hermetic loop tests: the binary-identity preflight would probe
+    # the host PATH (and abort on the Python httpx), so it is disabled here.
+    monkeypatch.setenv("NEXUS_PREFLIGHT_BINARIES", "0")
+
+
 @pytest.fixture()
 def store(tmp_path):
     from nexus_core.kernel.control_store import ControlStore

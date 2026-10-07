@@ -15,6 +15,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from nexus_core.kernel.sandbox import OCISandbox, SandboxResult
+from nexus_core.provisioner.binaries import BinaryIdentity, IdentityCheck, classify_identity
 
 #: Programs the durable recon/web handlers are allowed to execute.
 RECON_ALLOWED_PROGRAMS: tuple[str, ...] = (
@@ -72,6 +73,30 @@ def append_repeated(flag: str, values: Sequence[str]) -> list[str]:
     for value in values:
         argv.extend([flag, value])
     return argv
+
+
+async def probe_identity_in_sandbox(
+    sandbox: Any,
+    identity: BinaryIdentity,
+    *,
+    timeout_seconds: float = 10.0,
+    image_env: str,
+    default_image: str,
+) -> IdentityCheck:
+    """Verify a binary's identity *through the sandbox* (never a raw spawn).
+
+    Used by handlers to tell "the binary is the wrong one" apart from "the tool
+    ran but produced nothing usable" without breaking the invariant that only
+    the sandbox starts processes.
+    """
+    argv = [identity.name, *identity.version_argv]
+    result = await run_in_sandbox(
+        sandbox, argv, timeout_seconds=timeout_seconds,
+        image_env=image_env, default_image=default_image,
+    )
+    present = result.exit_code is not None and result.exit_code != 127
+    output = f"{result.stdout}\n{result.stderr}"
+    return classify_identity(identity, path=identity.name, present=present, output=output)
 
 
 def safe_run_id(context: Any, fallback: str = "run") -> str:

@@ -331,8 +331,13 @@ async def test_loop_continues_after_denial_does_not_count_as_tool_failure(harnes
     assert len(_observations(store, result.conversation_id)) == 4
 
 
-async def test_loop_without_callback_still_fails_on_high_risk_tool(harness):
-    """Regression: no callback and no approval_id keeps the pre-CLI behaviour."""
+async def test_loop_without_callback_never_executes_high_risk_tool(harness):
+    """Regression: no callback and no approval_id keeps the tool unexecuted.
+
+    A governance denial is *not* a tool failure (B3): it never retires the tool
+    and never aborts the run while other routes exist, so the loop runs to the
+    iteration budget with the denial repeated.
+    """
     store, context = harness
     catalog = catalog_with_risk(RiskLevel.HIGH)
 
@@ -348,9 +353,9 @@ async def test_loop_without_callback_still_fails_on_high_risk_tool(harness):
             tool_catalog=catalog,
         )
 
-    assert result.status == STATUS_FAILED
-    assert result.iterations == 3
-    assert "3 consecutive tool failures" in result.final_summary
+    assert result.status == STATUS_MAX_ITERATIONS
+    assert result.iterations == 6
     last = result.actions[-1]["tool_result"]
     assert last["error_type"] == "PermissionError"
+    assert last["failure_kind"] == "input"
     assert "approval" in last["error"]

@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from nexus_core.config.loader import apply_environment
+from nexus_core.provisioner.binaries import check_binary_identity
 from nexus_core.provisioner.readiness import assess_environment, render_report
 
 
@@ -22,9 +23,11 @@ def run_setup(
 
     ``--install`` without ``--yes`` only prints the exact plans (safe default);
     ``--install --yes`` executes them through the approved installer loop.
+    Presence is verified **and** so is identity: a same-named wrong binary
+    (e.g. the Python ``httpx`` HTTP client) is reported as not ready.
     """
     apply_environment(config, paths)
-    report = assess_environment()
+    report = assess_environment(probe_binary=check_binary_identity)
 
     actions: list[Any] = []
     if install:
@@ -35,7 +38,7 @@ def run_setup(
 
         echo = _silent if as_json else print
         actions = run_bootstrap(report, assume_yes=assume_yes, echo=echo)
-        report = assess_environment()
+        report = assess_environment(probe_binary=check_binary_identity)
 
     if as_json:
         payload = report.to_dict()
@@ -44,6 +47,21 @@ def run_setup(
         return 0
 
     print(render_report(report))
+    wrong = [
+        c for c in report.components
+        if c.kind == "binary" and c.identity_ok is False
+    ]
+    if wrong:
+        print("")
+        print("BINARIOS EQUIVOCADOS (misma ruta, herramienta equivocada):")
+        for component in wrong:
+            print(f"  ✗ {component.component_id}: {component.detail}")
+            if component.setup:
+                print(f"      → instala el binario correcto: {component.setup}")
+        print(
+            "Estos binarios harán fallar los tools correspondientes; "
+            "un run autónomo se detendrá en el preflight hasta corregirlo."
+        )
     if actions:
         installed = [a for a in actions if a.executed and a.success]
         failed = [a for a in actions if a.executed and not a.success]

@@ -14,7 +14,12 @@ from unittest import mock
 
 import pytest
 
-from nexus_core.agent.react import STATUS_COMPLETED, ReActConfig, run_react_loop
+from nexus_core.agent.react import (
+    STATUS_COMPLETED,
+    STATUS_MAX_ITERATIONS,
+    ReActConfig,
+    run_react_loop,
+)
 from nexus_core.cli.approval import make_approval_callback
 from nexus_core.cli.session import OmniSession
 from nexus_core.kernel.approvals import ApprovalService
@@ -268,5 +273,71 @@ async def test_loop_with_real_gateway_executes_after_a_granted_approval(session)
     assert observation["success"] is True
     assert observation["verification_method"] == "control_store_query"
     events = {event["action"] for event in AuditWriter(session.store).export(TENANT)}
+    assert "tool.complete" in events
+    assert _approval_statuses(session) == ["approved"]
+
+
+def _headless_context(session: OmniSession) -> ExecutionContext:
+    return ExecutionContext(
+        session.store,
+        {
+            "id": "task-headless-approval",
+            "tenant_id": TENANT,
+            "run_id": session.run_id,
+            "task_type": "react.run",
+            "payload": {
+                "objective": "Consulta el estado del sistema",
+                "identity": {"subject_id": session.agent_subject_id, "roles": ["operator"]},
+            },
+        },
+        "worker-test",
+    )
+
+
+async def test_headless_without_trust_mode_denies_high_risk_tool(session):
+    """P1: the denial route of the gate is exercised, not just assumed."""
+    catalog = high_risk_catalog()
+    with mock.patch("nexus_core.tools.registry.durable_tool_definitions", return_value=catalog):
+        result = await run_react_loop(
+            context=_headless_context(session),
+            objective="Consulta el estado del sistema",
+            engagement_id="eng-1",
+            llm_client=ScriptedLLM([tool_call()]),
+            config=ReActConfig(max_iterations=3),
+            tool_catalog=catalog,
+        )
+
+    # No human, no trust mode: the tool is never executed and nothing is approved.
+    assert result.status == STATUS_MAX_ITERATIONS
+    actions = AuditWriter(session.store).export(TENANT)
+    assert not any(row["action"] == "tool.complete" for row in actions)
+    assert _approval_statuses(session) == []
+    assert all(
+        (action.get("tool_result") or {}).get("error_type") == "PermissionError"
+        for action in result.actions
+        if action.get("tool_result")
+    )
+
+
+async def test_headless_trust_mode_auto_approves_and_audits(session):
+    """P1: trust mode reaches a HIGH-risk tool and records *why* it was allowed."""
+    catalog = high_risk_catalog()
+    callback = make_approval_callback(
+        session, session.store, TENANT, session.run_id, trust_mode=True
+    )
+    with mock.patch("nexus_core.tools.registry.durable_tool_definitions", return_value=catalog):
+        result = await run_react_loop(
+            context=_headless_context(session),
+            objective="Consulta el estado del sistema",
+            engagement_id="eng-1",
+            llm_client=ScriptedLLM([tool_call(), task_complete("hecho")]),
+            config=ReActConfig(max_iterations=4, on_approval_needed=callback),
+            tool_catalog=catalog,
+        )
+
+    assert result.status == STATUS_COMPLETED
+    assert result.actions[0]["tool_result"]["success"] is True
+    events = {row["action"] for row in AuditWriter(session.store).export(TENANT)}
+    assert "tool.trust_mode_approved" in events
     assert "tool.complete" in events
     assert _approval_statuses(session) == ["approved"]

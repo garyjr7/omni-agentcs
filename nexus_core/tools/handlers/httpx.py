@@ -8,18 +8,25 @@ size of the batch because every target generates direct traffic.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import sandbox_for_environment
-from nexus_core.tools.parsers.httpx import parse_httpx_jsonl
+from nexus_core.provisioner.binaries import BINARY_IDENTITIES_BY_NAME
+from nexus_core.tools.parsers.httpx import empty_httpx_result, parse_httpx_jsonl
 
 from ._exec import (
     MAX_BATCH_TARGETS,
     RECON_ALLOWED_PROGRAMS,
     append_repeated,
     normalize_targets,
+    probe_identity_in_sandbox,
     run_in_sandbox,
 )
+
+#: Image env for both the scan and the identity probe (kept in one place).
+HTTPX_IMAGE_ENV = "NEXUS_HTTPX_IMAGE"
+HTTPX_DEFAULT_IMAGE = "projectdiscovery/httpx"
 
 HTTPX_ALLOWED_PROGRAMS = RECON_ALLOWED_PROGRAMS
 HTTPX_DEFAULT_TIMEOUT_SECONDS = 120
@@ -74,6 +81,36 @@ def httpx_definition(tenant_id: str = "system") -> ToolDefinition:
     )
 
 
+async def _diagnose_wrong_binary(sandbox: Any, exit_code: int | None) -> ToolResult | None:
+    """Return a clear mismatch result when the ``httpx`` found is not PD's."""
+    identity = BINARY_IDENTITIES_BY_NAME.get("httpx")
+    if identity is None:  # pragma: no cover - defensive
+        return None
+    check = await probe_identity_in_sandbox(
+        sandbox,
+        identity,
+        image_env=HTTPX_IMAGE_ENV,
+        default_image=HTTPX_DEFAULT_IMAGE,
+    )
+    if check.ok:
+        return None
+    return ToolResult(
+        output={
+            "error": (
+                "httpx binario equivocado: el 'httpx' del PATH no es el de "
+                f"ProjectDiscovery ({check.detail})."
+            ),
+            "binary_path": check.binary_path,
+            "install": check.install,
+        },
+        verified=False,
+        verification_method="httpx_binary_mismatch",
+        evidence={"binary_identity": check.to_dict()},
+        exit_code=exit_code,
+        accepted_exit_codes=(0, 1),
+    )
+
+
 async def httpx_handler(arguments: dict, context: RunContext) -> ToolResult:
     """Probe HTTP endpoints through the sandbox and parse the JSONL output."""
     targets = normalize_targets(arguments.get("targets"))
@@ -112,8 +149,8 @@ async def httpx_handler(arguments: dict, context: RunContext) -> ToolResult:
         sandbox,
         argv,
         timeout_seconds=timeout_seconds,
-        image_env="NEXUS_HTTPX_IMAGE",
-        default_image="projectdiscovery/httpx",
+        image_env=HTTPX_IMAGE_ENV,
+        default_image=HTTPX_DEFAULT_IMAGE,
     )
 
     evidence: dict = {
@@ -139,17 +176,47 @@ async def httpx_handler(arguments: dict, context: RunContext) -> ToolResult:
             timed_out=True,
         )
 
+    parse_error: str | None = None
+    fingerprint = empty_httpx_result()
     try:
         fingerprint = parse_httpx_jsonl(result.stdout)
     except ValueError as exc:
+        parse_error = str(exc)
+
+    # Directly diagnose the classic environment failure: ``/usr/bin/httpx`` is
+    # the Python HTTP client, not ProjectDiscovery's scanner. It exits non-zero
+    # with empty stdout, so the handler used to report an opaque
+    # ``httpx_jsonl_parsed`` post-condition error. Probing identity turns it
+    # into an actionable, distinct outcome (B1).
+    if parse_error is not None or (
+        result.exit_code not in {0, 1} and not fingerprint.probes
+    ):
+        mismatch = await _diagnose_wrong_binary(sandbox, result.exit_code)
+        if mismatch is not None:
+            return mismatch
+        if parse_error is not None:
+            return ToolResult(
+                output={
+                    "error": parse_error,
+                    "targets_requested": len(targets),
+                    "noise_level": noise_level,
+                },
+                verified=False,
+                verification_method="httpx_parse_failed",
+                evidence=evidence,
+                exit_code=result.exit_code,
+                accepted_exit_codes=(0, 1),
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
         return ToolResult(
             output={
-                "error": str(exc),
+                "error": "httpx produced no probe output",
                 "targets_requested": len(targets),
                 "noise_level": noise_level,
             },
             verified=False,
-            verification_method="httpx_parse_failed",
+            verification_method="httpx_no_output",
             evidence=evidence,
             exit_code=result.exit_code,
             accepted_exit_codes=(0, 1),

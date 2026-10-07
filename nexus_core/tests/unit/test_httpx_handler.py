@@ -132,6 +132,33 @@ def test_handler_reports_probe_summary_in_evidence():
     assert len(result.output["probes"]) == 3
 
 
+def test_handler_reports_wrong_binary_on_empty_output():
+    # Regression (B1): /usr/bin/httpx is the Python HTTP client. It exits 2 with
+    # empty stdout; the handler must say "wrong binary", not "post-condition
+    # failed with method=httpx_jsonl_parsed".
+    class SequencedSandbox:
+        def __init__(self, results):
+            self.results = list(results)
+            self.calls: list[list[str]] = []
+
+        async def run(self, argv, *, timeout_seconds: float = 30):
+            self.calls.append(list(argv))
+            return self.results.pop(0)
+
+    sandbox = SequencedSandbox(
+        [
+            SandboxResult(2, "", "Error: No such option: -json"),
+            SandboxResult(2, "Usage: httpx [OPTIONS] URL\nError: No such option: -e", ""),
+        ]
+    )
+    with mock.patch.object(httpx_module, "sandbox_for_environment", lambda *a, **k: sandbox):
+        result = _run({"targets": ["http://x"]})
+    assert result.success is False
+    assert result.verification_method == "httpx_binary_mismatch"
+    assert "projectdiscovery" in result.output["install"].lower()
+    assert sandbox.calls[1][:2] == ["httpx", "-version"]
+
+
 def test_handler_returns_unverified_on_timeout():
     with _fake_sandbox(SandboxResult(-1, "", "", timed_out=True)):
         result = _run({"targets": ["https://a.example"]})

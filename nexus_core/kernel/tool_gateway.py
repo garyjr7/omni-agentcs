@@ -140,7 +140,14 @@ class ToolGateway:
                 action="tool.invoke",
                 resource_type="tool",
                 resource_id=tool_id,
-                payload={"argument_keys": sorted(arguments)},
+                # The arguments make the transcript self-contained; credentials
+                # are scrubbed with the audit writer's own field policy, so the
+                # redaction is identical to every other durable record.
+                payload={
+                    "argument_keys": sorted(arguments),
+                    "arguments": self.audit._sanitize(dict(arguments)),
+                    "run_id": context.run_id,
+                },
                 decision="allow" if decision.allowed else "deny",
             )
             if not decision.allowed:

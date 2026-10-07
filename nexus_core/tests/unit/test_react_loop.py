@@ -233,8 +233,11 @@ async def test_loop_injects_tool_result_to_history(harness):
     assert "react.observation" in second_prompt or "nexus.recon.nmap" in second_prompt
 
 
-async def test_loop_aborts_after_3_consecutive_tool_failures(harness):
-    _, context = harness
+async def test_loop_retires_a_broken_tool_and_keeps_running(harness):
+    # Regression (B3): 3 *tool* failures used to abort the whole engagement. A
+    # broken/absent binary must instead retire that one tool so the agent can
+    # pivot to another route of the phase.
+    store, context = harness
     llm = ScriptedLLM([tool_call()])
     spy = ToolSpy(error=RuntimeError("tool post-condition was not verified"))
 
@@ -247,11 +250,29 @@ async def test_loop_aborts_after_3_consecutive_tool_failures(harness):
             config=ReActConfig(max_iterations=8),
         )
 
-    assert result.status == STATUS_FAILED
-    assert result.iterations == 3
+    assert result.status == STATUS_MAX_ITERATIONS
+    # The tool actually ran three times, then was retired and refused.
     assert len(spy.payloads) == 3
-    assert "3 consecutive tool failures" in result.final_summary
-    assert result.actions[-1]["tool_result"]["error_type"] == "RuntimeError"
+    events = [
+        event
+        for event in store.list_run_events("system", context.run_id)
+        if event.get("event_type") == "react.tool_unavailable"
+    ]
+    assert events and events[0]["payload"]["tool_id"] == "nexus.recon.nmap"
+    # The refusal afterwards points the model at what remains.
+    observations = [
+        message["content"]
+        for message in store.list_messages("system", result.conversation_id)
+        if message["metadata"].get("kind") == "react.observation"
+    ]
+    assert any("unavailable after repeated failures" in item for item in observations)
+    # The three real failures are recorded with their kind; the last action is
+    # the refusal, which is not a failure.
+    failed_actions = [
+        action for action in result.actions if (action.get("tool_result") or {}).get("error_type")
+    ]
+    assert failed_actions and failed_actions[0]["tool_result"]["error_type"] == "RuntimeError"
+    assert failed_actions[0]["tool_result"]["failure_kind"] == "tool"
 
 
 async def test_loop_handles_clarification(harness):
@@ -377,9 +398,12 @@ async def test_loop_rejects_unknown_tool_without_executing(harness):
             config=ReActConfig(max_iterations=8),
         )
 
-    assert result.status == STATUS_FAILED
+    # An invented tool is never executed. It keeps being rejected, and because
+    # other routes remain the loop does not abort (B3): it runs to the iteration
+    # budget with the rejection repeated every turn.
+    assert result.status == STATUS_MAX_ITERATIONS
     assert spy.payloads == []
-    assert result.iterations == 3
+    assert result.iterations == 8
     observations = [
         message["content"]
         for message in store.list_messages("system", result.conversation_id)

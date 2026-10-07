@@ -27,8 +27,14 @@ deterministic post-condition. The profile only shrinks the surface.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
+
+#: Per-subagent token budgets are tunable per engagement through env vars, e.g.
+#: ``NEXUS_SUBAGENT_BUDGET_RECON=150000``. This is the escape hatch for a
+#: target that legitimately needs more context than the calibrated default.
+BUDGET_ENV_PREFIX = "NEXUS_SUBAGENT_BUDGET_"
 
 #: Tools that only read durable memory or the local environment. They touch no
 #: target, so every profile may use them without widening its blast radius.
@@ -164,7 +170,9 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.recon.whatweb",
             }
         ),
-        token_budget=20_000,
+        # 5x the original 20k: each iteration re-sends ~7k tokens of system
+        # prompt + schemas, so 20k only bought ~3 actions (B4).
+        token_budget=100_000,
         max_iterations=8,
         read_only=True,
     ),
@@ -183,7 +191,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.web.dalfox",
             }
         ),
-        token_budget=20_000,
+        token_budget=80_000,
         max_iterations=10,
         read_only=True,
     ),
@@ -199,7 +207,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.recon.ftp",
             }
         ),
-        token_budget=12_000,
+        token_budget=60_000,
         max_iterations=6,
         read_only=False,
     ),
@@ -217,7 +225,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.recon.netexec",
             }
         ),
-        token_budget=16_000,
+        token_budget=60_000,
         max_iterations=8,
         read_only=False,
     ),
@@ -238,7 +246,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.c2.sliver_loot",
             }
         ),
-        token_budget=16_000,
+        token_budget=60_000,
         max_iterations=8,
         read_only=False,
     ),
@@ -254,7 +262,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.post.ssh_exec",
             }
         ),
-        token_budget=16_000,
+        token_budget=60_000,
         max_iterations=10,
         read_only=False,
     ),
@@ -278,7 +286,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.c2.sliver_pivot",
             }
         ),
-        token_budget=16_000,
+        token_budget=60_000,
         max_iterations=8,
         read_only=False,
     ),
@@ -288,7 +296,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         phase="reporting",
         focus="consolidar hallazgos verificados y cerrar el engagement",
         tools=_with_common({"nexus.report.generate"}),
-        token_budget=8_000,
+        token_budget=30_000,
         max_iterations=4,
         read_only=True,
     ),
@@ -309,28 +317,57 @@ PHASE_SUBAGENT: Mapping[str, str] = {
 }
 
 
+def budget_env_name(subagent_id: str) -> str:
+    """Env var that overrides one profile's token budget for this engagement."""
+    return f"{BUDGET_ENV_PREFIX}{str(subagent_id).upper()}"
+
+
+def apply_budget_overrides(
+    profile: SubAgentDefinition, *, env: Mapping[str, str] | None = None
+) -> SubAgentDefinition:
+    """Return ``profile`` with ``NEXUS_SUBAGENT_BUDGET_<ID>`` applied when set.
+
+    A non-numeric or non-positive value is ignored so a typo cannot disable the
+    budget entirely (fail safe towards the calibrated default).
+    """
+    raw = (os.environ if env is None else env).get(budget_env_name(profile.id))
+    if raw is None or str(raw).strip() == "":
+        return profile
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return profile
+    if value <= 0:
+        return profile
+    if value == profile.token_budget:
+        return profile
+    return replace(profile, token_budget=value)
+
+
 def select_subagent(
     phase: str | None = None,
     *,
     counts: Mapping[str, Any] | None = None,
     override: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> SubAgentDefinition:
     """Pick the active profile deterministically.
 
     ``override`` (an operator pin) wins when it names a real profile; an unknown
     override raises instead of silently falling back. Otherwise the kill-chain
     phase plus the blackboard counts decide, and an unknown phase fails closed to
-    the most restrictive profile.
+    the most restrictive profile. The chosen profile's budget honours
+    ``NEXUS_SUBAGENT_BUDGET_<ID>`` when present.
     """
     if override:
         profile = SUBAGENTS_BY_ID.get(str(override))
         if profile is None:
             raise ValueError(f"unknown subagent: {override}")
-        return profile
+        return apply_budget_overrides(profile, env=env)
     normalized = {str(key): int(value or 0) for key, value in (counts or {}).items()}
     refined = _refine(str(phase or ""), normalized)
     subagent_id = refined or PHASE_SUBAGENT.get(str(phase or ""), DEFAULT_SUBAGENT_ID)
-    return SUBAGENTS_BY_ID[subagent_id]
+    return apply_budget_overrides(SUBAGENTS_BY_ID[subagent_id], env=env)
 
 
 def _refine(phase: str, counts: Mapping[str, int]) -> str | None:
@@ -479,7 +516,10 @@ __all__ = [
     "SUBAGENTS",
     "SUBAGENTS_BY_ID",
     "SUBAGENT_IDS",
+    "BUDGET_ENV_PREFIX",
     "SubAgentDefinition",
+    "apply_budget_overrides",
+    "budget_env_name",
     "filter_catalog",
     "gather_readonly",
     "is_external",

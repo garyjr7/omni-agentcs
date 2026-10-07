@@ -19,6 +19,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -28,6 +29,7 @@ from nexus_core.scope import ScopeViolation
 
 from . import memory
 from .injection import render_for_model, scan_untrusted_text
+from .observations import bounded_context, prepare_observation
 from .project_context import load_project_instruction, render_project_instruction
 from .skills import activate_skills, render_skills
 from .subagents import filter_catalog, permits, select_for_plan
@@ -44,10 +46,23 @@ from .prompts import describe_scope, render_system_prompt
 DEFAULT_AGENT_ID = "omni"
 MAX_CONSECUTIVE_TOOL_FAILURES = 3
 CANCEL_EVENT_TYPE = "react.cancel_requested"
-
-#: Observations longer than this are truncated before persisting (the durable
-#: message store is text; full artifacts belong in the artifact store).
-MAX_OBSERVATION_CHARS = 20_000
+#: A tool that fails this many times *as a tool* (not as invalid input) is
+#: marked unavailable for the rest of the run, so the agent pivots instead of
+#: the whole engagement dying (B3).
+MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE = 3
+TOOL_UNAVAILABLE_EVENT_TYPE = "react.tool_unavailable"
+PHASE_TIMEOUT_EVENT_TYPE = "react.phase_timeout"
+#: Optional per-phase wall-clock budget (0 disables it). When exceeded the
+#: phase's already-failing tools are retired and the event is audited.
+PHASE_TIMEOUT_ENV = "NEXUS_PHASE_TIMEOUT_SECONDS"
+#: Output-token ceiling for one ReAct turn. Providers with a low tokens-per-
+#: minute budget count the *reserved* ``max_tokens`` against the request, so an
+#: oversized default (4096) makes every call fail even when the prompt is small
+#: (B4 / Groq TPM=8000 in the E2E run #2). A ReAct reply is a small JSON object,
+#: so a lean ceiling keeps requests inside the budget.
+REACT_MAX_TOKENS_ENV = "NEXUS_REACT_MAX_TOKENS"
+REACT_DEFAULT_MAX_TOKENS = 1536
+REACT_MIN_MAX_TOKENS = 256
 
 STATUS_COMPLETED = "completed"
 STATUS_MAX_ITERATIONS = "max_iterations"
@@ -194,11 +209,58 @@ def _audit_step(
     )
 
 
-def _truncate_observation(value: dict[str, Any]) -> tuple[str, bool]:
-    encoded = json.dumps(value, default=str, ensure_ascii=False)
-    if len(encoded) <= MAX_OBSERVATION_CHARS:
-        return encoded, False
-    return encoded[:MAX_OBSERVATION_CHARS], True
+def _failure_kind(exc: BaseException) -> str:
+    """Classify a tool exception as ``"input"`` or ``"tool"``.
+
+    Invalid input (schema violations, forbidden flags) raises a ``ValueError``
+    from the gateway/handler; a governance denial raises ``PermissionError``.
+    Neither means the tool is broken, so neither retires it: a model that keeps
+    sending bad arguments or hitting a policy gate must not be able to exhaust
+    the phase's toolset. A broken/absent binary surfaces as anything else
+    (``RuntimeError`` post-condition, ``OSError``, timeouts) and does (B3).
+    """
+    return "input" if isinstance(exc, (ValueError, PermissionError)) else "tool"
+
+
+def _phase_timeout_seconds() -> float:
+    """Read the optional per-phase wall-clock budget (seconds; 0 disables)."""
+    raw = os.getenv(PHASE_TIMEOUT_ENV, "0")
+    try:
+        return max(0.0, float(str(raw).strip() or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def react_max_tokens() -> int:
+    """Output-token ceiling of one ReAct turn (env-overridable)."""
+    raw = os.getenv(REACT_MAX_TOKENS_ENV, "")
+    try:
+        return max(REACT_MIN_MAX_TOKENS, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return REACT_DEFAULT_MAX_TOKENS
+
+
+def _usable_tool_count(subagent: Any, unavailable: set[str]) -> int:
+    """How many of the profile's tools are still usable."""
+    return len(_remaining_tools(subagent, unavailable))
+
+
+def _keep_going_after_failures(
+    subagent: Any, unavailable: set[str], consecutive_failures: int
+) -> bool:
+    """Whether the loop continues instead of aborting after failures (B3).
+
+    Fatal only when the failure threshold is reached *and* the active profile
+    has no usable tool left; otherwise the run pivots to another route.
+    """
+    if consecutive_failures < MAX_CONSECUTIVE_TOOL_FAILURES:
+        return True
+    return _usable_tool_count(subagent, unavailable) > 0
+
+
+def _remaining_tools(subagent: Any, unavailable: set[str]) -> list[str]:
+    """Tools of the active profile that are still usable."""
+    return sorted(str(tool) for tool in subagent.tools if str(tool) not in unavailable)
 
 
 def _persisted_actions(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -406,18 +468,21 @@ async def _complete_turn(llm_client: Any, messages: list[Any], config: ReActConf
 
     Falls back to a plain ``complete`` on any streaming error so the reasoning
     UI can never turn into a dead end. ``CancelledError`` propagates untouched.
+    The output ceiling is bounded (see :func:`react_max_tokens`) so a request
+    fits inside a provider's tokens-per-minute budget.
     """
+    max_tokens = react_max_tokens()
     can_stream = (
         config.on_thought is not None
         and bool(getattr(llm_client, "supports_streaming", False))
         and hasattr(llm_client, "stream")
     )
     if not can_stream:
-        return await llm_client.complete(messages)
+        return await llm_client.complete(messages, max_tokens=max_tokens)
     collected: list[str] = []
     last = ""
     try:
-        async for chunk in llm_client.stream(messages):
+        async for chunk in llm_client.stream(messages, max_tokens=max_tokens):
             collected.append(chunk)
             thought = extract_partial_thought("".join(collected))
             if thought and thought != last:
@@ -425,7 +490,7 @@ async def _complete_turn(llm_client: Any, messages: list[Any], config: ReActConf
                 _notify(config.on_thought, thought)
     except Exception:  # noqa: BLE001 - retry the whole turn without streaming
         _notify(config.on_thought_done)
-        return await llm_client.complete(messages)
+        return await llm_client.complete(messages, max_tokens=max_tokens)
     finally:
         _notify(config.on_thought_done)
     response = getattr(llm_client, "last_stream_response", None)
@@ -618,6 +683,13 @@ async def run_react_loop(
     last_subagent_id: str | None = None
     active_subagent_id: str | None = None
     subagent_iterations = 0
+    # Degradation state (B3): a tool that keeps failing *as a tool* is retired
+    # and the phase continues by another route; a tool that fails only on bad
+    # input is never retired.
+    unavailable_tools: set[str] = set()
+    tool_failures: dict[str, int] = {}
+    phase_started = time.monotonic()
+    phase_timeout_seconds = _phase_timeout_seconds()
 
     def audit_step(*, iteration: int, action: str, decision: str, **extra: Any) -> None:
         """Audit one step, always tagged with the active subagent (3C)."""
@@ -695,6 +767,9 @@ async def run_react_loop(
         last_plan = plan
         subagent = select_for_plan(plan, override=subagent_override)
         active_subagent_id = subagent.id
+        if plan.current != last_phase:
+            # A new phase gets a fresh wall-clock allowance.
+            phase_started = time.monotonic()
         if subagent.id != last_subagent_id:
             subagent_iterations = 0
             store.append_run_event(
@@ -732,9 +807,47 @@ async def run_react_loop(
                     f"{spent} >= {subagent.token_budget}"
                 )
                 break
+        # Phase timeout (B3): a stall is visible and bounded. The already-failing
+        # tools of the phase are retired so the model is pushed to another route.
+        # The phase itself is NOT auto-advanced: the planner is deterministic and
+        # blackboard-driven, so fabricating progress would corrupt the plan.
+        if phase_timeout_seconds and (time.monotonic() - phase_started) > phase_timeout_seconds:
+            stalled = sorted(
+                tool_id
+                for tool_id in tool_failures
+                if tool_id in subagent.tools and tool_id not in unavailable_tools
+            )
+            if stalled:
+                unavailable_tools.update(stalled)
+            store.append_run_event(
+                tenant_id,
+                run_id,
+                PHASE_TIMEOUT_EVENT_TYPE,
+                {
+                    "phase": plan.current,
+                    "subagent_id": subagent.id,
+                    "elapsed_seconds": round(time.monotonic() - phase_started, 3),
+                    "iteration": iteration,
+                    "retired_tools": stalled,
+                },
+            )
+            audit_step(
+                iteration=iteration,
+                action="phase_timeout",
+                decision="degrade",
+                phase=plan.current,
+                retired_tools=stalled,
+            )
+            phase_started = time.monotonic()
+
         # The loop may only draw from the active profile's subset; the full
         # catalog stays around to tell an invented tool from a denied one.
-        allowed_catalog = filter_catalog(subagent, catalog)
+        # Retired (repeatedly broken) tools are removed from what it may propose.
+        allowed_catalog = {
+            tool_id: entry
+            for tool_id, entry in filter_catalog(subagent, catalog).items()
+            if tool_id not in unavailable_tools
+        }
         if plan.current != last_phase:
             store.append_run_event(
                 tenant_id,
@@ -763,13 +876,23 @@ async def run_react_loop(
             skills_summary=render_skills(active_skills),
         )
         messages = [LLMMessage(role="system", content=system_prompt)]
+        # Bound the raw history: a shared work session accumulates every prior
+        # run's messages, and paying for all of them on every turn can exceed a
+        # provider's per-request token limit (B4). The summarised history block
+        # in the system prompt still carries the older context.
+        context_messages = bounded_context(
+            [
+                message
+                for message in history
+                if message.get("role") in {"user", "assistant"}
+                and memory.message_kind(message) not in memory.COMPACTION_KINDS
+            ]
+        )
         messages.extend(
             # Tool output is untrusted data: observation messages are wrapped in
             # the untrusted-output delimiters at the model boundary (H1).
             LLMMessage(role=str(message["role"]), content=render_for_model(message))
-            for message in history
-            if message.get("role") in {"user", "assistant"}
-            and memory.message_kind(message) not in memory.COMPACTION_KINDS
+            for message in context_messages
         )
 
         response = await _complete_turn(llm_client, messages, config)
@@ -971,13 +1094,17 @@ async def run_react_loop(
                 tool_id=action.tool_id,
                 reason="unknown_tool",
             )
-            if consecutive_failures >= MAX_CONSECUTIVE_TOOL_FAILURES:
+            if not _keep_going_after_failures(
+                subagent, unavailable_tools, consecutive_failures
+            ):
                 status = STATUS_FAILED
                 final_summary = (
                     f"aborted after {consecutive_failures} consecutive tool failures "
-                    f"(last: unknown tool '{action.tool_id}')"
+                    f"(last: unknown tool '{action.tool_id}'; no usable tools remain "
+                    f"for subagent '{subagent.id}')"
                 )
                 break
+            consecutive_failures = 0
             continue
 
         # A tool that exists but sits outside the active subagent's subset is
@@ -1013,13 +1140,51 @@ async def run_react_loop(
                 tool_id=action.tool_id,
                 reason="subagent_tool_denied",
             )
-            if consecutive_failures >= MAX_CONSECUTIVE_TOOL_FAILURES:
+            if not _keep_going_after_failures(
+                subagent, unavailable_tools, consecutive_failures
+            ):
                 status = STATUS_FAILED
                 final_summary = (
                     f"aborted after {consecutive_failures} consecutive tool failures "
-                    f"(last: '{action.tool_id}' outside subagent '{subagent.id}')"
+                    f"(last: '{action.tool_id}' outside subagent '{subagent.id}'; no "
+                    f"usable tools remain)"
                 )
                 break
+            consecutive_failures = 0
+            continue
+
+        # A retired tool (too many *tool* failures) is refused without counting
+        # as a failure, so the model is told what it may still use (B3).
+        if action.tool_id in unavailable_tools:
+            observation = {
+                "success": False,
+                "tool_id": action.tool_id,
+                "error": (
+                    f"tool '{action.tool_id}' is unavailable after repeated failures; "
+                    "use another tool from the available list"
+                ),
+                "subagent_id": subagent.id,
+                "available_tools": sorted(allowed_catalog),
+            }
+            entry["tool_result"] = observation
+            actions.append(entry)
+            _inject_observation(
+                store,
+                tenant_id,
+                conversation_id,
+                run_id,
+                iteration,
+                action,
+                observation,
+                subagent_id=active_subagent_id,
+            )
+            audit_step(
+                iteration=iteration,
+                action=action.action,
+                decision="deny",
+                tool_id=action.tool_id,
+                reason="tool_unavailable",
+            )
             continue
 
         resolved = catalog[action.tool_id]
@@ -1105,11 +1270,46 @@ async def run_react_loop(
             )
             break
         except Exception as exc:  # noqa: BLE001 - surfaced to the LLM as an observation
+            kind = _failure_kind(exc)
             observation = {
                 "success": False,
                 "error_type": type(exc).__name__,
                 "error": str(exc)[:1000],
+                "failure_kind": kind,
             }
+            failed_tool = str(action.tool_id)
+            if kind == "tool":
+                count = tool_failures.get(failed_tool, 0) + 1
+                tool_failures[failed_tool] = count
+                if (
+                    count >= MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE
+                    and failed_tool not in unavailable_tools
+                ):
+                    unavailable_tools.add(failed_tool)
+                    observation["tool_retired"] = True
+                    observation["available_tools"] = sorted(
+                        tool
+                        for tool in subagent.tools
+                        if tool not in unavailable_tools
+                    )
+                    store.append_run_event(
+                        tenant_id,
+                        run_id,
+                        TOOL_UNAVAILABLE_EVENT_TYPE,
+                        {
+                            "tool_id": action.tool_id,
+                            "subagent_id": subagent.id,
+                            "failures": count,
+                            "iteration": iteration,
+                        },
+                    )
+                    audit_step(
+                        iteration=iteration,
+                        action="tool_unavailable",
+                        decision="degrade",
+                        tool_id=action.tool_id,
+                        failures=count,
+                    )
             consecutive_failures += 1
         else:
             if cancelled_now:
@@ -1152,12 +1352,18 @@ async def run_react_loop(
             error=observation.get("error"),
         )
 
-        if consecutive_failures >= MAX_CONSECUTIVE_TOOL_FAILURES:
+        if not _keep_going_after_failures(
+            subagent, unavailable_tools, consecutive_failures
+        ):
             status = STATUS_FAILED
             final_summary = (
-                f"aborted after {consecutive_failures} consecutive tool failures"
+                f"aborted after {consecutive_failures} consecutive tool failures "
+                f"(no usable tools remain for subagent '{subagent.id}')"
             )
             break
+        if consecutive_failures >= MAX_CONSECUTIVE_TOOL_FAILURES:
+            # Threshold reached but other routes exist: pivot instead of dying.
+            consecutive_failures = 0
 
     if status == STATUS_MAX_ITERATIONS and not final_summary:
         final_summary = (
@@ -1204,8 +1410,14 @@ def _inject_observation(
     Suspicious phrases are flagged here and persisted as ``injection_signals`` so
     the boundary can warn the model without ever hiding the raw evidence.
     """
-    content, truncated = _truncate_observation(
-        {"tool_id": action.tool_id, **observation}
+    # Tool output can be huge (nmap XML, nuclei JSON). Keep the model on a
+    # bounded summary and archive the full payload content-addressed (B4).
+    content, compacted, artifact = prepare_observation(
+        str(action.tool_id),
+        observation,
+        store=store,
+        tenant_id=tenant_id,
+        run_id=run_id,
     )
     memory.append_step(
         store,
@@ -1223,9 +1435,10 @@ def _inject_observation(
                 for key, value in observation.items()
                 if key not in {"evidence", "output"}
             },
-            "truncated": truncated,
+            "truncated": compacted,
             "injection_signals": scan_untrusted_text(content),
             "run_id": run_id,
+            **({"artifact": artifact} if artifact else {}),
             **({"subagent_id": subagent_id} if subagent_id else {}),
         },
     )

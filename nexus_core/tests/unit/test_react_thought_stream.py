@@ -13,11 +13,11 @@ class _StreamingClient:
         self._chunks = list(chunks)
         self.complete_calls = 0
 
-    async def stream(self, messages):
+    async def stream(self, messages, **kwargs):
         for chunk in self._chunks:
             yield chunk
 
-    async def complete(self, messages):
+    async def complete(self, messages, **kwargs):
         self.complete_calls += 1
         return "complete"
 
@@ -27,7 +27,7 @@ class _StreamingClient:
 
 
 class _BrokenStreamClient(_StreamingClient):
-    async def stream(self, messages):
+    async def stream(self, messages, **kwargs):
         yield '{"thought": "empiezo'
         raise RuntimeError("boom")
 
@@ -75,7 +75,7 @@ def test_complete_turn_falls_back_when_streaming_fails():
     client = _BrokenStreamClient([])
     done: list[bool] = []
 
-    async def fallback(messages):
+    async def fallback(messages, **kwargs):
         client.complete_calls += 1
         return SimpleNamespace(content="fallback", tokens_input=1, tokens_output=1)
 

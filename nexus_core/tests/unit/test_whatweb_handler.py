@@ -12,8 +12,9 @@ from nexus_core.kernel.models import Identity, RiskLevel, RunContext
 from nexus_core.kernel.sandbox import SandboxResult
 from nexus_core.tools.handlers import whatweb as whatweb_module
 from nexus_core.tools.handlers.whatweb import (
+    MIN_VALID_JSONL_BYTES,
     WHATWEB_ALLOWED_PROGRAMS,
-    WHATWEB_EFFECTIVE_AGGRESSION,
+    WHATWEB_AGGRESSION_LEVELS,
     whatweb_definition,
     whatweb_handler,
     whatweb_noise_level,
@@ -72,10 +73,20 @@ def workspace(tmp_path, monkeypatch):
 
 
 def test_noise_level_from_aggression():
-    assert whatweb_noise_level(1) == "low"
-    assert whatweb_noise_level(2) == "medium"
-    assert whatweb_noise_level(3) == "high"
-    assert whatweb_noise_level(4) == "high"
+    # Regression (B2): whatweb only accepts 1, 3, 4. Level 2 does not exist.
+    assert WHATWEB_AGGRESSION_LEVELS == (1, 3, 4)
+    assert whatweb_noise_level(1) == "stealth"
+    assert whatweb_noise_level(3) == "aggressive"
+    assert whatweb_noise_level(4) == "heavy"
+    with pytest.raises(ValueError):
+        whatweb_noise_level(2)
+
+
+def test_definition_rejects_aggression_two_before_argv():
+    # Regression (B2): the schema must reject 2 instead of propagating an
+    # invalid level to whatweb (which exits 0 with a 2-byte log).
+    schema = whatweb_definition().input_schema
+    assert schema["properties"]["aggression"]["enum"] == [1, 3, 4]
 
 
 def test_handler_builds_log_json_command(workspace):
@@ -101,14 +112,33 @@ def test_handler_multiple_targets_skips_quiet(workspace):
     assert argv[-2:] == ["http://a/", "http://b/"]
 
 
-def test_handler_forces_aggression_four_to_three(workspace):
+def test_handler_honors_aggression_four(workspace):
     (workspace / "whatweb_t1.json").write_text(SAMPLE, encoding="utf-8")
     with _fake_sandbox(SandboxResult(0, "", "")) as (sandbox, _):
         result = _run({"targets": ["http://x/"], "aggression": 4})
     argv = sandbox.calls[0][0]
-    assert f"--aggression={WHATWEB_EFFECTIVE_AGGRESSION}" in argv
-    assert result.evidence["aggression"] == WHATWEB_EFFECTIVE_AGGRESSION
-    assert any("forced to 3" in warning for warning in result.evidence["warnings"])
+    assert "--aggression=4" in argv
+    assert result.evidence["aggression"] == 4
+    assert result.evidence["noise_level"] == "heavy"
+    assert any("heavy" in warning for warning in result.evidence["warnings"])
+
+
+def test_handler_rejects_invalid_aggression(workspace):
+    # Regression (B2): a direct handler call must fail closed too, not just the
+    # schema boundary.
+    with _fake_sandbox(SandboxResult(0, "", "")):
+        with pytest.raises(ValueError):
+            _run({"targets": ["http://x/"], "aggression": 2})
+
+
+def test_handler_rejects_two_byte_log(workspace):
+    # Regression (B2): whatweb exits 0 with `[\n` when the command line is
+    # invalid. That is a broken run, not "a successful scan with 0 targets".
+    assert MIN_VALID_JSONL_BYTES >= 10
+    with _fake_sandbox(SandboxResult(0, "", ""), "[\n"):
+        result = _run({"targets": ["http://x/"]})
+    assert result.success is False
+    assert result.verification_method == "whatweb_output_too_small"
 
 
 def test_handler_reads_and_parses_the_json_log(workspace):
@@ -127,7 +157,7 @@ def test_handler_returns_unverified_when_no_log(workspace):
 
 
 def test_handler_returns_unverified_on_parse_error(workspace):
-    with _fake_sandbox(SandboxResult(0, "", ""), "{not json"):
+    with _fake_sandbox(SandboxResult(0, "", ""), "{not valid json"):
         result = _run({"targets": ["http://x/"]})
     assert result.success is False
     assert result.verification_method == "whatweb_parse_failed"

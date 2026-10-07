@@ -25,7 +25,15 @@ import threading
 import time
 from typing import Any, TextIO
 
+import os
+
 from nexus_core.agent import memory
+from nexus_core.agent.preflight import (
+    PREFLIGHT_ENV,
+    PreflightVerdict,
+    env_flag,
+    preflight_binaries,
+)
 from nexus_core.agent.react import ReActConfig, run_react_loop
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.runtime import ExecutionContext
@@ -136,6 +144,13 @@ class _EventEmitter(threading.Thread):
         self.state["audit"] = len(rows)
 
 
+def _run_preflight() -> PreflightVerdict | None:
+    """Binaries preflight; ``NEXUS_PREFLIGHT_BINARIES=0`` disables it."""
+    if not env_flag(os.environ, PREFLIGHT_ENV, default=True):
+        return None
+    return preflight_binaries()
+
+
 def run_headless(
     session: Any,
     objective: str,
@@ -143,6 +158,7 @@ def run_headless(
     mode: str = "json",
     stream: TextIO | None = None,
     max_iterations: int | None = None,
+    preflight: PreflightVerdict | None = None,
 ) -> int:
     """Run one objective headlessly; return the process exit code.
 
@@ -155,6 +171,23 @@ def run_headless(
     if not objective:
         write_line(out, {"type": "run.error", "error": "el objetivo no puede estar vacío"})
         return 2
+
+    # Refuse to start against a wrong binary: it burns tokens and then fails
+    # with an opaque post-condition error (B1). The operator can opt into a
+    # degraded run with NEXUS_ALLOW_DEGRADED_TOOLS=1.
+    verdict = preflight if preflight is not None else _run_preflight()
+    if verdict is not None and not verdict.ok:
+        write_line(out, {"type": "run.error", "error": verdict.message()})
+        return 2
+    if verdict is not None and verdict.problems and verdict.degraded:
+        write_line(
+            out,
+            {
+                "type": "run.preflight_degraded",
+                "problems": [problem.to_dict() for problem in verdict.problems],
+            },
+        )
+
     raw_iterations: Any = max_iterations or getattr(session, "max_iterations", 12)
     iterations = int(raw_iterations)
 

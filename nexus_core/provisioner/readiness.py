@@ -22,6 +22,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .binaries import (
+    BINARY_IDENTITIES_BY_NAME,
+    BinaryIdentity,
+    IdentityCheck,
+)
 from .recipes import load_recipes
 
 #: Binary components: (component_id, binary, purpose, required).
@@ -56,6 +61,10 @@ class ComponentStatus:
     ready: bool
     detail: str
     setup: str = ""
+    #: Identity verdict for binary components (``None`` when not probed, the
+    #: binary is absent, or the component is not a binary). ``False`` means the
+    #: binary exists but is the *wrong* one (e.g. Python ``httpx``).
+    identity_ok: bool | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -66,6 +75,7 @@ class ComponentStatus:
             "ready": self.ready,
             "detail": self.detail,
             "setup": self.setup,
+            "identity_ok": self.identity_ok,
         }
 
 
@@ -119,18 +129,43 @@ def assess_environment(
     env: dict | None = None,
     path_exists: Callable[[str], bool] | None = None,
     lhost: str = "127.0.0.1",
+    probe_binary: Callable[[BinaryIdentity], IdentityCheck] | None = None,
 ) -> EnvironmentReport:
-    """Assess the operational environment. Fully injectable for tests."""
+    """Assess the operational environment. Fully injectable for tests.
+
+    ``probe_binary`` is opt-in: when given, the critical binaries (those in
+    :data:`nexus_core.provisioner.binaries.BINARY_IDENTITIES`) are checked for
+    *identity*, so a same-named wrong binary is reported as not ready instead of
+    "present". The default is ``None`` to keep the assessment free of process
+    spawns for callers that only need presence.
+    """
     env = dict(os.environ if env is None else env)
     port_open = port_open or _default_port_open
     path_exists = path_exists or (lambda p: Path(p).expanduser().exists())
+    identities = BINARY_IDENTITIES_BY_NAME if probe_binary is not None else {}
 
     components: list[ComponentStatus] = []
     recipe_names = set(load_recipes())
 
     # ---- binaries ---------------------------------------------------------
     for component_id, binary, purpose, required in BINARY_COMPONENTS:
-        present = which(binary) is not None
+        path = which(binary)
+        present = path is not None
+        identity: IdentityCheck | None = None
+        identity_spec = identities.get(binary)
+        if present and identity_spec is not None and probe_binary is not None:
+            identity = probe_binary(identity_spec)
+        if identity is not None and not identity.ok:
+            # A wrong binary is worse than a missing one: it silently feeds
+            # garbage to the handler. Fail it closed with actionable guidance.
+            components.append(
+                ComponentStatus(
+                    component_id, "binary", purpose, required, False,
+                    f"binario equivocado en {identity.binary_path or path}",
+                    identity.install, False,
+                )
+            )
+            continue
         if component_id == "sliver-server":
             setup = (
                 "Ejecuta `omni --setup --install --yes`: descarga la release "
@@ -148,7 +183,8 @@ def assess_environment(
         components.append(
             ComponentStatus(
                 component_id, "binary", purpose, required, present,
-                which(binary) or "no encontrado en PATH", "" if present else setup,
+                path or "no encontrado en PATH", "" if present else setup,
+                True if (identity is not None and identity.ok) else None,
             )
         )
 

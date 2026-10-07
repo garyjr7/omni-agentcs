@@ -14,14 +14,40 @@ def test_initial_cost_is_unknown(tui_factory):
 
 
 def test_unknown_provider_cost_remains_placeholder(tui_factory, monkeypatch):
+    # A provider the reference table does not know stays unknown (no invented
+    # number). groq *is* known now, so this uses a genuinely unknown one.
     monkeypatch.delenv("NEXUS_TUI_INPUT_USD_PER_MTOK", raising=False)
     monkeypatch.delenv("NEXUS_TUI_OUTPUT_USD_PER_MTOK", raising=False)
     ui = tui_factory()
     session = OmniSession(store=None, use_tui=False)
     session._tui = ui.session
-    session._record_usage(SimpleNamespace(tokens_input=6000, tokens_output=100, provider="groq"), durable=False)
+    session._record_usage(
+        SimpleNamespace(tokens_input=6000, tokens_output=100, provider="mystery"),
+        durable=False,
+    )
     text = render_status_plain(ui.session._status)
     assert "6.1k tok" in text and "$—" in text
+
+
+def test_known_provider_cost_is_registered_by_default(tui_factory, monkeypatch):
+    # Regression (P1): groq/gpt-oss-120b now has a reference rate, so the status
+    # shows a real estimate without any env override.
+    monkeypatch.delenv("NEXUS_TUI_INPUT_USD_PER_MTOK", raising=False)
+    monkeypatch.delenv("NEXUS_TUI_OUTPUT_USD_PER_MTOK", raising=False)
+    ui = tui_factory()
+    session = OmniSession(store=None, use_tui=False)
+    session._tui = ui.session
+    session._record_usage(
+        SimpleNamespace(
+            tokens_input=6000,
+            tokens_output=100,
+            provider="groq",
+            model="openai/gpt-oss-120b",
+        ),
+        durable=False,
+    )
+    text = render_status_plain(ui.session._status)
+    assert "~$" in text and "$—" not in text
 
 
 def test_configured_cost_estimate_is_preserved(tui_factory, monkeypatch):
