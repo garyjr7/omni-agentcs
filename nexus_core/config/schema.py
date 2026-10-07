@@ -9,7 +9,12 @@ from typing import Any
 CURRENT_SCHEMA_VERSION = 1
 PROVIDERS = ("groq", "openai", "anthropic", "gemini", "ollama", "fake")
 DEFAULT_MODELS = {
-    "groq": "openai/gpt-oss-20b",
+    # Fase 3.8: the free Groq model with the best instruction-following of the
+    # options the operator's key actually exposes (see docs/missions/
+    # FASE38_MODEL_CHANGE.md). gpt-oss-120b was the default and failed the E2E
+    # #4 on schema/instruction following; gpt-oss-safeguard-20b cannot fit the
+    # ~3k-token agent prompt inside its 2k free-tier TPM budget.
+    "groq": "qwen/qwen3.8-27b",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-4-20250514",
     "gemini": "gemini-2.5-flash",
@@ -25,7 +30,7 @@ def model_env_name(provider: str) -> str:
 @dataclass
 class LlmConfig:
     default_provider: str = "groq"
-    default_model: str = "openai/gpt-oss-20b"
+    default_model: str = "qwen/qwen3.8-27b"
     api_keys: dict[str, str] = field(default_factory=dict, repr=False)
 
 

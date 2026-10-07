@@ -27,6 +27,10 @@ PROVIDER_TPM: Mapping[str, int] = _PROVIDER_TPM
 #: name by longest-substring; a provider key applies when no model matches.
 REFERENCE_RATES_USD_PER_MTOK: Mapping[str, tuple[float, float]] = {
     # Groq (the E2E provider). Source: Groq public pricing, Aug 2026.
+    # ``qwen3.8-27b`` is the Fase 3.8 default and is used on the free tier only
+    # (no billing), so its reference cost is reported as zero rather than a
+    # paid list price. See docs/missions/FASE38_MODEL_CHANGE.md.
+    "qwen3.8-27b": (0.0, 0.0),
     "gpt-oss-120b": (0.15, 0.60),
     "gpt-oss-20b": (0.10, 0.50),
     "llama-3.3-70b": (0.59, 0.79),

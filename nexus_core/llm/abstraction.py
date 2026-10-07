@@ -659,7 +659,7 @@ class LLMFactory:
             try:
                 config = LLMConfig(
                     provider=LLMProvider.GROQ,
-                    model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                    model=os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b"),
                     api_key=os.getenv("GROQ_API_KEY"),
                     base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
                 )

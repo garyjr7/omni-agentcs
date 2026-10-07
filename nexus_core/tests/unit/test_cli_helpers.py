@@ -62,7 +62,7 @@ def test_llm_summary_is_side_effect_free(monkeypatch, _llm_env, capsys):
         "nexus_core.llm.abstraction.LLMFactory.create_from_env",
         side_effect=AssertionError("the banner must not build LLM clients"),
     ):
-        assert _session()._llm_summary() == "groq/llama-3.3-70b-versatile"
+        assert _session()._llm_summary() == "groq/qwen/qwen3.8-27b"
     assert capsys.readouterr().out == ""
 
 

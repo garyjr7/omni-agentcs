@@ -66,6 +66,20 @@ REACT_MAX_TOKENS_ENV = "NEXUS_REACT_MAX_TOKENS"
 REACT_DEFAULT_MAX_TOKENS = 1536
 REACT_MIN_MAX_TOKENS = 256
 
+#: Kick-off user turn (Fase 3.8). The loop rebuilds the conversation on every
+#: iteration as ``[system] + bounded history``; on the *first* iteration the
+#: history is empty, so the request carried no ``user`` message at all. Most
+#: OpenAI-style models accept that, but a strict chat template does not: Qwen
+#: rejects it with HTTP 400 ("No user query found in messages"), which made
+#: ``qwen/qwen3.8-27b`` unusable as the default. The turn is inserted only when
+#: the context has no user message, so a model that already accepted the
+#: system-only prompt keeps the exact same input as before.
+KICKOFF_USER_PROMPT = (
+    "OBJETIVO DE LA MISIÓN: {objective}\n\n"
+    "Comienza o continúa la misión proponiendo UN único objeto JSON con la "
+    "siguiente acción a ejecutar."
+)
+
 #: Last phase of the deterministic plan. Only when the planner has reached it
 #: (every earlier required phase backed by blackboard evidence) may a
 #: ``task_complete`` be accepted (B8.2.2). Kept as a literal so this module keeps
@@ -351,6 +365,24 @@ def _completion_objections(
             "aparece en ninguna observación de este run (stale_evidence)"
         )
     return objections
+
+
+def with_kickoff_user_turn(
+    messages: list[LLMMessage], objective: str
+) -> list[LLMMessage]:
+    """Append a ``user`` turn when the context has none (Fase 3.8).
+
+    Some chat templates (Qwen) reject a conversation that carries no user
+    message, and the first ReAct iteration historically sent only the system
+    prompt. Idempotent: a context that already has a user turn is returned
+    unchanged, so providers that worked with the old shape are unaffected.
+    """
+    if any(getattr(message, "role", None) == "user" for message in messages):
+        return messages
+    return [
+        *messages,
+        LLMMessage(role="user", content=KICKOFF_USER_PROMPT.format(objective=objective)),
+    ]
 
 
 def _premature_completion_message(objections: list[str], plan: Any) -> str:
@@ -1041,6 +1073,8 @@ async def run_react_loop(
             LLMMessage(role=str(message["role"]), content=render_for_model(message))
             for message in context_messages
         )
+
+        messages = with_kickoff_user_turn(messages, objective)
 
         response = await _complete_turn(llm_client, messages, config)
         _record_response_tokens(

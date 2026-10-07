@@ -52,7 +52,7 @@ PROVIDER_MODEL_ENVS = {
     "fake": ("FAKE_LLM_MODEL", "nexus-fake-v1"),
     "openai": ("OPENAI_MODEL", "gpt-4o-mini"),
     "gemini": ("GEMINI_MODEL", "gemini-1.5-flash"),
-    "groq": ("GROQ_MODEL", "llama-3.3-70b-versatile"),
+    "groq": ("GROQ_MODEL", "qwen/qwen3.8-27b"),
     "anthropic": ("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
     "ollama": ("OLLAMA_MODEL", "llama3"),
 }

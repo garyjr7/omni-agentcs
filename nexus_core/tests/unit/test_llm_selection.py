@@ -160,7 +160,7 @@ def test_cli_and_execute_react_agree_on_provider(clean_env):
 
     assert build_llm_client().primary.config.provider.value == "groq"
     assert select_llm_client().primary.config.provider.value == "groq"
-    assert llm_env.provider_summary() == ("groq/llama-3.3-70b-versatile", 1)
+    assert llm_env.provider_summary() == ("groq/qwen/qwen3.8-27b", 1)
 
 
 def test_cli_process_publishes_real_provider_despite_stale_fake(clean_env):
