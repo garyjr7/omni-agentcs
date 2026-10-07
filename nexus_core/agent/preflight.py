@@ -26,6 +26,7 @@ from nexus_core.provisioner.binaries import (
     check_binary_identities,
     default_version_runner,
     identity_problems,
+    missing_tool_binaries,
 )
 
 #: Operator opt-in to continue when a binary is present but wrong.
@@ -51,6 +52,9 @@ class PreflightVerdict:
 
     problems: tuple[IdentityCheck, ...]
     degraded: bool
+    #: Durable tools whose binary is absent: usable in principle, dead in
+    #: practice, so the loop starts with them retired (B6).
+    unavailable_tools: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -94,7 +98,28 @@ def preflight_binaries(
     checks = check_binary_identities(which=which, run=run, identities=identities)
     problems = tuple(identity_problems(checks))
     degraded = env_flag(environment, DEGRADED_TOOLS_ENV)
-    return PreflightVerdict(problems=problems, degraded=degraded)
+    return PreflightVerdict(
+        problems=problems,
+        degraded=degraded,
+        unavailable_tools=missing_tool_binaries(which=which, identities=identities),
+    )
+
+
+def unavailable_tools_from_env(
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    env: Mapping[str, str] | None = None,
+) -> set[str]:
+    """Tools the run must start without because their binary is absent (B6).
+
+    Honours ``NEXUS_PREFLIGHT_BINARIES=0`` so hermetic tests (and an operator who
+    knows better) can skip the probe. Only ``which`` lookups happen here: no
+    binary is ever executed.
+    """
+    environment = dict(os.environ if env is None else env)
+    if not env_flag(environment, PREFLIGHT_ENV, default=True):
+        return set()
+    return set(missing_tool_binaries(which=which))
 
 
 __all__ = [
@@ -103,4 +128,5 @@ __all__ = [
     "PreflightVerdict",
     "env_flag",
     "preflight_binaries",
+    "unavailable_tools_from_env",
 ]

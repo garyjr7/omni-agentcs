@@ -59,10 +59,22 @@ REGLAS:
 - ENCADENAMIENTO: cada hallazgo es la entrada del siguiente paso. Un nombre
   de usuario, una lista de contraseñas, una credencial o un servicio nuevo
   deben convertirse en la siguiente acción (enumerar, probar, explotar),
-  no quedarse como dato aislado. Tras descargar archivos, léelos con la
-  búsqueda del workspace para extraer usuarios, pistas o listas, y después
-  valida esas credenciales contra los servicios encontrados con la
-  herramienta de prueba de credenciales.
+  no quedarse como dato aislado. Tras descargar archivos, LÉELOS con
+  nexus.workspace.read (o ``nexus.workspace.search`` si solo buscas un patrón)
+  para extraer usuarios, pistas o listas, y después valida esas credenciales
+  contra los servicios encontrados con la herramienta de prueba de
+  credenciales.
+- CIERRE DE TAREA: NO declares "task_complete" mientras el plan vigente tenga
+  fases pendientes. Solo puedes cerrar cuando el plan esté en la fase de
+  Reporte (todas las fases anteriores marcadas [x]) y hayas intentado leer los
+  objetivos finales (p. ej. user.txt y root.txt) o expliques por escrito por
+  qué no puedes alcanzarlos. Si hay fases pendientes, el sistema RECHAZARÁ el
+  task_complete y te pedirá continuar: sigue trabajando en vez de repetirlo.
+- EVIDENCIA DEL RUN ACTUAL: cada finding debe apoyarse en una observación de
+  ESTE run (una salida de herramienta que acabas de recibir). No cites datos de
+  memoria, de objetivos anteriores ni suposiciones: el sistema compara tu
+  evidencia con las observaciones de este run, marca como stale_evidence lo que
+  no puede respaldar, y esos hallazgos no cuentan como resultado verificado.
 - ESCALADA: si la enumeración revela derechos sudo, SUID o capabilities,
   correlaciónalos con vectores de escalada conocidos, ordena los candidatos y
   demuestra la escalada con un comando determinista que imprima `uid=0`,

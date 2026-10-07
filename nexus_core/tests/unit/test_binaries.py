@@ -25,6 +25,7 @@ PYTHON_HTTPX = "Usage: httpx [OPTIONS] URL\n\nError: No such option: -e\n"
 PD_HTTPX = "ProjectDiscovery's HTTP toolkit\nCurrent Version: v1.7.0\n"
 WHATWEB = "WhatWeb version 0.6.4 ( https://morningstarsecurity.com/research/whatweb/ )\n"
 NMAP = "Nmap version 7.99 ( https://nmap.org )\n"
+RIPGREP = "ripgrep 14.1.0 (rev e50df40a19)\n"
 
 
 def _runner(outputs):
@@ -62,6 +63,7 @@ def test_check_binary_identities_reports_only_wrong_present_binaries():
             "httpx": (2, PYTHON_HTTPX),
             "whatweb": (0, WHATWEB),
             "nmap": (0, NMAP),
+            "rg": (0, RIPGREP),
         }
     )
     checks = check_binary_identities(which=which, run=run)
@@ -108,7 +110,14 @@ def test_assess_environment_without_probe_keeps_presence_semantics():
 
 def test_preflight_aborts_on_a_wrong_binary_by_default():
     which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-    run = _runner({"httpx": (2, PYTHON_HTTPX), "whatweb": (0, WHATWEB), "nmap": (0, NMAP)})
+    run = _runner(
+        {
+            "httpx": (2, PYTHON_HTTPX),
+            "whatweb": (0, WHATWEB),
+            "nmap": (0, NMAP),
+            "rg": (0, RIPGREP),
+        }
+    )
     verdict = preflight_binaries(which=which, run=run, env={})
     assert verdict.ok is False
     assert [p.name for p in verdict.problems] == ["httpx"]
@@ -117,7 +126,14 @@ def test_preflight_aborts_on_a_wrong_binary_by_default():
 
 def test_preflight_allows_degraded_mode_with_the_operator_flag():
     which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-    run = _runner({"httpx": (2, PYTHON_HTTPX), "whatweb": (0, WHATWEB), "nmap": (0, NMAP)})
+    run = _runner(
+        {
+            "httpx": (2, PYTHON_HTTPX),
+            "whatweb": (0, WHATWEB),
+            "nmap": (0, NMAP),
+            "rg": (0, RIPGREP),
+        }
+    )
     verdict = preflight_binaries(which=which, run=run, env={DEGRADED_TOOLS_ENV: "1"})
     assert verdict.degraded is True
     assert verdict.ok is True
@@ -125,7 +141,33 @@ def test_preflight_allows_degraded_mode_with_the_operator_flag():
 
 def test_preflight_passes_when_all_binaries_are_correct():
     which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-    run = _runner({"httpx": (0, PD_HTTPX), "whatweb": (0, WHATWEB), "nmap": (0, NMAP)})
+    run = _runner(
+        {
+            "httpx": (0, PD_HTTPX),
+            "whatweb": (0, WHATWEB),
+            "nmap": (0, NMAP),
+            "rg": (0, RIPGREP),
+        }
+    )
     verdict = preflight_binaries(which=which, run=run, env={})
     assert verdict.ok is True
     assert verdict.problems == ()
+    assert verdict.unavailable_tools == ()
+
+
+def test_missing_binary_retires_its_tool_without_blocking_the_run():
+    """B6: a missing ``rg`` must not fail the preflight, just retire the tool."""
+    which = lambda name: None if name == "rg" else f"/usr/bin/{name}"  # noqa: E731
+    run = _runner({"httpx": (0, PD_HTTPX), "whatweb": (0, WHATWEB), "nmap": (0, NMAP)})
+    verdict = preflight_binaries(which=which, run=run, env={})
+    assert verdict.ok is True
+    assert verdict.unavailable_tools == ("nexus.workspace.search",)
+
+
+def test_helper_retires_a_tool_whose_binary_is_absent():
+    from nexus_core.provisioner.binaries import missing_tool_binaries
+
+    missing = missing_tool_binaries(
+        which=lambda name: None if name in {"rg", "httpx"} else f"/usr/bin/{name}"
+    )
+    assert missing == ("nexus.recon.httpx", "nexus.workspace.search")

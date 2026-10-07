@@ -11,13 +11,12 @@ from unittest import mock
 import pytest
 
 from nexus_core.agent.react import (
+    ReActConfig,
     STATUS_CANCELLED,
     STATUS_CLARIFICATION,
     STATUS_COMPLETED,
-    STATUS_FAILED,
     STATUS_MAX_ITERATIONS,
     STATUS_SCOPE_VIOLATION,
-    ReActConfig,
     run_react_loop,
 )
 from nexus_core.kernel import runtime as runtime_module
@@ -176,6 +175,7 @@ async def test_loop_executes_single_tool_call_and_completes(harness):
 
     with mock.patch.object(runtime_module, "execute_tool", spy):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="Escanea 10.0.0.5 en los puertos 22 y 80",
             engagement_id="eng-1",
@@ -206,7 +206,7 @@ async def test_loop_respects_max_iterations(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=3),
+            config=_loop_config(max_iterations=3),
         )
 
     assert result.status == STATUS_MAX_ITERATIONS
@@ -221,6 +221,7 @@ async def test_loop_injects_tool_result_to_history(harness):
 
     with mock.patch.object(runtime_module, "execute_tool", spy):
         await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-1",
@@ -247,7 +248,7 @@ async def test_loop_retires_a_broken_tool_and_keeps_running(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=8),
+            config=_loop_config(max_iterations=8),
         )
 
     assert result.status == STATUS_MAX_ITERATIONS
@@ -282,6 +283,7 @@ async def test_loop_handles_clarification(harness):
 
     with mock.patch.object(runtime_module, "execute_tool", spy):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-1",
@@ -302,6 +304,7 @@ async def test_loop_propagates_engagement_id_to_tools(harness):
 
     with mock.patch.object(runtime_module, "execute_tool", spy):
         await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-42",
@@ -321,6 +324,7 @@ async def test_loop_audits_each_step(harness):
 
     with mock.patch.object(runtime_module, "execute_tool", spy):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-1",
@@ -346,7 +350,7 @@ async def test_loop_aborts_on_scope_violation_immediately(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=10),
+            config=_loop_config(max_iterations=10),
         )
 
     assert result.status == STATUS_SCOPE_VIOLATION
@@ -365,6 +369,7 @@ async def test_loop_handles_llm_json_parse_error_gracefully(harness):
 
     with mock.patch.object(runtime_module, "execute_tool", ToolSpy()):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-1",
@@ -395,7 +400,7 @@ async def test_loop_rejects_unknown_tool_without_executing(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=8),
+            config=_loop_config(max_iterations=8),
         )
 
     # An invented tool is never executed. It keeps being rejected, and because
@@ -429,7 +434,7 @@ async def test_loop_stops_on_cancel_run_event(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=10),
+            config=_loop_config(max_iterations=10),
         )
 
     assert result.status == STATUS_CANCELLED
@@ -449,7 +454,7 @@ async def test_loop_conversation_is_resumable(harness):
             objective="Escanea 10.0.0.5",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call()]),
-            config=ReActConfig(max_iterations=1),
+            config=_loop_config(max_iterations=1),
         )
 
     assert first.status == STATUS_MAX_ITERATIONS
@@ -462,7 +467,7 @@ async def test_loop_conversation_is_resumable(harness):
             objective="Escanea 10.0.0.5",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=4),
+            config=_loop_config(max_iterations=4),
         )
 
     assert resumed.conversation_id == first.conversation_id
@@ -482,9 +487,32 @@ async def test_execute_react_requires_objective(harness):
         await runtime_module.execute_react({"objective": "   "}, context)
 
 
+def _seed_completed_plan(store) -> None:
+    """Put the blackboard where a ``task_complete`` is legitimate (B8.2.2).
+
+    One fact per required phase so the deterministic plan reaches ``reporting``;
+    without it the loop now (correctly) refuses to close an engagement the plan
+    says is unfinished.
+    """
+    from nexus_core.kernel.blackboard import Blackboard
+
+    board = Blackboard(store)
+    for fact_type in ("host", "user", "access", "privilege", "loot"):
+        board.record(
+            tenant_id="system",
+            engagement_id="eng-1",
+            fact_type=fact_type,
+            key=f"k-{fact_type}",
+            value={"note": fact_type},
+            source="test",
+            created_by="operator-1",
+        )
+
+
 async def test_execute_react_runs_through_the_registry(harness, monkeypatch):
     """The durable executor resolves a provider and returns the loop contract."""
-    _, context = harness
+    store, context = harness
+    _seed_completed_plan(store)
     monkeypatch.setenv("NEXUS_LLM_DEFAULT_PROVIDER", "fake")
     monkeypatch.setenv("NEXUS_LLM_FIXTURES", str(FIXTURES / "fake_llm_responses.json"))
 
@@ -510,3 +538,16 @@ async def test_execute_react_runs_through_the_registry(harness, monkeypatch):
     assert result["iterations"] == 1
     assert result["findings"]
     assert result["conversation_id"].startswith("conversation_")
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``. The host-binary preflight
+    (B6) is disabled too so the tool catalog never depends on the CI machine.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

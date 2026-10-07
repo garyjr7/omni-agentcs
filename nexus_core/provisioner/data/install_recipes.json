@@ -161,5 +161,19 @@
     "recipes": {
       "pip": {"command": ["pip", "install", "sliver-py"], "sudo": false}
     }
+  },
+  "ripgrep": {
+    "description": "Recursive text search (ripgrep); `rg` is the binary (alias)",
+    "purpose": "Búsqueda de patrones en el workspace del engagement",
+    "aliases": ["rg"],
+    "verify": ["rg", "--version"],
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "ripgrep"], "sudo": true},
+      "dnf": {"command": ["dnf", "install", "-y", "ripgrep"], "sudo": true},
+      "yum": {"command": ["yum", "install", "-y", "ripgrep"], "sudo": true},
+      "pacman": {"command": ["pacman", "-S", "--noconfirm", "ripgrep"], "sudo": true},
+      "zypper": {"command": ["zypper", "--non-interactive", "install", "ripgrep"], "sudo": true},
+      "brew": {"command": ["brew", "install", "ripgrep"], "sudo": false}
+    }
   }
 }

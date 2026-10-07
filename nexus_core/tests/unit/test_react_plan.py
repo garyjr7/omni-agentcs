@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-from nexus_core.agent.react import STATUS_COMPLETED, run_react_loop
+from nexus_core.agent.react import ReActConfig, STATUS_COMPLETED, run_react_loop
 from nexus_core.kernel import runtime as runtime_module
 from nexus_core.kernel.blackboard import Blackboard
 from nexus_core.kernel.control_store import ControlStore
@@ -84,6 +84,7 @@ async def test_prompt_includes_phased_plan(harness):
     llm = _LLM()
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id=ENGAGEMENT,
@@ -109,6 +110,7 @@ async def test_plan_reflects_blackboard_facts(harness):
     llm = _LLM()
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id=ENGAGEMENT,
@@ -125,6 +127,7 @@ async def test_phase_transition_is_audited_as_run_event(harness):
     context = _context(store)
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id=ENGAGEMENT,
@@ -135,3 +138,15 @@ async def test_phase_transition_is_audited_as_run_event(harness):
     assert plan_events
     assert plan_events[0]["payload"]["phase"] == "recon"
     assert plan_events[0]["payload"]["previous"] is None
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

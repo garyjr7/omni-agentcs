@@ -504,7 +504,7 @@ async def test_malicious_mcp_output_reaches_the_model_as_wrapped_data(tmp_path):
             objective="lee el README",
             engagement_id=None,
             llm_client=llm,
-            config=ReActConfig(max_iterations=2),
+            config=_loop_config(max_iterations=2),
             tool_catalog={tool_id: (definition, handler)},
         )
 
@@ -718,3 +718,16 @@ def test_server_config_to_dict_lists_env_keys_but_never_values():
     assert payload["env_keys"] == ["MCP_TOKEN"]
     assert "super-secret" not in json.dumps(payload)
     assert config.allows("read_file") is True and config.allows("write_file") is False
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``. The host-binary preflight
+    (B6) is disabled too so the tool catalog never depends on the CI machine.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

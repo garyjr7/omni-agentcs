@@ -8,8 +8,8 @@ from unittest import mock
 
 import pytest
 
-from nexus_core.agent import react as react_module
 from nexus_core.agent.react import (
+    ReActConfig,
     BUDGET_EVENT_TYPE,
     STATUS_BUDGET_EXCEEDED,
     STATUS_COMPLETED,
@@ -119,6 +119,7 @@ async def test_run_budget_zero_never_aborts(harness):
     )
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-budget",
@@ -133,6 +134,7 @@ async def test_run_aborts_when_budget_already_exceeded(harness):
     store.record_usage(TENANT, context.run_id, "model_route", "react", "tokens", 100)
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-budget",
@@ -152,6 +154,7 @@ async def test_run_budget_records_usage(harness):
     store, context = harness
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-budget",
@@ -200,6 +203,7 @@ async def test_budget_counts_accumulate_across_iterations(harness):
         runtime_module, "execute_tool", mock.AsyncMock(return_value=ok)
     ):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-budget",
@@ -244,7 +248,20 @@ async def test_budget_aborts_mid_run_when_exhausted(harness):
             engagement_id="eng-budget",
             llm_client=_LoopForever(),
             budget_tokens=25,
-            config=react_module.ReActConfig(max_iterations=10),
+            config=_loop_config(max_iterations=10),
         )
     assert result.status == STATUS_BUDGET_EXCEEDED
     assert calls["n"] == 1
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``. The host-binary preflight
+    (B6) is disabled too so the tool catalog never depends on the CI machine.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

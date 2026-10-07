@@ -33,6 +33,7 @@ from .recipes import load_recipes
 BINARY_COMPONENTS: tuple[tuple[str, str, str, bool], ...] = (
     ("nmap", "nmap", "Descubrimiento de puertos y servicios", True),
     ("hydra", "hydra", "Prueba de credenciales (ssh/ftp)", True),
+    ("ripgrep", "rg", "Búsqueda en el workspace (nexus.workspace.search)", False),
     ("gobuster", "gobuster", "Descubrimiento de contenido web", False),
     ("whatweb", "whatweb", "Fingerprinting web", False),
     ("ffuf", "ffuf", "Fuzzing web", False),

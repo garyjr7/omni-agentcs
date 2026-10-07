@@ -103,9 +103,13 @@ def test_consecutive_objectives_share_work_session(session):
     ]
     assert objectives == ["Escanea el host 10.0.0.5", "Ahora enumera SMB en ese host"]
 
-    # The second objective's model call saw the first objective's context.
-    assert "Escanea el host 10.0.0.5" in llm.prompts[1]
-    assert "Ahora enumera SMB en ese host" in llm.prompts[1]
+    # The second objective's model call saw the first objective's context. It
+    # arrives as *summarised session context* (B8.2.1): the first run's raw
+    # transcript is never replayed into another run, so the earlier objective is
+    # cited in the session block while its tool turns stay behind.
+    assert "Escanea el host 10.0.0.5" in llm.prompts[-1]
+    assert "Ahora enumera SMB en ese host" in llm.prompts[-1]
+    assert "Objetivos previos de esta sesión de trabajo" in llm.prompts[-1]
 
 
 def test_ask_reuses_work_session_created_by_objectives(session):

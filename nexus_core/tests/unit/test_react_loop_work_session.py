@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 from nexus_core.agent import memory
-from nexus_core.agent.react import STATUS_COMPLETED, run_react_loop
+from nexus_core.agent.react import ReActConfig, STATUS_COMPLETED, run_react_loop
 from nexus_core.kernel import runtime as runtime_module
 from nexus_core.kernel.control_store import ControlStore
 from nexus_core.kernel.runtime import ExecutionContext
@@ -81,6 +81,7 @@ async def test_run_react_loop_uses_provided_conversation(harness):
     conversation_id = memory.ensure_work_conversation(store, "system", "omni", "eng-work")
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-work",
@@ -95,6 +96,7 @@ async def test_run_react_loop_falls_back_to_new_conversation(harness):
     store, context = harness
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         result = await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="objetivo",
             engagement_id="eng-work",
@@ -113,6 +115,7 @@ async def test_shared_conversation_exposes_previous_objective(harness):
     first = _LLM()
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         await run_react_loop(
+                config=_loop_config(),
             context=context,
             objective="Escanea el host A",
             engagement_id="eng-work",
@@ -123,6 +126,7 @@ async def test_shared_conversation_exposes_previous_objective(harness):
     second = _LLM()
     with mock.patch.object(runtime_module, "execute_tool", mock.AsyncMock()):
         await run_react_loop(
+                config=_loop_config(),
             context=_context(store),
             objective="Ahora el host B",
             engagement_id="eng-work",
@@ -132,3 +136,15 @@ async def test_shared_conversation_exposes_previous_objective(harness):
     # The second run's model call sees the first objective in the same session.
     assert "Escanea el host A" in second.calls[0]
     assert "Ahora el host B" in second.calls[0]
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

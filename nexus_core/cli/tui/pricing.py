@@ -15,6 +15,14 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from nexus_core.llm.limits import PROVIDER_TPM as _PROVIDER_TPM
+
+#: Reference tokens-per-minute budgets of each provider's standard tier, used by
+#: the LLM client to space requests instead of earning a 413/429 (B5). Documented
+#: here next to the prices because both are "what the provider charges/allows";
+#: the single source of truth lives in ``nexus_core.llm.limits``.
+PROVIDER_TPM: Mapping[str, int] = _PROVIDER_TPM
+
 #: Key -> (input USD / 1M tokens, output USD / 1M tokens). Keys match a model
 #: name by longest-substring; a provider key applies when no model matches.
 REFERENCE_RATES_USD_PER_MTOK: Mapping[str, tuple[float, float]] = {
@@ -34,7 +42,11 @@ REFERENCE_RATES_USD_PER_MTOK: Mapping[str, tuple[float, float]] = {
     # Google.
     "gemini-2.0-flash": (0.10, 0.40),
     "gemini-1.5-flash": (0.075, 0.30),
-    # DeepSeek.
+    # DeepSeek. V4.1 Flash: $0.15/M input (cache miss) and $0.60/M output
+    # off-peak; the peak rate doubles. Source: DeepSeek API docs / vendor
+    # coverage of the Sep 2026 V4.1-Flash release (see FASE36_CLOSE_E2E.md).
+    # ``deepseek-chat`` is the older, pricier model and keeps its own row.
+    "deepseek-v4.1-flash": (0.15, 0.60),
     "deepseek-chat": (0.27, 1.10),
 }
 
@@ -63,6 +75,7 @@ def default_rates(model: str, provider: str | None = None) -> tuple[float, float
 
 __all__ = [
     "PROVIDER_FALLBACK",
+    "PROVIDER_TPM",
     "REFERENCE_RATES_USD_PER_MTOK",
     "default_rates",
 ]

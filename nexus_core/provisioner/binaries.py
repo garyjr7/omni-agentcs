@@ -41,6 +41,10 @@ class BinaryIdentity:
     install: str
     #: True when the whole engagement cannot run without it.
     required: bool = False
+    #: Durable tool that cannot work without this binary. When the binary is
+    #: *absent* the tool is retired for the run (do not burn iterations on a
+    #: ``FileNotFoundError``); see ``missing_tool_binaries`` (B6).
+    tool_id: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -51,6 +55,7 @@ class BinaryIdentity:
             "wrong_markers": list(self.wrong_markers),
             "install": self.install,
             "required": self.required,
+            "tool_id": self.tool_id,
         }
 
 
@@ -63,6 +68,7 @@ BINARY_IDENTITIES: tuple[BinaryIdentity, ...] = (
         markers=("projectdiscovery",),
         wrong_markers=("no such option", "usage: httpx [options]", "python"),
         install="go install github.com/projectdiscovery/httpx/cmd/httpx@latest",
+        tool_id="nexus.recon.httpx",
     ),
     BinaryIdentity(
         name="whatweb",
@@ -71,6 +77,7 @@ BINARY_IDENTITIES: tuple[BinaryIdentity, ...] = (
         markers=("whatweb",),
         wrong_markers=(),
         install="sudo apt install whatweb",
+        tool_id="nexus.recon.whatweb",
     ),
     BinaryIdentity(
         name="nmap",
@@ -80,6 +87,16 @@ BINARY_IDENTITIES: tuple[BinaryIdentity, ...] = (
         wrong_markers=(),
         install="sudo apt install nmap",
         required=True,
+        tool_id="nexus.recon.nmap",
+    ),
+    BinaryIdentity(
+        name="rg",
+        purpose="Búsqueda de texto en el workspace (ripgrep)",
+        version_argv=("--version",),
+        markers=("ripgrep",),
+        wrong_markers=(),
+        install="sudo apt install ripgrep",
+        tool_id="nexus.workspace.search",
     ),
 )
 
@@ -220,6 +237,29 @@ def identity_problems(checks: Iterable[IdentityCheck]) -> list[IdentityCheck]:
     return [check for check in checks if check.present and not check.ok]
 
 
+def missing_tool_binaries(
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    identities: Iterable[BinaryIdentity] = BINARY_IDENTITIES,
+) -> tuple[str, ...]:
+    """Durable tools whose binary is **absent** (no process is spawned).
+
+    A missing binary is not a reason to refuse the run (it is an optional route,
+    unlike a *wrong* binary which silently feeds garbage), but it is a reason to
+    stop proposing that tool: the E2E run #2 spent iterations on
+    ``nexus.workspace.search`` until ``rg`` raised ``FileNotFoundError`` (B6).
+    Only a ``which`` lookup happens here, so this is cheap enough to call at the
+    start of every run.
+    """
+    missing: list[str] = []
+    for identity in identities:
+        if not identity.tool_id or identity.tool_id in missing:
+            continue
+        if which(identity.name) is None:
+            missing.append(identity.tool_id)
+    return tuple(sorted(missing))
+
+
 __all__ = [
     "BINARY_IDENTITIES",
     "BINARY_IDENTITIES_BY_NAME",
@@ -231,4 +271,5 @@ __all__ = [
     "classify_identity",
     "default_version_runner",
     "identity_problems",
+    "missing_tool_binaries",
 ]

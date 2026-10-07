@@ -257,16 +257,31 @@ async def summarize_history_if_large(
     client: Any,
     max_tokens: int = 8000,
     force: bool = False,
+    run_id: str | None = None,
 ) -> str:
     """Compact the history with one LLM call when it grows too large.
 
     Returns the summary text (and persists it as a compaction marker), or an
     empty string when no compaction was needed. The system prompt and the
     trailing :data:`PRESERVED_TAIL_MESSAGES` messages are never summarized.
+
+    ``run_id`` scopes the compaction to one run of a shared work session
+    (B8.2.1): a run must never fold another run's turns into *its* context, both
+    because the model would then reason over stale evidence and because it would
+    pay for a compaction call it did not need. The marker inherits the ``run_id``
+    so the summary is only ever re-read by the run that produced it.
     """
     messages = _collapse_summaries(
         store.list_messages(tenant_id, conversation_id, limit=500)
     )
+    if run_id is not None:
+        wanted = str(run_id)
+        messages = [
+            message
+            for message in messages
+            if message_kind(message) == SYSTEM_MESSAGE_KIND
+            or str(message.get("run_id") or "") == wanted
+        ]
     if not force and estimate_tokens(messages) <= max_tokens:
         return ""
 
@@ -294,16 +309,19 @@ async def summarize_history_if_large(
     summary = str(getattr(response, "content", "") or "").strip()
     if not summary:
         return ""
+    metadata: dict[str, Any] = {
+        "kind": HISTORY_SUMMARY_KIND,
+        "covers": len(middle),
+        "preserved_tail": len(tail),
+    }
+    if run_id is not None:
+        metadata["run_id"] = run_id
     append_step(
         store,
         tenant_id,
         conversation_id,
         "system",
         summary,
-        {
-            "kind": HISTORY_SUMMARY_KIND,
-            "covers": len(middle),
-            "preserved_tail": len(tail),
-        },
+        metadata,
     )
     return summary

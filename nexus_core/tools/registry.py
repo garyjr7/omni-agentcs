@@ -78,7 +78,12 @@ def durable_tool_definitions(
     from .handlers.system import system_status_definition, system_status_handler
     from .handlers.system_env import check_env_definition, check_env_handler
     from .handlers.system_install import install_tool_definition, install_tool_handler
-    from .handlers.workspace import workspace_search_definition, workspace_search_handler
+    from .handlers.workspace import (
+        workspace_read_definition,
+        workspace_read_handler,
+        workspace_search_definition,
+        workspace_search_handler,
+    )
     from .handlers.netexec import netexec_definition, netexec_handler
     from .handlers.bloodhound import bloodhound_definition, bloodhound_handler
     from .handlers.impacket_secretsdump import (
@@ -122,6 +127,10 @@ def durable_tool_definitions(
         "nexus.workspace.search": (
             workspace_search_definition(tenant_id),
             workspace_search_handler,
+        ),
+        "nexus.workspace.read": (
+            workspace_read_definition(tenant_id),
+            workspace_read_handler,
         ),
         "nexus.recon.nmap": (nmap_definition(tenant_id), nmap_handler),
         "nexus.recon.subfinder": (subfinder_definition(tenant_id), subfinder_handler),

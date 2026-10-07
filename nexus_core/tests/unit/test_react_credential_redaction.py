@@ -141,7 +141,7 @@ async def _run(harness):
             objective="Prueba de redacción",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=4),
+            config=_loop_config(max_iterations=4),
         )
     return store, result, spy
 
@@ -185,3 +185,16 @@ def test_redact_arguments_none_passthrough():
 
     assert _redact_arguments(None) is None
     assert _redact_arguments({}) == {}
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``. The host-binary preflight
+    (B6) is disabled too so the tool catalog never depends on the CI machine.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

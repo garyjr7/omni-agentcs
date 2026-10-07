@@ -38,11 +38,15 @@ BUDGET_ENV_PREFIX = "NEXUS_SUBAGENT_BUDGET_"
 
 #: Tools that only read durable memory or the local environment. They touch no
 #: target, so every profile may use them without widening its blast radius.
+#: ``nexus.workspace.read`` reads the *engagement's own* workspace (the loot the
+#: recon handlers downloaded); it is confined to that directory, so it belongs
+#: here next to the workspace search (B7).
 COMMON_TOOLS: frozenset[str] = frozenset(
     {
         "nexus.knowledge.record_fact",
         "nexus.knowledge.query_facts",
         "nexus.workspace.search",
+        "nexus.workspace.read",
         "nexus.system.status",
         "nexus.system.check_env",
         "nexus.orchestrator.playbook",

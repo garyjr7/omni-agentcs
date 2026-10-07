@@ -226,7 +226,7 @@ async def test_loop_wraps_untrusted_tool_output_for_the_model(tmp_path):
             objective="Escanea 10.0.0.5",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=2),
+            config=_loop_config(max_iterations=2),
         )
 
     second = "\n".join(message["content"] for message in llm.calls[1])
@@ -247,7 +247,7 @@ async def test_loop_records_injection_signals_in_metadata(tmp_path):
             objective="Escanea 10.0.0.5",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=2),
+            config=_loop_config(max_iterations=2),
         )
 
     observations = [
@@ -261,3 +261,16 @@ async def test_loop_records_injection_signals_in_metadata(tmp_path):
     assert "shell_pipe_execution" in signals
     # Storage stays pure JSON so the report extractor and the TUI can read it.
     assert json.loads(observations[0]["content"])
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``. The host-binary preflight
+    (B6) is disabled too so the tool catalog never depends on the CI machine.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

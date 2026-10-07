@@ -15,9 +15,9 @@ from unittest import mock
 import pytest
 
 from nexus_core.agent.react import (
+    ReActConfig,
     STATUS_COMPLETED,
     STATUS_MAX_ITERATIONS,
-    ReActConfig,
     run_react_loop,
 )
 from nexus_core.cli.approval import make_approval_callback
@@ -263,7 +263,7 @@ async def test_loop_with_real_gateway_executes_after_a_granted_approval(session)
             objective="Consulta el estado del sistema",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call(), task_complete("hecho")]),
-            config=ReActConfig(max_iterations=4, on_approval_needed=callback),
+            config=_loop_config(max_iterations=4, on_approval_needed=callback),
             tool_catalog=catalog,
         )
 
@@ -303,7 +303,7 @@ async def test_headless_without_trust_mode_denies_high_risk_tool(session):
             objective="Consulta el estado del sistema",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call()]),
-            config=ReActConfig(max_iterations=3),
+            config=_loop_config(max_iterations=3),
             tool_catalog=catalog,
         )
 
@@ -331,7 +331,7 @@ async def test_headless_trust_mode_auto_approves_and_audits(session):
             objective="Consulta el estado del sistema",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call(), task_complete("hecho")]),
-            config=ReActConfig(max_iterations=4, on_approval_needed=callback),
+            config=_loop_config(max_iterations=4, on_approval_needed=callback),
             tool_catalog=catalog,
         )
 
@@ -341,3 +341,16 @@ async def test_headless_trust_mode_auto_approves_and_audits(session):
     assert "tool.trust_mode_approved" in events
     assert "tool.complete" in events
     assert _approval_statuses(session) == ["approved"]
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``. The host-binary preflight
+    (B6) is disabled too so the tool catalog never depends on the CI machine.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

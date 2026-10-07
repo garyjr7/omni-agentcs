@@ -16,11 +16,11 @@ import pytest
 
 from nexus_core.agent import react as react_module
 from nexus_core.agent.react import (
+    ReActConfig,
     MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE,
     REACT_DEFAULT_MAX_TOKENS,
     STATUS_COMPLETED,
     STATUS_MAX_ITERATIONS,
-    ReActConfig,
     _failure_kind,
     react_max_tokens,
     run_react_loop,
@@ -183,7 +183,7 @@ async def test_agent_pivots_after_a_broken_tool_is_retired(harness):
             objective="comprometer 10.0.0.5",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=10),
+            config=_loop_config(max_iterations=10),
         )
 
     assert result.status == STATUS_COMPLETED
@@ -219,7 +219,7 @@ async def test_invalid_input_does_not_retire_the_tool(harness):
             objective="comprometer 10.0.0.5",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=10),
+            config=_loop_config(max_iterations=10),
         )
 
     assert result.status == STATUS_COMPLETED
@@ -240,7 +240,7 @@ async def test_phase_timeout_retires_failing_tools_and_is_audited(harness, monke
             objective="comprometer 10.0.0.5",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=4),
+            config=_loop_config(max_iterations=4),
         )
 
     timeouts = _events(store, context.run_id, "react.phase_timeout")
@@ -263,7 +263,7 @@ async def test_run_continues_to_budget_while_any_route_remains(harness):
             objective="comprometer 10.0.0.5",
             engagement_id="eng-1",
             llm_client=llm,
-            config=ReActConfig(max_iterations=6),
+            config=_loop_config(max_iterations=6),
         )
 
     # The broken tool was retired after three *tool* failures, but the phase has
@@ -275,3 +275,16 @@ async def test_run_continues_to_budget_while_any_route_remains(harness):
     }
     assert retired == {"nexus.recon.ftp"}
     assert len([p for p in spy.payloads if p["tool_id"] == "nexus.recon.ftp"]) == 3
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``. The host-binary preflight
+    (B6) is disabled too so the tool catalog never depends on the CI machine.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

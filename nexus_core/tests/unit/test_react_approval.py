@@ -11,11 +11,10 @@ from unittest import mock
 import pytest
 
 from nexus_core.agent.react import (
+    ReActConfig,
     STATUS_COMPLETED,
-    STATUS_FAILED,
     STATUS_MAX_ITERATIONS,
     ApprovalDecision,
-    ReActConfig,
     run_react_loop,
 )
 from nexus_core.kernel import runtime as runtime_module
@@ -174,7 +173,7 @@ async def test_approval_callback_called_when_policy_requires_it(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call(), task_complete()]),
-            config=ReActConfig(on_approval_needed=approval),
+            config=_loop_config(on_approval_needed=approval),
             tool_catalog=catalog_with_risk(RiskLevel.HIGH),
         )
 
@@ -199,7 +198,7 @@ async def test_approval_callback_not_called_for_low_risk_tool(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call(), task_complete()]),
-            config=ReActConfig(on_approval_needed=approval),
+            config=_loop_config(on_approval_needed=approval),
             tool_catalog=catalog_with_risk(RiskLevel.MEDIUM),
         )
 
@@ -221,7 +220,7 @@ async def test_approval_denied_injects_observation_and_continues(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call(), task_complete("seguí sin la tool")]),
-            config=ReActConfig(on_approval_needed=approval),
+            config=_loop_config(on_approval_needed=approval),
             tool_catalog=catalog_with_risk(RiskLevel.HIGH),
         )
 
@@ -252,7 +251,7 @@ async def test_approval_granted_passes_approval_id_to_tool(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call(), task_complete()]),
-            config=ReActConfig(on_approval_needed=approval),
+            config=_loop_config(on_approval_needed=approval),
             tool_catalog=catalog_with_risk(RiskLevel.HIGH),
         )
 
@@ -278,7 +277,7 @@ async def test_approval_edited_arguments_replace_original(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call(), task_complete()]),
-            config=ReActConfig(on_approval_needed=approval),
+            config=_loop_config(on_approval_needed=approval),
             tool_catalog=catalog_with_risk(RiskLevel.HIGH),
         )
 
@@ -298,7 +297,7 @@ async def test_approval_callback_returning_none_aborts_gracefully(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call()]),
-            config=ReActConfig(max_iterations=3, on_approval_needed=approval),
+            config=_loop_config(max_iterations=3, on_approval_needed=approval),
             tool_catalog=catalog_with_risk(RiskLevel.HIGH),
         )
 
@@ -320,7 +319,7 @@ async def test_loop_continues_after_denial_does_not_count_as_tool_failure(harnes
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call()]),
-            config=ReActConfig(max_iterations=4, on_approval_needed=approval),
+            config=_loop_config(max_iterations=4, on_approval_needed=approval),
             tool_catalog=catalog_with_risk(RiskLevel.HIGH),
         )
 
@@ -349,7 +348,7 @@ async def test_loop_without_callback_never_executes_high_risk_tool(harness):
             objective="objetivo",
             engagement_id="eng-1",
             llm_client=ScriptedLLM([tool_call()]),
-            config=ReActConfig(max_iterations=6),
+            config=_loop_config(max_iterations=6),
             tool_catalog=catalog,
         )
 
@@ -359,3 +358,16 @@ async def test_loop_without_callback_never_executes_high_risk_tool(harness):
     assert last["error_type"] == "PermissionError"
     assert last["failure_kind"] == "input"
     assert "approval" in last["error"]
+
+
+def _loop_config(**kwargs):
+    """Loop config for tests that exercise mechanics, not the completion gates.
+
+    ``require_plan_completion=False`` disables the B8.2.2/B8.2.3 gate on purpose:
+    these tests script a ``task_complete`` (or need the loop to keep proposing
+    recon tools) while the blackboard is empty, which production must refuse. The
+    gate itself is covered by ``test_react_frame.py``. The host-binary preflight
+    (B6) is disabled too so the tool catalog never depends on the CI machine.
+    """
+    kwargs.setdefault("enforce_completion_gates", False)
+    return ReActConfig(**kwargs)

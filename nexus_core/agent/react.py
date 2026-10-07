@@ -28,8 +28,10 @@ from nexus_core.llm.abstraction import LLMMessage
 from nexus_core.scope import ScopeViolation
 
 from . import memory
+from .evidence import annotate_findings, fabricated_evidence
 from .injection import render_for_model, scan_untrusted_text
 from .observations import bounded_context, prepare_observation
+from .preflight import unavailable_tools_from_env
 from .project_context import load_project_instruction, render_project_instruction
 from .skills import activate_skills, render_skills
 from .subagents import filter_catalog, permits, select_for_plan
@@ -64,10 +66,27 @@ REACT_MAX_TOKENS_ENV = "NEXUS_REACT_MAX_TOKENS"
 REACT_DEFAULT_MAX_TOKENS = 1536
 REACT_MIN_MAX_TOKENS = 256
 
+#: Last phase of the deterministic plan. Only when the planner has reached it
+#: (every earlier required phase backed by blackboard evidence) may a
+#: ``task_complete`` be accepted (B8.2.2). Kept as a literal so this module keeps
+#: importing the planner lazily; a test asserts it matches ``PHASES[-1].id``.
+FINAL_PHASE_ID = "reporting"
+PREMATURE_COMPLETION_EVENT_TYPE = "react.premature_completion"
+#: How many times a premature ``task_complete`` is refused before the loop stops
+#: with ``premature_completion``. A model that will not continue must not burn
+#: the whole iteration budget arguing with the frame (and the operator needs a
+#: distinct status, not a fake ``completed``).
+MAX_PREMATURE_COMPLETIONS = 3
+#: Observations of the current run kept as the evidence corpus for findings.
+RUN_EVIDENCE_MAX_OBSERVATIONS = 40
+
 STATUS_COMPLETED = "completed"
 STATUS_MAX_ITERATIONS = "max_iterations"
 STATUS_CLARIFICATION = "clarification"
 STATUS_FAILED = "failed"
+#: The model kept declaring the task complete while the plan said otherwise, or
+#: while its findings cited evidence from nowhere (B8.2.2/B8.2.3).
+STATUS_PREMATURE_COMPLETION = "premature_completion"
 STATUS_CANCELLED = "cancelled"
 STATUS_SCOPE_VIOLATION = "scope_violation_aborted"
 STATUS_BUDGET_EXCEEDED = "budget_exceeded"
@@ -104,6 +123,12 @@ class ReActConfig:
     timeout_per_tool_seconds: int = 600
     enable_summarization: bool = True
     max_history_messages: int = 40
+    #: Enforce the completion gates (B8.2.2/B8.2.3): refuse a ``task_complete``
+    #: while the deterministic plan still has pending phases, and refuse one whose
+    #: findings cite evidence no observation of this run supports. Disable only
+    #: for a caller that deliberately scripts a completion out of order (e.g.
+    #: loop-mechanics tests); production always leaves it on.
+    enforce_completion_gates: bool = True
     #: Interactive approval hook. When set, the loop asks policy *before* every
     #: tool invocation and, if the decision requires human approval, calls this
     #: callback with ``(tool_id, arguments, decision)``. Returning ``None`` or a
@@ -136,6 +161,11 @@ class ReActResult:
     plan: dict[str, Any] | None = None
     #: Subagent that owned the last iteration (audited in the action log).
     subagent_id: str | None = None
+    #: Evidence-grounding counters of the accepted completion (B8.2.3).
+    evidence_stats: dict[str, int] | None = None
+    #: Why the completion was refused, when ``status`` is
+    #: ``premature_completion``.
+    completion_objections: list[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------- helpers
@@ -261,6 +291,86 @@ def _keep_going_after_failures(
 def _remaining_tools(subagent: Any, unavailable: set[str]) -> list[str]:
     """Tools of the active profile that are still usable."""
     return sorted(str(tool) for tool in subagent.tools if str(tool) not in unavailable)
+
+
+def _run_messages(messages: list[dict[str, Any]], run_id: str) -> list[dict[str, Any]]:
+    """The messages that belong to ``run_id`` only (B8.2.1).
+
+    A shared work session accumulates every run's turns; a run must reason over
+    *its own* observations, so the raw history handed to the model is filtered by
+    ``run_id``. The engagement blackboard stays shared (that is the point of the
+    work session), and prior objectives still reach the model through the
+    summarised history block in the system prompt.
+    """
+    wanted = str(run_id)
+    return [
+        message for message in messages if str(message.get("run_id") or "") == wanted
+    ]
+
+
+def _completion_objections(
+    plan: Any,
+    *,
+    enforce_completion_gates: bool,
+    evidence_stats: dict[str, int] | None = None,
+    engagement_id: str | None = None,
+) -> list[str]:
+    """Why this ``task_complete`` must not be accepted yet (B8.2.2/B8.2.3).
+
+    Two independent checks, both deterministic:
+
+    * the plan is not on its final phase yet, so required phases are missing;
+    * the findings cite evidence that no observation of this run supports.
+
+    The plan check only applies to an **engagement** run: with no signed scope
+    there is no blackboard, so every phase would stay ``pending`` forever and no
+    objective could ever complete. The kill-chain frame is a property of an
+    engagement, not of a bare objective.
+    """
+    objections: list[str] = []
+    if enforce_completion_gates and engagement_id and plan is not None:
+        current = getattr(plan, "current", None)
+        if current != FINAL_PHASE_ID:
+            from .planner import STATUS_PENDING
+
+            pending = [
+                item.label
+                for item in plan.phases
+                if item.status == STATUS_PENDING and not item.optional
+            ]
+            done, total = plan.progress
+            label = getattr(getattr(plan, "phase", None), "label", current)
+            objections.append(
+                f"el plan sigue en la fase '{label}' ({done}/{total} fases de la "
+                "kill chain con evidencia): faltan "
+                + (", ".join(pending) if pending else "fases obligatorias")
+            )
+    if enforce_completion_gates and evidence_stats and fabricated_evidence(evidence_stats):
+        objections.append(
+            f"{evidence_stats.get('stale')} hallazgo(s) citan evidencia que no "
+            "aparece en ninguna observación de este run (stale_evidence)"
+        )
+    return objections
+
+
+def _premature_completion_message(objections: list[str], plan: Any) -> str:
+    """Correction injected into the history when a completion is refused."""
+    lines = [
+        "Tu 'task_complete' ha sido RECHAZADO: la tarea no está terminada.",
+    ]
+    lines.extend(f"- {item}" for item in objections)
+    if plan is not None:
+        lines.append("")
+        lines.append("PLAN VIGENTE:")
+        lines.append(plan.render())
+    lines.append("")
+    lines.append(
+        "Continúa con la fase actual: propone UNA acción (tool_call) que produzca "
+        "evidencia NUEVA de este run. Solo puedes cerrar la tarea cuando el plan "
+        f"esté en la fase '{FINAL_PHASE_ID}' y tu evidencia provenga de "
+        "observaciones de este run."
+    )
+    return "\n".join(lines)
 
 
 def _persisted_actions(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -668,9 +778,7 @@ async def run_react_loop(
     # A shared work session holds the messages of several runs. Resume
     # bookkeeping (action log + iteration cursor) is scoped to this run so a
     # new objective does not inherit the iteration budget of the previous one.
-    run_history = [
-        message for message in history if str(message.get("run_id") or "") == str(run_id)
-    ]
+    run_history = _run_messages(history, run_id)
     actions = _persisted_actions(run_history)
     iteration = _last_persisted_iteration(actions)
     status = STATUS_MAX_ITERATIONS
@@ -685,11 +793,25 @@ async def run_react_loop(
     subagent_iterations = 0
     # Degradation state (B3): a tool that keeps failing *as a tool* is retired
     # and the phase continues by another route; a tool that fails only on bad
-    # input is never retired.
-    unavailable_tools: set[str] = set()
+    # input is never retired. Tools whose binary is absent start retired so the
+    # run never spends an iteration on a guaranteed ``FileNotFoundError`` (B6).
+    unavailable_tools: set[str] = set(unavailable_tools_from_env())
     tool_failures: dict[str, int] = {}
     phase_started = time.monotonic()
     phase_timeout_seconds = _phase_timeout_seconds()
+    # Evidence of *this* run only: the corpus a finding is grounded against, plus
+    # the grounding counters of the accepted completion (B8.2.3).
+    run_evidence: list[dict[str, Any]] = []
+    evidence_stats: dict[str, int] | None = None
+    premature_rejections = 0
+    completion_objections: list[str] = []
+    for tool_id in sorted(unavailable_tools):
+        store.append_run_event(
+            tenant_id,
+            run_id,
+            TOOL_UNAVAILABLE_EVENT_TYPE,
+            {"tool_id": tool_id, "reason": "binary_missing", "iteration": 0},
+        )
 
     def audit_step(*, iteration: int, action: str, decision: str, **extra: Any) -> None:
         """Audit one step, always tagged with the active subagent (3C)."""
@@ -739,18 +861,23 @@ async def run_react_loop(
 
         iteration += 1
         history = memory.load_history(store, tenant_id, conversation_id, limit=500)
-        history_summary = memory.latest_summary(history)
+        # B8.2.1: the run reads (and compacts) only its own turns. The shared
+        # work session keeps the blackboard, not the other runs' transcripts.
+        run_history = _run_messages(history, run_id)
+        history_summary = memory.latest_summary(run_history)
         if config.enable_summarization:
             summary = await memory.summarize_history_if_large(
                 store,
                 tenant_id,
                 conversation_id,
                 llm_client,
-                force=len(history) > config.max_history_messages,
+                force=len(run_history) > config.max_history_messages,
+                run_id=run_id,
             )
             if summary:
                 history_summary = summary
                 history = memory.load_history(store, tenant_id, conversation_id, limit=500)
+                run_history = _run_messages(history, run_id)
 
         # In a shared work session the model must be able to build on the
         # objectives executed earlier in the engagement, not just the current
@@ -883,7 +1010,7 @@ async def run_react_loop(
         context_messages = bounded_context(
             [
                 message
-                for message in history
+                for message in run_history
                 if message.get("role") in {"user", "assistant"}
                 and memory.message_kind(message) not in memory.COMPACTION_KINDS
             ]
@@ -973,9 +1100,103 @@ async def run_react_loop(
         )
 
         if action.action == ACTION_TASK_COMPLETE:
+            # Evidence first: every finding is annotated with where its support
+            # comes from, before any gate reads it (B8.2.3).
+            annotated, evidence_stats = annotate_findings(
+                action.findings, observations=run_evidence
+            )
+            completion_objections = _completion_objections(
+                plan,
+                enforce_completion_gates=config.enforce_completion_gates,
+                evidence_stats=evidence_stats,
+                engagement_id=engagement_id,
+            )
+            if completion_objections and premature_rejections < MAX_PREMATURE_COMPLETIONS:
+                # Refuse to close an engagement the plan says is unfinished: tell
+                # the model why and let it keep working (B8.2.2).
+                premature_rejections += 1
+                actions.append(
+                    _action_entry(
+                        iteration,
+                        action.action,
+                        thought=action.thought,
+                        warnings=action.warnings,
+                        summary=action.summary or "",
+                        findings=annotated,
+                        rejected=True,
+                        objections=list(completion_objections),
+                    )
+                )
+                store.append_run_event(
+                    tenant_id,
+                    run_id,
+                    PREMATURE_COMPLETION_EVENT_TYPE,
+                    {
+                        "iteration": iteration,
+                        "phase": plan.current,
+                        "attempt": premature_rejections,
+                        "objections": list(completion_objections),
+                        "evidence": evidence_stats,
+                        "subagent_id": active_subagent_id,
+                    },
+                )
+                memory.append_step(
+                    store,
+                    tenant_id,
+                    conversation_id,
+                    "user",
+                    _premature_completion_message(completion_objections, plan),
+                    {
+                        "kind": "react.correction",
+                        "iteration": iteration,
+                        "rejected_action": ACTION_TASK_COMPLETE,
+                        "run_id": run_id,
+                    },
+                )
+                audit_step(
+                    iteration=iteration,
+                    action=action.action,
+                    decision="deny",
+                    reason="premature_task_complete",
+                    attempt=premature_rejections,
+                    objections=list(completion_objections),
+                    evidence=evidence_stats,
+                )
+                continue
+            if completion_objections:
+                # The model insisted past every warning. Stop loudly with its own
+                # status instead of reporting a completion nobody verified.
+                status = STATUS_PREMATURE_COMPLETION
+                final_summary = (
+                    "task_complete rechazado "
+                    f"{premature_rejections} veces sin evidencia suficiente: "
+                    + "; ".join(completion_objections)
+                )
+                findings = annotated
+                actions.append(
+                    _action_entry(
+                        iteration,
+                        action.action,
+                        thought=action.thought,
+                        warnings=action.warnings,
+                        summary=action.summary or "",
+                        findings=annotated,
+                        rejected=True,
+                        objections=list(completion_objections),
+                    )
+                )
+                audit_step(
+                    iteration=iteration,
+                    action=action.action,
+                    decision="deny",
+                    reason="premature_completion_exhausted",
+                    objections=list(completion_objections),
+                    evidence=evidence_stats,
+                )
+                break
             status = STATUS_COMPLETED
             final_summary = action.summary or ""
-            findings = list(action.findings)
+            findings = annotated
             actions.append(
                 _action_entry(
                     iteration,
@@ -984,6 +1205,7 @@ async def run_react_loop(
                     warnings=action.warnings,
                     summary=final_summary,
                     findings=findings,
+                    evidence=evidence_stats,
                 )
             )
             memory.append_step(
@@ -999,6 +1221,7 @@ async def run_react_loop(
                     "kind": "react.final",
                     "iteration": iteration,
                     "findings_count": len(findings),
+                    "evidence": evidence_stats,
                     "run_id": run_id,
                 },
             )
@@ -1008,6 +1231,7 @@ async def run_react_loop(
                 decision="allow",
                 thought=action.thought,
                 findings_count=len(findings),
+                evidence=evidence_stats,
             )
             break
 
@@ -1327,6 +1551,16 @@ async def run_react_loop(
             observation = _observation_payload(invocation)
             if observation.get("success"):
                 consecutive_failures = 0
+                # Only a *verified* observation can ground a finding later
+                # (B8.2.3); the corpus stays bounded across a long run.
+                run_evidence.append(
+                    {
+                        "tool_id": action.tool_id,
+                        "evidence": observation.get("evidence"),
+                        "output": observation.get("output"),
+                    }
+                )
+                del run_evidence[:-RUN_EVIDENCE_MAX_OBSERVATIONS]
             else:
                 consecutive_failures += 1
 
@@ -1388,6 +1622,8 @@ async def run_react_loop(
         question=question,
         plan=last_plan.to_dict() if last_plan is not None else None,
         subagent_id=last_subagent_id,
+        evidence_stats=evidence_stats,
+        completion_objections=list(completion_objections),
     )
 
 

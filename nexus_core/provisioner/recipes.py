@@ -10,7 +10,26 @@ def load_recipes() -> dict:
 
 
 def find_tool_recipe(tool_name: str):
-    return load_recipes().get(tool_name)
+    """Resolve a tool name to its recipe, accepting a declared alias.
+
+    A recipe key is the *component id* (``ripgrep``), but the model and the
+    preflight reason in binary names (``rg``). Recipes may declare
+    ``"aliases": ["rg"]``; without this, ``nexus.system.check_env(tools=["rg"])``
+    failed with ``unknown tool`` in the E2E run #2 (B6) instead of reporting the
+    missing binary.
+    """
+    recipes = load_recipes()
+    recipe = recipes.get(tool_name)
+    if recipe is not None:
+        return recipe
+    wanted = str(tool_name or "").strip().lower()
+    if not wanted:
+        return None
+    for candidate in recipes.values():
+        aliases = candidate.get("aliases") if isinstance(candidate, dict) else None
+        if any(str(alias).strip().lower() == wanted for alias in (aliases or ())):
+            return candidate
+    return None
 
 
 def available_recipes(tool_name: str, managers: tuple[str, ...]) -> list[str]:

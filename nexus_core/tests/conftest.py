@@ -1,10 +1,24 @@
-"""Shared fixtures for the current CLI test suite."""
+"""Shared fixtures for the test suite."""
 
 import os
 
 import pytest
 
 from nexus_core.tests.onboarding_support import onboarding_env  # noqa: F401 - pytest fixture
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_binary_preflight(monkeypatch):
+    """Unit tests must not depend on the host PATH.
+
+    Since B6 the ReAct loop retires a tool whose binary is absent (e.g.
+    ``nexus.workspace.search`` without ``rg``), which would make the tool catalog
+    of a test depend on the machine running it. The behaviour itself is covered
+    by ``test_binaries.py`` (``which``/``run`` injected) and by
+    ``test_react_frame.py`` (the preflight helper is monkeypatched), so the loop
+    tests stay hermetic.
+    """
+    monkeypatch.setenv("NEXUS_PREFLIGHT_BINARIES", "0")
 
 
 @pytest.fixture(autouse=True)

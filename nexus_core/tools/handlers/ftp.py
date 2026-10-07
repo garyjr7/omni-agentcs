@@ -33,6 +33,15 @@ FTP_MAX_TIMEOUT_SECONDS = 300
 #: Cap on listing lines persisted per scan (defensive against huge directories).
 FTP_MAX_LISTING_LINES = 500
 
+#: How many leading bytes of a downloaded file travel back in the result.
+#: Rationale (B7): without it the agent has to learn that a second tool exists
+#: and read the file itself; with it the immediately useful content (``locks``
+#: wordlists, ``task.txt`` user names) is in the same observation as the
+#: download, while the full bytes stay in the workspace for
+#: ``nexus.workspace.read``. Injected into the client script below so the number
+#: has exactly one definition.
+FTP_PREVIEW_BYTES = 4096
+
 FTP_ACTIONS = ("list", "download")
 
 #: Anonymous login credentials; the model must not invent other accounts.
@@ -45,6 +54,8 @@ FTP_ANONYMOUS_PASSWORD = "anonymous@"
 #: answer in active mode, so the client retries PASV -> PORT before giving up.
 FTP_CLIENT_SCRIPT = r"""
 import ftplib, hashlib, json, os, sys
+
+PREVIEW_BYTES = __PREVIEW_BYTES__
 
 def run_op(ftp, action, remote, local_dir):
     info = {}
@@ -67,6 +78,7 @@ def run_op(ftp, action, remote, local_dir):
         path = os.path.join(local_dir, name)
         digest = hashlib.sha256()
         size = 0
+        head = bytearray()
         handle = open(path, "wb")
         try:
             def writer(chunk):
@@ -74,6 +86,8 @@ def run_op(ftp, action, remote, local_dir):
                 handle.write(chunk)
                 digest.update(chunk)
                 size += len(chunk)
+                if len(head) < PREVIEW_BYTES:
+                    head.extend(chunk[: PREVIEW_BYTES - len(head)])
             ftp.retrbinary("RETR " + remote, writer)
         finally:
             handle.close()
@@ -81,6 +95,9 @@ def run_op(ftp, action, remote, local_dir):
         info["path"] = path
         info["size"] = size
         info["sha256"] = digest.hexdigest()
+        info["preview"] = bytes(head).decode("utf-8", "replace")
+        info["preview_bytes"] = len(head)
+        info["preview_truncated"] = size > len(head)
     return info
 
 def has_data(action, info):
@@ -130,13 +147,20 @@ def main():
     if not result["ok"]:
         result["error"] = best.get("error") or "login failed"
     result["attempts"] = [
-        {k: v for k, v in a.items() if k in ("mode", "login_ok", "error", "list_error", "nlst_error", "size")}
+        {
+            k: v
+            for k, v in a.items()
+            if k in (
+                "mode", "login_ok", "error", "list_error", "nlst_error", "size",
+                "preview_bytes", "preview_truncated",
+            )
+        }
         for a in attempts
     ]
     print(json.dumps(result))
 
 main()
-"""
+""".replace("__PREVIEW_BYTES__", str(FTP_PREVIEW_BYTES))
 
 
 def ftp_definition(tenant_id: str = "system") -> ToolDefinition:
@@ -306,6 +330,8 @@ async def ftp_handler(arguments: dict, context: RunContext) -> ToolResult:
                     "file": payload.get("file"),
                     "size": payload.get("size"),
                     "sha256": payload.get("sha256"),
+                    "preview_bytes": payload.get("preview_bytes"),
+                    "preview_truncated": payload.get("preview_truncated"),
                 }
             )
         verification_method = "ftp_download_verified" if ok else "ftp_download_failed"

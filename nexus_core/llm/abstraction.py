@@ -47,6 +47,15 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
+from .limits import (
+    MIN_COMPLETION_TOKENS,
+    backoff_base_seconds,
+    estimate_request_tokens,
+    is_rate_limit_status,
+    pace_request,
+    record_provider_usage,
+)
+
 # Assuming a logger utility exists. If not, a standard logger is used.
 try:
     from nexus_core.utils.logger import get_logger
@@ -81,6 +90,11 @@ class LLMProvider(str, Enum):
     GROQ = "groq"
     OPENAI_COMPATIBLE = "openai_compatible"
     ANTHROPIC = "anthropic"
+    #: OpenAI-compatible endpoint (https://api.deepseek.com/v1). Supported from
+    #: Fase 3.6 but deliberately NOT the default: switching the development model
+    #: is a Fase 4 decision, made by pointing ``llm.default_provider`` at it once
+    #: the operator has the API key (B8.2.4).
+    DEEPSEEK = "deepseek"
 
 @dataclass
 class LLMConfig:
@@ -251,29 +265,58 @@ class OpenAIClient(BaseLLMClient):
         }
 
         max_retries = 3
-        backoff_factor = 2.0
+        backoff_factor = backoff_base_seconds()
         for attempt in range(max_retries):
+            # Respect the provider's tokens-per-minute budget before spending a
+            # request that is guaranteed to be rejected (B5).
+            await pace_request(
+                self.config.provider,
+                estimated_tokens=estimate_request_tokens(
+                    messages, request_params["max_tokens"]
+                ),
+            )
             try:
                 response: ChatCompletion = await self.client.chat.completions.create(**request_params)
                 duration_ms = (time.perf_counter() - start_time) * 1000
 
                 usage = response.usage
+                tokens_input = usage.prompt_tokens if usage else 0
+                tokens_output = usage.completion_tokens if usage else 0
+                record_provider_usage(
+                    self.config.provider, tokens_input + tokens_output
+                )
                 return LLMResponse(
                     content=response.choices[0].message.content or "",
                     model=self.config.model,
                     provider=self.config.provider,
-                    tokens_input=usage.prompt_tokens if usage else 0,
-                    tokens_output=usage.completion_tokens if usage else 0,
+                    tokens_input=tokens_input,
+                    tokens_output=tokens_output,
                     duration_ms=duration_ms,
                     raw_response=response.model_dump(),
                 )
-            except openai.RateLimitError as e:
-                if attempt + 1 == max_retries:
-                    self._logger.error("OpenAI rate limit exceeded after max retries.")
-                    raise NexusLLMError("OpenAI rate limit exceeded") from e
-                
+            except openai.APIStatusError as e:
+                # 429 (rate limit) and 413 (the reserved max_tokens itself blew
+                # the per-minute token budget) are the same problem: retry with
+                # backoff, and for 413 also shrink the reservation.
+                raw_status = getattr(e, "status_code", None)
+                status = int(raw_status) if isinstance(raw_status, int) else 0
+                if not is_rate_limit_status(status) or attempt + 1 == max_retries:
+                    self._logger.error(f"OpenAI API error: {e}")
+                    raise NexusLLMError(f"OpenAI API error: {e}") from e
+                if status == 413:
+                    shrunk = max(
+                        MIN_COMPLETION_TOKENS, int(request_params["max_tokens"]) // 2
+                    )
+                    self._logger.warning(
+                        "Provider rejected the request as too large (413); "
+                        f"shrinking max_tokens {request_params['max_tokens']} -> {shrunk}."
+                    )
+                    request_params["max_tokens"] = shrunk
                 wait_time = backoff_factor * (2 ** attempt)
-                self._logger.warning(f"OpenAI rate limit hit. Retrying in {wait_time:.2f}s...")
+                self._logger.warning(
+                    f"Provider rate/token limit (status {status}). "
+                    f"Retrying in {wait_time:.2f}s..."
+                )
                 await asyncio.sleep(wait_time)
             except openai.APIError as e:
                 self._logger.error(f"OpenAI API error: {e}")
@@ -306,6 +349,13 @@ class OpenAIClient(BaseLLMClient):
 
         collected: List[str] = []
         usage_input = usage_output = 0
+        # A streamed turn also counts against the provider's per-minute budget.
+        await pace_request(
+            self.config.provider,
+            estimated_tokens=estimate_request_tokens(
+                messages, request_params["max_tokens"]
+            ),
+        )
         try:
             response = await self.client.chat.completions.create(**request_params)
             async for chunk in response:
@@ -326,12 +376,14 @@ class OpenAIClient(BaseLLMClient):
             raise NexusLLMError(f"OpenAI API error: {e}") from e
 
         text = "".join(collected)
+        tokens_output = usage_output or max(1, len(text.split()))
+        record_provider_usage(self.config.provider, usage_input + tokens_output)
         self._last_stream_response = LLMResponse(
             content=text,
             model=self.config.model,
             provider=self.config.provider,
             tokens_input=usage_input,
-            tokens_output=usage_output or max(1, len(text.split())),
+            tokens_output=tokens_output,
             duration_ms=(time.perf_counter() - start_time) * 1000,
         )
 
@@ -549,6 +601,7 @@ class LLMFactory:
             LLMProvider.FAKE: FakeLLMClient,
             LLMProvider.GROQ: OpenAIClient,
             LLMProvider.OPENAI_COMPATIBLE: OpenAIClient,
+            LLMProvider.DEEPSEEK: OpenAIClient,
         }
         client_class = provider_map.get(config.provider)
         if not client_class:
@@ -614,6 +667,21 @@ class LLMFactory:
                 logger.info("Groq client created from environment variables.")
             except Exception as e:
                 logger.warning(f"Failed to create Groq client from env: {e}")
+
+        # DeepSeek (OpenAI-compatible). Available from Fase 3.6, not the default;
+        # a client is only built when the operator exported the key.
+        if os.getenv("DEEPSEEK_API_KEY"):
+            try:
+                config = LLMConfig(
+                    provider=LLMProvider.DEEPSEEK,
+                    model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4.1-flash"),
+                    api_key=os.getenv("DEEPSEEK_API_KEY"),
+                    base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+                )
+                clients["deepseek"] = OpenAIClient(config)
+                logger.info("DeepSeek client created from environment variables.")
+            except Exception as e:
+                logger.warning(f"Failed to create DeepSeek client from env: {e}")
 
         if os.getenv("ANTHROPIC_API_KEY"):
             clients["anthropic"] = LLMFactory.create(LLMConfig(
