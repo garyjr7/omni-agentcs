@@ -84,6 +84,7 @@ class ToolDefinition:
     scope_required: bool = False
     effects: tuple[str, ...] = ()
     sandbox_required: bool = False
+    idempotent: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -147,6 +148,22 @@ class RunContext:
     approved_install_plan: Any = field(default=None, repr=False, compare=False)
     invocation_id: str = ""
     session_id: str = ""
+    # Operator-supplied workspace; never taken from tool arguments.
+    project_root: str = ""
+    # Kill-chain phase and objective of the calling step. Set by the engine (not
+    # the model) so the gateway can derive a durable ``step_key`` for the
+    # invocation journal.
+    phase: str = ""
+    objective: str = ""
+
+    @property
+    def engagement_id(self) -> str:
+        """Engagement of the signed scope, if any.
+
+        Derived from the scope so a tool's lifecycle hooks report the same
+        engagement as the run that authorized the call (P2-A2).
+        """
+        return str(getattr(self.scope, "engagement_id", "") or "")
 
 
 @dataclass(frozen=True)

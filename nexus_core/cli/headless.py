@@ -267,6 +267,9 @@ def run_headless(
             # P2 (Fase 3.7): the operator pin from ``--subagent``; ``None`` lets
             # the planner choose.
             "subagent": getattr(session, "subagent_override", None),
+            # P2-A2: the engagement workspace, explicit so headless hooks see the
+            # same directory as REPL and worker regardless of cwd.
+            "project_root": os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd()),
         },
     }
     context = ExecutionContext(session.store, task, session.worker_id)

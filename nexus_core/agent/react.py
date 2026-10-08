@@ -159,6 +159,16 @@ class ReActConfig:
     #: Called once when a streamed turn ends (success, error or fallback), so the
     #: live indicator closes before the durable thought is rendered.
     on_thought_done: Callable[[], None] | None = None
+    #: Durable budget reservation, run *before* the provider call (P2-C2).
+    #: Receives the estimated request tokens and returns an opaque handle (or
+    #: ``None`` to skip). Raising :class:`BudgetExceeded` aborts the turn cleanly
+    #: with ``status='budget_exceeded'`` *before* the provider is contacted.
+    before_provider_call: Callable[[int], Any] | None = None
+    #: Settle (or release) the handle returned by ``before_provider_call`` with
+    #: the real token usage reported by the provider.
+    after_provider_call: Callable[[Any, int], None] | None = None
+    #: Durable root of the spawning tree, for budget attribution and audit.
+    root_id: str = ""
 
 
 @dataclass
@@ -748,7 +758,18 @@ async def _await_tool(
             await asyncio.gather(cancel_waiter, return_exceptions=True)
 
 
-async def run_react_loop(
+def _estimate_request_tokens(messages: Any) -> int:
+    """Cheap pre-flight token estimate for a reservation (chars/4)."""
+    total = 0
+    for message in messages:
+        content = getattr(message, "content", None)
+        if content is None and isinstance(message, dict):
+            content = message.get("content")
+        total += len(str(content or ""))
+    return (total + 3) // 4
+
+
+async def _run_react_loop_impl(
     *,
     context: Any,
     objective: str,
@@ -759,6 +780,7 @@ async def run_react_loop(
     conversation_id: str | None = None,
     budget_tokens: int | None = None,
     cancel_event: asyncio.Event | None = None,
+    isolated_child: bool = False,
 ) -> ReActResult:
     """Run the durable ReAct loop until completion, abort or iteration budget.
 
@@ -792,11 +814,11 @@ async def run_react_loop(
     # once per run, delimited, scanned, and their provenance is audited so the
     # exact bytes that shaped the run are provable afterwards.
     project_root = payload.get("project_root") or None
-    project_instruction = load_project_instruction(project_root)
+    project_instruction = None if isolated_child else load_project_instruction(project_root)
     from nexus_core.kernel.scope_loader import scope_signing_secret
 
     active_skills, refused_skills = activate_skills(
-        payload.get("active_skills") or [],
+        [] if isolated_child else payload.get("active_skills") or [],
         project_root,
         secret=scope_signing_secret(),
     )
@@ -819,6 +841,14 @@ async def run_react_loop(
     conversation_id = conversation_id or memory.ensure_conversation(
         store, tenant_id, run_id, agent_id
     )
+    from nexus_core.hooks import HookRunner
+    hook_context = runtime_module._build_run_context(
+        {**payload, 'engagement_id': engagement_id, 'session_id': conversation_id}, context)
+    hooks = HookRunner(
+        hook_context, project_root=project_root, engagement_id=engagement_id,
+        workspace=project_root or os.getenv('NEXUS_WORKSPACE_ROOT') or os.getcwd(),
+    )
+    await hooks.emit('session_start', objective=objective, engagement_id=engagement_id)
     if cancel_event is None:
         cancel_event = getattr(context, "cancel_event", None)
     budget = _budget_tokens(payload, budget_tokens)
@@ -940,6 +970,7 @@ async def run_react_loop(
                 llm_client,
                 force=len(run_history) > config.max_history_messages,
                 run_id=run_id,
+                pre_compact=lambda: hooks.emit('pre_compact', conversation_id=conversation_id),
             )
             if summary:
                 history_summary = summary
@@ -997,6 +1028,16 @@ async def run_react_loop(
                     "tools": sorted(subagent.tools),
                     "iteration": iteration,
                 },
+            )
+            # P2-C3: on a *family* transition, optionally delegate to a real child
+            # conversation (opt-in: default off, so historic behaviour is intact).
+            await _maybe_autospawn(
+                store=store, tenant_id=tenant_id, run_id=run_id,
+                context=context, llm_client=llm_client, config=config,
+                engagement_id=engagement_id, objective=objective,
+                previous_subagent_id=last_subagent_id, subagent_id=selected.id,
+                payload=payload, conversation_id=conversation_id, iteration=iteration,
+                audit_step=audit_step,
             )
             last_subagent_id = selected.id
         # Fail closed on a subagent that exhausted its own allowance: the next
@@ -1110,10 +1151,34 @@ async def run_react_loop(
 
         messages = with_kickoff_user_turn(messages, objective)
 
+        reservation = None
+        if config.before_provider_call is not None:
+            from nexus_core.kernel.errors import BudgetExceeded
+
+            try:
+                reservation = config.before_provider_call(_estimate_request_tokens(messages))
+            except BudgetExceeded as exc:
+                # Fail closed *before* the provider call: no tokens leave the
+                # machine for a request the tree cannot afford.
+                status = STATUS_BUDGET_EXCEEDED
+                final_summary = f"budget reservation refused: {exc}"
+                audit_step(iteration=iteration, action="budget_exceeded",
+                           decision="deny", reason="reservation_refused")
+                break
+
         try:
             response = await _complete_turn(llm_client, messages, config)
         except Exception as exc:
+            if reservation is not None and config.after_provider_call is not None:
+                # The call never produced usage: release the reservation so the
+                # rest of the tree can use the budget again.
+                config.after_provider_call(reservation, 0)
             raise ProviderFailure(type(exc).__name__) from exc
+        if reservation is not None and config.after_provider_call is not None:
+            actual = int(getattr(response, "tokens_input", 0) or 0) + int(
+                getattr(response, "tokens_output", 0) or 0
+            )
+            config.after_provider_call(reservation, actual)
         _record_response_tokens(
             store,
             tenant_id,
@@ -1202,6 +1267,12 @@ async def run_react_loop(
                 evidence_stats=evidence_stats,
                 engagement_id=engagement_id,
             )
+            from nexus_core.kernel.blackboard import Blackboard, is_verified_fact
+            verified_facts = [fact for fact in Blackboard(store).list_facts(tenant_id, engagement_id)
+                              if is_verified_fact(fact)] if engagement_id else []
+            completion_objections.extend(await hooks.verify_stop(
+                findings=annotated, facts_verified=verified_facts,
+                phase=plan.current, objective=objective))
             if completion_objections and premature_rejections < MAX_PREMATURE_COMPLETIONS:
                 # Refuse to close an engagement the plan says is unfinished: tell
                 # the model why and let it keep working (B8.2.2).
@@ -1513,6 +1584,10 @@ async def run_react_loop(
             "approval_id": payload.get("approval_id"),
             "trace_id": run_id,
             "session_id": conversation_id,
+            # P2-D1: engine-supplied step context for the gateway's step_key. The
+            # model never sets this; it names the intent of the phase/objective.
+            "phase": getattr(plan, "current", "") or "",
+            "objective": objective,
         }
         if config.on_approval_needed is not None:
             denial = _operator_approval_gate(
@@ -1781,4 +1856,130 @@ def _inject_observation(
             **({"artifact": artifact} if artifact else {}),
             **({"subagent_id": subagent_id} if subagent_id else {}),
         },
+    )
+
+
+async def run_react_loop(
+    *,
+    context: Any,
+    objective: str,
+    engagement_id: str | None,
+    llm_client: Any,
+    config: ReActConfig = ReActConfig(),
+    tool_catalog: dict[str, Any] | None = None,
+    conversation_id: str | None = None,
+    budget_tokens: int | None = None,
+    cancel_event: asyncio.Event | None = None,
+    isolated_child: bool = False,
+) -> ReActResult:
+    """Public entry point: the engine plus a guaranteed ``session_end``.
+
+    ``_run_react_loop_impl`` owns the ReAct mechanics. This thin wrapper adds the
+    lifecycle guarantee the operator extensions depend on: ``session_end`` is
+    emitted exactly once, whether the engine returns normally (``status`` is the
+    terminal status) or raises (``reason="exception"``). The hook can never
+    swallow the engine error: the exception is always re-raised after the audit.
+    """
+    from nexus_core.kernel import runtime as runtime_module
+    from nexus_core.hooks import HookRunner
+
+    payload = _task_payload(context)
+    project_root = None if isolated_child else (payload.get("project_root") or None)
+    hook_context = None
+    try:
+        # Resolve the *same* deterministic conversation the engine will use, so
+        # ``session_start``/``session_end`` share a session id and building the
+        # hook context never has the side effect of opening a work session.
+        session_id = conversation_id or memory.ensure_conversation(
+            context.store, context.tenant_id, context.run_id,
+            str(payload.get("agent_id") or DEFAULT_AGENT_ID),
+        )
+        hook_context = runtime_module._build_run_context(
+            {**payload, 'engagement_id': engagement_id, 'session_id': session_id},
+            context,
+        )
+    except Exception:  # noqa: BLE001 - lifecycle telemetry must never block the engine
+        hook_context = None
+    hooks = (
+        HookRunner(
+            hook_context, project_root=project_root, engagement_id=engagement_id,
+            workspace=project_root or os.getenv('NEXUS_WORKSPACE_ROOT') or os.getcwd(),
+        )
+        if hook_context is not None
+        else None
+    )
+    try:
+        result = await _run_react_loop_impl(
+            context=context, objective=objective, engagement_id=engagement_id,
+            llm_client=llm_client, config=config, tool_catalog=tool_catalog,
+            conversation_id=conversation_id, budget_tokens=budget_tokens,
+            cancel_event=cancel_event, isolated_child=isolated_child,
+        )
+    except BaseException:
+        if hooks is not None:
+            await hooks.emit('session_end', status='exception', reason='exception')
+        raise
+    if hooks is not None:
+        await hooks.emit(
+            'session_end', status=result.status, iterations=result.iterations,
+            reason=result.status,
+        )
+    return result
+
+
+async def _maybe_autospawn(
+    *, store: Any, tenant_id: str, run_id: str, context: Any, llm_client: Any,
+    config: ReActConfig, engagement_id: str | None, objective: str,
+    previous_subagent_id: str | None, subagent_id: str, payload: dict, conversation_id: str,
+    iteration: int, audit_step: Any,
+) -> None:
+    """Delegate to a real child conversation on a family transition (opt-in).
+
+    Disabled unless the run payload sets ``autospawn``. When the transition is
+    valid (different kill-chain family, a well-funded target) the child runs its
+    own isolated conversation to completion and the parent receives only its
+    structured summary as a system observation — never the child's transcript.
+    Any failure degrades to "no delegation" and is audited, never aborts the run.
+    """
+    if not payload.get('autospawn') or not previous_subagent_id:
+        return
+    from nexus_core.agent.supervisor import AgentSupervisor
+    from .subagents import SUBAGENTS_BY_ID
+
+    global_budget = int(payload.get('supervisor_budget') or 0)
+    if global_budget <= 0:
+        return
+    profile = SUBAGENTS_BY_ID.get(subagent_id)
+    if profile is None:
+        return
+    try:
+        supervisor = AgentSupervisor.root(
+            context, llm_client, engagement_id=engagement_id,
+            global_budget=global_budget, config=config, autospawn=True,
+        )
+        if not supervisor.maybe_spawn(previous_subagent_id, subagent_id):
+            return
+        child = await supervisor.spawn(
+            subagent_id, objective,
+            {'tokens': profile.token_budget, 'iterations': profile.max_iterations},
+        )
+    except Exception as exc:  # noqa: BLE001 - delegation must never break the parent
+        audit_step(iteration=iteration, action='autospawn_failed', decision='degrade',
+                   error=type(exc).__name__)
+        return
+    audit_step(iteration=iteration, action='autospawn', decision='allow',
+               child_run_id=child.run_id, root_id=child.root_id,
+               termination_reason=child.termination_reason)
+    store.append_run_event(
+        tenant_id, run_id, 'orchestrator.autospawn',
+        {'child_run_id': child.run_id, 'root_id': child.root_id,
+         'subagent_id': subagent_id, 'previous': previous_subagent_id,
+         'tokens_used': child.tokens_used, 'iteration': iteration},
+    )
+    memory.append_step(
+        store, tenant_id, conversation_id, 'system',
+        json.dumps({'kind': 'supervisor.child_summary', 'subagent_id': subagent_id,
+                    'summary': child.summary}, ensure_ascii=False, default=str),
+        {'kind': 'supervisor.child_summary', 'child_run_id': child.run_id,
+         'run_id': run_id, 'iteration': iteration},
     )

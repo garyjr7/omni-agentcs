@@ -22,6 +22,29 @@ from .telemetry import metrics, telemetry
 ToolHandler = Callable[[Dict[str, Any], RunContext], ToolResult | Awaitable[ToolResult]]
 
 
+def _journal_artifact_store(store):
+    """Content-addressed store for invocation results (local backend for now).
+
+    Returns ``None`` when no usable location is configured, in which case the
+    journal falls back to an inline sanitized JSON reference.
+    """
+    try:
+        from nexus_core.config.loader import load_config
+        from nexus_core.config.xdg import resolve_xdg_paths
+        from pathlib import Path as _Path
+        from .artifacts import LocalArtifactStore
+
+        paths = resolve_xdg_paths()
+        config = load_config(paths)
+        # ``load_config`` returns a typed config object (a mapping is also
+        # tolerated) so the fallback must not assume ``.get``.
+        configured = config.get('artifacts_dir') if isinstance(config, dict) else getattr(config, 'artifacts_dir', None)
+        root = configured or (_Path(paths.data_dir) / 'artifacts')
+        return LocalArtifactStore(store, str(root))
+    except Exception:  # noqa: BLE001 - the journal must not fail on storage setup
+        return None
+
+
 class ToolGateway:
     def __init__(
         self,
@@ -56,6 +79,7 @@ class ToolGateway:
         context: RunContext,
         permissions: tuple[str, ...] = (),
         approval_id: str | None = None,
+        retry_approval_id: str | None = None,
     ) -> Any:
         with telemetry.span("nexus.tool.invoke", {
             "nexus.tenant.id": context.tenant_id,
@@ -198,7 +222,56 @@ class ToolGateway:
                     raise PermissionError("exact install plan requires durable human approval")
                 context = replace(context, approved_install_plan=install_plan)
 
+            from nexus_core.hooks import HookRunner
+            # The engagement workspace is passed explicitly (never the process
+            # cwd) so tool hooks agree with the session hooks on the directory.
+            hooks = HookRunner(
+                replace(context, store=self.audit.store),
+                project_root=context.project_root or None,
+                workspace=context.project_root or None,
+            )
+            blockers = await hooks.emit('pre_tool_use', tool_id=tool_id, arguments=arguments)
+            if blockers:
+                raise PermissionError('hook blocked tool: ' + '; '.join(blockers))
+
             store = self.audit.store
+            from .invocation_journal import InvocationJournal
+            journal = InvocationJournal(store)
+            # P2-D1: the gateway derives the intent key; the model cannot supply
+            # it. Only the engine-provided phase/objective distinguish two calls
+            # that happen to share arguments.
+            step_key = journal.step_key(
+                tool_id, arguments, phase=getattr(context, 'phase', ''),
+                objective=getattr(context, 'objective', ''),
+            )
+            previous = journal.matching(context, tool_id, arguments, step_key=step_key)
+            retry_of = None
+            if previous and previous['state'] == 'succeeded' and not definition.idempotent:
+                self.audit.append(tenant_id=context.tenant_id, trace_id=context.trace_id,
+                    actor_id=context.identity.subject_id, action='invocation.reused',
+                    resource_type='tool', resource_id=tool_id,
+                    payload={'invocation_id': previous['invocation_id'], 'run_id': context.run_id,
+                             'step_key': step_key}, decision='allow')
+                try:
+                    reused = journal.result_of(
+                        previous, artifact_store=_journal_artifact_store(store))
+                except Exception:  # noqa: BLE001 - fall back to the inline reference
+                    reused = journal.result_of(previous)
+                return reused
+            if previous and previous['state'] in {'running', 'prepared'}:
+                raise PermissionError('invocation is already running or prepared; reconcile before retry')
+            if previous and previous['state'] == 'unknown':
+                retry_of = previous['invocation_id']
+                if not definition.idempotent:
+                    retry_action = f'retry:invocation:{retry_of}'
+                    retry_id = retry_approval_id or (approval_id if not decision.requires_approval else None)
+                    if not self.approvals or not retry_id or not self.approvals.consume(retry_id, context, retry_action):
+                        raise ApprovalRequired('unknown invocation requires human approval: ' + retry_action)
+                journal.claim_retry(retry_of, context.tenant_id)
+            target = arguments.get(definition.scope_target_field, '') if definition.scope_target_field else ''
+            journal.prepare(context, tool_id, arguments, target, retry_of=retry_of,
+                            step_key=step_key, lease_id=getattr(context, 'worker_id', '') or None)
+            journal.start(context.invocation_id, context.tenant_id)
             store.record_usage(
                 context.tenant_id, context.run_id, "tool", tool_id, "calls", 1,
                 {"trace_id": context.trace_id},
@@ -248,8 +321,12 @@ class ToolGateway:
                     tool_id=tool_id, tenant_id=context.tenant_id,
                 )
                 persist_assertions(assertions, context, tool_id)
+                journal.finish(context.invocation_id, context.tenant_id, result_value,
+                               artifact_store=_journal_artifact_store(store))
+                await hooks.emit('post_tool_use', tool_id=tool_id, result=result_value)
                 return result_value
-            except Exception as exc:
+            except BaseException as exc:
+                journal.unknown(context.invocation_id, context.tenant_id)
                 self.audit.append(
                     tenant_id=context.tenant_id, trace_id=context.trace_id,
                     actor_id=context.identity.subject_id, action="tool.failed",

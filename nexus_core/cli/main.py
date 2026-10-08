@@ -91,6 +91,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume", metavar="RUN_ID", help="retoma un run previo (reanuda su conversación durable)"
     )
     parser.add_argument(
+        "--resume-policy",
+        choices=["approve", "skip", "fail"],
+        default=None,
+        help=(
+            "con --resume en headless: qué hacer con invocaciones en estado unknown "
+            "(approve=exige aprobación durable previa; skip=marca sin efecto; fail=falla)"
+        ),
+    )
+    parser.add_argument(
+        "--autospawn",
+        action="store_true",
+        help=(
+            "delega automáticamente a un subagente hijo al cambiar de familia de "
+            "fase (opt-in; desactivado por defecto)"
+        ),
+    )
+    parser.add_argument(
+        "--no-autospawn", dest="autospawn", action="store_false", help=argparse.SUPPRESS
+    )
+    parser.set_defaults(autospawn=False)
+    parser.add_argument(
+        "--supervisor-budget", type=int, default=0, metavar="TOKENS",
+        help="presupuesto global de tokens del árbol de subagentes (0 = sin delegación)",
+    )
+    parser.add_argument(
         "--list-engagements", action="store_true", help="lista los engagements del tenant y sale"
     )
     parser.add_argument(
@@ -324,7 +349,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         if subcommand == "run":
             objective = " ".join(args.command[1:]).strip() or objective
             headless_mode = "stream" if args.stream_json else "json"
-        elif subcommand not in {"report", "cve", "tool"}:
+        elif subcommand not in {"report", "cve", "tool", "hooks", "resume"}:
             render.render_error(f"subcomando desconocido: {subcommand}")
             return 2
     elif args.stream_json and objective:
@@ -346,6 +371,19 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         from .tool import list_tools
 
         return list_tools(args.tenant)
+
+    # ``omni hooks ...`` is an operator-governed write to the private trust file;
+    # it needs no engagement and never executes a hook itself.
+    if subcommand == "hooks":
+        from .hooks_cli import run_hooks_command
+
+        return run_hooks_command(list(args.command[1:]), args.tenant)
+
+    # ``omni resume ...`` decides what to do with invocations left ``unknown``.
+    if subcommand == "resume":
+        from .resume_cli import run_resume_command
+
+        return run_resume_command(list(args.command[1:]), store, args.tenant)
 
     if args.list_engagements:
         _list_engagements(engagements)
@@ -453,6 +491,24 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     )
     # Skills are opt-in per run: the operator names them, nothing is implicit.
     session.active_skills = list(args.skill or [])
+
+    session.autospawn = bool(args.autospawn)
+    session.supervisor_budget = int(args.supervisor_budget or 0)
+
+    # A resume with an explicit unknown-invocation policy is resolved before the
+    # run starts, so a crashed step is never silently replayed by headless.
+    if args.resume and args.resume_policy and headless_mode:
+        from .resume_cli import apply_resume_policy
+
+        verdict = apply_resume_policy(store, args.tenant, args.resume, args.resume_policy)
+        if verdict == "blocked":
+            render.render_error(
+                "resume bloqueado: hay invocaciones unknown sin aprobación durable"
+            )
+            return 2
+        if verdict == "failed":
+            render.render_error("resume marcado como fallido por política")
+            return 1
 
     if objective and headless_mode:
         from .headless import run_headless

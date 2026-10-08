@@ -7,3 +7,7 @@ class ApprovalRequired(PermissionError):
 
 class ProviderFailure(RuntimeError):
     """The LLM or an external RPC provider failed or timed out."""
+
+
+class BudgetExceeded(RuntimeError):
+    """A durable token reservation would oversubscribe a shared tree budget."""

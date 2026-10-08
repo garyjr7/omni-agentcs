@@ -165,7 +165,10 @@ def test_report_registers_artifact_with_sha256(env):
         assert digest == hashlib.sha256(body).hexdigest()
     with store.connect() as conn:
         rows = conn.execute(
-            "SELECT id, sha256, media_type FROM kernel_artifacts WHERE tenant_id=?",
+            # Scope to the report's own deliverables: since P2-D4 the same
+            # store also holds content-addressed invocation results.
+            "SELECT id, sha256, media_type FROM kernel_artifacts "
+            "WHERE tenant_id=? AND metadata LIKE '%engagement_report%'",
             (support.TENANT,),
         ).fetchall()
     assert len(rows) == 3
@@ -281,7 +284,8 @@ def test_report_artifact_store_is_content_addressed(env, tmp_path):
             (support.TENANT, digest),
         ).fetchall()
         count = conn.execute(
-            "SELECT COUNT(*) AS n FROM kernel_artifacts WHERE tenant_id=?",
+            "SELECT COUNT(*) AS n FROM kernel_artifacts WHERE tenant_id=? "
+            "AND metadata LIKE '%engagement_report%'",
             (support.TENANT,),
         ).fetchone()["n"]
     assert count == 6  # three deliverables per generation, both recorded

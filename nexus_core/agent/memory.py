@@ -258,6 +258,7 @@ async def summarize_history_if_large(
     max_tokens: int = 8000,
     force: bool = False,
     run_id: str | None = None,
+    pre_compact: Any = None,
 ) -> str:
     """Compact the history with one LLM call when it grows too large.
 
@@ -300,6 +301,8 @@ async def summarize_history_if_large(
         f"[{message.get('role')}] {str(message.get('content') or '')[:2000]}"
         for message in middle
     )
+    if pre_compact is not None:
+        await pre_compact()
     response = await client.complete(
         [
             LLMMessage(role="system", content="Eres un compresor de contexto preciso."),

@@ -56,6 +56,17 @@ class ExecutorRegistry:
         executor = self._executors.get(task["task_type"])
         if not executor:
             raise ValueError(f"unsupported durable task type: {task['task_type']}")
+        if int(task.get('attempts', 1)) > 1 and context.worker_id:
+            from .invocation_journal import InvocationJournal
+            # Only a claimed, renewed lease may reconcile a previous owner.
+            if not context.store.renew_task_lease(task['id'], context.worker_id):
+                raise PermissionError('cannot recover invocations without active task lease')
+            # P2-D2: fencing — only reconcile the previous owner's running
+            # invocations while this worker provably holds the task lease.
+            InvocationJournal(context.store).recover(
+                _build_run_context(task.get('payload') or {}, context),
+                lease_id=context.worker_id,
+            )
         context.event("task.started", task_id=task["id"], task_type=task["task_type"])
         with telemetry.span("nexus.runtime.execute", {
             "nexus.tenant.id": context.tenant_id,
@@ -126,6 +137,9 @@ def _build_run_context(payload: dict, context: ExecutionContext) -> RunContext:
                                              outer.get('agent_id') or 'omni', payload.get('engagement_id'))
     return RunContext(
         session_id=str(session_id or ''),
+        project_root=str(outer.get('project_root') or ''),
+        phase=str(payload.get('phase') or outer.get('phase') or ''),
+        objective=str(payload.get('objective') or outer.get('objective') or ''),
         tenant_id=context.tenant_id,
         identity=identity,
         run_id=context.run_id,
@@ -276,7 +290,8 @@ async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
     gateway.register(definition, handler)
     result = await gateway.invoke(tool_id, arguments, run_context,
                                   permissions=tuple(payload.get("permissions") or ()),
-                                  approval_id=payload.get("approval_id"))
+                                  approval_id=payload.get("approval_id"),
+                                  retry_approval_id=payload.get('retry_approval_id'))
     return {"tool_id": tool_id, "output": result}
 
 

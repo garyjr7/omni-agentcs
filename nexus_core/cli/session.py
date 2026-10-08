@@ -1021,6 +1021,12 @@ class OmniSession:
             "session_id": self.conversation_id,
             "active_skills": list(self.active_skills),
             "subagent": self.subagent_override,
+            # P2-A2: pass the engagement workspace explicitly so lifecycle hooks
+            # resolve the same directory in REPL, headless and worker.
+            "project_root": os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd()),
+            # P2-C3: opt-in automatic delegation on a family transition.
+            "autospawn": bool(getattr(self, "autospawn", False)),
+            "supervisor_budget": int(getattr(self, "supervisor_budget", 0) or 0),
         }
         task = {
             "id": f"cli-{run_id}",

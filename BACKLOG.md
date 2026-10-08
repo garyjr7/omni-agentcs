@@ -6,7 +6,7 @@ Estas P1 no se presentan como garantías disponibles:
 
 | Prioridad / ID de auditoría | Trabajo pendiente | Impacto actual | Criterio de cierre |
 | --- | --- | --- | --- |
-| P1-A · A-01 | Journal durable de invocaciones y reconciliación de efectos tras crash | Los nuevos `invocation_id` permiten atribución, **no** exactly-once. Caer después de un efecto y antes de guardar el resultado puede provocar reejecución, incluido un exploit. | Estado reservado/ejecutando/observado/reconciliado y pruebas de caída en cada frontera; ningún replay automático de efectos desconocidos. |
+| P1-A · A-01 | Completar journal durable por paso/intento y reconciliación tras crash | Fase 2 parcial ya registra prepared/running/succeeded/unknown y bloquea unknown no idempotente; identidad por hash no distingue toda intención, resume CLI y fencing de lease pendientes. **No** exactly-once. | Estado reservado/ejecutando/observado/reconciliado y pruebas de caída en cada frontera; ningún replay automático de efectos desconocidos. |
 | P1-B · P2-3 | `oci_network` con egress validado por scope | El modo sigue indisponible y falla explícitamente. `oci` no tiene red; local no aísla egress. | Pruebas reales de rutas permitidas/denegadas, DNS/rebinding, IPv4/IPv6, cierre y cleanup sin degradación a local. |
 | P1-C · A-05 | Sustituir el validador subset del gateway por JSON Schema completo | `minimum`, `maximum`, `pattern` y otras restricciones siguen sin validarse universalmente en entradas de herramientas. Los checks específicos de handlers siguen vigentes. | Suite por dialecto y constraints, errores compatibles, tratamiento explícito de `$ref`; no añadir dependencias sin autorización. MCP ya trae `jsonschema` transitivamente, utilizado para validar su outputSchema. |
 
@@ -33,9 +33,44 @@ seguridad del sistema operativo para un servidor stdio malicioso en modo local.
 | --- | --- | --- |
 | P1-UX-6 · U-05 | Transcript conserva todos los bloques y cola sin backpressure. El pegado compacto no limita la memoria de sesiones largas. La medición offline de 10.000 eventos retuvo 10.000 segmentos (~26,6 MB de pico trazado; ~1,539 s en la revisión final de este entorno). | Paginación de bloques a disco, ventana visible e índice/cola acotados; prueba de productor más rápido que renderer; medir memoria y latencia antes de cambiar renderer. |
 | P1-UX-7 · U-06 | No hay estados separados de «enviar al terminar» e «interrumpir con instrucción», editor externo ni navegación por teclado de tarjetas individuales. Las teclas F3–F7 cubren chips/tareas, no esas funciones. | Máquina de estados explícita, prioridad de instrucciones/cancelación, editor seguro y navegación de tarjetas con pruebas PTY y sin perder entradas. |
-| P1-3 · O-03 | AgentSupervisor y delegación con contextos aislados siguen pendientes. El panel de Fase 1 visualiza perfiles y fan-out existentes. | Ciclo de vida durable de agentes, contexto y presupuestos separados, resultados atribuibles y cancelación/reanudación sin contaminación del principal. |
+| P1-3 · O-03 | Integrar AgentSupervisor a cambios de fase y cuotas raíz durables. La API de Fase 2 crea conversaciones aisladas, pero no hay auto-spawn ni árbol global verificado. | Ciclo de vida durable de agentes, contexto y presupuestos separados, resultados atribuibles y cancelación/reanudación sin contaminación del principal. |
 | Calidad · Tipado TUI | Mypy incremental sobre ocho módulos UX conserva 23 errores preexistentes en `session.py` (atributos del layout dinámico, opcionalidad y anotaciones). El check no pasa; no se añadieron supresiones. | Contrato tipado de construcción del layout y sesión, cero hallazgos en esos módulos y pruebas de interfaz completas sin debilitar controles. Evidencia: `docs/missions/evidence/phase1/typecheck.txt`. |
 | U-03 · Telemetría | Ventana depende de configuración/metadato conocido; el conteo previo al response es estimado. El aviso al 80% no cambia los umbrales existentes de compactación; tasa oculta sin dato. | Descubrimiento confiable por despliegue, tokenizer/usage consistente y telemetría de límites del proveedor. Cambiar la política de compactación requiere otra misión del orquestador. |
 
 P1-A/A-01, P1-B/P2-3 (`oci_network`) y P1-C/A-05 permanecen con los criterios
 anteriores. No se amplió esta fase para declararlas resueltas.
+
+## Fase 2 · Cierre
+
+Los tres pendientes críticos quedan **cerrados** con un test de regresión por
+bloque. El detalle está en `docs/missions/FASE2_ORQUESTACION_AVANZADA.md`
+(sección «Cierre de Fase 2») y la evidencia en
+`docs/missions/evidence/phase2-close/`. 52 tests nuevos; la suite queda en
+**2421 passed, 36 skipped**.
+
+| ID | Estado | Resultado |
+| --- | --- | --- |
+| P2-A1 | CERRADO | `omni hooks trust/list/revoke`; la aprobación vive FUERA del repo (`hooks-trust.json` en XDG, `path+sha256+tenant+operador+fecha`); un byte distinto revoca la confianza. |
+| P2-A2 | CERRADO | `HookRunner` recibe workspace/engagement explícitos y los publica; REPL, headless y worker pasan el `project_root` del engagement (nunca el cwd). |
+| P2-A3 | CERRADO | `run_react_loop` emite `session_end` una vez (`status=exception` ante fallo) y nunca oculta la excepción del motor. |
+| P2-C1/C2 | CERRADO | `kernel_budget_reservations` + `BudgetLedger`; reserva **antes** del proveedor, falla cerrado con `BudgetExceeded`, `settle`/`release` durables; la cuota global es por árbol. |
+| P2-C3 | CERRADO | Auto-spawn opt-in solo en cambio de familia de fase, con umbrales `NEXUS_AUTOSPAWN_MIN_BUDGET`/`_ITERATIONS`; `web→services` y fases cortas no spawnean. |
+| P2-C4 | CERRADO | `AgentSupervisor.root` ancla el árbol en `kernel_supervisor_roots`; la raíz es durable, compartida y sobrevive reinicios; profundidad se evalúa contra el árbol. |
+| P2-D1 | CERRADO | `step_key` derivada por el gateway (`tool+args+phase+objective`); la reutilización de `succeeded` exige misma intención. |
+| P2-D2 | CERRADO | Fencing por `lease_id`: un worker vivo no se toca; la propia lease recuperada pasa a `unknown` (sin replay), auditado. |
+| P2-D3 | CERRADO | `omni resume` lista `unknown`; `--retry` exige aprobación durable y `--skip` marca `failed`; headless `--resume-policy approve\|skip\|fail`. |
+| P2-D4 | CERRADO | `result_ref` = `artifact_id\|sha256` del `LocalArtifactStore`, con verificación de integridad al releer. |
+| P2-D5 | CERRADO | Journal verificado contra PostgreSQL 18.6 real (esquema aislado): transiciones, migración aditiva, fencing y concurrencia. |
+
+### Fase 2 · Límites que siguen abiertos (honestidad)
+
+| ID | Pendiente | Criterio de cierre |
+| --- | --- | --- |
+| P2-A/B · OCI | Hooks/workspace se cierran a nivel de proceso; no se ejecutó un contenedor OCI real y `local_strict` no aísla host/red. | Procesos reales por las rutas del operador dentro de OCI, con egress validado por scope; sin degradar a local. |
+| P2-D · FTP/efectos | Idempotencia FTP por operación y clasificación `failed` solo con ausencia de efecto **comprobada** (el skip actual es una aserción del operador). | Detectores deterministas por operación y reanudación GUI/headless que no dependan de la palabra del operador. |
+| Global · exactly-once | No se promete exactly-once remoto; el journal evita replay automático y el fencing evita doble worker, pero no es una garantía distribuida. | Diseño distribuido explícito solo si un cliente lo exige; hoy no es requisito. |
+
+Nota de cierre: la reserva es una estimación (chars/4) y es fail-closed a
+propósito; un presupuesto global pequeño puede rechazar un request barato. La
+deuda de tipado TUI de Fase 1 sigue vigente y no se presentan los tests verdes
+como tipado estricto.
