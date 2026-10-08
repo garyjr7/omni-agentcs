@@ -53,3 +53,11 @@ def test_future_history_version_is_not_migrated_as_commands(tmp_path):
     with pytest.raises(ValueError,match='version'):
         list(file_history(path).load_history_strings())
     assert path.read_text()==raw
+
+
+def test_navigation_cache_is_bounded_during_same_session(tmp_path):
+    from nexus_core.cli.tui.history import JsonHistory
+    history=JsonHistory(tmp_path/'history',max_entries=2)
+    for text in ('one','two','three','four'):
+        history.append_string(text)
+    assert history.get_strings()==['three','four']

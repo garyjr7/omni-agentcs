@@ -98,6 +98,12 @@ class JsonHistory(History):
             entries = self._read()
         yield from reversed(entries)
 
+    def append_string(self, string):
+        # Cache the same retained window as disk, not an ever-growing session list.
+        self.store_string(string)
+        self._loaded_strings = list(self.load_history_strings())
+        self._loaded = True
+
     def store_string(self, string):
         size = len((json.dumps(HEADER) + json.dumps({'version': 1, 'text': string}, ensure_ascii=False) + '\n\n').encode())
         if size > self.max_bytes:
