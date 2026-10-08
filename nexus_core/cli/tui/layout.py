@@ -161,7 +161,15 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
         ),
         bottom=3, left=1, right=1,
     )
+    ui._tasks_float = Float(
+        content=ConditionalContainer(
+            Window(FormattedTextControl(lambda: ui.task_panel.render(no_color=ui.no_color)),
+                   height=lambda: len(ui.task_panel.render()), wrap_lines=False),
+            filter=Condition(lambda: bool(ui.task_panel.tasks))),
+        bottom=6, left=0, right=0,
+    )
     root = FloatContainer(HSplit(ui._regions), [
+        ui._tasks_float,
         Float(xcursor=True, ycursor=True, content=MultiColumnCompletionsMenu(show_meta=True)),
         ui._panel_float,
         ui._approval_float,

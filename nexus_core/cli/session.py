@@ -1176,23 +1176,35 @@ class OmniSession:
         }
         context = ExecutionContext(self.store, task, self.worker_id)
 
-        def make_call(target: str):
-            async def call() -> Any:
-                return await runtime_module.execute_tool(
-                    {
-                        "tool_id": str(tool_id),
-                        "arguments": {"target": target},
-                        "identity": self.agent_identity_payload,
-                        "permissions": list(self.permissions),
-                        "engagement_id": self.engagement_id,
-                        "trace_id": run_id,
-                    },
-                    context,
-                )
+        def emit(kind, task_id, target, status='running'):
+            data = {'task_id': task_id, 'subagent_id': profile.id, 'target': target, 'status': status}
+            self.store.append_run_event(self.tenant_id, run_id, kind, data)
+            self._tui.task_event({'event_type':kind,'run_id':run_id,'payload':data})
 
+        def make_call(index, target: str):
+            async def call() -> Any:
+                task_id = str(index)
+                emit('fanout.task.started',task_id,target)
+                loop, current = asyncio.get_running_loop(), asyncio.current_task()
+                self._tui.bind_task_cancel(run_id+':'+task_id,lambda: loop.call_soon_threadsafe(current.cancel))
+                status = 'ok'
+                try:
+                    return await runtime_module.execute_tool(
+                        {'tool_id': str(tool_id), 'arguments': {'target':target},
+                         'identity':self.agent_identity_payload, 'permissions':list(self.permissions),
+                         'engagement_id':self.engagement_id, 'trace_id':run_id}, context)
+                except asyncio.CancelledError:
+                    status = 'cancelled'
+                    raise
+                except Exception:
+                    status = 'failed'
+                    raise
+                finally:
+                    self._tui.bind_task_cancel(run_id+':'+task_id,None)
+                    emit('fanout.task.ended',task_id,target,status)
             return call
 
-        calls = [make_call(target) for target in ordered]
+        calls = [make_call(index,target) for index,target in enumerate(ordered)]
         return asyncio.run(
             subagents.gather_readonly(
                 calls,
@@ -1322,6 +1334,7 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
 def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
     event_type = str(event.get("event_type") or event.get("action") or "")
     payload = event.get("payload") or {}
+    session._tui.task_event({**event, 'run_id': event.get('run_id') or session.run_id})
     if session._tui.use_tui:
         from .tui.stream import format_tool_invocation
 

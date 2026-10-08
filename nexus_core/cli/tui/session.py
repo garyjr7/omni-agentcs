@@ -92,6 +92,9 @@ class TuiSession:
         self._auto_scroll = True
         self._cancel_event = threading.Event()
         self._error = None
+        from .tasks import TaskPanel
+        self.task_panel = TaskPanel()
+        self._task_cancellers = {}
         self._plan: dict[str, Any] | None = None
         self.panel_enabled = False
         #: Collapse tool cards to 5 lines by default; the footer click (or
@@ -214,6 +217,18 @@ class TuiSession:
         def wheel_down(event):
             self.scroll_transcript(3)
 
+        @keys.add('f6', eager=True)
+        def next_task(event):
+            self.task_panel.select_next()
+            self.invalidate()
+
+        @keys.add('f7', eager=True)
+        def cancel_task(event):
+            with self._lock:
+                callback = self._task_cancellers.get(self.task_panel.selected)
+            if callback:
+                callback()
+
         @keys.add("f2", eager=True)
         def toggle_panel(event):
             self.set_panel(not self.panel_enabled)
@@ -263,6 +278,20 @@ class TuiSession:
         """Refresh the ``@engagement`` completion candidates in place."""
         if self._completer is not None:
             self._completer.engagements = tuple(sorted(set(names)))
+
+    def task_event(self, event):
+        self.task_panel.consume(event)
+        if self.use_tui:
+            self._session.app.refresh_interval = 0.25 if self.task_panel.running or self._status.busy else None
+            self._dispatch(self._session.app.refresh_wake.set)
+        self.invalidate()
+
+    def bind_task_cancel(self, key, callback):
+        with self._lock:
+            if callback is None:
+                self._task_cancellers.pop(key, None)
+            else:
+                self._task_cancellers[key] = callback
 
     def set_plan(self, plan: dict | None) -> None:
         """Store the latest engagement plan for the side panel."""
@@ -831,7 +860,7 @@ class TuiSession:
                 )
             for key, value in fields.items():
                 setattr(self._status, aliases.get(key, key), value)
-        self._session.app.refresh_interval = 0.25 if self._status.busy else None
+        self._session.app.refresh_interval = 0.25 if self._status.busy or self.task_panel.running else None
         self._dispatch(self._session.app.refresh_wake.set)
         self.invalidate()
 
