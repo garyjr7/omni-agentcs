@@ -165,8 +165,10 @@ def _install_readline() -> Path | None:
         paths = resolve_xdg_paths()
         paths.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         history_path = paths.state_dir / "history"
-        if history_path.exists():
-            readline.read_history_file(str(history_path))
+        from .tui.history import file_history
+        readline.clear_history()
+        for entry in reversed(list(file_history(history_path).load_history_strings())):
+            readline.add_history(entry)
         readline.set_history_length(1000)
         return history_path
     except OSError:  # pragma: no cover - unwritable home directory
@@ -181,8 +183,11 @@ def _save_readline_history(history_path: Path | None) -> None:
     except ImportError:  # pragma: no cover
         return
     try:
-        readline.write_history_file(str(history_path))
-        history_path.chmod(0o600)
+        from .tui.history import file_history, history_lock
+        history = file_history(history_path)
+        entries = [readline.get_history_item(i) for i in range(1, readline.get_current_history_length()+1)]
+        with history_lock(history_path):
+            history._write([entry for entry in entries if entry is not None])
     except OSError:  # pragma: no cover - unwritable home directory
         pass
 

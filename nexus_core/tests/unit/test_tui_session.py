@@ -73,7 +73,8 @@ def test_history_file_created_on_first_prompt(tui_factory, tmp_path):
     ui.pipe.send_text("/help\n")
     ui.session.prompt()
     ui.session.flush()
-    assert path.read_text() == "/help\n"
+    from nexus_core.cli.tui.history import file_history
+    assert list(file_history(path).load_history_strings()) == ["/help"]
     assert path.stat().st_mode & 0o777 == 0o600
 
 
