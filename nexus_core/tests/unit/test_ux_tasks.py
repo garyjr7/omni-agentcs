@@ -48,3 +48,15 @@ def test_real_fanout_cancel_one_does_not_cancel_sibling(tmp_path,monkeypatch):
     assert isinstance(results[1],dict)
     states={task['target']:task['status'] for task in session._tui.task_panel.tasks.values()}
     assert states=={'a':'cancelled','b':'ok'}
+
+
+def test_existing_orchestrator_events_project_profile_lifecycle():
+    from nexus_core.cli.tui.tasks import TaskPanel
+    panel=TaskPanel()
+    panel.consume({'event_type':'orchestrator.subagent','run_id':'r','sequence':1,'payload':{'subagent_id':'recon'}})
+    assert panel.running
+    panel.consume({'event_type':'orchestrator.subagent','run_id':'r','sequence':2,'payload':{'subagent_id':'web'}})
+    assert sum(t['status']=='running' for t in panel.tasks.values())==1
+    panel.consume({'event_type':'react.finished','run_id':'r','payload':{'status':'cancelled'}})
+    assert not panel.running
+    assert any(t['status']=='cancelled' for t in panel.tasks.values())

@@ -3,7 +3,7 @@ from collections import OrderedDict
 import threading
 import time
 
-TERMINAL = {'ok','failed','cancelled'}
+TERMINAL = {'ok','failed','cancelled','released'}
 
 class TaskPanel:
     def __init__(self, max_tasks=128):
@@ -20,6 +20,21 @@ class TaskPanel:
     def consume(self, event):
         kind = event.get('event_type') or event.get('action')
         payload = event.get('payload') or {}
+        run = str(event.get('run_id') or payload.get('run_id') or '')
+        if kind in {'orchestrator.subagent','react.finished'}:
+            with self._lock:
+                event_key = f"{run}:profile:{payload.get('subagent_id')}:{event.get('sequence',len(self.tasks))}"
+                if kind == 'orchestrator.subagent' and event_key in self.tasks:
+                    return
+                for key, task in self.tasks.items():
+                    if key.startswith(run+':profile:') and task['status']=='running':
+                        task['status'] = 'released' if kind=='orchestrator.subagent' else (
+                            'ok' if payload.get('status')=='completed' else
+                            'cancelled' if payload.get('status')=='cancelled' else 'failed')
+                if kind=='react.finished':
+                    return
+                payload = {**payload,'task_id':f"profile:{payload.get('subagent_id')}:{event.get('sequence',len(self.tasks))}"}
+                kind = 'subagent.started'
         if kind not in {'subagent.started','subagent.ended','fanout.task.started','fanout.task.ended'}:
             return
         run = str(event.get('run_id') or payload.get('run_id') or '')
@@ -58,11 +73,11 @@ class TaskPanel:
                 return []
             keys = list(self.tasks)
             start = max(0,keys.index(self.selected)-4) if self.selected in keys else 0
-            rows = [('', 'Tareas · F6 seleccionar · F7 cancelar seleccionada\n')]
+            rows = [('', 'Tareas · F6 seleccionar · F7 cancelar fan-out\n')]
             for key in keys[start:start+5]:
                 task=self.tasks[key]; status=task['status']
-                icon = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[int((time.monotonic()-task['started'])*8)%10] if status=='running' else {'ok':'✓','failed':'✗','cancelled':'–'}[status]
-                style = 'ansiyellow' if status=='running' else 'ansigreen' if status=='ok' else 'ansired'
+                icon = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[int((time.monotonic()-task['started'])*8)%10] if status=='running' else {'ok':'✓','failed':'✗','cancelled':'–','released':'·'}[status]
+                style = 'ansiyellow' if status=='running' else 'ansigreen' if status=='ok' else 'dim' if status=='released' else 'ansired'
                 text=f"{'>' if key==self.selected else ' '} {icon} {status} · {task['label']} {task['target']}"
                 text=''.join(c if c.isprintable() else ' ' for c in text)
                 rows.append(('' if no_color else style,text[:100]+'\n'))
