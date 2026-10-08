@@ -66,6 +66,8 @@ class JsonHistory(History):
             header = json.loads(lines[0])
         except ValueError:
             header = None
+        if isinstance(header, dict) and header.get('format') == 'omni-history' and header != HEADER:
+            raise ValueError('unsupported history version; original preserved')
         if header != HEADER:
             # Exact backup precedes migration; old lost newlines cannot be recovered.
             backup = self.path.with_suffix('.legacy.bak')

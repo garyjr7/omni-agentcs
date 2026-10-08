@@ -44,3 +44,12 @@ def test_history_oversize_fails_without_losing_previous(tmp_path):
     with pytest.raises(ValueError):
         history.store_string('x'*101)
     assert list(history.load_history_strings()) == ['one']
+
+
+def test_future_history_version_is_not_migrated_as_commands(tmp_path):
+    path=tmp_path/'history'
+    raw='{"version": 2, "format": "omni-history"}\n'
+    path.write_text(raw)
+    with pytest.raises(ValueError,match='version'):
+        list(file_history(path).load_history_strings())
+    assert path.read_text()==raw
