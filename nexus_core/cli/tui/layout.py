@@ -67,11 +67,18 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
             return lambda n: ui._styled_lines[n] if n < len(ui._styled_lines) else []
 
     ui._scrollback = Buffer(name="scrollback", read_only=True)
-    ui._input = Buffer(
+    class InputBuffer(Buffer):
+        def append_to_history(self):
+            if not ui._secret_mode:
+                text = ui.input_document.reconstruct()
+                if text and (not self.history.get_strings() or self.history.get_strings()[-1] != text):
+                    self.history.append_string(text)
+
+    ui._input = InputBuffer(
         name="input", multiline=True, history=history,
         accept_handler=ui._accept, completer=ui._completer,
-        complete_while_typing=True, read_only=Condition(lambda: not ui._can_edit),
-        enable_history_search=True,
+        complete_while_typing=ui._enable_completion, read_only=Condition(lambda: not ui._can_edit),
+        enable_history_search=True, on_text_changed=ui._input_changed,
     )
     lexer = OmniLexer(no_color=ui.no_color)
     ui._scrollback_window = Window(
@@ -84,8 +91,8 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
     ui._busy_window = Window(FormattedTextControl(ui._render_busy),
                              height=lambda: int(ui._status.busy))
     header = Window(FormattedTextControl(lambda: ui._formatted(
-        "\n".join(ui.prompt_text.splitlines()[:-1]))),
-        height=lambda: max(0, len(ui.prompt_text.splitlines()) - 1))
+        "\n".join(ui.prompt_text.splitlines()[:-1] + (["F3 expandir/editar pegado · F4 eliminar (cursor junto al chip)"] if ui.input_document.refs else [])))),
+        height=lambda: max(0, len(ui.prompt_text.splitlines()) - 1) + bool(ui.input_document.refs))
     # While a secure prompt is active the input is masked through a conditional
     # ``PasswordProcessor``, so a secret is never rendered to the screen (see
     # ``TuiSession.prompt_secret``).
@@ -94,8 +101,9 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
     ui._secret_mask = ConditionalProcessor(
         PasswordProcessor(char="•"), Condition(lambda: ui._secret_mode)
     )
+    from .paste import PasteProcessor
     editor = Window(BufferControl(
-        ui._input, lexer=lexer, input_processors=[ui._secret_mask]
+        ui._input, lexer=lexer, input_processors=[PasteProcessor(ui), ui._secret_mask]
     ), wrap_lines=True,
                     get_line_prefix=lambda line, wrapped: ui._formatted(
                         ui.prompt_text.splitlines()[-1] if line == 0 and wrapped == 0 else "  · "))

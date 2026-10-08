@@ -100,6 +100,16 @@ class TuiSession:
         #: Accumulated text of an answer streaming into the live overlay.
         self._answer_text: str | None = None
         self._answer_cache: tuple[Any, list[str]] | None = None
+        from .paste import InputDocument, prune_drafts
+        from uuid import uuid4
+        draft = None
+        if history_path and self.use_tui:
+            directory = history_path.parent / 'drafts'
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            prune_drafts(directory)
+            draft = directory / (uuid4().hex + '.draft.json')
+        self.input_document = InputDocument(path=draft)
+        self._syncing_input = False
         if self.use_tui:
             self._build(history_path, prompt_style, input, output)
 
@@ -119,6 +129,21 @@ class TuiSession:
                 tools=tools, engagements=engagements,
             )
         keys = KeyBindings()
+
+        @keys.add(Keys.BracketedPaste, eager=True)
+        def paste(event):
+            if self._can_edit:
+                self.paste_text(event.data)
+
+        @keys.add('f3', eager=True)
+        def expand_paste(event):
+            if self._can_edit:
+                self.expand_paste()
+
+        @keys.add('f4', eager=True)
+        def delete_paste(event):
+            if self._can_edit:
+                self.delete_paste()
 
         @keys.add("tab", eager=True)
         def complete(event):
@@ -201,8 +226,8 @@ class TuiSession:
         size = self._session.output.get_size()
         columns = max(1, size.columns - 4)
         rows = sum(max(1, (get_cwidth(line) + columns - 1) // columns)
-                   for line in self._session.default_buffer.document.lines)
-        return max(0, len(self.prompt_text.splitlines()) - 1) + min(5, rows)
+                   for line in self.input_document.render().split("\n"))
+        return max(0, len(self.prompt_text.splitlines()) - 1) + min(5, rows) + bool(self.input_document.refs)
 
     @property
     def _can_edit(self):
@@ -392,12 +417,69 @@ class TuiSession:
 
     def _accept(self, buffer):
         if self._can_edit:
-            text = buffer.text
+            text = buffer.text if self._secret_mode else self.input_document.reconstruct()
+            visible = self.input_document.render()
             # A secret is never echoed to the transcript: show a fixed mask so
             # the operator still sees that the input was taken.
-            self.print(self.prompt_text + ("••••••" if self._secret_mode else text))
+            self.print(self.prompt_text + ("••••••" if self._secret_mode else visible))
             self._answer(text)
         return False
+
+    def _input_changed(self, buffer):
+        if self._secret_mode or self._syncing_input:
+            return
+        try:
+            from .paste import InputDocument, paste_threshold
+            if paste_threshold(buffer.text) and buffer.text in buffer.history.get_strings():
+                recalled = InputDocument(path=self.input_document.path)
+                recalled.text, recalled.refs = '', {}
+                recalled.insert_paste(0, buffer.text)
+                self.input_document = recalled
+                self._set_input_document(1)
+                return
+            self.input_document.synchronize(buffer.text)
+        except (ValueError, OSError) as exc:
+            self._syncing_input = True
+            try:
+                buffer.text = self.input_document.text
+            finally:
+                self._syncing_input = False
+            self.print(f"Entrada conservada: {exc}")
+
+    def paste_text(self, content):
+        from .paste import paste_threshold
+        if self._secret_mode or not paste_threshold(content):
+            self._input.insert_text(content)
+            return
+        pos = self._input.cursor_position
+        try:
+            self.input_document.insert_paste(pos, content)
+        except (ValueError, OSError) as exc:
+            self.print(f"Pegado rechazado, entrada conservada: {exc}")
+            return
+        self._set_input_document(pos+1)
+
+    def _set_input_document(self, cursor):
+        from prompt_toolkit.document import Document
+        self._syncing_input = True
+        try:
+            self._input.set_document(Document(self.input_document.text, cursor))
+        finally:
+            self._syncing_input = False
+
+    def _selected_paste(self):
+        cursor = self._input.cursor_position
+        return next((p for p in (cursor, cursor-1) if p in self.input_document.refs), None)
+
+    def expand_paste(self):
+        pos = self._selected_paste()
+        if pos is not None:
+            self._set_input_document(self.input_document.replace_ref(pos, expand=True))
+
+    def delete_paste(self):
+        pos = self._selected_paste()
+        if pos is not None:
+            self._set_input_document(self.input_document.replace_ref(pos, expand=False))
 
     def _run(self):
         async def run():
