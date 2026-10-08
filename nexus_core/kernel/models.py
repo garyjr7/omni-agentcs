@@ -146,6 +146,7 @@ class RunContext:
     # Only ToolGateway populates this after exact-plan durable approval.
     approved_install_plan: Any = field(default=None, repr=False, compare=False)
     invocation_id: str = ""
+    session_id: str = ""
 
 
 @dataclass(frozen=True)

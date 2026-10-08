@@ -605,6 +605,40 @@ def cmd_facts(session: "OmniSession", args: list[str]) -> None:
     render.write(f"Resumen: {summary['counts']}")
 
 
+def cmd_mode(session: "OmniSession", args: list[str]) -> None:
+    """Permisos persistentes: /mode show | /mode plan on|off (aprobar revisión)."""
+    from nexus_core.kernel.operator_mode import OperatorMode
+    from nexus_core.kernel.models import Identity
+    from nexus_core.agent.planner import plan_from_summary
+    from nexus_core.kernel.blackboard import Blackboard
+
+    if args not in ([], ['show'], ['plan','on'], ['plan','off']):
+        render.render_error('uso: /mode show | /mode plan on|off')
+        return
+    context = session.build_run_context()
+    modes = OperatorMode(session.store)
+    state = modes.get(context)
+    if args == ['plan','on']:
+        summary = Blackboard(session.store).summary(session.tenant_id,session.engagement_id)
+        plan = plan_from_summary(summary, engagement_id=session.engagement_id)
+        state = modes.plan(context,plan.render())
+    elif args == ['plan','off']:
+        if state['mode'] != 'plan':
+            render.render_error('no hay un plan pendiente de aprobación')
+            return
+        render.write(state['plan_text'])
+        render.write('Revisión: '+state['plan_hash'])
+        prompt = 'Escribe aprobar '+state['plan_hash']+' para pasar a exec: '
+        reader = session.input_reader or session._tui.prompt
+        if reader(prompt).strip() != 'aprobar '+state['plan_hash']:
+            render.write('Plan conservado; aprobación no otorgada.')
+            return
+        modes.approve(context,state['plan_hash'],Identity(session.operator_id,session.tenant_id,
+                     kind='human',roles=('operator',)))
+        state = modes.get(context)
+    render.write('Modo: '+state['mode']+' · sesión '+modes.key(context))
+
+
 def cmd_plan(session: "OmniSession", args: list[str]) -> None:
     """Muestra el plan por fases; /plan on|off abre el panel lateral (F2)."""
     if args and args[0] in {"on", "off"}:
@@ -1464,6 +1498,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/findings": cmd_findings,
     "/facts": cmd_facts,
     "/plan": cmd_plan,
+    "/mode": cmd_mode,
     "/panel": cmd_panel,
     "/expand": cmd_expand,
     "/playbook": cmd_playbook,

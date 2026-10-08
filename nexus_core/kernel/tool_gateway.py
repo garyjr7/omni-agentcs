@@ -69,6 +69,9 @@ class ToolGateway:
             from .sandbox_modes import SandboxPolicy
 
             SandboxPolicy.resolve()
+            from .operator_mode import OperatorMode
+            modes = OperatorMode(self.audit.store)
+            modes.constrain(context, definition)
             context = replace(context, invocation_id=uuid4().hex)
             validate(arguments, definition.input_schema or {"type": "object"})
             if context.scope is not None:
@@ -170,6 +173,7 @@ class ToolGateway:
             )
             if not decision.allowed:
                 raise PermissionError(decision.reason)
+            decision = modes.constrain(context, definition, decision)
             action = f"execute:tool:{tool_id}"
             install_plan = None
             if tool_id == "nexus.system.install_tool":

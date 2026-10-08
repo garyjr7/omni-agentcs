@@ -257,6 +257,7 @@ def run_headless(
         "task_type": "react.run",
         "payload": {
             "objective": objective,
+            "session_id": session.conversation_id,
             "engagement_id": session.engagement_id,
             "max_iterations": iterations,
             "agent_id": session.agent_id,

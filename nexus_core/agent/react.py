@@ -521,6 +521,8 @@ def _operator_approval_gate(
         tuple(tool_payload.get("permissions") or ()),
         definition,
     )
+    from nexus_core.kernel.operator_mode import OperatorMode
+    decision = OperatorMode(context.store).constrain(run_context, definition, decision)
     if not decision.allowed:
         raise PermissionError(decision.reason)
     if not decision.requires_approval or config.on_approval_needed is None:
@@ -1510,6 +1512,7 @@ async def run_react_loop(
             "permissions": tuple(payload.get("permissions") or ()),
             "approval_id": payload.get("approval_id"),
             "trace_id": run_id,
+            "session_id": conversation_id,
         }
         if config.on_approval_needed is not None:
             denial = _operator_approval_gate(

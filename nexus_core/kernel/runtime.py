@@ -118,7 +118,14 @@ def _build_run_context(payload: dict, context: ExecutionContext) -> RunContext:
     scope = load_engagement_scope(
         context.store, context.tenant_id, payload.get("engagement_id")
     )
+    from nexus_core.agent.memory import ensure_work_conversation
+    outer = context.task.get('payload') or {}
+    session_id = outer.get('session_id') or outer.get('conversation_id') or payload.get('session_id')
+    if not session_id:
+        session_id = ensure_work_conversation(context.store, context.tenant_id,
+                                             outer.get('agent_id') or 'omni', payload.get('engagement_id'))
     return RunContext(
+        session_id=str(session_id or ''),
         tenant_id=context.tenant_id,
         identity=identity,
         run_id=context.run_id,

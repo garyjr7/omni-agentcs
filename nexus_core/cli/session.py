@@ -336,6 +336,7 @@ class OmniSession:
             scope=self.engagement,
             store=self.store,
             worker_id=self.worker_id,
+            session_id=self._ensure_work_session() or self.conversation_id or "",
         )
 
     def reset_context(self) -> None:
@@ -789,6 +790,7 @@ class OmniSession:
             "engagement_id": self.engagement_id,
             "permissions": list(self.permissions),
             "trace_id": run_id,
+            "session_id": self._ensure_work_session() or self.conversation_id,
         }
         task = {
             "id": f"cli-{run_id}",
@@ -803,9 +805,13 @@ class OmniSession:
                 self, self.store, self.tenant_id, run_id, trust_mode=self.trust_mode
             )
         )
-        denial = _operator_approval_gate(
-            config=config, context=context, definition=definition, tool_payload=payload
-        )
+        try:
+            denial = _operator_approval_gate(
+                config=config, context=context, definition=definition, tool_payload=payload
+            )
+        except PermissionError as exc:
+            render.render_error(str(exc))
+            return None
         if denial is not None:
             render.render_error(
                 f"denegado por el operador: {denial.get('reason') or denial.get('status')}"
@@ -1011,6 +1017,7 @@ class OmniSession:
             "agent_id": self.agent_id,
             "identity": self.agent_identity_payload,
             "permissions": list(self.permissions),
+            "session_id": self.conversation_id,
             "active_skills": list(self.active_skills),
             "subagent": self.subagent_override,
         }
@@ -1164,7 +1171,7 @@ class OmniSession:
             "tenant_id": self.tenant_id,
             "run_id": run_id,
             "task_type": "tool.fanout",
-            "payload": {"engagement_id": self.engagement_id},
+            "payload": {"engagement_id": self.engagement_id, "session_id": self._ensure_work_session()},
         }
         context = ExecutionContext(self.store, task, self.worker_id)
 
