@@ -660,9 +660,12 @@ los colores; la TUI sigue necesitando secuencias de control para dibujar.
 
 El historial persiste en `~/.local/state/omni/history`, respetando un
 `XDG_STATE_HOME` absoluto. Flecha arriba recupera comandos previos.
-Un adaptador de `FileHistory` conserva el formato de readline para alternar
-entre ambos modos; el archivo tiene permisos 600 y el directorio se crea
-con 700. Ctrl+D sale; una línea vacía simplemente vuelve a pedir entrada.
+El historial usa JSONL versionado y conserva saltos de línea, tabulaciones y
+Unicode. La migración del formato readline guarda una copia exacta
+`history.legacy.bak`; no puede recuperar saltos que versiones anteriores ya
+aplanaron. TUI y fallback comparten el formato. El archivo tiene permisos 600,
+el directorio se crea con 700 y la retención es de 1000 entradas / 16 MiB.
+Las versiones desconocidas o registros corruptos se rechazan sin sobrescribirlos. Ctrl+D sale; una línea vacía simplemente vuelve a pedir entrada.
 
 ```text
 /status          # ver si la barra está habilitada
@@ -955,3 +958,57 @@ independiente se identifica como `mcp_unverified`, aunque su JSON Schema sea vá
 
 La justificación, incompatibilidades y evidencia de cierre están en
 [la misión Fase 0](docs/missions/FASE0_HONESTIDAD_Y_SEGURIDAD.md).
+
+
+### Fase 1: entrada, modo de permisos y progreso
+
+Un pegado de más de 1000 caracteres o 4 líneas se muestra como
+`[Pegado #N · M caracteres · K líneas]`. `NEXUS_PASTE_CHARS` y
+`NEXUS_PASTE_LINES` ajustan esos umbrales. El texto íntegro se reconstruye al
+enviar; escribir un marcador parecido no inserta contenido oculto.
+
+Con el cursor junto al chip: **F3** lo expande para editarlo y **F4** lo elimina.
+**F5**, con la entrada vacía, recupera el último borrador no vacío. Deshacer y
+rehacer preservan las referencias de los chips. Los borradores viven en
+`$XDG_STATE_HOME/omni/drafts`, con escritura atómica y permisos 600; máximo
+2 MiB por entrada, hasta 32 borradores anteriores más el actual, y limpieza
+al iniciar de los que superan 7 días. Las entradas secretas no se guardan.
+Flecha arriba recupera el prompt completo; los prompts grandes vuelven a
+mostrarse compactos.
+
+```text
+/plan show       # visor del plan
+/mode show       # modo efectivo y sesión durable
+/mode plan on    # gateway permite únicamente read_only
+/mode plan off   # muestra la revisión y exige «aprobar HASH» para pasar a exec
+/status fields ctx,tokens,provider,time
+```
+
+El modo se conserva en la conversación de trabajo, también entre procesos.
+Worker/headless heredan esa sesión o usan el `session_id` explícito del trabajo.
+`interactive` es el default; `exec` exige además aprobación durable por cada
+herramienta activa. `--trust-mode` no aprueba la transición del plan. Scope,
+RoE, política, sandbox y aprobaciones de Fase 0 siguen aplicándose. `/clear`
+crea otra conversación de trabajo, con su propio modo.
+
+El HUD distingue `ctx NN% usado` de `run N tok`. Antes de recibir usage del
+proveedor, muestra una estimación del request como `ctx ~NN% usado`; después
+usa sus tokens de entrada y salida. Si desconoce la ventana, muestra `ctx ~?%`.
+Configura la ventana efectiva de tu despliegue con `NEXUS_CONTEXT_WINDOW`, o
+un mapa JSON `NEXUS_CONTEXT_WINDOWS` cuyas claves sean `proveedor/modelo`.
+También se acepta el metadato `context_window` del cliente. No se infieren
+capacidades de modelos por el nombre ni se cambia el modelo seleccionado.
+
+Verde <50%, amarillo 50–80%, rojo >80%; desde 80% aparece «revisar compactación».
+Es un aviso: la compactación existente conserva sus propios umbrales, no se
+ha cambiado el orquestador para dispararla al 80%. La tasa se muestra solo si
+existe telemetría `rate_remaining`; no se calcula a partir del gasto.
+Alertas y fase tienen prioridad incluso al personalizar campos.
+
+El panel de tareas muestra spinners y estados textuales independientes.
+**F6** recorre las tareas; **F7** cancela solo la llamada fan-out seleccionada.
+Las otras llamadas continúan. Los perfiles secuenciales de ReAct también se
+visualizan, pero su cancelación sigue siendo la del run. El panel no implementa
+`AgentSupervisor` ni contextos aislados nuevos.
+
+Evidencia y límites: [misión de Fase 1](docs/missions/FASE1_UX_ELITE.md).

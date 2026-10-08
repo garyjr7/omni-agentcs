@@ -11,7 +11,7 @@ from queue import Queue
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .fallback import fallback_prompt
 from .status import StatusState, render_status_bar
@@ -94,7 +94,7 @@ class TuiSession:
         self._error = None
         from .tasks import TaskPanel
         self.task_panel = TaskPanel()
-        self._task_cancellers = {}
+        self._task_cancellers: dict[str, Callable[[], None]] = {}
         self._plan: dict[str, Any] | None = None
         self.panel_enabled = False
         #: Collapse tool cards to 5 lines by default; the footer click (or

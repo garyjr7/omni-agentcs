@@ -85,14 +85,14 @@ def _safe(value) -> str:
     return "".join(c if c.isprintable() else " " for c in str(value))
 
 
-def _parts(state: StatusState) -> list[tuple[int, str, str]]:
+def _parts(state: StatusState) -> list[tuple[float, str, str]]:
     """Return ``(priority, style, text)`` segments in display order.
 
     Display order (left to right): alert · phase · provider · tokens · cost ·
     time · facts · engagement. The engagement is last on purpose: it is the
     first to fall when the terminal is narrow.
     """
-    parts: list[tuple[int, str, str]] = []
+    parts: list[tuple[float, str, str]] = []
     if state.trust_mode:
         parts.append((PRIORITY["alert"], "ansired bold", "TRUST"))
     if state.session_uuid:
@@ -154,7 +154,7 @@ def _parts(state: StatusState) -> list[tuple[int, str, str]]:
     return [(priority, style, _safe(text)) for priority, style, text in parts]
 
 
-def _join(items: list[tuple[int, str, str]]) -> str:
+def _join(items: list[tuple[float, str, str]]) -> str:
     return " · ".join(text for _, _, text in items)
 
 
@@ -182,7 +182,7 @@ def render_status_bar(state: StatusState, *, width: int):
             break
         items.pop(min(droppable, key=lambda index: items[index][0]))
 
-    fragments = []
+    fragments: list[tuple[str, str]] = []
     remaining = max(0, width)
     for index, (_, style, text) in enumerate(items):
         if index:
