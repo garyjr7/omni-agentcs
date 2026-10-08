@@ -71,6 +71,15 @@ class InputDocument:
             atomic_private(self.path, json.dumps({'version':1,'text':text,'refs':{str(p):asdict(r) for p,r in refs.items()}},ensure_ascii=False).encode())
         self.text, self.refs = text, refs
 
+    def replace_text(self, start, stop, replacement):
+        """Apply an editor range, preserving identity even for identical glyphs."""
+        if not 0 <= start <= stop <= len(self.text):
+            raise ValueError('invalid input edit range')
+        delta = len(replacement) - (stop-start)
+        refs = {p if p < start else p+delta:r for p,r in self.refs.items()
+                if p < start or p >= stop}
+        self._commit(self.text[:start]+replacement+self.text[stop:], refs)
+
     def synchronize(self, new):
         if new == self.text:
             return

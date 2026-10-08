@@ -76,6 +76,52 @@ def test_deleted_chip_undo_restores_content_not_object_character(tui_factory):
     assert ui.input_document.reconstruct()==''
 
 
+@pytest.mark.parametrize('operation', ['delete', 'backspace', 'insert_object', 'overwrite'])
+def test_adjacent_chips_edit_preserves_exact_identity(tui_factory, operation):
+    from nexus_core.cli.tui.paste import OBJECT
+    ui = tui_factory(enable_completion=False).session
+    ui.paste_text('a'*1500)
+    ui.paste_text('b'*1500)
+    if operation == 'backspace':
+        ui._input.cursor_position = 1
+        ui._input.delete_before_cursor()
+        expected = 'b'*1500
+    else:
+        ui._input.cursor_position = 0
+        if operation == 'delete':
+            ui._input.delete()
+            expected = 'b'*1500
+        elif operation == 'overwrite':
+            ui._input.insert_text(OBJECT, overwrite=True)
+            expected = OBJECT + 'b'*1500
+        else:
+            ui._input.insert_text(OBJECT)
+            expected = OBJECT + 'a'*1500 + 'b'*1500
+    assert ui.input_document.reconstruct() == expected
+    ui._accept(ui._input)
+    assert ui._answers.get_nowait() == expected
+
+
+def test_keyboard_delete_first_of_adjacent_bracketed_pastes(tui_factory):
+    ui = tui_factory(enable_completion=False)
+    ui.pipe.send_text('\x1b[200~'+'a'*1500+'\x1b[201~'
+                      +'\x1b[200~'+'b'*1500+'\x1b[201~'
+                      +'\x1b[D\x1b[D\x1b[3~\r')
+    assert ui.session.prompt() == 'b'*1500
+
+
+def test_cut_chip_returns_content_and_preserves_sibling(tui_factory):
+    from prompt_toolkit.selection import SelectionState
+    ui = tui_factory(enable_completion=False).session
+    ui.paste_text('a'*1500)
+    ui.paste_text('b'*1500)
+    ui._input.cursor_position = 1
+    ui._input.selection_state = SelectionState(original_cursor_position=0)
+    copied = ui._input.cut_selection()
+    assert copied.text == 'a'*1500
+    assert ui.input_document.reconstruct() == 'b'*1500
+
+
 def test_restore_latest_draft_preserves_segments(tui_factory,tmp_path):
     first=tui_factory(history_path=tmp_path/'history',enable_completion=False).session
     first.paste_text('data'*1000)

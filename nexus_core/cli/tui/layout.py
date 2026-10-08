@@ -70,7 +70,88 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
     class InputBuffer(Buffer):
         def reset(self, *args, **kwargs):
             self._segment_undo, self._segment_redo = [], []
-            return super().reset(*args, **kwargs)
+            result = super().reset(*args, **kwargs)
+            # Buffer.reset does not emit on_text_changed. Keep the typed side
+            # document in sync before subsequent typeahead edits use its ranges.
+            if getattr(ui, '_input', None) is self and not ui._secret_mode:
+                ui.input_document.synchronize(self.text)
+            return result
+
+        def _edit_range(self, start, stop, replacement, cursor):
+            if self.read_only():
+                from prompt_toolkit.buffer import EditReadOnlyBuffer
+                raise EditReadOnlyBuffer()
+            try:
+                ui.input_document.replace_text(start, stop, replacement)
+            except (ValueError, OSError) as exc:
+                ui.print(f'Entrada conservada: {exc}')
+                return False
+            ui._set_input_document(cursor)
+            return True
+
+        def delete(self, count=1):
+            if ui._secret_mode:
+                return super().delete(count)
+            start = self.cursor_position
+            stop = min(len(self.text), start+max(0, count))
+            deleted = self.text[start:stop]
+            return deleted if self._edit_range(start, stop, '', start) else ''
+
+        def delete_before_cursor(self, count=1):
+            if ui._secret_mode:
+                return super().delete_before_cursor(count)
+            assert count >= 0
+            stop = self.cursor_position
+            start = max(0, stop-count)
+            deleted = self.text[start:stop]
+            return deleted if self._edit_range(start, stop, '', start) else ''
+
+        def insert_text(self, data, overwrite=False, move_cursor=True, fire_event=True):
+            if ui._secret_mode:
+                return super().insert_text(data, overwrite, move_cursor, fire_event)
+            start = self.cursor_position
+            overwritten = self.text[start:start+len(data)].split('\n', 1)[0] if overwrite else ''
+            cursor = start+len(data) if move_cursor else start
+            if self._edit_range(start, start+len(overwritten), data, cursor) and fire_event:
+                self.on_text_insert.fire()
+                from prompt_toolkit.application import get_app
+                if self.completer and self.complete_while_typing():
+                    get_app().create_background_task(self._async_completer())
+                if self.auto_suggest:
+                    get_app().create_background_task(self._async_suggester())
+
+        def copy_selection(self, _cut=False):
+            if ui._secret_mode:
+                return super().copy_selection(_cut=_cut)
+            from prompt_toolkit.clipboard import ClipboardData
+            from prompt_toolkit.selection import SelectionType
+            document = self.document
+            ranges = list(document.selection_ranges()) if document.selection else []
+            contents = [''.join(ui.input_document.refs[p].content if p in ui.input_document.refs
+                                else self.text[p] for p in range(start, stop))
+                        for start, stop in ranges]
+            data = '\n'.join(contents)
+            kind = document.selection.type if document.selection else SelectionType.CHARACTERS
+            if kind == SelectionType.LINES and data.endswith('\n'):
+                data = data[:-1]
+            if _cut and ranges:
+                from .paste import InputDocument
+                edited = InputDocument()
+                edited.text, edited.refs = self.text, dict(ui.input_document.refs)
+                for start, stop in reversed(ranges):
+                    edited.replace_text(start, stop, '')
+                new_document, _ = document.cut_selection()
+                if self.read_only():
+                    from prompt_toolkit.buffer import EditReadOnlyBuffer
+                    raise EditReadOnlyBuffer()
+                try:
+                    ui.input_document._commit(edited.text, edited.refs)
+                except (ValueError, OSError) as exc:
+                    ui.print(f'Entrada conservada: {exc}')
+                    return ClipboardData('')
+                ui._set_input_document(new_document.cursor_position)
+            self.selection_state = None
+            return ClipboardData(data, kind)
 
         def _snapshot(self):
             return self.text, self.cursor_position, dict(ui.input_document.refs)
