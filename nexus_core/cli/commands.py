@@ -1215,8 +1215,18 @@ def cmd_subagent(session: "OmniSession", args: list[str]) -> None:
 
 def cmd_status(session: "OmniSession", args: list[str]) -> None:
     """/status [on|off|show]: muestra u oculta la barra (preferencia persistente)."""
-    from .tui.status import render_status_plain, save_status_preference
+    from .tui.status import render_status_plain, save_status_preference, save_status_fields
 
+    if len(args) == 2 and args[0] == 'fields':
+        fields = args[1].split(',')
+        try:
+            save_status_fields(fields)
+        except ValueError as exc:
+            render.render_error(str(exc))
+            return
+        session._tui.set_status(fields=tuple(fields))
+        session._output.write('HUD: '+', '.join(fields)+' (alert/phase protegidos)')
+        return
     if len(args) > 1 or (args and args[0] not in {"on", "off", "show"}):
         render.render_error("uso: /status [on|off|show]")
         return

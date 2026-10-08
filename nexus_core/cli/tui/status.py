@@ -22,6 +22,8 @@ PRIORITY = {
     "alert": 7,
     "phase": 6,
     "provider": 5,
+    "ctx": 4.5,
+    "rate": 2.5,
     "tokens": 4,
     "cost": 3,
     "time": 2,
@@ -42,6 +44,11 @@ class StatusState:
     session_type: str | None = None
     trust_mode: bool = False
     provider_model: str = ""
+    context_tokens: int | None = None
+    context_window: int | None = None
+    context_source: str = 'provider'
+    rate_remaining: int | None = None
+    fields: tuple[str, ...] | None = None
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
@@ -100,12 +107,24 @@ def _parts(state: StatusState) -> list[tuple[int, str, str]]:
         progress = f" {state.plan_progress}" if state.plan_progress else ""
         parts.append((PRIORITY["phase"], "ansicyan bold", f"▸ {state.plan_phase}{progress}"))
     parts.append((PRIORITY["provider"], "ansicyan", state.provider_model or "(sin modelo)"))
+    if state.context_window and state.context_window > 0 and state.context_tokens is not None:
+        percent = max(0, int(100 * state.context_tokens / state.context_window))
+        style = 'ansigreen' if percent < 50 else 'ansiyellow' if percent <= 80 else 'ansired'
+        approx = '~' if state.context_source == 'estimate' else ''
+        label = f'ctx {approx}{percent}% usado'
+        if percent >= 80:
+            label += ' · revisar compactación'
+    else:
+        style, label = 'dim', 'ctx ~?%'
+    parts.append((PRIORITY['ctx'], style, label))
+    if state.rate_remaining is not None:
+        parts.append((PRIORITY['rate'], 'dim', f'tasa {state.rate_remaining} restantes'))
     tokens = state.tokens_input + state.tokens_output
     parts.append(
         (
             PRIORITY["tokens"],
             "ansigreen",
-            f"{tokens / 1000:.1f}k tok" if tokens >= 1000 else f"{tokens} tok",
+            f"run {tokens / 1000:.1f}k tok" if tokens >= 1000 else f"run {tokens} tok",
         )
     )
     parts.append(
@@ -129,6 +148,9 @@ def _parts(state: StatusState) -> list[tuple[int, str, str]]:
         elapsed = max(0, int(time.monotonic() - state.busy_started_at))
         frame = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[elapsed % 10]
         parts.append((8, "ansiyellow", f"{frame} {state.busy_message} [{elapsed}s]"))
+    if state.fields is not None:
+        allowed = {PRIORITY[name] for name in state.fields if name in PRIORITY} | set(PROTECTED_PRIORITIES) | {8}
+        parts = [part for part in parts if part[0] in allowed]
     return [(priority, style, _safe(text)) for priority, style, text in parts]
 
 
@@ -197,10 +219,30 @@ def save_status_preference(enabled: bool) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             os.fchmod(stream.fileno(), 0o600)
-            json.dump({"status_bar_enabled": bool(enabled)}, stream)
+            json.dump({**_preferences(), "status_bar_enabled": bool(enabled)}, stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _preferences():
+    try:
+        data = json.loads(preferences_path().read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def load_status_fields():
+    fields = _preferences().get('status_fields')
+    return tuple(fields) if isinstance(fields, list) and all(v in PRIORITY for v in fields) else None
+
+
+def save_status_fields(fields):
+    from .history import atomic_private
+    if any(name not in PRIORITY for name in fields):
+        raise ValueError('unknown HUD field')
+    atomic_private(preferences_path(), json.dumps({**_preferences(), 'status_fields': list(fields)}).encode())

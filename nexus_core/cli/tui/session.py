@@ -60,7 +60,8 @@ class TuiSession:
         self.status_bar_enabled = status_bar_enabled
         self.no_color = no_color or "NO_COLOR" in os.environ
         self.prompt_text = "└─$ "
-        self._status = StatusState(cost_known=False)
+        from .status import load_status_fields
+        self._status = StatusState(cost_known=False, fields=load_status_fields())
         self._completion_context = (commands, tools or {}, engagements or [])
         self._enable_completion = enable_completion
         self._completer = None

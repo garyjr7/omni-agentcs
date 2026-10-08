@@ -544,7 +544,8 @@ class OmniSession:
             return client
         from .tui.usage import MeteredClient
 
-        return MeteredClient(client, lambda response: self._record_usage(response, durable=durable))
+        return MeteredClient(client, lambda response: self._record_usage(response, durable=durable),
+                             context_callback=lambda state: self._tui.set_status(**state))
 
     async def _with_cancel(self, operation, run_id, *, cooperative=True, cancel_event=None):
         """Consume UI cancellation on the work loop, never writing DB on the UI thread."""
