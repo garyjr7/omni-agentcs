@@ -139,6 +139,11 @@ class TuiSession:
             if self._can_edit:
                 self.paste_text(event.data)
 
+        @keys.add('f5', eager=True)
+        def restore_paste(event):
+            if self._can_edit and not self._secret_mode:
+                self.restore_paste_draft()
+
         @keys.add('f3', eager=True)
         def expand_paste(event):
             if self._can_edit:
@@ -482,12 +487,31 @@ class TuiSession:
             self._input.insert_text(content)
             return
         pos = self._input.cursor_position
+        self._input.save_to_undo_stack()
         try:
             self.input_document.insert_paste(pos, content)
         except (ValueError, OSError) as exc:
             self.print(f"Pegado rechazado, entrada conservada: {exc}")
             return
         self._set_input_document(pos+1)
+
+    def restore_paste_draft(self):
+        from .paste import InputDocument
+        path = self.input_document.path
+        if self._secret_mode or self._input.text or not path:
+            return False
+        candidates = sorted(path.parent.glob('*.draft.json'), key=lambda p:p.stat().st_mtime, reverse=True)
+        for candidate in candidates:
+            if candidate == path:
+                continue
+            restored = InputDocument(path=candidate)
+            if restored.text:
+                self._input.save_to_undo_stack()
+                self.input_document._commit(restored.text, restored.refs)
+                self.input_document.next_id = restored.next_id
+                self._set_input_document(len(restored.text))
+                return True
+        return False
 
     def _set_input_document(self, cursor):
         from prompt_toolkit.document import Document
@@ -504,11 +528,13 @@ class TuiSession:
     def expand_paste(self):
         pos = self._selected_paste()
         if pos is not None:
+            self._input.save_to_undo_stack()
             self._set_input_document(self.input_document.replace_ref(pos, expand=True))
 
     def delete_paste(self):
         pos = self._selected_paste()
         if pos is not None:
+            self._input.save_to_undo_stack()
             self._set_input_document(self.input_document.replace_ref(pos, expand=False))
 
     def _run(self):

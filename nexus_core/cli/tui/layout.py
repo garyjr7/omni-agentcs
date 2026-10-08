@@ -68,6 +68,43 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
 
     ui._scrollback = Buffer(name="scrollback", read_only=True)
     class InputBuffer(Buffer):
+        def reset(self, *args, **kwargs):
+            self._segment_undo, self._segment_redo = [], []
+            return super().reset(*args, **kwargs)
+
+        def _snapshot(self):
+            return self.text, self.cursor_position, dict(ui.input_document.refs)
+
+        def save_to_undo_stack(self, clear_redo_stack=True):
+            if ui._secret_mode:
+                return
+            snapshot = self._snapshot()
+            if self._segment_undo and self._segment_undo[-1][0] == self.text:
+                self._segment_undo[-1] = snapshot
+            else:
+                self._segment_undo.append(snapshot)
+                self._segment_undo = self._segment_undo[-32:]
+            if clear_redo_stack:
+                self._segment_redo = []
+
+        def _restore(self, snapshot):
+            text, cursor, refs = snapshot
+            ui.input_document._commit(text, refs)
+            ui._set_input_document(cursor)
+
+        def undo(self):
+            while self._segment_undo:
+                snapshot = self._segment_undo.pop()
+                if snapshot[0] != self.text or snapshot[2] != ui.input_document.refs:
+                    self._segment_redo.append(self._snapshot())
+                    self._restore(snapshot)
+                    break
+
+        def redo(self):
+            if self._segment_redo:
+                self.save_to_undo_stack(clear_redo_stack=False)
+                self._restore(self._segment_redo.pop())
+
         def append_to_history(self):
             if not ui._secret_mode:
                 text = ui.input_document.reconstruct()

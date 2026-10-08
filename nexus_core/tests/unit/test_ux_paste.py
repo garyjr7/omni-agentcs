@@ -63,3 +63,22 @@ def test_secret_paste_is_not_persisted(tui_factory,tmp_path):
     ui.paste_text('secret'*1000)
     assert ui._input.text == 'secret'*1000
     assert not (tmp_path/'history.draft.json').exists()
+
+
+def test_deleted_chip_undo_restores_content_not_object_character(tui_factory):
+    ui=tui_factory(enable_completion=False).session
+    ui.paste_text('x'*2000)
+    ui._input.save_to_undo_stack()
+    ui.delete_paste()
+    ui._input.undo()
+    assert ui.input_document.reconstruct()=='x'*2000
+    ui._input.redo()
+    assert ui.input_document.reconstruct()==''
+
+
+def test_restore_latest_draft_preserves_segments(tui_factory,tmp_path):
+    first=tui_factory(history_path=tmp_path/'history',enable_completion=False).session
+    first.paste_text('data'*1000)
+    second=tui_factory(history_path=tmp_path/'history',enable_completion=False).session
+    assert second.restore_paste_draft()
+    assert second.input_document.reconstruct()=='data'*1000
