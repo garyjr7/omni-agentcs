@@ -120,3 +120,42 @@ def test_approved_exec_invocation_consumes_approval(tmp_path):
     assert asyncio.run(gateway.invoke('probe',{},ctx,approval_id=approval['id']))['verified']
     with pytest.raises(PermissionError):
         asyncio.run(gateway.invoke('probe',{},ctx,approval_id=approval['id']))
+
+
+def test_worker_react_inherits_existing_work_mode_without_explicit_session(tmp_path,monkeypatch):
+    from nexus_core.cli.session import OmniSession
+    from nexus_core.cli.commands import cmd_mode
+    from nexus_core.kernel import runtime
+    from nexus_core.kernel.operator_mode import OperatorMode
+    store=ControlStore(tmp_path/'worker.db');store.initialize()
+    session=OmniSession(store=store,tenant_id='system',engagement=None,use_tui=False)
+    cmd_mode(session,['plan','on'])
+    async def loop(**kwargs):
+        context=kwargs['context']
+        # The runtime must bind both the loop conversation and the tool boundary.
+        built=runtime._build_run_context({},context)
+        assert kwargs.get('conversation_id') == session._ensure_work_session()
+        assert OperatorMode(store).get(built)['mode']=='plan'
+        raise PermissionError('plan read_only')
+    monkeypatch.setattr('nexus_core.agent.react.run_react_loop',loop)
+    monkeypatch.setattr(runtime,'select_llm_client',lambda:object())
+    payload={'objective':'offline'}
+    task={'id':'worker','tenant_id':'system','run_id':'r','payload':payload}
+    with pytest.raises(PermissionError,match='plan'):
+        asyncio.run(runtime.execute_react(payload,runtime.ExecutionContext(store,task,'worker')))
+
+
+def test_mode_command_requires_reviewed_hash_and_never_trust_autoapproves(tmp_path):
+    from nexus_core.cli.session import OmniSession
+    from nexus_core.cli.commands import cmd_mode
+    from nexus_core.kernel.operator_mode import OperatorMode
+    store=ControlStore(tmp_path/'command.db');store.initialize()
+    session=OmniSession(store=store,tenant_id='system',engagement=None,use_tui=False,
+                        trust_mode=True,operator_id='alice',input_reader=lambda prompt:'yes')
+    cmd_mode(session,['plan','on'])
+    ctx=session.build_run_context();modes=OperatorMode(store)
+    cmd_mode(session,['plan','off'])
+    assert modes.get(ctx)['mode']=='plan'
+    session.input_reader=lambda prompt:'aprobar '+modes.get(ctx)['plan_hash']
+    cmd_mode(session,['plan','off'])
+    assert modes.get(ctx)['mode']=='exec'

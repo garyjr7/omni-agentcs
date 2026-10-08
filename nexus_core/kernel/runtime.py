@@ -373,8 +373,14 @@ async def execute_react(payload: dict, context: ExecutionContext) -> dict:
         budget_tokens = max(0, int(budget))
     except (TypeError, ValueError):
         budget_tokens = 0
+    from dataclasses import replace
+    from nexus_core.agent.memory import ensure_work_conversation
+    session_id = payload.get('session_id') or payload.get('conversation_id') or ensure_work_conversation(
+        context.store, context.tenant_id, payload.get('agent_id') or 'omni', payload.get('engagement_id'))
+    context = replace(context, task={**context.task, 'payload': {**payload, 'session_id':session_id}})
     result = await run_react_loop(
         context=context,
+        conversation_id=session_id,
         objective=objective,
         engagement_id=payload.get("engagement_id"),
         llm_client=llm,
