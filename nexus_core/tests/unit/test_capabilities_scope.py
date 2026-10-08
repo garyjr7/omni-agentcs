@@ -98,3 +98,11 @@ def test_searchsploit_needs_no_scope():
     definition = searchsploit_definition()
     assert definition.scope_required is False
     assert definition.scope_target_field is None
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

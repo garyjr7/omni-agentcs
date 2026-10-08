@@ -17,7 +17,6 @@ import pytest
 from nexus_core.agent.react import (
     ReActConfig,
     STATUS_COMPLETED,
-    STATUS_MAX_ITERATIONS,
     run_react_loop,
 )
 from nexus_core.cli.approval import make_approval_callback
@@ -308,12 +307,12 @@ async def test_headless_without_trust_mode_denies_high_risk_tool(session):
         )
 
     # No human, no trust mode: the tool is never executed and nothing is approved.
-    assert result.status == STATUS_MAX_ITERATIONS
+    assert result.status == "blocked"
     actions = AuditWriter(session.store).export(TENANT)
     assert not any(row["action"] == "tool.complete" for row in actions)
     assert _approval_statuses(session) == []
     assert all(
-        (action.get("tool_result") or {}).get("error_type") == "PermissionError"
+        (action.get("tool_result") or {}).get("error_type") == "ApprovalRequired"
         for action in result.actions
         if action.get("tool_result")
     )
@@ -354,3 +353,11 @@ def _loop_config(**kwargs):
     """
     kwargs.setdefault("enforce_completion_gates", False)
     return ReActConfig(**kwargs)
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

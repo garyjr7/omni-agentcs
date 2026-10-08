@@ -16,10 +16,10 @@ def test_local_mode_guarantees():
     assert g.supports_network_tools is True
 
 
-def test_local_strict_adds_process_isolation():
+def test_local_strict_process_group_is_not_isolation():
     strict = modes.GUARANTEES[modes.SandboxMode.LOCAL_STRICT]
     local = modes.GUARANTEES[modes.SandboxMode.LOCAL]
-    assert strict.process_isolation is True
+    assert strict.process_isolation is False
     assert local.process_isolation is False
     assert strict.supports_network_tools is True
 

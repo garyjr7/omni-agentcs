@@ -252,8 +252,12 @@ class OfflineKernelTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 asyncio.run(gateway.invoke(tool.tool_id, {}, context))
             store.set_quota("system", "tool", tool.tool_id, "calls", 1)
+            result = asyncio.run(gateway.invoke(tool.tool_id, {"query": "ok"}, context))
+            self.assertTrue(result.pop("invocation_id"))
+            self.assertEqual(result.pop("run_id"), context.run_id)
+            self.assertEqual(result.pop("assertions"), [])
             self.assertEqual(
-                asyncio.run(gateway.invoke(tool.tool_id, {"query": "ok"}, context)),
+                result,
                 {"success": True, "output": {"result": "ok"}, "verified": True,
                  "verification_method": "test-observation", "evidence": {},
                  "exit_code": None, "accepted_exit_codes": [0], "stdout": "",

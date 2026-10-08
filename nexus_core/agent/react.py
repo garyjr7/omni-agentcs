@@ -29,6 +29,7 @@ from nexus_core.scope import ScopeViolation
 
 from . import memory
 from .evidence import annotate_findings, fabricated_evidence
+from nexus_core.kernel.errors import ApprovalRequired, ProviderFailure
 from .injection import render_for_model, scan_untrusted_text
 from .observations import bounded_context, prepare_observation
 from .preflight import unavailable_tools_from_env
@@ -180,6 +181,7 @@ class ReActResult:
     #: Why the completion was refused, when ``status`` is
     #: ``premature_completion``.
     completion_objections: list[str] = field(default_factory=list)
+    completion_verified: bool = False
 
 
 # --------------------------------------------------------------------- helpers
@@ -519,6 +521,8 @@ def _operator_approval_gate(
         tuple(tool_payload.get("permissions") or ()),
         definition,
     )
+    if not decision.allowed:
+        raise PermissionError(decision.reason)
     if not decision.requires_approval or config.on_approval_needed is None:
         return None
 
@@ -553,6 +557,8 @@ def _observation_payload(invocation: dict[str, Any]) -> dict[str, Any]:
         "success": bool(output.get("success")),
         "verification_method": output.get("verification_method"),
         "evidence": output.get("evidence"),
+        "invocation_id": output.get("invocation_id"),
+        "assertions": output.get("assertions", []),
         "output": output.get("output"),
     }
 
@@ -774,6 +780,9 @@ async def run_react_loop(
     # An operator may pin the profile; the model never picks its own subagent.
     subagent_override = payload.get("subagent") or None
     audit = AuditWriter(store)
+    from nexus_core.kernel.sandbox_modes import SandboxPolicy
+
+    SandboxPolicy.resolve()
     scope = load_engagement_scope(store, tenant_id, engagement_id)
 
     # Project instructions (OMNI.md) and activated skills are quasi-trusted
@@ -1099,7 +1108,10 @@ async def run_react_loop(
 
         messages = with_kickoff_user_turn(messages, objective)
 
-        response = await _complete_turn(llm_client, messages, config)
+        try:
+            response = await _complete_turn(llm_client, messages, config)
+        except Exception as exc:
+            raise ProviderFailure(type(exc).__name__) from exc
         _record_response_tokens(
             store,
             tenant_id,
@@ -1180,7 +1192,7 @@ async def run_react_loop(
             # Evidence first: every finding is annotated with where its support
             # comes from, before any gate reads it (B8.2.3).
             annotated, evidence_stats = annotate_findings(
-                action.findings, observations=run_evidence
+                action.findings, observations=run_evidence, run_id=run_id
             )
             completion_objections = _completion_objections(
                 plan,
@@ -1412,7 +1424,7 @@ async def run_react_loop(
         # refused exactly like an invented one (fail-closed) and audited with the
         # profile that refused it. The full catalog decides "invented"; the subset
         # decides "not mine".
-        if not permits(subagent, action.tool_id):
+        if not permits(subagent, action.tool_id, catalog.get(action.tool_id)):
             observation = {
                 "success": False,
                 "error": (
@@ -1571,6 +1583,22 @@ async def run_react_loop(
             )
             break
         except Exception as exc:  # noqa: BLE001 - surfaced to the LLM as an observation
+            if isinstance(exc, PermissionError):
+                status = "blocked" if isinstance(exc, ApprovalRequired) else "governance_denial"
+                final_summary = str(exc)
+                observation = {"success": False, "error_type": type(exc).__name__,
+                               "error": str(exc), "failure_kind": "governance"}
+                entry["tool_result"] = observation
+                actions.append(entry)
+                _inject_observation(store, tenant_id, conversation_id, run_id, iteration,
+                                    action, observation, subagent_id=active_subagent_id)
+                audit_step(iteration=iteration, action=action.action, decision="deny",
+                           tool_id=action.tool_id, reason=status)
+                break
+            if isinstance(exc, (ProviderFailure, TimeoutError, ConnectionError)):
+                status = "provider_error"
+                final_summary = type(exc).__name__
+                break
             kind = _failure_kind(exc)
             observation = {
                 "success": False,
@@ -1630,13 +1658,7 @@ async def run_react_loop(
                 consecutive_failures = 0
                 # Only a *verified* observation can ground a finding later
                 # (B8.2.3); the corpus stays bounded across a long run.
-                run_evidence.append(
-                    {
-                        "tool_id": action.tool_id,
-                        "evidence": observation.get("evidence"),
-                        "output": observation.get("output"),
-                    }
-                )
+                run_evidence.extend(observation.get("assertions") or [])
                 del run_evidence[:-RUN_EVIDENCE_MAX_OBSERVATIONS]
             else:
                 consecutive_failures += 1
@@ -1701,6 +1723,8 @@ async def run_react_loop(
         subagent_id=last_subagent_id,
         evidence_stats=evidence_stats,
         completion_objections=list(completion_objections),
+        completion_verified=(status == STATUS_COMPLETED and config.enforce_completion_gates
+                             and not completion_objections and bool(run_evidence)),
     )
 
 

@@ -352,11 +352,11 @@ async def test_loop_without_callback_never_executes_high_risk_tool(harness):
             tool_catalog=catalog,
         )
 
-    assert result.status == STATUS_MAX_ITERATIONS
-    assert result.iterations == 6
+    assert result.status == "blocked"
+    assert result.iterations == 1
     last = result.actions[-1]["tool_result"]
-    assert last["error_type"] == "PermissionError"
-    assert last["failure_kind"] == "input"
+    assert last["error_type"] == "ApprovalRequired"
+    assert last["failure_kind"] == "governance"
     assert "approval" in last["error"]
 
 
@@ -371,3 +371,11 @@ def _loop_config(**kwargs):
     """
     kwargs.setdefault("enforce_completion_gates", False)
     return ReActConfig(**kwargs)
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

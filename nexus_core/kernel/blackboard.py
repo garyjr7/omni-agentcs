@@ -16,7 +16,7 @@ lives (its artifact) rather than embedding it.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from .knowledge import KnowledgeStore
 from .models import utc_now
@@ -45,6 +45,23 @@ def _source_uri(engagement_id: str, fact_type: str, key: str) -> str:
     return f"{SOURCE_URI_PREFIX}/{engagement_id}/{fact_type}/{key}"
 
 
+class Fact(TypedDict):
+    fact_type: str
+    key: str
+    value: dict[str, Any]
+    asserted_by: Literal["agent", "verifier"]
+    verified: bool
+    verification_method: str
+    invocation_id: str
+
+
+def is_verified_fact(fact):
+    """Legacy flags without verifier provenance are never trusted."""
+    return (isinstance(fact, dict) and fact.get("verified") is True
+            and fact.get("asserted_by") == "verifier"
+            and bool(fact.get("verification_method")) and bool(fact.get("invocation_id")))
+
+
 class Blackboard:
     """Typed, tenant-scoped fact store for one or more engagements."""
 
@@ -62,7 +79,10 @@ class Blackboard:
         value: dict[str, Any],
         source: str,
         created_by: str,
-        verified: bool = True,
+        verified: bool = False,
+        asserted_by: Literal["agent", "verifier"] = "agent",
+        verification_method: str = "",
+        invocation_id: str = "",
         classification: str = "internal",
     ) -> dict[str, Any]:
         """Persist one fact and return its normalized record."""
@@ -71,6 +91,10 @@ class Blackboard:
         key = str(key).strip()
         if not key:
             raise ValueError("fact key is required")
+        if asserted_by not in {"agent", "verifier"}:
+            raise ValueError("invalid fact provenance")
+        if verified and (asserted_by != "verifier" or not verification_method or not invocation_id):
+            raise ValueError("verified facts require verifier, method and invocation_id")
         record = {
             "engagement_id": engagement_id,
             "fact_type": fact_type,
@@ -78,6 +102,9 @@ class Blackboard:
             "value": value or {},
             "source": source or "unknown",
             "verified": bool(verified),
+            "asserted_by": asserted_by,
+            "verification_method": verification_method,
+            "invocation_id": invocation_id,
             "recorded_at": utc_now(),
         }
         self.knowledge.ingest(
@@ -153,7 +180,7 @@ class Blackboard:
             value = json.dumps(fact.get("value") or {}, sort_keys=True)
             if len(value) > 200:
                 value = value[:197] + "..."
-            mark = "verificado" if fact.get("verified") else "sin verificar"
+            mark = "verificado" if is_verified_fact(fact) else "sin verificar"
             source = fact.get("source", "?")
             lines.append(
                 f"- [{fact['fact_type']}] {fact['key']} ({mark}, via {source}): {value}"
@@ -165,5 +192,7 @@ class Blackboard:
         facts = self.list_facts(tenant_id, engagement_id)
         counts: dict[str, int] = {}
         for fact in facts:
+            if not is_verified_fact(fact):
+                continue
             counts[fact["fact_type"]] = counts.get(fact["fact_type"], 0) + 1
         return {"engagement_id": engagement_id, "total": len(facts), "counts": counts}

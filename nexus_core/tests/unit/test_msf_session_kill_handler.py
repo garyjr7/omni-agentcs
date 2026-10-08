@@ -92,3 +92,11 @@ def _owned_context(tmp_path, monkeypatch):
                     session_type="shell", target_host="203.0.113.10", opened_by_tool="fixture")
         return ctx
     monkeypatch.setitem(globals(), "context", owned_context)
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

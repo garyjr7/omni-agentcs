@@ -44,7 +44,7 @@ def test_record_and_list_round_trip(board):
     assert len(facts) == 1
     assert facts[0]["fact_type"] == "service"
     assert facts[0]["value"]["anonymous"] is True
-    assert facts[0]["verified"] is True
+    assert facts[0]["verified"] is False
 
 
 def test_latest_version_wins(board):
@@ -97,7 +97,7 @@ def test_render_returns_prompt_lines(board):
                       source="nexus.recon.nmap", created_by="op")
     text = blackboard.render(TENANT, ENGAGEMENT)
     assert "[service]" in text
-    assert "verificado" in text
+    assert "sin verificar" in text
     assert "nexus.recon.nmap" in text
 
 
@@ -116,7 +116,7 @@ def test_summary_counts_by_type(board):
                       key="c1", value={}, source="x", created_by="op")
     summary = blackboard.summary(TENANT, ENGAGEMENT)
     assert summary["total"] == 3
-    assert summary["counts"] == {"service": 2, "credential": 1}
+    assert summary["counts"] == {}
 
 
 # --------------------------------------------------------------------- handler

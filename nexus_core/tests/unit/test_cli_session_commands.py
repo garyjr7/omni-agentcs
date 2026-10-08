@@ -186,3 +186,11 @@ def test_detach_survives_unreachable_daemon(session, monkeypatch, capsys):
 def test_sessions_command_registered():
     for name in ("/sessions", "/session", "/detach", "/kill-session"):
         assert name in commands_module.COMMANDS
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

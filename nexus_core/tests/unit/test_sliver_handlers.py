@@ -313,3 +313,11 @@ def test_never_executes_subprocess(monkeypatch):
         assert "subprocess" not in source
         assert "os.system" not in source
         assert "shell=True" not in source
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

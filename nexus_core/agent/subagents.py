@@ -465,14 +465,16 @@ def is_external(tool_id: str) -> bool:
     return str(tool_id).startswith(EXTERNAL_TOOL_PREFIXES)
 
 
-def permits(subagent: SubAgentDefinition, tool_id: str) -> bool:
-    """Whether the active profile may propose ``tool_id``.
-
-    A profile's own subset plus every external (operator-authorized) tool. This
-    is the single predicate the loop uses, so the prompt and the enforcement can
-    never disagree.
-    """
-    return subagent.allows(tool_id) or is_external(tool_id)
+def permits(subagent: SubAgentDefinition, tool_id: str, definition=None) -> bool:
+    """External tools require known effects, restricted by the active profile."""
+    if not is_external(tool_id):
+        return subagent.allows(tool_id)
+    if isinstance(definition, tuple):
+        definition = definition[0]
+    effects = set(getattr(definition, "effects", ()))
+    if not effects or not effects <= {"read", "write", "exec", "network"}:
+        return False
+    return not subagent.read_only or effects == {"read"}
 
 
 def filter_catalog(
@@ -485,7 +487,7 @@ def filter_catalog(
     return {
         tool_id: entry
         for tool_id, entry in catalog.items()
-        if (permits(subagent, tool_id) if include_external else subagent.allows(tool_id))
+        if (permits(subagent, tool_id, entry) if include_external else subagent.allows(tool_id))
     }
 
 

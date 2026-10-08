@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from nexus_core.config.loader import config_exists, effective_db_path
 from nexus_core.config.schema import DEFAULT_MODELS, PROVIDERS, model_env_name
 from nexus_core.kernel.sandbox import sandbox_path, tool_bin_dir
-from nexus_core.kernel.sandbox_modes import active_mode, guarantees_for
+from nexus_core.kernel.sandbox_modes import active_mode, effective_guarantees
 from nexus_core.provisioner.detector import check_all_tools, detect_managers, detect_os
 from nexus_core.provisioner.installer import probe_command
 
@@ -107,7 +107,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
             "mode": active_mode().value,
             "path": sandbox_path(),
             "tool_bin_dir": str(tool_bin_dir()) if tool_bin_dir() else None,
-            **guarantees_for().to_dict(),
+            **effective_guarantees().to_dict(),
         },
         "managers": list(detect_managers()),
         "tools": {name: asdict(status) for name, status in check_all_tools().items()},

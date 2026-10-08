@@ -61,3 +61,12 @@ def tui_factory(tmp_path, monkeypatch):
         yield create
         for session in sessions:
             session.close()
+
+
+@pytest.fixture
+def lab_scope(monkeypatch):
+    """Explicit unsigned fixtures for tests of non-authentication behavior.
+
+    Not autouse: governed stays the default, including all Phase 0 regressions.
+    """
+    monkeypatch.setenv("NEXUS_SCOPE_MODE", "lab")

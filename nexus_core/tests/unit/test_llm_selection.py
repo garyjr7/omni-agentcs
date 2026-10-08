@@ -129,7 +129,7 @@ async def test_execute_react_uses_select_llm_client(clean_env, monkeypatch):
     async def _fake_loop(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(
-            status="completed", iterations=1, final_summary="ok",
+            status="completed", completion_verified=False, iterations=1, final_summary="ok",
             findings=[], question=None, conversation_id="c-1", actions=[],
         )
 
@@ -168,7 +168,7 @@ def test_cli_process_publishes_real_provider_despite_stale_fake(clean_env):
     clean_env.setenv("GROQ_API_KEY", "gsk_fixture")
     clean_env.setenv(llm_env.LEGACY_PROVIDER_ENV, "fake")
     with (
-        mock.patch("omni.load_dotenv"),
+        mock.patch("dotenv.load_dotenv"),
         mock.patch("nexus_core.cli.wizard.should_run_wizard", return_value=False),
         mock.patch("nexus_core.cli.main.main", return_value=0) as cli_main,
     ):

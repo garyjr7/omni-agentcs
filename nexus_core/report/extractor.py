@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from nexus_core.kernel.audit import AuditWriter
-from nexus_core.kernel.blackboard import Blackboard
+from nexus_core.kernel.blackboard import Blackboard, is_verified_fact
 from nexus_core.kernel.models import utc_now
 from nexus_core.scope import EngagementScope, EngagementStore
 
@@ -950,9 +950,8 @@ def _fact_findings(facts: Iterable[dict[str, Any]]) -> list[Finding]:
                     f"Hecho tipado `{fact_type}` registrado en el blackboard del "
                     f"engagement: `{key}`. Valor observado: "
                     f"{json.dumps(value, ensure_ascii=False, sort_keys=True)}"
-                    + (" (verificado)" if fact.get("verified") else " (sin verificar)")
-                    + ". Procedencia registrada por el toolkit; es memoria durable "
-                    "del engagement, no una afirmación del modelo."
+                    + (" (verificado)" if is_verified_fact(fact) else " (sin verificar)")
+                    + ". Procedencia: " + str(fact.get("asserted_by", "agent"))
                 ),
                 severity=severity,
                 cvss_score=None,
@@ -971,6 +970,7 @@ def _fact_findings(facts: Iterable[dict[str, Any]]) -> list[Finding]:
                     "Verificar el valor en la evidencia del blackboard",
                 ),
                 kind=kind,
+                verification_status="confirmed_finding" if is_verified_fact(fact) else "hypothesis",
             )
         )
     return results
@@ -1363,7 +1363,7 @@ def _deduplicate(findings: list[Finding]) -> list[Finding]:
     merged: list[Finding] = []
     index: dict[tuple[str, str, tuple[str, ...]], Finding] = {}
     for finding in findings:
-        key = (finding.kind, finding.title, finding.affected_targets)
+        key = (finding.kind, finding.title, finding.affected_targets, finding.verification_status)
         previous = index.get(key)
         if previous is not None and _within_window(previous.discovered_at, finding.discovered_at):
             from dataclasses import replace

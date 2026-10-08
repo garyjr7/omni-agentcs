@@ -9,7 +9,6 @@ touches a target, so the tool requires no scope and no approval.
 from __future__ import annotations
 
 from nexus_core.integrations.sliver.client import SliverError
-from nexus_core.kernel.blackboard import Blackboard
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.schema_validation import validate
 from nexus_core.tools.handlers.sliver_common import build_client, error_result
@@ -112,24 +111,7 @@ async def sliver_loot_handler(arguments: dict, context: RunContext) -> ToolResul
             return ToolResult(verification_method="blackboard_store_missing")
         if not engagement_id:
             return ToolResult(verification_method="blackboard_no_engagement")
-        created_by = getattr(getattr(context, "identity", None), "subject_id", "agent")
         key = selected.name or selected.loot_id or selected.sha256[:16]
-        Blackboard(store).record(
-            tenant_id=context.tenant_id,
-            engagement_id=engagement_id,
-            fact_type="loot",
-            key=key,
-            value={
-                "loot_id": selected.loot_id,
-                "kind": selected.kind,
-                "sha256": selected.sha256,
-                "size": selected.size,
-                "file_type": selected.file_type,
-            },
-            source=TOOL_ID,
-            created_by=created_by,
-            verified=True,
-        )
         return ToolResult(
             output=client.redact(
                 {

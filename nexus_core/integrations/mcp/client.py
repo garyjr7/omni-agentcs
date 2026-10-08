@@ -108,6 +108,36 @@ class MCPServerConfig:
     requires_approval: tuple[str, ...] = ()
     call_timeout: float = DEFAULT_CALL_TIMEOUT
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
+    capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
+    workspace_root: str = "."
+
+    def capability(self, tool_name):
+        value = self.capabilities.get(tool_name)
+        required = {"effects", "scope_required", "scope_target_field", "sandbox_required"}
+        if not isinstance(value, dict) or not required <= value.keys():
+            raise ValueError(f"MCP capabilities missing for {self.name}.{tool_name}")
+        effects = value["effects"]
+        if not isinstance(effects, (list, tuple)) or not effects or not set(effects) <= {"read", "write", "exec", "network"}:
+            raise ValueError("invalid MCP effects")
+        if type(value["scope_required"]) is not bool or type(value["sandbox_required"]) is not bool:
+            raise ValueError("MCP scope_required and sandbox_required must be booleans")
+        value = dict(value)
+        target = value["scope_target_field"]
+        if target == "":  # TOML has no null literal.
+            target = value["scope_target_field"] = None
+        if target is not None and (not isinstance(target, str) or not target.strip()):
+            raise ValueError("invalid MCP scope_target_field")
+        if "network" in effects and (not value["scope_required"] or not target):
+            raise ValueError("network MCP tools require scope and a target field")
+        if self.transport == TRANSPORT_STDIO and not value["sandbox_required"]:
+            raise ValueError("stdio MCP requires sandbox_required=true")
+        if self.transport == TRANSPORT_HTTP and value["sandbox_required"]:
+            raise ValueError("remote MCP sandbox cannot be enforced locally")
+        return dict(value)
+
+    def validate_capabilities(self):
+        for name in self.allowed_tools:
+            self.capability(name)
 
     def allows(self, tool_name: str) -> bool:
         return str(tool_name) in self.allowed_tools
@@ -140,6 +170,7 @@ class MCPTool:
     description: str
     input_schema: dict[str, Any] = field(default_factory=dict)
     title: str = ""
+    output_schema: dict[str, Any] = field(default_factory=dict)
 
     @property
     def tool_id(self) -> str:
@@ -163,6 +194,7 @@ class MCPCallResult:
 
     text: str
     is_error: bool = False
+    structured_content: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {"is_error": bool(self.is_error), "text_chars": len(self.text)}
@@ -194,6 +226,7 @@ class _SDKSession:
     async def __aenter__(self) -> Any:
         from mcp import ClientSession
 
+        self.config.validate_capabilities()
         self._stack = AsyncExitStack()
         try:
             streams = await self._stack.enter_async_context(self._transport())
@@ -237,16 +270,10 @@ class _SDKSession:
             from mcp.client.streamable_http import streamable_http_client
 
             return streamable_http_client(self.config.url)
-        from mcp import StdioServerParameters
-        from mcp.client.stdio import stdio_client
+        from .transport import sandbox_stdio_client
 
-        return stdio_client(
-            StdioServerParameters(
-                command=self.config.command,
-                args=list(self.config.args),
-                env=sanitized_env(extra=self.config.env),
-            )
-        )
+        return sandbox_stdio_client(self.config)
+
 
 
 def _sdk_session(config: MCPServerConfig) -> AsyncContextManager[Any]:
@@ -267,6 +294,18 @@ def _extract_text(result: Any) -> str:
     return "\n".join(parts)
 
 
+def validate_output_schema(schema, content):
+    """Validate locally only: an untrusted $ref must never fetch a URL.
+
+    Both packages are already dependencies of the installed MCP SDK.
+    """
+    from jsonschema import Draft202012Validator
+    from referencing import Registry
+
+    Draft202012Validator.check_schema(schema)
+    Draft202012Validator(schema, registry=Registry()).validate(content)
+
+
 class MCPClient:
     """One live session with one MCP server, bounded by hard timeouts."""
 
@@ -277,6 +316,7 @@ class MCPClient:
         self._session: Any = None
 
     async def __aenter__(self) -> MCPClient:
+        self.config.validate_capabilities()
         self._stack = AsyncExitStack()
         try:
             self._session = await self._stack.enter_async_context(
@@ -323,7 +363,8 @@ class MCPClient:
                     name=str(getattr(item, "name", "") or ""),
                     title=str(getattr(item, "title", "") or ""),
                     description=str(getattr(item, "description", "") or ""),
-                    input_schema=dict(getattr(item, "input_schema", None) or {}),
+                    input_schema=dict(getattr(item, "inputSchema", None) or getattr(item, "input_schema", None) or {}),
+                    output_schema=dict(getattr(item, "output_schema", None) or getattr(item, "outputSchema", None) or {}),
                 )
             )
         return tools
@@ -349,7 +390,8 @@ class MCPClient:
                 f"{type(exc).__name__}: {exc}"
             ) from exc
         return MCPCallResult(
-            text=_extract_text(result), is_error=bool(getattr(result, "is_error", False))
+            text=_extract_text(result), is_error=bool(getattr(result, "isError", getattr(result, "is_error", False))),
+            structured_content=getattr(result, "structured_content", getattr(result, "structuredContent", None))
         )
 
 

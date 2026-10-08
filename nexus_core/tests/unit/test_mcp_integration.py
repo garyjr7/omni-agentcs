@@ -117,6 +117,9 @@ def make_config(**overrides):
         connect_timeout=1.0,
     )
     base.update(overrides)
+    base.setdefault("capabilities", {name: dict(effects=["read"], scope_required=False,
+                    scope_target_field=None, sandbox_required=base["transport"] == "stdio")
+                    for name in base["allowed_tools"]})
     return MCPServerConfig(**base)
 
 
@@ -150,6 +153,16 @@ def test_parse_config_reads_the_example_shape():
         command = "npx"
         args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
         allowed_tools = ["read_file", "list_directory"]
+        [servers.capabilities.read_file]
+        effects = ["read"]
+        scope_required = false
+        scope_target_field = ""
+        sandbox_required = true
+        [servers.capabilities.list_directory]
+        effects = ["read"]
+        scope_required = false
+        scope_target_field = ""
+        sandbox_required = true
 
         [[servers]]
         name = "github"
@@ -157,6 +170,11 @@ def test_parse_config_reads_the_example_shape():
         url = "https://api.githubcopilot.com/mcp/"
         allowed_tools = ["search_repositories"]
         requires_approval = ["create_issue"]
+        [servers.capabilities.search_repositories]
+        effects = ["read"]
+        scope_required = false
+        scope_target_field = ""
+        sandbox_required = false
         """
     )
     assert [c.name for c in configs] == ["filesystem", "github"]
@@ -345,7 +363,7 @@ async def test_error_result_is_not_a_success(tmp_path):
         {"path": "/etc/hosts"}, make_context(ControlStore(tmp_path / "m.db"))
     )
     assert result.success is False
-    assert result.verification_method == "mcp_response_received"
+    assert result.verification_method == "mcp_response_received_unverified"
 
 
 # ------------------------------------------------------------- real transport
@@ -355,6 +373,7 @@ async def test_real_stdio_transport_fails_closed_on_a_silent_server():
     """The real SDK path must not hang: a server that never speaks times out."""
     config = MCPServerConfig(
         name="silent",
+        capabilities=make_config().capabilities,
         transport="stdio",
         command=sys.executable,
         args=("-c", "import time; time.sleep(60)"),
@@ -369,6 +388,7 @@ async def test_real_stdio_transport_fails_closed_on_a_silent_server():
 async def test_real_stdio_transport_reports_missing_command():
     config = MCPServerConfig(
         name="missing",
+        capabilities={"x": make_config().capabilities["read_file"]},
         transport="stdio",
         command="/nonexistent/definitely-not-a-binary",
         args=(),
@@ -383,9 +403,11 @@ async def test_real_stdio_transport_reports_missing_command():
 # ----------------------------------------------------- loop / gateway wiring
 
 
-def test_external_tools_are_permitted_for_every_subagent():
+def test_external_read_tools_require_manifest_for_every_subagent():
+    definition = gb.make_definition_factory(make_config(), MCPTool("fs", "read_file", ""))("system")
     for profile in subagents.SUBAGENTS:
-        assert subagents.permits(profile, "mcp.fs.read_file")
+        assert subagents.permits(profile, "mcp.fs.read_file", definition)
+        assert not subagents.permits(profile, "mcp.fs.read_file")
         assert subagents.permits(profile, profile.tools and next(iter(profile.tools)))
 
 
@@ -394,7 +416,7 @@ def test_filter_catalog_includes_external_tools_but_not_foreign_builtins():
     catalog = {
         "nexus.recon.nmap": "builtin",
         "nexus.web.nuclei": "other-phase",
-        "mcp.fs.read_file": "external",
+        "mcp.fs.read_file": gb.make_definition_factory(make_config(), MCPTool("fs", "read_file", ""))("system"),
     }
     filtered = subagents.filter_catalog(recon, catalog)
     assert set(filtered) == {"nexus.recon.nmap", "mcp.fs.read_file"}
@@ -619,6 +641,7 @@ def test_parse_server_accepts_scalar_args_allowed_tools_and_env():
             "command": "npx",
             "args": "-y",
             "allowed_tools": "read_file",
+            "capabilities": make_config().capabilities,
             "env": {"MCP_MODE": "1"},
         }
     )

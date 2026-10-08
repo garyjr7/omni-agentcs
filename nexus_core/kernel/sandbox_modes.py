@@ -16,8 +16,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import Any
 
 
 class SandboxMode(str, Enum):
@@ -65,7 +63,7 @@ GUARANTEES: dict[SandboxMode, SandboxGuarantees] = {
     SandboxMode.LOCAL_STRICT: SandboxGuarantees(
         filesystem_isolation=False,
         network_isolation=False,
-        process_isolation=True,
+        process_isolation=False,
         resource_limits=False,
         user_isolation=False,
         persistent_across_calls=True,
@@ -106,68 +104,75 @@ def parse_mode(value: str | None) -> SandboxMode | None:
     return None
 
 
-def active_mode() -> SandboxMode:
-    """Resolve the active sandbox mode from the environment.
-
-    ``NEXUS_SANDBOX_MODE`` wins; otherwise ``NEXUS_ENV=production`` selects
-    ``oci`` and everything else selects ``local_strict`` (the default runner now
-    isolates the process group and the HOME).
-    """
-    explicit = parse_mode(os.getenv(MODE_ENV))
-    if explicit is not None:
-        return explicit
-    if os.getenv("NEXUS_ENV", "development").lower() == "production":
-        return SandboxMode.OCI
-    return SandboxMode.LOCAL_STRICT
+class UnknownSandboxMode(ValueError):
+    """Unknown configuration cannot silently select a weaker policy."""
 
 
-def guarantees_for(mode: SandboxMode | str | None = None) -> SandboxGuarantees:
-    """Return the guarantees of ``mode`` (active mode when omitted)."""
-    resolved = mode if isinstance(mode, SandboxMode) else parse_mode(mode)
-    return GUARANTEES[resolved or active_mode()]
+class SandboxModeMismatch(RuntimeError):
+    """The executor does not enforce the selected mode."""
 
 
-def sandbox_for_mode(
-    mode: SandboxMode | str | None,
-    workspace_root: str | Path,
-    allowed_programs: Any = None,
-) -> Any:
-    """Build the sandbox implementation for ``mode``.
+class SandboxModeNotImplemented(NotImplementedError):
+    """The requested policy has no implementing executor."""
 
-    ``oci_network`` is designed but not implemented: enabling it raises instead
-    of silently running with an unenforced network policy.
-    """
+
+def _build_executor(mode, workspace_root, allowed_programs, env):
     from .sandbox import LocalSandbox, OCISandbox
 
-    resolved = mode if isinstance(mode, SandboxMode) else parse_mode(mode)
-    resolved = resolved or SandboxMode.LOCAL_STRICT
-    if resolved is SandboxMode.OCI_NETWORK:
-        raise NotImplementedError(
-            "sandbox mode 'oci_network' is documented in "
-            "docs/adr/ADR-004-sandbox-modes.md but not implemented yet; the "
-            "scope-filtered firewall hook is missing"
-        )
-    if resolved is SandboxMode.OCI:
-        images = [
-            item.strip()
-            for item in os.getenv("NEXUS_SANDBOX_IMAGES", "python:3.12-alpine").split(",")
-            if item.strip()
-        ]
-        return OCISandbox(
-            workspace_root, images, runtime=os.getenv("NEXUS_OCI_RUNTIME", "docker")
-        )
-    if allowed_programs is None:
-        return LocalSandbox(workspace_root)
-    return LocalSandbox(workspace_root, allowed_programs)
+    if mode is SandboxMode.OCI:
+        images = [v.strip() for v in env.get("NEXUS_SANDBOX_IMAGES", "python:3.12-alpine").split(",") if v.strip()]
+        return OCISandbox(workspace_root, images, runtime=env.get("NEXUS_OCI_RUNTIME", "docker"))
+    return LocalSandbox(workspace_root, **({"allowed_programs": allowed_programs} if allowed_programs is not None else {}))
 
 
-__all__ = [
-    "GUARANTEES",
-    "MODE_ENV",
-    "SandboxGuarantees",
-    "SandboxMode",
-    "active_mode",
-    "guarantees_for",
-    "parse_mode",
-    "sandbox_for_mode",
-]
+class SandboxPolicy:
+    """Single resolution boundary, including reporting and process execution.
+
+    Local modes constrain argv, cwd and HOME to a workspace; they do NOT
+    isolate host filesystem, processes or network. A process group is cleanup,
+    not a security namespace. OCI guarantees describe enforced launch flags,
+    not a claim that a container engine is installed or healthy.
+    """
+
+    @staticmethod
+    def resolve(env=None, *, workspace_root=".", allowed_programs=None):
+        from .sandbox import LocalSandbox, OCISandbox
+
+        env = os.environ if env is None else env
+        raw = env.get(MODE_ENV)
+        if raw is not None:
+            mode = parse_mode(raw)
+            if mode is None:
+                raise UnknownSandboxMode(f"unknown sandbox mode: {raw!r}")
+        else:
+            mode = SandboxMode.OCI if env.get("NEXUS_ENV", "development").lower() == "production" else SandboxMode.LOCAL_STRICT
+        if mode is SandboxMode.OCI_NETWORK:
+            raise SandboxModeNotImplemented("oci_network requires an enforced egress policy; not implemented")
+        executor = _build_executor(mode, workspace_root, allowed_programs, env)
+        expected = OCISandbox if mode is SandboxMode.OCI else LocalSandbox
+        if not isinstance(executor, expected):
+            raise SandboxModeMismatch(f"{mode.value} requires {expected.__name__}, got {type(executor).__name__}")
+        effective = SandboxMode.OCI if isinstance(executor, OCISandbox) else SandboxMode.LOCAL
+        return mode, executor, GUARANTEES[effective].to_dict()
+
+
+def active_mode() -> SandboxMode:
+    return SandboxPolicy.resolve()[0]
+
+
+def effective_guarantees(mode: SandboxMode | str | None = None) -> SandboxGuarantees:
+    env = dict(os.environ)
+    if mode is not None:
+        env[MODE_ENV] = mode.value if isinstance(mode, SandboxMode) else str(mode)
+    return SandboxGuarantees(**SandboxPolicy.resolve(env)[2])
+
+
+# Compatibility alias: still resolves the executor, never the declared table.
+guarantees_for = effective_guarantees
+
+
+def sandbox_for_mode(mode, workspace_root, allowed_programs=None):
+    env = dict(os.environ)
+    if mode is not None:
+        env[MODE_ENV] = mode.value if isinstance(mode, SandboxMode) else str(mode)
+    return SandboxPolicy.resolve(env, workspace_root=workspace_root, allowed_programs=allowed_programs)[1]

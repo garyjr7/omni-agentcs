@@ -266,20 +266,28 @@ def test_loot_get_not_found(monkeypatch):
 
 
 def test_loot_record_writes_blackboard_fact(tmp_path, monkeypatch):
+    from nexus_core.kernel.tool_gateway import ToolGateway
+    from nexus_core.kernel.policy import PolicyEngine
+    from nexus_core.kernel.audit import AuditWriter
     client = fake_client(monkeypatch)
     client.loot_list.return_value = [_loot_record()]
     run_context, store = owned_context(tmp_path)
-    result = asyncio.run(
-        sliver_loot.sliver_loot_handler(
-            {"action": "record", "name": "creds.txt"}, run_context
-        )
-    )
-    assert result.success
-    assert result.verification_method == "sliver_loot_recorded"
-    facts = Blackboard(store).list_facts(
-        "system", run_context.scope.engagement_id, fact_type="loot"
-    )
-    assert len(facts) == 1
-    assert facts[0]["key"] == "creds.txt"
-    assert facts[0]["value"]["sha256"] == result.evidence["sha256"]
-    assert facts[0]["verified"] is True
+    gateway = ToolGateway(PolicyEngine(), AuditWriter(store))
+    definition = sliver_loot.sliver_loot_definition()
+    gateway.register(definition, sliver_loot.sliver_loot_handler)
+    result = asyncio.run(gateway.invoke(definition.tool_id,
+                        {"action": "record", "name": "creds.txt"}, run_context))
+    assert result['success']
+    facts = Blackboard(store).list_facts("system", run_context.scope.engagement_id, fact_type="loot")
+    assert len(facts) == 1 and facts[0]['key'] == 'creds.txt'
+    assert facts[0]['value']['sha256'] == result['evidence']['sha256']
+    assert facts[0]['verified'] and facts[0]['asserted_by'] == 'verifier'
+    assert facts[0]['invocation_id'] == result['invocation_id']
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

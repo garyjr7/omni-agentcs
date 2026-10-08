@@ -505,11 +505,12 @@ def _seed_completed_plan(store) -> None:
             key=f"k-{fact_type}",
             value={"note": fact_type},
             source="test",
+            verified=True, asserted_by="verifier", verification_method="test-parser", invocation_id="fixture-invocation",
             created_by="operator-1",
         )
 
 
-async def test_execute_react_runs_through_the_registry(harness, monkeypatch):
+async def test_execute_react_registry_rejects_fixture_without_evidence(harness, monkeypatch):
     """The durable executor resolves a provider and returns the loop contract."""
     store, context = harness
     _seed_completed_plan(store)
@@ -534,8 +535,8 @@ async def test_execute_react_runs_through_the_registry(harness, monkeypatch):
         "conversation_id",
         "actions",
     }
-    assert result["status"] == STATUS_COMPLETED
-    assert result["iterations"] == 1
+    assert result["status"] == "premature_completion"
+    assert result["iterations"] == 4
     assert result["findings"]
     assert result["conversation_id"].startswith("conversation_")
 
@@ -551,3 +552,11 @@ def _loop_config(**kwargs):
     """
     kwargs.setdefault("enforce_completion_gates", False)
     return ReActConfig(**kwargs)
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

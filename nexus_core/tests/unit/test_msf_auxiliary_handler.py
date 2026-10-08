@@ -151,3 +151,11 @@ def test_authentication_timeout(monkeypatch):
     assert result.timed_out
     client.execute_module.assert_not_awaited()
     client.aclose.assert_awaited_once()
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

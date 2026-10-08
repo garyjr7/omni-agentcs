@@ -199,7 +199,7 @@ def test_main_tool_list_routes_without_selecting_an_engagement(
         raise AssertionError("tool --list must not require an engagement")
 
     monkeypatch.setattr(main_module, "select_engagement", _fail)
-    with patch.object(omni, "load_dotenv"):
+    with patch("dotenv.load_dotenv"):
         code = omni.main(["tool", "--list", "--no-wizard"])
     assert code == 0
     assert "nexus.recon.nmap" in capsys.readouterr().out
@@ -214,9 +214,17 @@ def test_main_tool_invokes_through_the_session(onboarding_env, monkeypatch):
         return _verified(tool_id)
 
     monkeypatch.setattr(OmniSession, "invoke_tool", fake)
-    with patch.object(omni, "load_dotenv"):
+    with patch("dotenv.load_dotenv"):
         code = omni.main(
             ["tool", "nexus.knowledge.query_facts", '{"limit": 5}', "--no-wizard"]
         )
     assert code == 0
     assert seen == {"tool_id": "nexus.knowledge.query_facts", "arguments": {"limit": 5}}
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

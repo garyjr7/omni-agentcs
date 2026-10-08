@@ -209,7 +209,11 @@ def normalize_counts(
                 continue
             if amount > 0:
                 normalized[str(key)] = amount
+    from nexus_core.kernel.blackboard import is_verified_fact
+
     for fact in facts or ():
+        if not is_verified_fact(fact):
+            continue
         fact_type = None
         if isinstance(fact, Mapping):
             fact_type = fact.get("fact_type") or fact.get("type")

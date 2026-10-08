@@ -892,3 +892,66 @@ SQLite y PostgreSQL. La inicialización incorpora `consumed_at` también a bases
 PostgreSQL existentes. La prueba contra PostgreSQL real requiere `DATABASE_URL`
 y permiso para crear un esquema temporal exclusivo; no utiliza tablas de la
 aplicación.
+
+### Gobernanza y automatización — contrato Fase 0
+
+El scope usa **`governed` por defecto**: faltan firma HMAC o secreto de verificación,
+la firma no coincide, o vence la ventana autorizada → ejecución denegada. CLI y
+worker comparten el arranque de secretos: entorno explícito, después `.env`,
+después el almacén de secretos/keyring. No se registran los valores secretos.
+`NEXUS_SCOPE_MODE=lab` permite scopes unsigned y registra
+`scope.unsigned_accepted` en la auditoría durable. **Lab no debe usarse en
+producción**; no omite targets, exclusiones, vencimiento ni firmas incorrectas.
+
+`NEXUS_SANDBOX_MODE` selecciona el mismo ejecutor que anuncian banner y doctor.
+Un modo desconocido falla; `oci_network` falla explícitamente porque no tiene
+una política de egress implementada. `local_strict` confina el cwd y configura
+HOME/argv, pero **no aísla el sistema de archivos, procesos ni red del host**.
+`oci` requiere el ejecutor OCI y conserva su red deshabilitada.
+
+`omni run` publica `run.complete` tanto en JSON como en NDJSON, con
+`termination_reason`, `completion_verified`, `exit_code` y `exit_code_version: 1`.
+El código del proceso sigue esta tabla versionada:
+
+| Código | Significado |
+| --- | --- |
+| `0` | `completed` **y** `completion_verified=true` |
+| `1` | Incompleto: `max_iterations`, `clarification`, `premature_completion`, final no verificado u otro fallo local |
+| `2` | Bloqueado esperando aprobación humana; `--trust-mode` mantiene sus límites de riesgo existentes |
+| `3` | Fallo de proveedor LLM/RPC o timeout externo |
+| `4` | Denegación de gobernanza: scope, RoE, policy o configuración de sandbox inválida |
+| `130` | Interrupción SIGINT/cancelación |
+
+Un texto final sin pruebas **no** produce éxito CI. `completion_verified`
+expresa que pasaron las puertas deterministas implementadas y que existen
+assertions verificadas del run; no constituye una prueba universal de cualquier
+objetivo expresado en lenguaje natural. Hechos registrados por el modelo son
+hipótesis. Los reportes separan `confirmed_finding`, `hypothesis` e `inventory`.
+
+Cada tool MCP necesita capacidades explícitas en `mcp_servers.toml`. Ejemplo
+mínimo de una lectura local (el nombre ejecutable debe estar instalado):
+
+```toml
+[[servers]]
+name = "docs"
+transport = "stdio"
+command = "my-installed-mcp-server"
+workspace_root = "."
+allowed_tools = ["read_document"]
+
+[servers.capabilities.read_document]
+effects = ["read"]
+scope_required = false
+scope_target_field = "" # null explícito: TOML no tiene literal null
+sandbox_required = true
+```
+
+Los efectos admitidos son `read`, `write`, `exec`, `network`; una tool `network`
+necesita scope y campo target. Stdio se ejecuta mediante el sandbox efectivo.
+HTTP es remoto: requiere `sandbox_required=false`, pues el cliente no puede
+acreditar aislamiento del servidor remoto. Perfiles readonly solo admiten MCP
+con efecto exclusivamente `read`. Un resultado MCP sin verificación semántica
+independiente se identifica como `mcp_unverified`, aunque su JSON Schema sea válido.
+
+La justificación, incompatibilidades y evidencia de cierre están en
+[la misión Fase 0](docs/missions/FASE0_HONESTIDAD_Y_SEGURIDAD.md).

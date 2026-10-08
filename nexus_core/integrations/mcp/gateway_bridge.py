@@ -3,8 +3,9 @@
 An MCP tool becomes a **durable tool**, registered with ``replace=False`` so it
 can never shadow a builtin. That is the whole trick: because the ReAct loop only
 ever reaches a tool through ``execute_tool`` → ``ToolGateway``, an MCP tool
-inherits policy, the signed scope boundary, durable approvals, the sandbox and
-the audit chain for free. There is no side door, and this module is what makes
+inherits policy and approvals. Scope and effects require an operator manifest;
+stdio uses the effective sandbox transport. HTTP execution is remote and cannot
+claim local process isolation. There is no side door, and this module is what makes
 sure there is not: it never calls ``session.call_tool`` outside a handler that
 the gateway invoked.
 
@@ -93,12 +94,14 @@ def make_definition_factory(
 ) -> Callable[[str], ToolDefinition]:
     """Build the per-tenant definition factory for one MCP tool."""
 
+    capability = config.capability(tool.name)
+
     def factory(tenant_id: str) -> ToolDefinition:
         # A tool the operator listed under ``requires_approval`` is HIGH, which is
         # exactly what makes PolicyEngine demand durable human approval. Everything
         # else is MEDIUM: an MCP server is a supply-chain boundary, so nothing it
         # exposes is READ_ONLY by default.
-        risk = RiskLevel.HIGH if config.needs_approval(tool.name) else RiskLevel.MEDIUM
+        risk = RiskLevel.HIGH if (config.needs_approval(tool.name) or set(capability["effects"]) & {"write", "exec"}) else RiskLevel.MEDIUM
         return ToolDefinition(
             name=tool.tool_id,
             tenant_id=tenant_id,
@@ -106,6 +109,11 @@ def make_definition_factory(
             tool_id=tool.tool_id,
             description=sanitize_description(tool.description or tool.title),
             risk=risk,
+            effects=tuple(capability["effects"]),
+            effect="read_only" if set(capability["effects"]) == {"read"} else "active",
+            scope_required=capability["scope_required"],
+            scope_target_field=capability["scope_target_field"],
+            sandbox_required=capability["sandbox_required"],
             # The gateway budget must exceed the MCP call timeout, otherwise the
             # gateway kills the call before the server can time out cleanly.
             timeout_seconds=int(config.call_timeout) + 5,
@@ -135,6 +143,8 @@ def make_handler(
             raise PermissionError(
                 f"mcp_tool_denied: '{tool.name}' no está en allowed_tools de '{config.name}'"
             )
+        if current.capability(tool.name) != config.capability(tool.name):
+            raise PermissionError("MCP capabilities changed; rediscovery required")
         try:
             async with registry.client(config.name) as client:
                 result = await client.call_tool(tool.name, arguments or {})
@@ -161,6 +171,13 @@ def make_handler(
                 payload={"server": config.name, "tool": tool.name, "error": type(exc).__name__},
             )
             raise
+        semantic_verified = False
+        if tool.output_schema and not result.is_error:
+            from .client import validate_output_schema
+            if result.structured_content is None:
+                raise MCPError("MCP outputSchema requires structured content")
+            validate_output_schema(tool.output_schema, result.structured_content)
+            # Schema validity is structural, not proof of access/root/etc.
         text = result.text
         truncated = len(text) > MAX_OUTPUT_CHARS
         return ToolResult(
@@ -169,11 +186,13 @@ def make_handler(
                 "truncated": truncated,
                 "server": config.name,
                 "tool": tool.name,
+                "observation_status": "mcp_unverified",
+                "semantic_verified": semantic_verified,
             },
             # Deterministic post-condition: the server answered. An explicit
             # ``is_error`` result is a failure, never a success with a sad message.
             verified=not result.is_error,
-            verification_method="mcp_response_received",
+            verification_method="mcp_response_received_unverified",
             evidence={
                 "server": config.name,
                 "tool": tool.name,

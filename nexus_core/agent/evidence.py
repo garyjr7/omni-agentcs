@@ -1,16 +1,4 @@
-"""Ground the model's findings in the *current* run's observations (B8.2.3).
-
-The E2E run #2 ended with a ``task_complete`` whose findings cited ports, users
-and files that this run never observed: they came from the earlier runs sharing
-the same work session. A deterministic check is possible because the loop knows
-exactly which tool outputs this run produced: a finding that cites evidence must
-share at least one substantive token with them.
-
-Nothing here trusts the model: a finding with no evidence at all is not "stale",
-it is simply unsupported, and a finding whose only citations appear in *no*
-observation of this run is marked ``stale_evidence`` so it cannot be counted as a
-verified result. The raw finding is always preserved (annotated, never dropped).
-"""
+"""Ground findings in typed verifier assertions from the current run."""
 
 from __future__ import annotations
 
@@ -155,99 +143,68 @@ def evidence_corpus(
     return "\n".join(chunks)
 
 
-def is_grounded(finding: Any, corpus_tokens: frozenset[str]) -> bool:
-    """True when the finding cites evidence this run actually observed.
+def is_grounded(finding, observations, *, run_id=None):
+    """Require a trusted invocation, current run, exact target and semantic type.
 
-    The *distinctive* tokens of the finding must intersect the corpus (a claim
-    about ``10.65.163.65`` is not supported by output that only ever mentioned
-    ``10.67.177.81``). Only when a finding is built exclusively from shared
-    vocabulary does the check fall back to ordinary overlap.
+    Token coincidence and server/model-authored verification flags carry no
+    authority. Observations must come from gateway verifier assertions.
     """
-    tokens = evidence_tokens(finding_text(finding))
-    if not tokens:
+    if not isinstance(finding, Mapping) or not finding.get("invocation_id") or not run_id:
         return False
-    identifiers = distinctive_tokens(tokens)
-    if identifiers:
-        return bool(identifiers & corpus_tokens)
-    return bool(tokens & corpus_tokens)
+    for observation in observations:
+        if not isinstance(observation, Mapping):
+            continue
+        if (observation.get("verified") is True
+                and observation.get("verification_method")
+                and observation.get("invocation_id") == finding["invocation_id"]
+                and observation.get("run_id") == run_id
+                and finding.get("target") and finding.get("target") == observation.get("target")
+                and finding.get("fact_type") and finding.get("fact_type") == observation.get("fact_type")):
+            # A reference to a host observation cannot substantiate a root claim.
+            text = finding_text(finding).lower()
+            if any(word in text for word in ("root", "uid=0", "administrator", "privilegio")):
+                if observation.get("fact_type") != "privilege":
+                    continue
+            if "value" in finding and finding["value"] != observation.get("value"):
+                continue
+            return True
+    return False
 
 
-def annotate_findings(
-    findings: Any,
-    *,
-    observations: Iterable[Any] = (),
-    corpus: str | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Annotate each finding with where its evidence comes from.
-
-    Returns ``(findings, stats)``. Every input finding survives: it gains
-    ``evidence_source`` (``current_run`` | ``stale_evidence`` | ``no_evidence``)
-    and, when stale, ``stale_evidence: True``.
-    """
-    if corpus is None:
-        materialized = list(observations)
-        text = evidence_corpus(materialized)
-        observations_seen = len(materialized)
-    else:
-        text = str(corpus)
-        observations_seen = 0
-    tokens = evidence_tokens(text)
-    annotated: list[dict[str, Any]] = []
-    stale = 0
-    unsupported = 0
+def annotate_findings(findings, *, observations=(), corpus=None, run_id=None):
+    materialized = list(observations)
+    annotated = []
+    grounded = stale = unsupported = 0
     for finding in findings or ():
         record = dict(finding) if isinstance(finding, Mapping) else {"value": finding}
-        if not evidence_tokens(finding_text(record)):
-            record["evidence_source"] = "no_evidence"
-            unsupported += 1
-        elif is_grounded(record, tokens):
-            record["evidence_source"] = "current_run"
-        else:
-            record["evidence_source"] = "stale_evidence"
-            record["stale_evidence"] = True
+        # Always overwrite model-provided status flags.
+        record.pop("stale_evidence", None)
+        if is_grounded(record, materialized, run_id=run_id):
+            proof = next(item for item in materialized if is_grounded(record, [item], run_id=run_id))
+            # A valid reference authenticates the typed fact, never arbitrary
+            # model prose (e.g. a SQL-injection title attached to a host fact).
+            declared = dict(record, verification_status="hypothesis", verified=False)
+            record = {"title": f"{proof['fact_type']}: {proof['target']}",
+                      "severity": "info", "value": proof.get("value"),
+                      "fact_type": proof["fact_type"], "target": proof["target"],
+                      "invocation_id": proof["invocation_id"], "run_id": proof["run_id"],
+                      "verification_method": proof["verification_method"],
+                      "evidence_source": "current_run", "verification_status": "confirmed_finding",
+                      "declared_finding": declared}
+            grounded += 1
+        elif finding_text(record) or record.get("invocation_id"):
+            record.update(evidence_source="stale_evidence", stale_evidence=True, verification_status="hypothesis")
             stale += 1
+        else:
+            record.update(evidence_source="no_evidence", verification_status="hypothesis")
+            unsupported += 1
         annotated.append(record)
-    stats = {
-        "findings_total": len(annotated),
-        "grounded": len(annotated) - stale - unsupported,
-        "stale": stale,
-        "unsupported": unsupported,
-        "corpus_tokens": len(tokens),
-        "corpus_observations": observations_seen,
-    }
-    return annotated, stats
+    return annotated, {"findings_total": len(annotated), "grounded": grounded,
+                       "stale": stale, "unsupported": unsupported,
+                       "corpus_tokens": len(evidence_tokens(evidence_corpus(materialized))),
+                       "corpus_observations": len(materialized)}
 
 
-def fabricated_evidence(stats: Mapping[str, int]) -> bool:
-    """True when the completion cites evidence that nothing in this run supports.
-
-    Only meaningful when the model *made claims*: an empty findings list is not
-    fabrication, it is simply an unsupported completion (handled by the plan
-    gate). This is the exact E2E run #2 shape: several findings, none of them
-    traceable to an observation of the run.
-
-    A run with **no observations at all** cannot answer the question either way
-    (there is no evidence base to be stale against), so it is not flagged here;
-    the plan gate is what refuses an engagement run that has done nothing.
-    """
-    return (
-        bool(stats.get("stale"))
-        and not stats.get("grounded")
-        and bool(stats.get("corpus_tokens"))
-    )
-
-
-__all__ = [
-    "FINDING_TEXT_FIELDS",
-    "MAX_CORPUS_CHARS",
-    "MIN_EVIDENCE_TOKEN_CHARS",
-    "STOPWORDS",
-    "annotate_findings",
-    "distinctive_tokens",
-    "evidence_corpus",
-    "evidence_tokens",
-    "fabricated_evidence",
-    "finding_text",
-    "is_grounded",
-    "looks_distinctive",
-]
+def fabricated_evidence(stats):
+    """Any unsupported claimed evidence blocks completion, including mixed lists."""
+    return bool(stats.get("stale") or stats.get("unsupported"))

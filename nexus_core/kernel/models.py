@@ -82,6 +82,8 @@ class ToolDefinition:
     created_at: str = field(default_factory=utc_now)
     scope_target_field: str | None = None
     scope_required: bool = False
+    effects: tuple[str, ...] = ()
+    sandbox_required: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -143,6 +145,7 @@ class RunContext:
     worker_id: str = ""
     # Only ToolGateway populates this after exact-plan durable approval.
     approved_install_plan: Any = field(default=None, repr=False, compare=False)
+    invocation_id: str = ""
 
 
 @dataclass(frozen=True)

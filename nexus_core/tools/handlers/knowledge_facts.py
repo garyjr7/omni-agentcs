@@ -86,8 +86,8 @@ async def record_fact_handler(arguments: dict, context: RunContext) -> ToolResul
     fact_type = str(arguments.get("fact_type") or "").strip()
     key = str(arguments.get("key") or "").strip()
     value = arguments.get("value") if isinstance(arguments.get("value"), dict) else {}
-    source = str(arguments.get("source") or "agent").strip()
-    verified = bool(arguments.get("verified", True))
+    source = "agent"
+    verified = False
     created_by = getattr(getattr(context, "identity", None), "subject_id", "agent")
 
     record = Blackboard(store).record(

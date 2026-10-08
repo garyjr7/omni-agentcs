@@ -60,7 +60,7 @@ class Evidence:
 
 @dataclass(frozen=True)
 class Finding:
-    """A verified observation worth reporting, with its chain of custody."""
+    """An observation, hypothesis or confirmed finding with explicit provenance."""
 
     finding_id: str
     title: str
@@ -79,6 +79,7 @@ class Finding:
     reproduction_steps: tuple[str, ...]
     #: Internal classification used for deduplication (never rendered as-is).
     kind: str = "generic"
+    verification_status: str = "inventory"
     #: How many times the same observation was reproduced inside the window.
     reproductions: int = 1
     #: Whether CVSS came from the tool, the LLM or the deterministic heuristic.
@@ -213,6 +214,13 @@ class EngagementReport:
             counts[key] = counts.get(key, 0) + 1
         return counts
 
+    @property
+    def findings_by_verification(self) -> dict[str, int]:
+        counts = {"confirmed_finding": 0, "hypothesis": 0, "inventory": 0}
+        for finding in self.findings:
+            counts[finding.verification_status] = counts.get(finding.verification_status, 0) + 1
+        return counts
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation of the whole report."""
         return {
@@ -236,6 +244,7 @@ class EngagementReport:
             "timeline": [item.to_dict() for item in self.timeline],
             "run_ids": list(self.run_ids),
             "findings_by_severity": self.findings_by_severity,
+            "findings_by_verification": self.findings_by_verification,
             "notes": self.notes,
             "inventories": [item.to_dict() for item in self.inventories],
             "references": [item.to_dict() for item in self.references],

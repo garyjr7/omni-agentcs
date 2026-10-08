@@ -264,3 +264,13 @@ async def test_unknown_override_is_rejected(tmp_path):
                 llm_client=llm,
                 config=ReActConfig(max_iterations=2),
             )
+
+
+import pytest
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

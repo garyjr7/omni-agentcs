@@ -107,7 +107,9 @@ def test_to_dict_roundtrip_fields():
 
 def test_normalize_counts_from_fact_records():
     counts = normalize_counts(
-        facts=[{"fact_type": "service"}, {"fact_type": "service"}, {"type": "user"}]
+        facts=[dict(fact_type=kind, verified=True, asserted_by="verifier",
+                    verification_method="test-parser", invocation_id="fixture-invocation")
+               for kind in ("service", "service", "user")]
     )
     assert counts == {"service": 2, "user": 1}
 

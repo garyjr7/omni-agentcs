@@ -111,7 +111,10 @@ def preflight_binaries(
     module_finder: ModuleFinder | None = None,
 ) -> PreflightVerdict:
     """Probe the critical binaries and decide whether a run may start."""
+    from nexus_core.kernel.sandbox_modes import SandboxPolicy
+
     environment = dict(os.environ if env is None else env)
+    SandboxPolicy.resolve(environment)
     checks = check_binary_identities(which=which, run=run, identities=identities)
     problems = tuple(identity_problems(checks))
     degraded = env_flag(environment, DEGRADED_TOOLS_ENV)

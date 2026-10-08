@@ -26,6 +26,7 @@ import time
 from typing import Any, TextIO
 
 import os
+from types import SimpleNamespace
 
 from nexus_core.agent import memory
 from nexus_core.agent.preflight import (
@@ -58,12 +59,36 @@ def write_line(stream: TextIO, payload: dict[str, Any]) -> None:
     stream.flush()
 
 
+EXIT_CODE_VERSION = 1
+
+
+from nexus_core.kernel.errors import ApprovalRequired as ApprovalPending, ProviderFailure
+
+
+def exit_code_for(status, completion_verified=False):
+    if status == "completed" and completion_verified:
+        return 0
+    if status == "blocked":
+        return 2
+    if status == "provider_error":
+        return 3
+    if status in {"governance_denial", "scope_violation_aborted"}:
+        return 4
+    if status in {"cancelled", "interrupted"}:
+        return 130
+    return 1
+
+
 def result_payload(result: Any, run_id: str) -> dict[str, Any]:
     """The final ``run.complete`` object (also used by ``--json``)."""
     return {
         "type": "run.complete",
         "run_id": run_id,
         "status": getattr(result, "status", "unknown"),
+        "termination_reason": getattr(result, "termination_reason", None) or getattr(result, "status", "unknown"),
+        "completion_verified": getattr(result, "status", None) == "completed" and bool(getattr(result, "completion_verified", False)),
+        "exit_code": exit_code_for(getattr(result, "status", "unknown"), bool(getattr(result, "completion_verified", False))),
+        "exit_code_version": EXIT_CODE_VERSION,
         "iterations": getattr(result, "iterations", 0),
         "summary": getattr(result, "final_summary", ""),
         "findings": getattr(result, "findings", []),
@@ -177,22 +202,32 @@ def run_headless(
     """Run one objective headlessly; return the process exit code.
 
     ``mode`` is ``"json"`` (one object at the end) or ``"stream"`` (NDJSON plus a
-    final ``run.complete`` line). A non-``completed``/``max_iterations``/
-    ``clarification`` status is a failure for automation.
+    final ``run.complete`` line). Only verified completion exits 0;
+    ``max_iterations`` and ``clarification`` exit 1 under contract v1.
     """
     out = stream if stream is not None else sys.stdout
     objective = str(objective or "").strip()
     if not objective:
-        write_line(out, {"type": "run.error", "error": "el objetivo no puede estar vacío"})
-        return 2
+        payload = result_payload(SimpleNamespace(status="incomplete", termination_reason="invalid_objective"), "")
+        write_line(out, payload)
+        return payload["exit_code"]
 
     # Refuse to start against a wrong binary: it burns tokens and then fails
     # with an opaque post-condition error (B1). The operator can opt into a
     # degraded run with NEXUS_ALLOW_DEGRADED_TOOLS=1.
-    verdict = preflight if preflight is not None else _run_preflight()
+    from nexus_core.kernel.sandbox_modes import SandboxPolicy, UnknownSandboxMode, SandboxModeMismatch, SandboxModeNotImplemented
+    try:
+        SandboxPolicy.resolve()
+        verdict = preflight if preflight is not None else _run_preflight()
+    except (UnknownSandboxMode, SandboxModeMismatch, SandboxModeNotImplemented) as exc:
+        payload = result_payload(SimpleNamespace(status="governance_denial", final_summary=str(exc)), "")
+        write_line(out, payload)
+        return payload["exit_code"]
     if verdict is not None and not verdict.ok:
-        write_line(out, {"type": "run.error", "error": verdict.message()})
-        return 2
+        payload = result_payload(SimpleNamespace(status="incomplete", termination_reason="preflight_failed",
+                                                final_summary=verdict.message()), "")
+        write_line(out, payload)
+        return payload["exit_code"]
     if verdict is not None and verdict.problems and verdict.degraded:
         write_line(
             out,
@@ -258,12 +293,25 @@ def run_headless(
                 conversation_id=session.conversation_id,
             )
         )
+    except ApprovalPending:
+        result = SimpleNamespace(status="blocked", completion_verified=False)
+    except PermissionError:
+        result = SimpleNamespace(status="governance_denial", completion_verified=False)
     except KeyboardInterrupt:  # pragma: no cover - interactive interruption
         session.store.append_run_event(
             session.tenant_id, run_id, "react.cancel_requested", {"source": "headless-sigint"}
         )
-        write_line(out, {"type": "run.error", "run_id": run_id, "error": "interrupted"})
-        return 130
+        result = SimpleNamespace(status="cancelled", completion_verified=False)
+    except Exception as exc:
+        from nexus_core.scope import ScopeViolation
+        from nexus_core.kernel.sandbox_modes import SandboxModeMismatch, SandboxModeNotImplemented, UnknownSandboxMode
+        status = "failed"
+        if isinstance(exc, (ScopeViolation, SandboxModeMismatch, SandboxModeNotImplemented, UnknownSandboxMode)):
+            status = "governance_denial"
+        elif isinstance(exc, (ProviderFailure, TimeoutError, ConnectionError)):
+            status = "provider_error"
+        result = SimpleNamespace(status=status,
+                                 completion_verified=False, final_summary=type(exc).__name__)
     finally:
         stop.set()
         if emitter is not None:
@@ -273,13 +321,20 @@ def run_headless(
     payload["duration_seconds"] = round(time.monotonic() - started, 3)
     payload.update(llm_identity(session))
     write_line(out, payload)
-    return 0 if payload["status"] in {"completed", "max_iterations", "clarification"} else 1
+    return payload["exit_code"]
 
 
 def _trust_approval(session: Any):
     """Approval hook for headless runs (``--trust-mode`` only; else deny)."""
     if not getattr(session, "trust_mode", False):
-        return None
+        def pending(tool_id, arguments, decision):
+            AuditWriter(session.store).append(
+                tenant_id=session.tenant_id, trace_id=session.run_id,
+                actor_id=session.agent_identity_payload.get("subject_id", "headless"),
+                action="approval.pending", resource_type="tool", resource_id=tool_id,
+                payload={"reason": "headless_requires_human"}, decision="deny")
+            raise ApprovalPending("durable human approval required")
+        return pending
     from .approval import make_approval_callback
 
     return make_approval_callback(

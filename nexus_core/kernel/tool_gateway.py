@@ -8,9 +8,11 @@ import json
 import os
 import time
 from dataclasses import replace
+from uuid import uuid4
 from typing import Any, Awaitable, Callable, Dict
 
 from .approvals import ApprovalService
+from .errors import ApprovalRequired, ProviderFailure
 from .audit import AuditWriter
 from .models import Resource, RunContext, ToolDefinition, ToolResult
 from .policy import PolicyEngine
@@ -64,7 +66,16 @@ class ToolGateway:
             definition = self._definitions.get(tool_id)
             if not definition or not definition.enabled:
                 raise KeyError("tool is unavailable")
+            from .sandbox_modes import SandboxPolicy
+
+            SandboxPolicy.resolve()
+            context = replace(context, invocation_id=uuid4().hex)
             validate(arguments, definition.input_schema or {"type": "object"})
+            if context.scope is not None:
+                from .scope_loader import validate_scope_authentication
+
+                validate_scope_authentication(context.scope, self.audit.store, context.tenant_id,
+                                              context.trace_id, context.identity.subject_id)
             if definition.scope_required or definition.scope_target_field:
                 if context.scope is None:
                     if definition.scope_required:
@@ -79,8 +90,14 @@ class ToolGateway:
                             decision="deny",
                         )
                         raise PermissionError("scope is required but not provided")
-                elif self.scope_validator is not None:
+                else:
                     try:
+                        if self.scope_validator is None:
+                            from nexus_core.scope import make_scope_validator
+                            from .scope_loader import scope_signing_secret
+                            validator = make_scope_validator(signing_secret=scope_signing_secret())
+                        else:
+                            validator = self.scope_validator
                         if definition.scope_target_field is None:
                             # Engagement-scoped tools (sessions, C2) carry no
                             # per-call target: validate the engagement itself
@@ -89,7 +106,7 @@ class ToolGateway:
 
                             validate_session_scope(context)
                         else:
-                            self.scope_validator(context, definition, arguments)
+                            validator(context, definition, arguments)
                     except Exception as exc:
                         self.audit.append(
                             tenant_id=context.tenant_id,
@@ -144,6 +161,7 @@ class ToolGateway:
                 # are scrubbed with the audit writer's own field policy, so the
                 # redaction is identical to every other durable record.
                 payload={
+                    "invocation_id": context.invocation_id,
                     "argument_keys": sorted(arguments),
                     "arguments": self.audit._sanitize(dict(arguments)),
                     "run_id": context.run_id,
@@ -160,7 +178,7 @@ class ToolGateway:
                 action = approval_action(install_plan, dry_run=arguments.get("dry_run", False))
             if decision.requires_approval:
                 if not self.approvals or not approval_id:
-                    raise PermissionError("durable human approval is required")
+                    raise ApprovalRequired("durable human approval is required")
                 if not self.approvals.consume(approval_id, context, action):
                     raise PermissionError("approval is invalid or already used")
 
@@ -193,11 +211,17 @@ class ToolGateway:
                 if not isinstance(result, ToolResult):
                     raise TypeError("tool handlers must return ToolResult with deterministic evidence")
                 if not result.success:
+                    if result.timed_out or result.verification_method.endswith(("_rpc_failed", "_credentials_missing", "_unavailable", "_timeout")):
+                        raise ProviderFailure(result.verification_method)
                     raise RuntimeError(
                         "tool post-condition was not verified "
                         f"(method={result.verification_method})"
                     )
+                from .fact_verification import derive_assertions, persist_assertions
+                assertions = derive_assertions(tool_id, arguments, result, context)
                 result_value = result.to_dict()
+                result_value.update(invocation_id=context.invocation_id,
+                                    run_id=context.run_id, assertions=assertions)
                 encoded = json.dumps(result_value, default=str).encode("utf-8")
                 if len(encoded) > definition.max_output_bytes:
                     raise ValueError("tool output exceeds configured limit")
@@ -206,7 +230,8 @@ class ToolGateway:
                     actor_id=context.identity.subject_id, action="tool.complete",
                     resource_type="tool", resource_id=tool_id,
                     payload={"duration_ms": round((time.monotonic() - started) * 1000, 3),
-                             "output_bytes": len(encoded), "run_id": context.run_id},
+                             "output_bytes": len(encoded), "run_id": context.run_id,
+                             "invocation_id": context.invocation_id, "assertions": assertions},
                     decision="allow",
                 )
                 metrics.increment(
@@ -218,6 +243,7 @@ class ToolGateway:
                     (time.monotonic() - started) * 1000,
                     tool_id=tool_id, tenant_id=context.tenant_id,
                 )
+                persist_assertions(assertions, context, tool_id)
                 return result_value
             except Exception as exc:
                 self.audit.append(

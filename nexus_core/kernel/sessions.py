@@ -12,11 +12,11 @@ def validate_session_scope(context: RunContext) -> None:
         raise PermissionError("session operations require a store and engagement")
     if context.scope.tenant_id != context.tenant_id or not context.scope.engagement_id:
         raise PermissionError("session engagement does not belong to tenant")
-    validator = ScopeValidator(context.scope, signing_secret=scope_signing_secret())
-    # Context-only operations (listing) have no target to validate yet.
+    from .scope_loader import validate_scope_authentication
+    # Context-only operations still authenticate and durably audit lab/denial.
     try:
-        validator._validate_signature()
-        validator._validate_time_window()
+        validate_scope_authentication(context.scope, context.store, context.tenant_id,
+                                      context.trace_id, context.identity.subject_id)
     except ScopeViolation as exc:
         raise PermissionError("session engagement is not valid") from exc
 

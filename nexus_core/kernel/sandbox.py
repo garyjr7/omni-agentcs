@@ -11,7 +11,7 @@ import os
 import signal
 import time
 from collections.abc import Iterable, Sequence
-from contextlib import suppress
+from contextlib import suppress, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -213,6 +213,30 @@ class LocalSandbox:
             path.mkdir(parents=True, exist_ok=True)
         return env
 
+    @asynccontextmanager
+    async def open_stdio(self, argv, *, cwd=".", extra_env=None):
+        """Streaming child with the same argv/cwd/env policy as run()."""
+        if not argv or argv[0] not in self.allowed_programs:
+            raise PermissionError("program is not allowed in this sandbox")
+        env = self._sandbox_env()
+        extra_env = extra_env or {}
+        if any(key in env or key.startswith("XDG_") for key in extra_env):
+            raise PermissionError("MCP cannot override sandbox environment controls")
+        env.update(extra_env)
+        process = await asyncio.create_subprocess_exec(
+            *argv, cwd=str(self.resolve_workspace(cwd)), env=env,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, start_new_session=True,
+            limit=self.max_output_bytes,
+        )
+        try:
+            yield process
+        finally:
+            await _terminate_process_group(process, 1.0)
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            await process.wait()
+
     async def terminate(
         self, process: asyncio.subprocess.Process, *, grace_seconds: float = 3.0
     ) -> int:
@@ -366,6 +390,38 @@ class OCISandbox:
             *command,
         ]
 
+    @asynccontextmanager
+    async def open_stdio(self, argv, *, image, extra_env=None):
+        """Interactive OCI process; stop the daemon-owned container on exit."""
+        command = self.build_argv(image, argv)
+        command.insert(2, "--interactive")
+        position = command.index(image)
+        for key, value in (extra_env or {}).items():
+            if key in {"HOME", "PATH"} or key.startswith("XDG_"):
+                raise PermissionError("MCP cannot override sandbox environment controls")
+            command[position:position] = ["--env", f"{key}={value}"]
+            position += 2
+        name = command[command.index("--name") + 1]
+        process = await asyncio.create_subprocess_exec(
+            *command, cwd=str(self.workspace_root), env=dict(SANDBOX_BASE_ENV),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, start_new_session=True,
+        )
+        try:
+            yield process
+        finally:
+            cleanup = await asyncio.create_subprocess_exec(
+                self.runtime, "rm", "--force", name,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                env=dict(SANDBOX_BASE_ENV), start_new_session=True,
+            )
+            try:
+                await asyncio.wait_for(cleanup.wait(), 10)
+            except asyncio.TimeoutError:
+                await _terminate_process_group(cleanup, 1)
+            await _terminate_process_group(process, 1)
+            await process.wait()
+
     async def run(
         self,
         image: str,
@@ -448,14 +504,6 @@ def sandbox_for_environment(
     workspace_root: str | Path,
     allowed_programs: Iterable[str] | None = None,
 ):
-    environment = os.getenv("NEXUS_ENV", "development").lower()
-    if environment == "production":
-        images = [item.strip() for item in os.getenv(
-            "NEXUS_SANDBOX_IMAGES", "python:3.12-alpine"
-        ).split(",") if item.strip()]
-        return OCISandbox(
-            workspace_root, images, runtime=os.getenv("NEXUS_OCI_RUNTIME", "docker")
-        )
-    if allowed_programs is None:
-        return LocalSandbox(workspace_root)
-    return LocalSandbox(workspace_root, allowed_programs)
+    from .sandbox_modes import SandboxPolicy
+
+    return SandboxPolicy.resolve(workspace_root=workspace_root, allowed_programs=allowed_programs)[1]

@@ -121,10 +121,10 @@ def test_result_payload_carries_the_subagent_attribution():
 # --------------------------------------------------------------- json mode
 
 
-def test_json_mode_prints_exactly_one_object_and_exits_zero(session):
+def test_json_mode_without_evidence_is_incomplete(session):
     buffer = io.StringIO()
     code = run_headless(session, "Escanea 10.0.0.5", mode="json", stream=buffer)
-    assert code == 0
+    assert code == 1
     lines = _lines(buffer)
     assert len(lines) == 1
     assert lines[0]["type"] == "run.complete"
@@ -134,8 +134,8 @@ def test_json_mode_prints_exactly_one_object_and_exits_zero(session):
 
 def test_empty_objective_is_a_usage_error_without_running_anything(session):
     buffer = io.StringIO()
-    assert run_headless(session, "   ", mode="json", stream=buffer) == 2
-    assert _lines(buffer)[0]["type"] == "run.error"
+    assert run_headless(session, "   ", mode="json", stream=buffer) == 1
+    assert _lines(buffer)[0]["type"] == "run.complete"
 
 
 # -------------------------------------------------------------- stream mode
@@ -144,7 +144,7 @@ def test_empty_objective_is_a_usage_error_without_running_anything(session):
 def test_stream_mode_is_line_delimited_and_carries_subagent_id(session):
     buffer = io.StringIO()
     code = run_headless(session, "Escanea 10.0.0.5", mode="stream", stream=buffer)
-    assert code == 0
+    assert code == 1
     lines = _lines(buffer)  # every line parses on its own
     assert lines[-1]["type"] == "run.complete"
     assert lines[-1]["status"] == "completed"

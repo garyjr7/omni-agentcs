@@ -3,6 +3,8 @@
 All DNS access is mocked; the suite performs no network I/O.
 """
 
+
+import pytest
 import asyncio
 import hashlib
 import hmac
@@ -164,10 +166,10 @@ class ScopeValidationTests(unittest.TestCase):
         with self.assertRaises(ScopeSignatureInvalid):
             ScopeValidator(scope, signing_secret="top-secret").validate("203.0.113.10")
 
-    def test_signature_absent_is_allowed(self):
+    def test_signature_absent_is_rejected_in_governed(self):
         scope = make_scope(signature="")
-        result = ScopeValidator(scope, signing_secret="top-secret").validate("203.0.113.10")
-        self.assertEqual(result.ip, "203.0.113.10")
+        with self.assertRaises(ScopeSignatureInvalid):
+            ScopeValidator(scope, signing_secret="top-secret", mode="governed").validate("203.0.113.10")
 
     def test_wizard_scope_signature_survives_persistence(self):
         # Regression: the wizard signs before EngagementStore.create() fills
@@ -416,3 +418,11 @@ class ScopeValidatorBatchTargetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

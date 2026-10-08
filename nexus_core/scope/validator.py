@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
+import logging
 import ipaddress
 import re
 from datetime import datetime, timezone
@@ -53,7 +55,13 @@ class ScopeValidator:
         resolver: DNSResolver | None = None,
         signing_secret: str | None = None,
         allow_private_ips_in_scope: bool = True,
+        mode: str | None = None,
+        audit: Callable | None = None,
     ):
+        self.mode = mode if mode is not None else os.getenv("NEXUS_SCOPE_MODE", "governed")
+        if self.mode not in {"governed", "lab"}:
+            raise ValueError(f"unknown scope mode: {self.mode!r}")
+        self.audit = audit
         self.scope = scope
         self.resolver = resolver if resolver is not None else DNSResolver()
         self.signing_secret = signing_secret
@@ -85,8 +93,19 @@ class ScopeValidator:
     # ------------------------------------------------------------ pre-checks
     def _validate_signature(self) -> None:
         """Verify HMAC-SHA256 over :meth:`EngagementScope.canonical_form`."""
-        if not self.scope.signature or self.signing_secret is None:
+        if not self.scope.signature and self.mode == "lab":
+            detail = {"engagement_id": self.scope.engagement_id, "mode": "lab"}
+            if self.audit is not None:
+                self.audit("scope.unsigned_accepted", detail)
+            else:
+                logging.getLogger(__name__).warning("scope.unsigned_accepted: %s", detail)
             return
+        if not self.scope.signature or not self.signing_secret:
+            raise ScopeSignatureInvalid(
+                self.scope.engagement_id or self.scope.name,
+                "governed scope requires a signature and signing secret",
+                self.scope.engagement_id,
+            )
         expected = hmac.new(
             self.signing_secret.encode("utf-8"),
             self.scope.canonical_form().encode("utf-8"),

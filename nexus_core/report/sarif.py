@@ -60,7 +60,8 @@ def _rule_for(finding: Finding) -> dict[str, Any]:
         tags.append(str(finding.cwe))
     if finding.owasp_category:
         tags.append(str(finding.owasp_category))
-    properties: dict[str, Any] = {"security-severity": _security_severity(finding), "tags": tags}
+    properties: dict[str, Any] = {
+        "verificationStatus": finding.verification_status,"security-severity": _security_severity(finding), "tags": tags}
     if finding.cwe:
         properties["cwe"] = finding.cwe
     return {
@@ -94,6 +95,7 @@ def _uri(value: str) -> str:
 def _result_for(finding: Finding, rule_index: int) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "findingId": finding.finding_id,
+        "verificationStatus": finding.verification_status,
         "severity": finding.severity,
         "tool": finding.discovered_by_tool,
         "targets": list(finding.affected_targets),

@@ -205,3 +205,11 @@ def test_react_loop_receives_prior_context(session):
     second = _run_objective(session.store, "Ahora el host B", conversation_id)
     assert "Escanea el host A" in second.calls[0]
     assert "Ahora el host B" in second.calls[0]
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

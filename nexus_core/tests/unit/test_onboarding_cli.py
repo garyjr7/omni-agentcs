@@ -11,7 +11,7 @@ pytestmark = pytest.mark.usefixtures("onboarding_env")
 
 
 def test_config_path_has_no_filesystem_side_effect(onboarding_env, capsys):
-    with patch.object(omni, "load_dotenv"):
+    with patch("dotenv.load_dotenv"):
         assert omni.main(["--config-path"]) == 0
     assert capsys.readouterr().out.strip() == str(onboarding_env.paths.config_file)
     assert not onboarding_env.paths.config_dir.exists()
@@ -19,7 +19,7 @@ def test_config_path_has_no_filesystem_side_effect(onboarding_env, capsys):
 
 def test_doctor_skips_wizard(onboarding_env, capsys):
     with (
-        patch.object(omni, "load_dotenv"),
+        patch("dotenv.load_dotenv"),
         patch("nexus_core.cli.wizard.run_wizard", side_effect=AssertionError),
         patch("socket.create_connection", side_effect=OSError),
     ):
@@ -29,7 +29,7 @@ def test_doctor_skips_wizard(onboarding_env, capsys):
 
 def test_no_tty_uses_xdg_db(onboarding_env):
     with (
-        patch.object(omni, "load_dotenv"),
+        patch("dotenv.load_dotenv"),
         patch("sys.stdin.isatty", return_value=False),
         patch("nexus_core.cli.main.main", return_value=0) as cli,
     ):
@@ -39,7 +39,7 @@ def test_no_tty_uses_xdg_db(onboarding_env):
 
 def test_editor_uses_argv_not_shell(onboarding_env, monkeypatch):
     monkeypatch.setenv("EDITOR", "editor --wait")
-    with patch.object(omni, "load_dotenv"):
+    with patch("dotenv.load_dotenv"):
         assert omni.main(["--config"]) == 0
     assert onboarding_env.run.call_args.args[0] == [
         "editor",

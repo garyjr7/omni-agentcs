@@ -193,3 +193,11 @@ async def test_context_cancel_event_is_used_when_argument_omitted(harness):
             llm_client=_LLM(),
         )
     assert result.status == STATUS_CANCELLED
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

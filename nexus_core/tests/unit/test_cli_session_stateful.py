@@ -291,3 +291,11 @@ def test_invoke_tool_denies_when_operator_refuses(session, daemon, capsys):
     ):
         assert session.invoke_tool("nexus.session.interact", {"command": "id"}) is None
     assert "denegado por el operador" in capsys.readouterr().out
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

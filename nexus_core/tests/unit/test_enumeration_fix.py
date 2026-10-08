@@ -146,7 +146,7 @@ def _spy(store, *, record_facts: bool):
 
     async def _call(payload, context):
         executed.append(payload["tool_id"])
-        if record_facts and payload["tool_id"] == "nexus.knowledge.record_fact":
+        if record_facts and payload["tool_id"] == "nexus.recon.nmap":
             arguments = payload.get("arguments") or {}
             board.record(
                 tenant_id=TENANT,
@@ -155,6 +155,7 @@ def _spy(store, *, record_facts: bool):
                 key=str(arguments.get("key") or "10.0.0.5:21/tcp"),
                 value=arguments.get("value") or {},
                 source="test",
+                verified=True, asserted_by="verifier", verification_method="nmap_xml_parsed", invocation_id="fixture-invocation",
                 created_by="tester",
             )
         return _result_for(payload["tool_id"])
@@ -184,7 +185,7 @@ async def test_first_service_fact_keeps_the_tools_that_enumerate_it(tmp_path):
     spy, executed = _spy(store, record_facts=True)
     llm = _ScriptedLLM(
         [
-            _record_ftp_service(),  # 1: recon -> the first ``service`` fact
+            _tool_call("nexus.recon.nmap"),  # 1: recon -> the first ``service`` fact
             _tool_call("nexus.recon.nmap"),  # 2: enumeration, grace
             _tool_call("nexus.recon.nmap"),  # 3: enumeration, grace
             _tool_call("nexus.recon.nmap"),  # 4: enumeration, grace expired
@@ -207,7 +208,7 @@ async def test_first_service_fact_keeps_the_tools_that_enumerate_it(tmp_path):
     # The service profile itself offers the FTP enumeration tool.
     assert "nexus.recon.ftp" in llm.calls[1][0]["content"]
     # P1: nmap (only reachable through the grace) ran twice, then was refused.
-    assert executed.count("nexus.recon.nmap") == 2
+    assert executed.count("nexus.recon.nmap") == 3
     assert "nexus.recon.nmap" in llm.calls[1][0]["content"]
     assert "nexus.recon.nmap" in llm.calls[2][0]["content"]
     assert "nexus.recon.nmap" not in llm.calls[3][0]["content"]
@@ -219,7 +220,7 @@ async def test_service_profile_is_announced_with_its_effective_subset(tmp_path):
     """P3: ``orchestrator.subagent`` carries ``tools``, so P1-style locks show up."""
     store, context, _ = _harness(tmp_path)
     spy, _ = _spy(store, record_facts=True)
-    llm = _ScriptedLLM([_record_ftp_service(), _task_complete()])
+    llm = _ScriptedLLM([_tool_call("nexus.recon.nmap"), _task_complete()])
 
     with mock.patch.object(runtime_module, "execute_tool", spy):
         await run_react_loop(
@@ -287,7 +288,7 @@ def test_operator_pin_reaches_the_headless_payload(tmp_path, monkeypatch):
     buffer = io.StringIO()
     code = headless_module.run_headless(session, "Enumera 10.0.0.5", mode="json", stream=buffer)
 
-    assert code == 0
+    assert code == 1
     assert captured and captured[0]["subagent"] == "services"
     assert json.loads(buffer.getvalue().splitlines()[-1])["status"] == "completed"
 
@@ -305,3 +306,11 @@ def test_repl_subagent_command_sets_and_clears_the_pin():
     assert session.subagent_override == "web"
     commands.cmd_subagent(session, ["nope"])
     assert session.subagent_override == "web"
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

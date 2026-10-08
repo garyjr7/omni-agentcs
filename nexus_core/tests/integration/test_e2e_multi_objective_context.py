@@ -121,3 +121,11 @@ def test_ask_reuses_work_session_created_by_objectives(session):
     assert sum(1 for m in messages if m["metadata"].get("source") == "ask") == 2
     # No extra work session was opened by /ask.
     assert len(commands._work_conversations(session)) == 1
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

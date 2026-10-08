@@ -55,9 +55,9 @@ TIPS = (
 #: Human note per sandbox mode; makes the guarantees visible at a glance.
 SANDBOX_NOTES: dict[str, str] = {
     "local": "sin aislamiento",
-    "local_strict": "sin aislamiento de red",
+    "local_strict": "sin aislamiento",
     "oci": "container aislado · sin red",
-    "oci_network": "container · red filtrada por scope",
+    "oci_network": "no implementado",
 }
 
 #: Below this width the ASCII art is dropped and only the stats block is shown.

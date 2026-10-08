@@ -144,3 +144,11 @@ def test_e2e_credentials_never_persisted_to_kernel_messages(tmp_path, wrapper, m
     from nexus_core.kernel.audit import AuditWriter
     assert AuditWriter(store).verify_chain()[0]
     assert outcome.conversation_id
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

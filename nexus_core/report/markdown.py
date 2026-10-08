@@ -64,7 +64,7 @@ def render_markdown(report: EngagementReport) -> str:
     lines += ["## Resumen ejecutivo", ""]
     summary = counts
     lines.append(
-        "- Hallazgos: "
+        "- Registros (incluye hipótesis e inventario): "
         f"**{summary.get('critical', 0)} críticos**, "
         f"**{summary.get('high', 0)} altos**, "
         f"**{summary.get('medium', 0)} medios**, "
@@ -72,6 +72,7 @@ def render_markdown(report: EngagementReport) -> str:
         f"{summary.get('info', 0)} informativos "
         f"({len(report.findings)} en total)."
     )
+    lines.append(f"- Estado de evidencia: {report.findings_by_verification}.")
     lines.append(f"- Intentos sin hallazgo: {len(report.failed_attempts)}.")
     lines.append(f"- Sesiones abiertas y verificadas: {report.sessions_opened}.")
     lines.append(f"- Eventos de auditoría considerados: {report.audit_events_total}.")
@@ -85,7 +86,7 @@ def render_markdown(report: EngagementReport) -> str:
     lines.append("")
 
     priorities = [
-        finding for finding in report.findings if finding.severity in {"critical", "high"}
+        finding for finding in report.findings if finding.severity in {"critical", "high"} and finding.verification_status == "confirmed_finding"
     ]
     if priorities:
         lines += ["### Hallazgos prioritarios (para dirección)", ""]
@@ -250,7 +251,7 @@ def render_markdown(report: EngagementReport) -> str:
     lines.append("")
     lines.append(
         "_Este reporte es una transcripción del registro durable del engagement. "
-        "No incluye ninguna conclusión que el toolkit no haya verificado._"
+        "Distingue confirmed_finding, hypothesis e inventory; una hipótesis no está verificada._"
     )
     lines.append("")
     return "\n".join(lines)
@@ -315,6 +316,7 @@ def _render_finding(finding: Finding) -> list[str]:
     lines = [
         f"### [{SEVERITY_LABEL.get(finding.severity, finding.severity.upper())}] {finding.title}",
         "",
+        f"**Estado de evidencia:** {finding.verification_status}",
         f"**CVSS v3.1:** {_cvss_text(finding)}",
         f"**CVSS v4.0:** {_cvss4_text(finding)}",
         f"**MITRE ATT&CK:** {', '.join(finding.mitre_techniques) or 'n/d'}",

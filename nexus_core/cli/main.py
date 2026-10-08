@@ -141,6 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
         ("banner", "usa el banner ASCII completo en el arranque del REPL"),
     ):
         parser.add_argument("--" + flag, action="store_true", help=help_text)
+    parser.epilog = ("omni run · códigos de salida v1: 0=completed verificado; "
+                     "1=incomplete; 2=aprobación pendiente; 3=provider_error; "
+                     "4=governance_denial; 130=SIGINT. "
+                     "Scope: governed por defecto; NEXUS_SCOPE_MODE=lab acepta scopes "
+                     "unsigned con auditoría (nunca en producción).")
     return parser
 
 

@@ -55,6 +55,7 @@ def test_run_bootstrap_without_yes_only_prints(monkeypatch):
 
 
 def test_run_bootstrap_with_yes_executes(monkeypatch):
+    monkeypatch.setattr("nexus_core.provisioner.bootstrap.shutil.which", lambda n: f"/usr/bin/{n}")
     monkeypatch.setattr("nexus_core.provisioner.installer.plan_install", _fake_plan)
     monkeypatch.setattr(
         "nexus_core.provisioner.installer.execute_install",

@@ -51,7 +51,7 @@ def test_no_info_logs_before_banner_on_startup(onboarding_env, monkeypatch, caps
     monkeypatch.setattr(logger, "propagate", False)
     monkeypatch.setattr(logger, "level", logging.INFO)
     logger.manager._clear_cache()
-    monkeypatch.setattr(omni, "load_dotenv", lambda *a, **k: logger.info("Groq client created"))
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: logger.info("Groq client created"))
     monkeypatch.setattr("nexus_core.cli.wizard.should_run_wizard", lambda *a, **k: False)
     def repl(*args, **kwargs):
         print("BANNER")

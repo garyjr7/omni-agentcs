@@ -69,15 +69,10 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="Claim at most one task")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     args = parser.parse_args()
-    from dotenv import load_dotenv
     from nexus_core.cli.llm_env import configure_logging, publish_default_provider
-    from nexus_core.config.loader import apply_environment, load_config
-    from nexus_core.config.xdg import resolve_xdg_paths
+    from nexus_core.config.bootstrap import bootstrap_secrets_and_config
 
-    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
-    paths = resolve_xdg_paths()
-    config = load_config(paths)
-    apply_environment(config, paths)
+    paths, config = bootstrap_secrets_and_config(Path(__file__).resolve().parent)
     configure_logging()
     # Same resolution as the CLI: the worker runs the same agentic executors.
     publish_default_provider(config)

@@ -69,8 +69,10 @@ def parse_server(entry: dict[str, Any]) -> MCPServerConfig:
     env = entry.get("env") or {}
     if not isinstance(env, dict):
         raise ValueError(f"servidor MCP '{name}': 'env' debe ser una tabla")
-    return MCPServerConfig(
+    config = MCPServerConfig(
         name=name,
+        capabilities=entry.get("capabilities") or {},
+        workspace_root=str(entry.get("workspace_root") or "."),
         transport=transport,
         command=str(entry.get("command") or ""),
         args=_as_str_tuple(entry.get("args")),
@@ -81,6 +83,9 @@ def parse_server(entry: dict[str, Any]) -> MCPServerConfig:
         call_timeout=float(entry.get("call_timeout") or 30.0),
         connect_timeout=float(entry.get("connect_timeout") or 30.0),
     )
+
+    config.validate_capabilities()
+    return config
 
 
 def parse_config(text: str) -> list[MCPServerConfig]:

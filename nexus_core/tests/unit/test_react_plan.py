@@ -104,6 +104,7 @@ async def test_plan_reflects_blackboard_facts(harness):
         key="10.0.0.5:21/tcp",
         value={"product": "vsftpd"},
         source="nexus.recon.nmap",
+        verified=True, asserted_by="verifier", verification_method="nmap_xml_parsed", invocation_id="fixture-invocation",
         created_by="operator-1",
     )
     context = _context(store)
@@ -150,3 +151,11 @@ def _loop_config(**kwargs):
     """
     kwargs.setdefault("enforce_completion_gates", False)
     return ReActConfig(**kwargs)
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

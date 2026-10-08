@@ -147,6 +147,8 @@ class ToolSpy:
         self.payloads.append(payload)
         result = copy.deepcopy(self.response)
         result["tool_id"] = payload["tool_id"]
+        result["output"]["assertions"] = [dict(invocation_id="test-invocation",run_id=context.run_id,
+            target=CURRENT_TARGET,fact_type="service",verified=True,verification_method="test-parser")]
         return result
 
 
@@ -213,7 +215,8 @@ def _seed_completed_plan(store, engagement_id: str = "eng-1") -> None:
             fact_type=fact_type,
             key=f"k-{fact_type}",
             value={"note": fact_type},
-            source="record_fact",
+            source="test-parser",
+            verified=True, asserted_by="verifier", verification_method="test-parser", invocation_id="fixture-invocation",
             created_by="operator-1",
         )
 
@@ -259,7 +262,7 @@ async def test_premature_task_complete_is_refused_and_the_loop_keeps_working(har
 async def test_task_complete_is_accepted_on_the_reporting_phase(harness):
     store, context = harness
     _seed_completed_plan(store)
-    llm = ScriptedLLM([_complete({"severity": "high", "title": "acceso", "evidence": "ftp"})])
+    llm = ScriptedLLM([_complete()])
 
     with mock.patch.object(runtime_module, "execute_tool", ToolSpy()):
         result = await run_react_loop(
@@ -334,7 +337,8 @@ async def test_findings_grounded_in_this_runs_observation_survive(harness):
             _complete(
                 {
                     "severity": "high",
-                    "title": f"FTP anónimo en {CURRENT_TARGET}",
+                    "title": f"FTP observado en {CURRENT_TARGET}",
+                    "invocation_id": "test-invocation", "target": CURRENT_TARGET, "fact_type": "service",
                     "evidence": f"21/tcp open ftp en {CURRENT_TARGET}",
                 }
             ),
@@ -489,33 +493,26 @@ async def test_a_tool_whose_binary_is_missing_starts_retired(harness, monkeypatc
 
 # ------------------------------------------------------------ evidence module
 def test_annotate_findings_marks_unsupported_and_stale():
-    observations = [{"output": {"target": CURRENT_TARGET}, "evidence": {"ports": [22]}}]
+    observations = [dict(invocation_id="i1",run_id="r1",target=CURRENT_TARGET,
+                         fact_type="service",verified=True,verification_method="test-parser")]
     findings, stats = annotate_findings(
-        [
-            {"title": "FTP", "evidence": f"ftp en {CURRENT_TARGET}"},
-            {"title": "SSH", "evidence": f"ssh en {STALE_TARGET}"},
-            {"title": ""},
-        ],
-        observations=observations,
-    )
-    assert [item["evidence_source"] for item in findings] == [
-        "current_run",
-        "stale_evidence",
-        "no_evidence",
-    ]
-    assert stats == {
-        "findings_total": 3,
-        "grounded": 1,
-        "stale": 1,
-        "unsupported": 1,
-        "corpus_tokens": 2,
-        "corpus_observations": 1,
-    }
-    assert fabricated_evidence(stats) is False  # something WAS grounded
+        [dict(title="FTP",invocation_id="i1",target=CURRENT_TARGET,fact_type="service"),
+         {"title":"SSH", "evidence":f"ssh en {STALE_TARGET}"}, {"title":""}],
+        observations=observations,run_id="r1")
+    assert [item["evidence_source"] for item in findings] == ["current_run","stale_evidence","no_evidence"]
+    assert stats['grounded'] == stats['stale'] == stats['unsupported'] == 1
+    assert fabricated_evidence(stats) is True
 
 
-def test_fabricated_evidence_requires_a_corpus_to_compare_against():
-    empty, stats = annotate_findings([{"title": f"algo en {STALE_TARGET}"}], observations=[])
-    assert empty[0]["evidence_source"] == "stale_evidence"
-    # With nothing observed, "stale" cannot be asserted: the plan gate decides.
-    assert fabricated_evidence(stats) is False
+def test_fabricated_evidence_without_observations_still_blocks():
+    findings, stats = annotate_findings([{"title":f"algo en {STALE_TARGET}"}],observations=[])
+    assert findings[0]['evidence_source'] == 'stale_evidence'
+    assert fabricated_evidence(stats) is True
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

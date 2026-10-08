@@ -108,13 +108,17 @@ Para invocar una herramienta:
   "expected_outcome": "qué esperas que devuelva esta tool"
 }}
 
+Los hechos registrados por knowledge.record_fact son hipótesis, aunque se envíe
+verified=true. Solo assertions emitidas por verificadores deterministas permiten
+avanzar el plan o confirmar hallazgos. Conserva invocation_id, target, fact_type y
+value sin inventarlos. Un resultado de ejecución no prueba una vulnerabilidad.
 Para declarar la tarea completa:
 {{
   "thought": "razonamiento final",
   "action": "task_complete",
   "summary": "resumen ejecutivo de lo logrado",
   "findings": [
-    {{"severity": "high", "title": "...", "evidence": "..."}}
+    {{"severity": "info", "title": "...", "invocation_id": "id de assertions", "target": "objetivo exacto", "fact_type": "tipo exacto verificado", "value": {{}}}}
   ]
 }}
 

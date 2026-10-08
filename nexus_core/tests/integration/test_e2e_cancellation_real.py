@@ -149,3 +149,11 @@ def test_loop_cancellation_kills_the_tool_sandbox(tmp_path):
 async def _cancel_soon(event: asyncio.Event, delay: float) -> None:
     await asyncio.sleep(delay)
     event.set()
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

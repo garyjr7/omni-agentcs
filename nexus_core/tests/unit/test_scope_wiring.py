@@ -164,3 +164,11 @@ def test_execute_brain_propagates_engagement_id_to_steps(tmp_path, monkeypatch):
     assert captured
     assert all(item.get("engagement_id") == "eng-1" for item in captured)
     assert result["evaluation"]["passed"] is True
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

@@ -142,7 +142,7 @@ def render_html(report: EngagementReport) -> str:
     parts.append("</div>")
     parts += [
         "<ul>",
-        f"<li>Hallazgos verificados: <strong>{len(report.findings)}</strong>.</li>",
+        f"<li>Estado de evidencia: {_e(report.findings_by_verification)}.</li>",
         f"<li>Intentos sin hallazgo: {len(report.failed_attempts)}.</li>",
         f"<li>Sesiones abiertas: {report.sessions_opened}.</li>",
         f"<li>Eventos de auditoría considerados: {report.audit_events_total}.</li>",
@@ -153,7 +153,7 @@ def render_html(report: EngagementReport) -> str:
         parts.append(f"<li>{_e(report.notes)}</li>")
     parts += ["</ul>"]
     priorities = [
-        item for item in report.findings if item.severity in {"critical", "high"}
+        item for item in report.findings if item.severity in {"critical", "high"} and item.verification_status == "confirmed_finding"
     ]
     if priorities:
         parts.append("<h3>Hallazgos prioritarios</h3><ul>")
@@ -393,6 +393,7 @@ def _render_finding(finding: Finding) -> str:
         '<div class="head">',
         f'<span class="sev sev-{level}">{SEVERITY_LABEL.get(level, level.upper())}</span>',
         f"<h3>{_e(finding.title)}</h3>",
+        f"<p>Estado de evidencia: {_e(finding.verification_status)}</p>",
         "</div>",
         '<dl class="props">',
         f"<dt>CVSS v3.1</dt><dd>{cvss31}</dd>",

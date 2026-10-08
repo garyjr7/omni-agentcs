@@ -25,3 +25,11 @@ def test_cross_engagement_denied_even_with_approval(tmp_path, monkeypatch):
     client.authenticate.assert_not_awaited()
     client.run_in_session.assert_not_awaited()
     assert audit.verify_chain()[0]
+
+
+# This module's unsigned scopes exercise targeting/session behavior. Authentication
+# is covered separately in test_scope_governed_mode with the governed default.
+pytestmark = globals().get("pytestmark", [])
+if not isinstance(pytestmark, list):
+    pytestmark = [pytestmark]
+pytestmark.append(pytest.mark.usefixtures("lab_scope"))

@@ -376,6 +376,8 @@ async def execute_react(payload: dict, context: ExecutionContext) -> dict:
     )
     return {
         "status": result.status,
+        "completion_verified": result.completion_verified,
+        "termination_reason": result.status,
         "iterations": result.iterations,
         "summary": result.final_summary,
         "findings": result.findings,
