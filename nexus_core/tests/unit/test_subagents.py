@@ -16,7 +16,7 @@ from nexus_core.tools.registry import durable_tool_definitions
 def test_registry_is_healthy_against_the_durable_catalog():
     catalog = durable_tool_definitions("system")
     assert subagents.validate_registry(catalog) == []
-    assert len(catalog) == 45
+    assert len(catalog) == 47
 
 
 def test_read_only_profiles_list_no_active_tool():

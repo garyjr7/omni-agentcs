@@ -68,7 +68,8 @@ def test_prompt_catalog_compact_format(catalog):
 
 
 def test_catalog_stays_compact_for_all_tools(catalog):
-    assert len(catalog) == 45
+    # 47 tools after adding nexus.recon.smb and nexus.post.smb_upload.
+    assert len(catalog) == 47
     # Compact catalog only: ~190 chars per tool, never the full JSON schema.
     assert len(render_tool_catalog(catalog)) < 9600
 

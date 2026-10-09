@@ -87,6 +87,12 @@ def durable_tool_definitions(
         workspace_search_handler,
     )
     from .handlers.netexec import netexec_definition, netexec_handler
+    from .handlers.smb import (
+        smb_definition,
+        smb_handler,
+        smb_upload_definition,
+        smb_upload_handler,
+    )
     from .handlers.bloodhound import bloodhound_definition, bloodhound_handler
     from .handlers.impacket_secretsdump import (
         impacket_secretsdump_definition,
@@ -169,6 +175,11 @@ def durable_tool_definitions(
             searchsploit_handler,
         ),
         "nexus.recon.netexec": (netexec_definition(tenant_id), netexec_handler),
+        "nexus.recon.smb": (smb_definition(tenant_id), smb_handler),
+        "nexus.post.smb_upload": (
+            smb_upload_definition(tenant_id),
+            smb_upload_handler,
+        ),
         "nexus.recon.bloodhound_python": (
             bloodhound_definition(tenant_id),
             bloodhound_handler,
