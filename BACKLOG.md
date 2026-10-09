@@ -74,3 +74,20 @@ Nota de cierre: la reserva es una estimación (chars/4) y es fail-closed a
 propósito; un presupuesto global pequeño puede rechazar un request barato. La
 deuda de tipado TUI de Fase 1 sigue vigente y no se presentan los tests verdes
 como tipado estricto.
+
+## Fase V0 · Validación con salas (deudas de RUN_sala02 · RootMe)
+
+La sala #2 se completó con `omni tool` (ver `docs/missions/salas/RUN_sala02.md`).
+Deudas concretas detectadas midiendo el motor:
+
+| ID | Pendiente | Impacto actual | Criterio de cierre |
+| --- | --- | --- | --- |
+| V0-1 · Wordlists | `DEFAULT_SYSTEM_WORDLIST_DIRS` (`ffuf.py`) no incluye `/usr/share/dirbuster/wordlists`, y el symlink `/usr/share/wordlists/dirbuster` escapa del root resuelto. | gobuster/ffuf rechazan la wordlist estándar de dirbuster; hay que saber usar `/usr/share/dirb/wordlists/common.txt`. | Añadir el dir por defecto o resolver el symlink antes del `_inside`; prueba de path real de Kali + negatives. |
+| V0-2 · Verificador de loot | No hay parser determinista que promueva hechos `loot`/`access`/`privilege`; quedan `asserted_by=agent`. | Los flags capturados salen como **hypothesis** en el reporte aunque el operador los verificó. | Parser determinista por tipo (p. ej. regex de flag + ubicación) que acredite el hallazgo; casos positivos/negativos. |
+| V0-3 · Interacción post-explotación | **Parcialmente cerrado**: `nexus.post.listener` (HIGH, engagement-scoped, valida el peer contra el scope firmado, guarda transcripción+sha256 en el workspace) cubre un catch reverse-shell gobernado sin MSF. Falta `nexus.post.webshell_exec` de primera clase y una sesión interactiva multi-paso (hoy es un catch por vez). | Footholds con canal inverso ya son gobernados; el webshell sigue siendo una petición por comando. | `nexus.post.webshell_exec`/session manager con scope+auditoría; pruebas de reconexión. |
+| V0-4 · Entorno MSF | `msfrpcd` no arranca por defecto; `nexus.exploit.msf_*`/`nexus.session.*` fallan sin él. | Las rutas MSF no son usables out-of-the-box. | Preflight que arranque/valide el RPC o falle con mensaje accionable (no un error opaco). |
+| V0-5 · SARIF | `nexus.report.generate` con `format:both` reporta `sarif_size_bytes` > 0 pero `report_path_sarif` vacío y no escribe el `.sarif`. | Un consumidor de SARIF recibe ruta vacía y el archivo no existe. | Escribir el `.sarif` cuando se computa, o no reportar su tamaño; test de artifact existente. |
+
+Cerradas en este run (no quedan como deuda): subida multipart con campos de
+formulario (`nexus.web.request`), vector SUID de python en `privesc_hints`, y
+lentitud de nmap (`-n` por perfil + `--min-rate`).
