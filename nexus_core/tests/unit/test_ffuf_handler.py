@@ -137,6 +137,107 @@ def test_handler_rejects_url_without_fuzz_keyword(wordlist):
             _run({"url": "https://scanme.example/", "wordlist": str(wordlist)})
 
 
+def test_vhost_template_is_appended_as_host_header(wordlist):
+    with _fake_sandbox(SandboxResult(0, _read("ndjson.jsonl"), "")) as (sandbox, _):
+        result = _run(
+            {
+                "url": "http://nahamstore.thm/",
+                "wordlist": str(wordlist),
+                "vhost": "FUZZ.nahamstore.thm",
+            }
+        )
+    argv = sandbox.calls[0][0]
+    assert argv[argv.index("-H") + 1] == "Host: FUZZ.nahamstore.thm"
+    assert result.evidence["vhost"] == "FUZZ.nahamstore.thm"
+
+
+def test_vhost_static_host_is_appended_as_host_header(wordlist):
+    """A static Host (no FUZZ) is allowed and built by the handler.
+
+    That is what makes content discovery usable on a virtual host that does not
+    resolve in DNS: ffuf keeps fuzzing the path while the handler pins ``Host``.
+    """
+    with _fake_sandbox(SandboxResult(0, _read("ndjson.jsonl"), "")) as (sandbox, _):
+        result = _run(
+            {
+                "url": "http://nahamstore.thm/FUZZ",
+                "wordlist": str(wordlist),
+                "vhost": "stock.nahamstore.thm",
+            }
+        )
+    argv = sandbox.calls[0][0]
+    assert argv[argv.index("-H") + 1] == "Host: stock.nahamstore.thm"
+    assert result.evidence["vhost"] == "stock.nahamstore.thm"
+
+
+def test_vhost_without_a_dot_is_rejected(wordlist):
+    with _fake_sandbox(SandboxResult(0, _read("ndjson.jsonl"), "")):
+        with pytest.raises(ValueError):
+            _run({"url": "http://nahamstore.thm/FUZZ", "wordlist": str(wordlist), "vhost": "localhost"})
+
+
+def test_vhost_invalid_hostname_is_rejected(wordlist):
+    with _fake_sandbox(SandboxResult(0, _read("ndjson.jsonl"), "")):
+        with pytest.raises(ValueError):
+            _run({"url": "http://nahamstore.thm/", "wordlist": str(wordlist), "vhost": "FUZZ.host:port"})
+
+
+def test_vhost_base_out_of_scope_is_rejected(wordlist, monkeypatch):
+    import nexus_core.scope as scope_mod
+
+    class _Boom:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def validate(self, target):
+            raise scope_mod.ScopeViolation(target, "outside scope", "eng")
+
+    monkeypatch.setattr(scope_mod, "ScopeValidator", _Boom)
+    ctx = RunContext("system", Identity("op", "system", roles=("operator",)), scope=object())
+    with _fake_sandbox(SandboxResult(0, _read("ndjson.jsonl"), "")):
+        with pytest.raises(ValueError):
+            asyncio.run(
+                ffuf_handler(
+                    {"url": "http://nahamstore.thm/", "wordlist": str(wordlist), "vhost": "FUZZ.evil.com"},
+                    ctx,
+                )
+            )
+
+
+def test_vhost_subdomain_of_authorized_root_is_accepted(wordlist, monkeypatch):
+    """A vhost that does not resolve is still allowed under an authorized root.
+
+    The scope validator rejects it (exact rule + DNS resolution), but it is a
+    subdomain of an authorized domain, which is what vhost enumerations target.
+    """
+    import nexus_core.scope as scope_mod
+
+    class _Unresolvable:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def validate(self, target):
+            raise scope_mod.ScopeUnresolvable(target, "does not resolve", "eng")
+
+    monkeypatch.setattr(scope_mod, "ScopeValidator", _Unresolvable)
+    scope = mock.Mock(domains=("nahamstore.thm",))
+    ctx = RunContext("system", Identity("op", "system", roles=("operator",)), scope=scope)
+    with _fake_sandbox(SandboxResult(0, _read("ndjson.jsonl"), "")) as (sandbox, _):
+        result = asyncio.run(
+            ffuf_handler(
+                {
+                    "url": "http://10.66.175.77/FUZZ",
+                    "wordlist": str(wordlist),
+                    "vhost": "stock.nahamstore.thm",
+                },
+                ctx,
+            )
+        )
+    argv = sandbox.calls[0][0]
+    assert argv[argv.index("-H") + 1] == "Host: stock.nahamstore.thm"
+    assert result.evidence["vhost"] == "stock.nahamstore.thm"
+
+
 def test_handler_rejects_wordlist_outside_the_workspace(wordlist):
     with _fake_sandbox(SandboxResult(0, _read("ndjson.jsonl"), "")):
         with pytest.raises(ValueError):

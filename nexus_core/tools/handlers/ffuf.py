@@ -8,7 +8,9 @@ rate limit is always applied because ffuf defaults to unlimited requests.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import SANDBOX_HOME_DIRNAME, sandbox_for_environment
@@ -78,6 +80,9 @@ FFUF_ALLOWED_FLAGS: dict[str, tuple[str, bool]] = {
     "-s": ("low", False),
     "-ac": ("low", False),
     "-r": ("low", False),
+    # Size/word filters: what makes vhost fuzzing usable (drop the default page).
+    "-fs": ("low", True),
+    "-fw": ("low", True),
 }
 
 #: Flags that would bypass the scope check, execute commands, redirect output
@@ -266,6 +271,20 @@ def ffuf_definition(tenant_id: str = "system") -> ToolDefinition:
                     "items": {"type": "string", "maxLength": 64},
                     "maxItems": 12,
                 },
+                "vhost": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 255,
+                    "description": (
+                        "Host header que construye el propio handler (nunca -H libre). "
+                        "Dos formas: host estático en scope (p. ej. 'stock.nahamstore.thm') "
+                        "para enumerar contenido de un vhost que no resuelve en DNS, o "
+                        "plantilla con el keyword FUZZ (p. ej. 'FUZZ.nahamstore.thm') para "
+                        "descubrir vhosts/subdominios. En ambos casos el dominio base debe "
+                        "estar en el scope firmado. Combínalo con 'flags':['-ac'] para "
+                        "auto-calibrar y no listar la página por defecto."
+                    ),
+                },
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 900},
             },
             "required": ["url", "wordlist"],
@@ -280,11 +299,85 @@ def ffuf_definition(tenant_id: str = "system") -> ToolDefinition:
     )
 
 
+#: A vhost template must replace FUZZ with a label that still forms a hostname.
+_VHOST_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$")
+
+
+def _validate_vhost_template(value: object, url: str, context: RunContext) -> str:
+    """Validate a handler-built ``Host`` header and require its base domain in scope.
+
+    Arbitrary ``-H`` stays forbidden (header injection / scope bypass). This is
+    the single, handler-built exception, in two shapes:
+
+    * a **static** host (``stock.nahamstore.thm``) used to reach a virtual host
+      that does not resolve in DNS, so content discovery keeps working on it;
+    * a **fuzz template** containing ``FUZZ`` (``FUZZ.nahamstore.thm``) used to
+      enumerate vhosts/subdomains.
+
+    In both cases the hostname must be valid and its non-FUZZ base domain must
+    be inside the signed engagement scope. It never lets the model inject
+    arbitrary headers or reach an out-of-scope host.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        raise ValueError("vhost contains control characters")
+    if "FUZZ" in text:
+        # Fuzz template: substituting FUZZ must still yield a valid hostname.
+        probe = text.replace("FUZZ", "a")
+        if "." not in probe or not _VHOST_HOSTNAME_RE.fullmatch(probe):
+            raise ValueError(f"vhost template is not a valid hostname: {text!r}")
+        base = text.replace("FUZZ", "").strip(".")
+    else:
+        # Static Host header: the whole value must be a valid hostname.
+        if "." not in text or not _VHOST_HOSTNAME_RE.fullmatch(text):
+            raise ValueError(f"vhost is not a valid hostname: {text!r}")
+        base = text.strip(".")
+    if not base:
+        base = urlsplit(url).hostname or ""
+    if not base:
+        raise ValueError("vhost has no base domain to scope-check")
+    if context.scope is not None:
+        _require_vhost_base_in_scope(base, context)
+    return text
+
+
+def _require_vhost_base_in_scope(base: str, context: RunContext) -> None:
+    """Accept the vhost base when it is authorized, subdomains included.
+
+    The scope validator is deliberately strict: a domain rule must match
+    *exactly* and the name must resolve in DNS. A vhost reached through the
+    ``Host`` header usually does **not** resolve (that is precisely why the
+    header is needed, and why subdomain enumeration happens against the apex),
+    so a base that is a subdomain of an authorized root domain is accepted too.
+    Anything else is refused.
+    """
+    from nexus_core.kernel.scope_loader import scope_signing_secret
+    from nexus_core.scope import ScopeValidator, ScopeViolation
+
+    candidate = base.lower().strip().rstrip(".")
+    try:
+        ScopeValidator(context.scope, signing_secret=scope_signing_secret()).validate(candidate)
+        return
+    except ScopeViolation:
+        pass
+    for rule in getattr(context.scope, "domains", ()) or ():
+        normalized = str(rule).lower().strip().rstrip(".")
+        if normalized.startswith("*."):
+            normalized = normalized[2:]
+        root = normalized.lstrip(".")
+        if root and (candidate == root or candidate.endswith("." + root)):
+            return
+    raise ValueError(f"vhost base domain is outside the engagement scope: {base}")
+
+
 async def ffuf_handler(arguments: dict, context: RunContext) -> ToolResult:
     """Run an allowlisted, rate-limited ffuf scan through the sandbox."""
     url = str(arguments["url"]).strip()
-    if "FUZZ" not in url:
-        raise ValueError("ffuf url must contain the FUZZ keyword")
+    vhost = _validate_vhost_template(arguments.get("vhost"), url, context)
+    if "FUZZ" not in url and not vhost:
+        raise ValueError("ffuf url must contain the FUZZ keyword (or pass a vhost template)")
 
     method = str(arguments.get("method") or FFUF_DEFAULT_METHOD).strip().upper()
     if method not in FFUF_ALLOWED_METHODS:
@@ -343,6 +436,9 @@ async def ffuf_handler(arguments: dict, context: RunContext) -> ToolResult:
     if extensions:
         argv.extend(["-e", ",".join(extensions)])
     argv.extend(user_flags)
+    if vhost:
+        # Built by the handler from a validated template — never model-provided -H.
+        argv.extend(["-H", f"Host: {vhost}"])
 
     sandbox = sandbox_for_environment(
         workspace_root, allowed_programs=FFUF_ALLOWED_PROGRAMS
@@ -364,6 +460,7 @@ async def ffuf_handler(arguments: dict, context: RunContext) -> ToolResult:
         "rate": rate,
         "timeout_seconds": timeout_seconds,
         "flags": list(user_flags),
+        "vhost": vhost or None,
         "warnings": sorted(warnings),
     }
     if result.timed_out:
