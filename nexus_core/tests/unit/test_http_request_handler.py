@@ -167,6 +167,23 @@ def test_upload_path_outside_workspace_is_rejected(tmp_path, monkeypatch):
             )
 
 
+def test_save_path_is_passed_and_confined(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", str(tmp_path))
+    with _fake_sandbox(_sandbox_for(_ok_payload())) as sandbox:
+        _run({"url": "http://203.0.113.10/.git/index", "save_path": "git/index"})
+    argv = sandbox.calls[0][0]
+    assert argv[11] == str((tmp_path / "git" / "index").resolve())
+
+
+def test_save_path_escape_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", str(tmp_path))
+    with _fake_sandbox(_sandbox_for(_ok_payload())):
+        with pytest.raises(ValueError):
+            _run({"url": "http://203.0.113.10/", "save_path": "../escape.bin"})
+        with pytest.raises(ValueError):
+            _run({"url": "http://203.0.113.10/", "save_path": "/etc/passwd"})
+
+
 def test_non_http_url_is_rejected():
     with _fake_sandbox(_sandbox_for(_ok_payload())):
         with pytest.raises(ValueError):

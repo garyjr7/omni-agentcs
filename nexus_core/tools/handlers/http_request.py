@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -64,7 +65,7 @@ HTTP_MAX_DATA_B64_CHARS = 524_288
 #: method url headers_json data_b64 upload_json follow max_bytes timeout.
 #: ``upload_json`` is ``null`` or ``{"field","filename","content_type","path"}``.
 HTTP_CLIENT_SCRIPT = r"""
-import base64, hashlib, json, sys, time, urllib.error, urllib.request, uuid
+import base64, hashlib, json, os, sys, time, urllib.error, urllib.request, uuid
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -103,7 +104,8 @@ def _build_upload(upload):
 
 
 def main():
-    method, url, headers_json, data_b64, upload_json, follow, max_bytes, timeout = sys.argv[1:9]
+    (method, url, headers_json, data_b64, upload_json, follow, max_bytes, timeout,
+     save_path) = sys.argv[1:10]
     method = method.upper()
     headers = json.loads(headers_json or "{}")
     follow = follow == "1"
@@ -160,6 +162,17 @@ def main():
     elapsed_ms = int((time.time() - started) * 1000)
     truncated = len(raw) > max_bytes
     preview_bytes = raw[:max_bytes]
+    saved = None
+    if save_path:
+        try:
+            parent = os.path.dirname(save_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(save_path, "wb") as handle:
+                handle.write(raw)
+            saved = {"path": save_path, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        except OSError as exc:
+            saved = {"error": "%s: %s" % (type(exc).__name__, exc)}
     print(json.dumps({
         "ok": True,
         "url": url,
@@ -175,6 +188,7 @@ def main():
         "preview_truncated": truncated,
         "elapsed_ms": elapsed_ms,
         "uploaded": uploaded,
+        "saved": saved,
     }))
 
 
@@ -224,6 +238,16 @@ def http_request_definition(tenant_id: str = "system") -> ToolDefinition:
                     "additionalProperties": False,
                 },
                 "follow_redirects": {"type": "boolean"},
+                "save_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "description": (
+                        "Ruta RELATIVA dentro del workspace donde guardar el cuerpo "
+                        "crudo de la respuesta (útil para binarios: objetos git, "
+                        "jarfiles). Evita exponer bytes no imprimibles en el contexto."
+                    ),
+                },
                 "max_response_bytes": {
                     "type": "integer",
                     "minimum": 1,
@@ -322,6 +346,27 @@ def _build_upload_spec(value: Any, root: str) -> dict[str, Any]:
     }
 
 
+def _resolve_save_path(value: Any, root: str) -> str:
+    """Return an absolute workspace path for a download, or ``""`` when unset.
+
+    The download target is confined to the engagement workspace exactly like the
+    upload source: an absolute path or a ``..`` escape is refused, so this can
+    never become an arbitrary file write.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "\x00" in text:
+        raise ValueError("save_path contains a NUL byte")
+    if os.path.isabs(text):
+        raise ValueError("save_path must be relative to the workspace")
+    root_path = Path(root).resolve()
+    candidate = (root_path / text).resolve()
+    if candidate != root_path and root_path not in candidate.parents:
+        raise ValueError("save_path escapes the engagement workspace")
+    return str(candidate)
+
+
 def _parse_last_json(stdout: str) -> dict[str, Any]:
     """Return the last JSON object printed by the client, else raise ``ValueError``."""
     for line in reversed(stdout.splitlines()):
@@ -361,6 +406,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
 
     root = workspace_root()
     upload = _build_upload_spec(arguments["upload"], root) if arguments.get("upload") else None
+    save_path = _resolve_save_path(arguments.get("save_path"), root)
 
     requested_max = arguments.get("max_response_bytes")
     max_bytes = min(
@@ -386,6 +432,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
         "1" if follow else "0",
         str(max_bytes),
         str(timeout_seconds),
+        save_path,
     ]
     sandbox = sandbox_for_environment(root, allowed_programs=HTTP_ALLOWED_PROGRAMS)
     result = await run_in_sandbox(
@@ -404,6 +451,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
         "noise_level": noise_level,
         "follow_redirects": follow,
         "upload": upload is not None,
+        "save_path": save_path or None,
         "timeout_seconds": timeout_seconds,
         "max_response_bytes": max_bytes,
     }
@@ -448,6 +496,9 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
         )
         if upload:
             evidence["uploaded_bytes"] = (payload.get("uploaded") or {}).get("size")
+        if save_path:
+            evidence["saved_path"] = (payload.get("saved") or {}).get("path")
+            evidence["saved_bytes"] = (payload.get("saved") or {}).get("bytes")
     else:
         evidence["error"] = payload.get("error")
 
@@ -465,6 +516,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
             "preview_truncated": payload.get("preview_truncated"),
             "elapsed_ms": payload.get("elapsed_ms"),
             "uploaded": payload.get("uploaded"),
+            "saved": payload.get("saved"),
             "error": payload.get("error"),
         },
         verified=ok,
