@@ -52,6 +52,8 @@ def durable_tool_definitions(
     from .handlers.sqlmap import sqlmap_definition, sqlmap_handler
     from .handlers.gobuster import gobuster_definition, gobuster_handler
     from .handlers.whatweb import whatweb_definition, whatweb_handler
+    from .handlers.http_request import http_request_definition, http_request_handler
+    from .handlers.listener import listener_definition, listener_handler
     from .handlers.searchsploit import searchsploit_definition, searchsploit_handler
     from .handlers.dalfox import dalfox_definition, dalfox_handler
     from .handlers.msf_search import msf_search_definition, msf_search_handler
@@ -160,6 +162,8 @@ def durable_tool_definitions(
         "nexus.web.dalfox": (dalfox_definition(tenant_id), dalfox_handler),
         "nexus.recon.gobuster": (gobuster_definition(tenant_id), gobuster_handler),
         "nexus.recon.whatweb": (whatweb_definition(tenant_id), whatweb_handler),
+        "nexus.web.request": (http_request_definition(tenant_id), http_request_handler),
+        "nexus.post.listener": (listener_definition(tenant_id), listener_handler),
         "nexus.exploit.searchsploit": (
             searchsploit_definition(tenant_id),
             searchsploit_handler,

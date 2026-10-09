@@ -234,6 +234,26 @@ def test_profile_flags_combine_with_explicit_flags():
     assert "-p-" in argv and "-sV" in argv
 
 
+def test_profiles_disable_reverse_dns():
+    # ``-n`` is a pure speed win on IP targets (no reverse DNS) and was missing
+    # from every profile; the RootMe scan measured 43.8 s without it.
+    for profile in ("quick", "full_tcp", "service"):
+        with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
+            _run({"target": "203.0.113.10", "profile": profile})
+        assert "-n" in sandbox.calls[0][0]
+
+
+def test_min_rate_flag_is_allowed():
+    flags, noise, _ = validate_and_canonicalize_flags(["--min-rate", "5000"])
+    assert flags == ["--min-rate", "5000"]
+    assert noise == "medium"
+
+
+def test_min_rate_requires_a_value():
+    with pytest.raises(ValueError):
+        validate_and_canonicalize_flags(["--min-rate"])
+
+
 def test_unknown_profile_is_rejected():
     with pytest.raises(ValueError):
         _run({"target": "203.0.113.10", "profile": "does-not-exist"})

