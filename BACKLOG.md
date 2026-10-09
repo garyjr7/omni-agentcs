@@ -92,3 +92,13 @@ Deudas concretas detectadas midiendo el motor:
 Cerradas en este run (no quedan como deuda): subida multipart con campos de
 formulario (`nexus.web.request`), vector SUID de python en `privesc_hints`, y
 lentitud de nmap (`-n` por perfil + `--min-rate`).
+
+## Fase V0 · Validación con salas (deudas de RUN_sala04 · NahamStore)
+
+Sala #4 en curso (ver `docs/missions/salas/RUN_sala04.md`). Deudas nuevas:
+
+| ID | Pendiente | Impacto actual | Criterio de cierre |
+| --- | --- | --- | --- |
+| V0-7 · `Host` en recon | **Parcialmente cerrado**: `nexus.web.ffuf` ya acepta un `Host` estático en scope (además de la plantilla `FUZZ`) y admite subdominios de un dominio autorizado. Sigue faltando lo mismo en `gobuster` (modo vhost devuelve 0) y el CLI de scope rechaza `*.dominio`. | Enumerar contenido/vhosts sin DNS ya es posible con ffuf; gobuster no. | `--header`/vhost gobernado en gobuster; scope que acepte wildcards con validación de resolución. |
+| V0-9 · Ejecución masiva de `omni` | Lanzar N procesos `omni` en paralelo (p. ej. 40 en un barrido SSRF) satura la CPU y congeló la máquina. Además, apuntar el SSRF al propio `localhost` de una app de un solo worker la deja en **deadlock** ~25 min. | Riesgo de tumbar el host del operador y la instancia objetivo. | Un cliente/cliente-batch que evite el arranque por petición (o un runner in-process) y una guía de concurrencia por tool; pruebas de carga. |
+| V0-10 · DAST web | El motor no cubre XSS/SQLi/LFI/SSRF/XXE de forma automatizada. `super_scanner` (`/home/operator/super_scanner`, DAST modular con payloads, colaborador OOB y DB CVE local) es candidato natural, pero no está integrado. | Las salas web se resuelven a mano; sin verificación automatizada de clases de bug. | Tool gobernada que envuelva `super_scanner scan/probe` con scope+sandbox+parser determinista, y mapeo de hallazgos a `vulnerability`. |
