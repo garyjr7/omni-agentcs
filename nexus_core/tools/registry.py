@@ -127,6 +127,12 @@ def durable_tool_definitions(
     )
     from .handlers.sliver_loot import sliver_loot_definition, sliver_loot_handler
     from .handlers.playbook import playbook_definition, playbook_handler
+    from .handlers.pwn import (
+        pwn_analyze_definition,
+        pwn_analyze_handler,
+        ret2libc_definition,
+        ret2libc_handler,
+    )
 
     catalog = {
         "nexus.system.check_env": (check_env_definition(tenant_id), check_env_handler),
@@ -236,6 +242,8 @@ def durable_tool_definitions(
             playbook_definition(tenant_id),
             playbook_handler,
         ),
+        "nexus.pwn.analyze": (pwn_analyze_definition(tenant_id), pwn_analyze_handler),
+        "nexus.pwn.ret2libc": (ret2libc_definition(tenant_id), ret2libc_handler),
     }
     # Additive overlay: decorator/entry-point registrations never shadow a
     # builtin unless they explicitly opt in. Discovery is cached and non-fatal.

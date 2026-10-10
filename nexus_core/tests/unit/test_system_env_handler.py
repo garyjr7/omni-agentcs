@@ -78,4 +78,4 @@ def test_check_env_registered_in_catalog():
         "nexus.knowledge.record_fact",
         "nexus.knowledge.query_facts",
     } <= set(catalog)
-    assert len(catalog) == 47
+    assert len(catalog) == 49

@@ -66,6 +66,7 @@ ACTIVE_TOOLS: frozenset[str] = frozenset(
         "nexus.attack.impacket_getuserspns",
         "nexus.attack.impacket_psexec",
         "nexus.post.ssh_exec",
+        "nexus.pwn.ret2libc",
         "nexus.recon.netexec",
         "nexus.recon.bloodhound_python",
         "nexus.web.sqlmap",
@@ -227,7 +228,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         phase="enumeration",
         focus="enumerar cada servicio hallado (FTP, SMB, HTTP…) y registrar usuarios y pistas",
         tools=_with_common(
-            WEB_ENUM_TOOLS | {"nexus.recon.ftp", "nexus.recon.netexec"}
+            WEB_ENUM_TOOLS | {"nexus.recon.ftp", "nexus.recon.netexec", "nexus.pwn.analyze"}
         ),
         token_budget=80_000,
         max_iterations=10,
@@ -261,6 +262,8 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.exploit.msf_exploit",
                 "nexus.exploit.searchsploit",
                 "nexus.recon.netexec",
+                "nexus.pwn.analyze",
+                "nexus.pwn.ret2libc",
             }
         ),
         token_budget=60_000,

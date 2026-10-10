@@ -49,6 +49,12 @@ def derive_assertions(tool_id, arguments, result, context):
             or (command == 'whoami' and stdout == 'root')
         ):
             add('privilege', target, {'uid': 0, 'user': 'root'})
+    elif tool_id == 'nexus.pwn.ret2libc' and result.verification_method == 'ret2libc_root_command':
+        target = output.get('target')
+        add('privilege', target, {'uid': 0, 'user': 'root'})
+        flag = output.get('flag')
+        if flag:
+            add('loot', flag, {'flag': flag, 'libc_base': output.get('libc_base')}, flag)
     elif tool_id == 'nexus.c2.sliver_loot' and result.verification_method == 'sliver_loot_recorded':
         loot = output.get('loot') or {}
         if loot.get('sha256'):
