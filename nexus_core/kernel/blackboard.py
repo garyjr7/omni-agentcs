@@ -25,6 +25,7 @@ from .models import utc_now
 FACT_TYPES = (
     "host",
     "service",
+    "web_app",
     "endpoint",
     "user",
     "email",

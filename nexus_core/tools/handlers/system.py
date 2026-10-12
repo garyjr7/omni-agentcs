@@ -9,6 +9,7 @@ def system_status_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.system.status``."""
     return ToolDefinition(
         tool_id="nexus.system.status",
+        effect="read_only",
         name="System status",
         tenant_id=tenant_id,
         input_schema={"type": "object", "additionalProperties": False},

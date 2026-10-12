@@ -167,6 +167,7 @@ def ftp_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.recon.ftp``."""
     return ToolDefinition(
         tool_id="nexus.recon.ftp",
+        effect="read_only",
         name="FTP recon",
         tenant_id=tenant_id,
         description=(

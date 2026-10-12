@@ -6,5 +6,7 @@ pytest>=8.2.0
 pytest-asyncio>=0.23.7
 pytest-cov>=5.0.0
 ruff>=0.6,<1
-mypy>=1.11,<2
+# mypy 2.x es lo que ejecuta el entorno real; el pin anterior (>=1.11,<2) hacía que
+# CI instalara un mypy distinto del que mide el gate (V1-9).
+mypy>=2.4,<3
 pip-audit>=2.7,<3

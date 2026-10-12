@@ -24,7 +24,7 @@ from typing import Any
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 
 from ._ad import ad_sandbox, resolve_ad_binary, validate_host, validate_username
-from ._exec import run_in_sandbox, safe_run_id
+from ._exec import run_in_sandbox
 
 SMB_BINARY_CANDIDATES = ("smbclient",)
 SMB_MAX_TIMEOUT_SECONDS = 600
@@ -35,7 +35,12 @@ SMB_MAX_LISTING_LINES = 1000
 SMB_RECON_ACTIONS = ("shares", "list", "get")
 
 _SHARE_RE = re.compile(r"^\s*(\S+)\s+(Disk|IPC|Printer)\s*(.*)$")
-_DIR_RE = re.compile(r"^\s*(.+?)\s+([ADN])\s+(\d+)\s+(.*)$")
+#: smbclient prints one attribute letter per flag and combines them
+#: (``D`` directory, ``A`` archive, ``N`` normal, ``H`` hidden, ``R``
+#: readonly, ``S`` system, ``E`` encrypted, ``C`` compressed), e.g. the SYSVOL
+#: root's domain folder is ``Dr``. Requiring exactly one letter silently
+#: dropped every such entry from the listing.
+_DIR_RE = re.compile(r"^\s*(.+?)\s+([A-Za-z]+)\s+(\d+)\s+(.*)$")
 #: ``NT_STATUS_...`` failures that ``smbclient`` prints while exiting 0.
 _NT_STATUS_RE = re.compile(r"NT_STATUS_[A-Z_]+")
 
@@ -69,12 +74,38 @@ def _validate_remote_path(value: Any, *, required: bool) -> str:
     return text
 
 
-def _smbclients_argv(binary: str, target: str, username: str, password: str) -> list[str]:
-    """Build the binary + auth prefix for an ``smbclient`` invocation."""
+def _validate_ntlm_hash(value: Any) -> str:
+    """Return the NT hash to authenticate with, or ``""`` when none is given.
+
+    Accepts a bare 32-hex NT hash or an ``LMHASH:NTHASH`` pair (the LM half is
+    dropped: Samba's ``--pw-nt-hash`` authenticates with the NT half alone).
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if ":" in text:
+        _, _, text = text.partition(":")
+    if not re.fullmatch(r"[0-9a-f]{32}", text):
+        raise ValueError("hash must be a 32-hex NT hash or a LMHASH:NTHASH pair")
+    return text
+
+
+def _smbclients_argv(
+    binary: str, target: str, username: str, password: str, ntlm_hash: str = ""
+) -> list[str]:
+    """Build the binary + auth prefix for an ``smbclient`` invocation.
+
+    With ``ntlm_hash`` the secret passed after ``username%`` is the NT hash and
+    ``--pw-nt-hash`` tells Samba to treat it as one (pass-the-hash), which is
+    the only way to authenticate with a dumped credential that has no plaintext
+    password (post-exploitation after DCSync).
+    """
     argv = [binary]
     if username:
-        secret = str(password or "")
+        secret = ntlm_hash or str(password or "")
         argv.extend(["-U", f"{username}%{secret}"])
+        if ntlm_hash:
+            argv.append("--pw-nt-hash")
     else:
         argv.append("-N")
     return argv
@@ -87,6 +118,34 @@ def _connection_failed(stdout: str, stderr: str) -> str | None:
         if match:
             return match.group(0)
     return None
+
+
+#: NT_STATUS tokens that answer *the operation*, as opposed to an I/O failure:
+#: the server decided about the request and the decision is evidence the
+#: operator needs ("this share refuses you", "that path does not exist here").
+#: Each maps to the outcome recorded instead of a ``RuntimeError`` (V0-22).
+#: An unrecognised token stays unclassified and keeps failing closed.
+NT_STATUS_OUTCOMES = {
+    "NT_STATUS_ACCESS_DENIED": "denied",
+    "NT_STATUS_LOGON_FAILURE": "denied",
+    "NT_STATUS_WRONG_PASSWORD": "denied",
+    "NT_STATUS_ACCOUNT_DISABLED": "denied",
+    "NT_STATUS_ACCOUNT_LOCKED_OUT": "denied",
+    "NT_STATUS_PASSWORD_MUST_CHANGE": "denied",
+    "NT_STATUS_BAD_NETWORK_NAME": "unsupported",
+    "NT_STATUS_BAD_NETWORK_PATH": "unsupported",
+    "NT_STATUS_OBJECT_NAME_NOT_FOUND": "unsupported",
+    "NT_STATUS_OBJECT_PATH_NOT_FOUND": "unsupported",
+    "NT_STATUS_NO_SUCH_FILE": "unsupported",
+    "NT_STATUS_NOT_SUPPORTED": "unsupported",
+    "NT_STATUS_INVALID_PARAMETER": "unsupported",
+    "NT_STATUS_SMB_BAD_TID": "unsupported",
+}
+
+
+def _nt_status_outcome(token: str | None) -> str:
+    """Outcome for a determinate ``NT_STATUS`` answer, or ``""`` when unknown."""
+    return NT_STATUS_OUTCOMES.get((token or "").upper(), "")
 
 
 def _parse_shares(stdout: str) -> list[dict[str, Any]]:
@@ -130,9 +189,9 @@ def smb_definition(tenant_id: str = "system") -> ToolDefinition:
         tenant_id=tenant_id,
         description=(
             "Enumera un servicio SMB: lista shares, lista el contenido de un "
-            "share o descarga un archivo (anónimo/guest por defecto o con "
-            "credenciales validadas). Read-only. Es el primitivo para detectar "
-            "shares accesibles o escribibles y leer notas/credenciales."
+            "share o descarga un archivo (anónimo/guest por defecto, contraseña "
+            "o hash NT con pass-the-hash). Read-only. Es el primitivo para "
+            "detectar shares accesibles o escribibles y leer notas/credenciales."
         ),
         input_schema={
             "type": "object",
@@ -144,6 +203,14 @@ def smb_definition(tenant_id: str = "system") -> ToolDefinition:
                 "local_path": {"type": "string", "maxLength": 1024},
                 "username": {"type": "string", "maxLength": 128},
                 "password": {"type": "string", "maxLength": 512},
+                "hash": {
+                    "type": "string",
+                    "maxLength": 65,
+                    "description": (
+                        "Hash NT (32 hex) o LMHASH:NTHASH para autenticar sin "
+                        "contraseña en claro (pass-the-hash)."
+                    ),
+                },
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": SMB_MAX_TIMEOUT_SECONDS},
             },
             "required": ["target"],
@@ -233,8 +300,9 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
     remote_path = _validate_remote_path(arguments.get("remote_path"), required=action == "get")
     username = validate_username(arguments["username"]) if arguments.get("username") else ""
     password = str(arguments.get("password") or "")
-    if password and not username:
-        raise ValueError("password authentication requires a username")
+    ntlm_hash = _validate_ntlm_hash(arguments.get("hash"))
+    if (password or ntlm_hash) and not username:
+        raise ValueError("credential authentication requires a username")
     timeout_seconds = _bounded_timeout(arguments)
 
     binary = resolve_ad_binary(*SMB_BINARY_CANDIDATES)
@@ -246,13 +314,17 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
         default_name = Path(remote_path.replace("\\", "/")).name or "download.bin"
         local_target = _resolve_local(arguments.get("local_path") or default_name, required=True)
 
-    argv = _smbclients_argv(binary, target, username, password)
+    argv = _smbclients_argv(binary, target, username, password, ntlm_hash)
     if action == "shares":
         argv.extend(["-L", f"//{target}"])
     else:
         argv.append(f"//{target}/{share}")
         if action == "list":
-            argv.extend(["-c", "ls"])
+            # ``remote_path`` lets the operator descend into a share (SYSVOL
+            # policies, a user profile) instead of only listing its root.
+            # ``ls <path>`` is a *mask* in smbclient and never descends, so the
+            # descent must be an explicit ``cd`` (measured against the target).
+            argv.extend(["-c", f'cd "{remote_path}"; ls' if remote_path else "ls"])
         else:
             argv.extend(["-c", f'get "{remote_path}" "{local_target}"'])
 
@@ -271,6 +343,7 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
         "action": action,
         "share": share,
         "anonymous": not username,
+        "pass_the_hash": bool(ntlm_hash),
         "timeout_seconds": timeout_seconds,
     }
     if result.timed_out:
@@ -296,9 +369,18 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
 
     if action == "shares":
         shares = _parse_shares(result.stdout)
+        failure = _connection_failed(result.stdout, result.stderr)
         output["shares"] = shares
         output["count"] = len(shares)
+        output["error"] = failure
         evidence["count"] = len(shares)
+        evidence["nt_status"] = failure
+        # No shares is a determinate answer: the server listed nothing, or it
+        # refused. An unrecognised NT_STATUS stays unclassified (fail closed).
+        if shares:
+            outcome = ""
+        else:
+            outcome = _nt_status_outcome(failure) or ("negative" if failure is None else "")
         return ToolResult(
             output=output,
             verified=bool(shares) and result.exit_code == 0,
@@ -308,6 +390,7 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
             accepted_exit_codes=(0,),
             stdout=result.stdout,
             stderr=result.stderr,
+            outcome=outcome,
         )
 
     if action == "list":
@@ -315,8 +398,10 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
         failure = _connection_failed(result.stdout, result.stderr)
         output["entries"] = entries[:SMB_MAX_LISTING_LINES]
         output["count"] = len(entries)
+        output["remote_path"] = remote_path or None
         output["error"] = failure
         evidence["count"] = len(entries)
+        evidence["remote_path"] = remote_path or None
         evidence["nt_status"] = failure
         return ToolResult(
             output=output,
@@ -327,6 +412,7 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
             accepted_exit_codes=(0,),
             stdout=result.stdout,
             stderr=result.stderr,
+            outcome=_nt_status_outcome(failure),
         )
 
     # action == "get"
@@ -337,12 +423,12 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
     head = b""
     if size:
         with path.open("rb") as handle:
-            digest = hashlib.sha256()
+            hasher = hashlib.sha256()
             head = handle.read(4096)
-            digest.update(head)
+            hasher.update(head)
             for chunk in iter(lambda: handle.read(65536), b""):
-                digest.update(chunk)
-        digest = digest.hexdigest()
+                hasher.update(chunk)
+            digest = hasher.hexdigest()
     output.update(
         {
             "file": path.name,
@@ -359,6 +445,9 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
         output=output,
         verified=ok,
         verification_method="smb_download_verified" if ok else "smb_download_failed",
+        # "that file is not here" is an answer, not a crash: the operator asks
+        # for the next path instead of losing the run (V0-22).
+        outcome=_nt_status_outcome(failure),
         evidence=evidence,
         exit_code=result.exit_code,
         accepted_exit_codes=(0,),

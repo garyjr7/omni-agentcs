@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import http.server
 import json
+import shutil
+import ssl
+import subprocess
+import sys
+import tempfile
+import threading
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -228,3 +236,137 @@ def test_timeout_is_not_verified():
         result = _run({"url": "http://203.0.113.10/"})
     assert result.verified is False
     assert result.verification_method == "http_timeout"
+
+
+# ------------------------------------------------------- TLS verification opt-in
+def test_insecure_flag_is_appended_to_argv_and_evidenced():
+    """The opt-in must reach the client and stay visible in the audit evidence."""
+    with _fake_sandbox(_sandbox_for(_ok_payload())) as sandbox:
+        result = _run({"url": "https://203.0.113.10/", "insecure": True})
+    assert sandbox.calls[0][0][12] == "1"
+    assert result.evidence["insecure"] is True
+
+
+def test_tls_verification_stays_on_by_default():
+    with _fake_sandbox(_sandbox_for(_ok_payload())) as sandbox:
+        result = _run({"url": "https://203.0.113.10/"})
+    assert sandbox.calls[0][0][12] == "0"
+    assert result.evidence["insecure"] is False
+
+
+def test_definition_exposes_the_insecure_opt_in():
+    definition = http_request_definition()
+    assert definition.input_schema["properties"]["insecure"]["type"] == "boolean"
+
+
+OPENSSL = shutil.which("openssl")
+
+
+class _QuietHandler(http.server.BaseHTTPRequestHandler):
+    """Minimal 200 handler that never logs to stderr."""
+
+    def do_GET(self):  # noqa: N802 - stdlib naming
+        body = b"<html>ok</html>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):  # noqa: ARG002 - silence the server
+        return
+
+
+@pytest.fixture(scope="module")
+def self_signed_https_server():
+    """A local HTTPS endpoint whose certificate no trust store knows about."""
+    if OPENSSL is None:
+        pytest.skip("openssl is required to mint a self-signed certificate")
+    with tempfile.TemporaryDirectory() as tmp:
+        cert = Path(tmp) / "cert.pem"
+        key = Path(tmp) / "key.pem"
+        subprocess.run(
+            [
+                OPENSSL, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(key), "-out", str(cert), "-days", "1",
+                "-subj", "/CN=localhost",
+                "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        server = http.server.HTTPServer(("127.0.0.1", 0), _QuietHandler)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile=str(cert), keyfile=str(key))
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            yield f"https://localhost:{server.server_address[1]}/"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def _run_client_script(url: str, *, insecure: bool) -> dict:
+    """Execute the *shipped* client exactly like the handler does, no mocks."""
+    argv = [
+        sys.executable, "-c", http_module.HTTP_CLIENT_SCRIPT, "GET", url,
+        "{}", "", "null", "0", "65536", "20", "", "1" if insecure else "0",
+    ]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    payloads = [line for line in proc.stdout.splitlines() if line.startswith("{")]
+    assert payloads, proc.stdout + proc.stderr
+    return json.loads(payloads[-1])
+
+
+def test_shipped_client_fails_closed_on_a_self_signed_certificate(self_signed_https_server):
+    payload = _run_client_script(self_signed_https_server, insecure=False)
+    assert payload["ok"] is False
+    assert "CERTIFICATE_VERIFY_FAILED" in payload["error"]
+
+
+def test_shipped_client_accepts_a_self_signed_certificate_when_insecure(self_signed_https_server):
+    payload = _run_client_script(self_signed_https_server, insecure=True)
+    assert payload["ok"] is True
+    assert payload["status"] == 200
+    assert "ok" in payload["body_preview"]
+
+
+# ------------------------------------------------------- repeated Set-Cookie
+def test_repeated_set_cookie_headers_are_preserved_in_output():
+    cookies = ["JSESSIONID=node01abc.node0;Path=/;HttpOnly", "csrf=Tok3n;Path=/;HttpOnly"]
+    with _fake_sandbox(_sandbox_for(_ok_payload(set_cookie=cookies))):
+        result = _run({"url": "http://203.0.113.10/login.jsp"})
+    assert result.output["set_cookie"] == cookies
+    assert result.evidence["set_cookie_count"] == 2
+
+
+class _TwoCookieHandler(http.server.BaseHTTPRequestHandler):
+    """Sets two cookies the way a login response does (JSESSIONID + csrf)."""
+
+    def do_GET(self):  # noqa: N802 - stdlib naming
+        body = b"ok"
+        self.send_response(200)
+        self.send_header("Set-Cookie", "JSESSIONID=node01abc.node0;Path=/;HttpOnly")
+        self.send_header("Set-Cookie", "csrf=Tok3n;Path=/;HttpOnly")
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):  # noqa: ARG002 - silence the server
+        return
+
+
+def test_shipped_client_keeps_every_cookie_of_a_login_response():
+    server = http.server.HTTPServer(("127.0.0.1", 0), _TwoCookieHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/login.jsp"
+        payload = _run_client_script(url, insecure=False)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert len(payload["set_cookie"]) == 2
+    joined = " ".join(payload["set_cookie"])
+    assert "JSESSIONID=" in joined and "csrf=" in joined

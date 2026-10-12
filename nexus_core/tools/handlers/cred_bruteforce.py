@@ -50,6 +50,7 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.cred.bruteforce``."""
     return ToolDefinition(
         tool_id="nexus.cred.bruteforce",
+        effect="credential_access",
         name="Credential testing",
         tenant_id=tenant_id,
         description=(

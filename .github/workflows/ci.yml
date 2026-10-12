@@ -15,6 +15,9 @@ jobs:
       NEXUS_E2E: "0"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # El gate de tipado es incremental: necesita la base del PR/push.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -25,6 +28,14 @@ jobs:
             nexus_core/requirements.txt
       - run: pip install -r requirements-dev.txt
       - run: make syntax lint test
+      - name: Typecheck changed Python files (V1-9)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE="HEAD~1"
+          fi
+          make typecheck TYPECHECK_BASE="$BASE"
 
   postgres:
     runs-on: ubuntu-latest

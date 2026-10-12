@@ -73,7 +73,7 @@ def mode(root):
     with redirect_stdout(io.StringIO()):
         cmd_mode(session,['plan','on'])
     called=[]
-    definition=ToolDefinition('probe','system',{},tool_id='probe',effect='active')
+    definition=ToolDefinition('probe','system',{},tool_id='probe',effect='exploit')
     payload={'tool_id':'probe','arguments':{},'identity':session.agent_identity_payload}
     with patch('nexus_core.tools.registry.durable_tool_definitions',lambda tenant:{'probe':(definition,lambda a,c:called.append(1))}):
         with redirect_stdout(io.StringIO()):

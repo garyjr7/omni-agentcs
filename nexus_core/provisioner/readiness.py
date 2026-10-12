@@ -36,6 +36,7 @@ BINARY_COMPONENTS: tuple[tuple[str, str, str, bool], ...] = (
     ("ripgrep", "rg", "Búsqueda en el workspace (nexus.workspace.search)", False),
     ("gobuster", "gobuster", "Descubrimiento de contenido web", False),
     ("whatweb", "whatweb", "Fingerprinting web", False),
+    ("nikto", "nikto", "Escaneo web con tuning/evasión", False),
     ("ffuf", "ffuf", "Fuzzing web", False),
     ("nuclei", "nuclei", "Escaneo por plantillas", False),
     ("httpx", "httpx", "Sondeo HTTP (ProjectDiscovery)", False),

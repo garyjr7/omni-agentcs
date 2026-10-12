@@ -53,6 +53,7 @@ def httpx_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.recon.httpx``."""
     return ToolDefinition(
         tool_id="nexus.recon.httpx",
+        effect="read_only",
         idempotent=True,
         name="HTTPX web fingerprinting",
         tenant_id=tenant_id,

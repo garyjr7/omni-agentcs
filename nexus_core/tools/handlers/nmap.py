@@ -162,6 +162,7 @@ def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.recon.nmap``."""
     return ToolDefinition(
         tool_id="nexus.recon.nmap",
+        effect="read_only",
         idempotent=True,
         name="Nmap scan",
         tenant_id=tenant_id,

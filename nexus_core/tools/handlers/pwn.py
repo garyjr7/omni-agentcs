@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
@@ -349,6 +348,7 @@ def pwn_analyze_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.pwn.analyze``."""
     return ToolDefinition(
         tool_id="nexus.pwn.analyze",
+        effect="post_exploitation",
         name="ELF binary analysis",
         tenant_id=tenant_id,
         description=(
@@ -383,6 +383,7 @@ def ret2libc_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.pwn.ret2libc``."""
     return ToolDefinition(
         tool_id="nexus.pwn.ret2libc",
+        effect="exploit",
         name="ret2libc exploitation",
         tenant_id=tenant_id,
         description=(
@@ -514,7 +515,9 @@ async def _resolve_constants(
     )
     explicit = {key: _as_int(arguments, key) for key in explicit_keys}
     if all(value is not None for value in explicit.values()):
-        return explicit, None
+        # The comprehension narrows each value to ``int`` for the type checker;
+        # the guard above already proved none of them is ``None``.
+        return {key: value for key, value in explicit.items() if value is not None}, None
 
     client = await _run_client(
         mode="analyze", host=target, port=port, username=username, password=password,

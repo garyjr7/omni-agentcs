@@ -4,6 +4,10 @@ Once a credential is validated (``nexus.cred.bruteforce``), the chain continues
 inside the host: ``nexus.post.ssh_exec`` runs a single command and
 ``nexus.post.enum_system`` collects the standard Linux privilege-escalation
 surface (identity, users, ``sudo -l``, SUID files, capabilities, cron, listeners).
+``nexus.post.ssh_upload`` places a workspace file on the host over SFTP, which is
+the Linux counterpart of ``nexus.post.smb_upload`` and the primitive a privesc
+step needs when the target has **no** outbound network (``curl`` to fetch a
+PE-assist script times out, so the script has to be pushed from the operator).
 
 Design notes:
 
@@ -13,12 +17,18 @@ Design notes:
 * ``ssh_exec`` is ``HIGH`` risk (remote command execution) and rejects a
   conservative destructive-command denylist; ``enum_system`` only runs a fixed
   allowlist of read-only commands (``MEDIUM``).
+* ``ssh_upload`` writes one file, so it is ``MEDIUM`` (same class as
+  ``nexus.post.smb_upload``), but its post-condition is strict: after the ``put``
+  it **re-reads the remote file over SFTP and compares sha256 with the local
+  source**, so a truncated or redirected upload is a declared negative
+  (``ssh_upload_hash_mismatch``) instead of a silent success.
 * Connections are short-lived (connect, run, disconnect); no credential is
   persisted by these handlers.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,14 +38,21 @@ from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, Tool
 from nexus_core.kernel.sandbox import sandbox_for_environment
 
 from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox
+from .workspace import resolve_workspace_path
 
 SSH_ALLOWED_PROGRAMS = RECON_ALLOWED_PROGRAMS
 SSH_DEFAULT_PORT = 22
 SSH_DEFAULT_TIMEOUT_SECONDS = 120
 #: Enumeration walks the filesystem over a possibly high-latency link.
 ENUM_DEFAULT_TIMEOUT_SECONDS = 300
+#: One SFTP put plus the read-back verification: the default command budget is
+#: generous enough for a ~1 MB PE-assist script on a slow link.
+UPLOAD_DEFAULT_TIMEOUT_SECONDS = 180
 SSH_MAX_TIMEOUT_SECONDS = 600
 SSH_ENUM_MARKER = "__SUDO__"
+
+#: Octal file mode accepted by ``ssh_upload`` (``755``, ``0644``, ...).
+SSH_FILE_MODE_RE = re.compile(r"^[0-7]{3,4}$")
 
 #: Fixed, read-only enumeration commands. ``ssh_exec`` runs none of these.
 ENUM_COMMANDS: dict[str, str] = {
@@ -76,10 +93,31 @@ _SUDO_RULE_RE = re.compile(r"^\s*\((?P<who>[^)]*)\)\s+(?P<command>\S.*)$")
 
 #: Client script. argv layout after ``-c``: mode host port user password payload.
 SSH_CLIENT_SCRIPT = r"""
-import json, sys
+import hashlib, json, posixpath, sys
 
 def emit(payload):
     print(json.dumps(payload))
+
+
+def make_dirs(sftp, directory):
+    # Recursive mkdir; an "already there" stat is success, a race on mkdir is
+    # ignored (two operators may create the same parent concurrently).
+    pending = []
+    current = directory
+    while current and current not in ("/", "."):
+        pending.append(current)
+        parent = posixpath.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for path in reversed(pending):
+        try:
+            sftp.stat(path)
+        except IOError:
+            try:
+                sftp.mkdir(path)
+            except IOError:
+                pass
 
 def main():
     mode, host, port, user, password, payload_raw = sys.argv[1:7]
@@ -106,7 +144,41 @@ def main():
             look_for_keys=False,
         )
         result["connected"] = True
-        if mode == "exec":
+        if mode == "upload":
+            local_path = payload["local_path"]
+            remote_path = payload["remote_path"]
+            sftp = client.open_sftp()
+            try:
+                if payload.get("make_dirs"):
+                    make_dirs(sftp, posixpath.dirname(remote_path))
+                sftp.put(local_path, remote_path)
+                file_mode = payload.get("file_mode")
+                if file_mode:
+                    sftp.chmod(remote_path, int(str(file_mode), 8))
+                stat = sftp.stat(remote_path)
+                # Read the bytes back and hash them *on the target*: the sha256 in
+                # the observation is the remote file's, never the local source's.
+                digest = hashlib.sha256()
+                remote_file = sftp.open(remote_path, "rb")
+                try:
+                    while True:
+                        chunk = remote_file.read(65536)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                finally:
+                    remote_file.close()
+                result.update({
+                    "ok": True,
+                    "mode": "upload",
+                    "remote_path": remote_path,
+                    "uploaded_bytes": stat.st_size,
+                    "remote_sha256": digest.hexdigest(),
+                    "remote_mode": oct(stat.st_mode & 0o777),
+                })
+            finally:
+                sftp.close()
+        elif mode == "exec":
             command = payload.get("command", "")
             stdin_data = payload.get("stdin")
             # sudo reads the password from a tty; allocate a pty only when we
@@ -212,6 +284,7 @@ def ssh_exec_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.post.ssh_exec``."""
     return ToolDefinition(
         tool_id="nexus.post.ssh_exec",
+        effect="post_exploitation",
         name="SSH command execution",
         tenant_id=tenant_id,
         description=(
@@ -244,6 +317,7 @@ def enum_system_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.post.enum_system``."""
     return ToolDefinition(
         tool_id="nexus.post.enum_system",
+        effect="post_exploitation",
         name="Linux post-exploitation enumeration",
         tenant_id=tenant_id,
         description=(
@@ -269,6 +343,86 @@ def enum_system_definition(tenant_id: str = "system") -> ToolDefinition:
         scope_target_field="target",
         scope_required=True,
     )
+
+
+def ssh_upload_definition(tenant_id: str = "system") -> ToolDefinition:
+    """Return the durable ToolDefinition for ``nexus.post.ssh_upload``."""
+    return ToolDefinition(
+        tool_id="nexus.post.ssh_upload",
+        name="SSH file upload (SFTP)",
+        tenant_id=tenant_id,
+        description=(
+            "Sube UN archivo del workspace al host por SFTP con una credencial "
+            "SSH ya validada (p. ej. un script de enumeración de escalada como "
+            "linPEAS cuando el objetivo no tiene salida a Internet, o el "
+            "manifiesto de persistencia). Verifica el sha256 remoto tras subirlo. "
+            "Escribe en el objetivo."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "minLength": 1, "maxLength": 255},
+                "username": {"type": "string", "minLength": 1, "maxLength": 128},
+                "password": {"type": "string", "minLength": 1, "maxLength": 256},
+                "local_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "description": "Ruta del archivo dentro del workspace del engagement.",
+                },
+                "remote_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "description": "Ruta destino en el objetivo (absoluta, p. ej. /tmp/pe.sh).",
+                },
+                "file_mode": {
+                    "type": "string",
+                    "pattern": "^[0-7]{3,4}$",
+                    "description": "Modo octal opcional para el archivo remoto (p. ej. 755).",
+                },
+                "make_dirs": {
+                    "type": "boolean",
+                    "description": "Crea los directorios padre del destino si faltan.",
+                },
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": SSH_MAX_TIMEOUT_SECONDS},
+            },
+            "required": ["target", "username", "password", "local_path", "remote_path"],
+            "additionalProperties": False,
+        },
+        risk=RiskLevel.MEDIUM,
+        effect="exploit",
+        required_permissions=["execute:tool:nexus.post.ssh_upload"],
+        timeout_seconds=SSH_MAX_TIMEOUT_SECONDS,
+        max_output_bytes=2_000_000,
+        scope_target_field="target",
+        scope_required=True,
+    )
+
+
+def _validate_remote_path(value: Any) -> str:
+    """Return a target path free of control characters and traversal."""
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("remote_path is required")
+    if len(text) > 4096:
+        raise ValueError("remote_path is too long")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        raise ValueError("remote_path contains control characters")
+    if any(part == ".." for part in text.split("/")):
+        raise ValueError("remote_path must not contain traversal sequences")
+    return text
+
+
+def _validate_file_mode(value: Any) -> str:
+    """Return an octal file mode (``"755"``) or ``""`` when unset."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not SSH_FILE_MODE_RE.fullmatch(text):
+        raise ValueError("file_mode must be an octal mode such as 755 or 0644")
+    return text
 
 
 async def _run_ssh_client(
@@ -498,3 +652,180 @@ async def enum_system_handler(arguments: dict, context: RunContext) -> ToolResul
         stdout=result.stdout,
         stderr=result.stderr,
     )
+
+
+async def ssh_upload_handler(arguments: dict, context: RunContext) -> ToolResult:
+    """Upload one workspace file to a host over SFTP and verify its sha256.
+
+    The post-condition is the point of this handler: a tool that drops a payload
+    on a target is only useful if the operator can trust that the bytes that
+    landed are the bytes that were sent. The local sha256 is computed here and
+    the remote one is computed by the client *on the target*, so a partial
+    transfer, a full disk or an ``scp``-style redirect surfaces as a declared
+    negative instead of a green check.
+    """
+    target = _validate_text(arguments.get("target"), "target", max_length=255)
+    username = _validate_text(arguments.get("username"), "username", max_length=128)
+    password = str(arguments.get("password") or "")
+    if not password:
+        raise ValueError("password is required")
+    remote_path = _validate_remote_path(arguments.get("remote_path"))
+    file_mode = _validate_file_mode(arguments.get("file_mode"))
+    make_dirs = bool(arguments.get("make_dirs", False))
+    # The source is confined to the engagement workspace, exactly like the
+    # multipart upload of ``nexus.web.request``: a missing path or a ``..``
+    # escape is refused before anything touches the network.
+    source = resolve_workspace_path(
+        str(arguments.get("local_path") or ""),
+        root=os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd()),
+    )
+    port = int(arguments.get("port") or SSH_DEFAULT_PORT)
+    requested_timeout = arguments.get("timeout_seconds")
+    timeout_seconds = min(
+        SSH_MAX_TIMEOUT_SECONDS,
+        max(10, int(requested_timeout) if requested_timeout else UPLOAD_DEFAULT_TIMEOUT_SECONDS),
+    )
+    digest = hashlib.sha256()
+    with source.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65_536), b""):
+            digest.update(chunk)
+    local_sha256 = digest.hexdigest()
+    local_bytes = source.stat().st_size
+
+    result = await _run_ssh_client(
+        mode="upload",
+        host=target,
+        port=port,
+        username=username,
+        password=password,
+        payload={
+            "local_path": str(source),
+            "remote_path": remote_path,
+            "file_mode": file_mode or None,
+            "make_dirs": make_dirs,
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    evidence: dict[str, Any] = {
+        "mode": "upload",
+        "port": port,
+        "username": username,
+        "local_path": str(source),
+        "remote_path": remote_path,
+        "local_bytes": local_bytes,
+        "local_sha256": local_sha256,
+        "file_mode": file_mode or None,
+        "make_dirs": make_dirs,
+        "timeout_seconds": timeout_seconds,
+    }
+    if result.timed_out:
+        return ToolResult(
+            output={"error": "ssh upload timed out", "target": target},
+            verified=False,
+            verification_method="ssh_upload_timeout",
+            evidence=evidence,
+            exit_code=result.exit_code,
+            accepted_exit_codes=(0,),
+            stdout=result.stdout,
+            stderr=result.stderr,
+            timed_out=True,
+        )
+    try:
+        payload = _parse_client_json(result.stdout)
+    except ValueError as exc:
+        return ToolResult(
+            output={"error": str(exc), "target": target},
+            verified=False,
+            verification_method="ssh_upload_parse_failed",
+            evidence=evidence,
+            exit_code=result.exit_code,
+            accepted_exit_codes=(0,),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    if payload.get("error") == "ssh_unavailable":
+        return ToolResult(
+            output={"error": "paramiko is not available in the ssh sandbox"},
+            verified=False,
+            verification_method="ssh_unavailable",
+            evidence=evidence,
+            exit_code=result.exit_code,
+        )
+    uploaded = bool(payload.get("ok")) and bool(payload.get("connected"))
+    remote_sha256 = str(payload.get("remote_sha256") or "")
+    evidence.update(
+        {
+            "uploaded_bytes": payload.get("uploaded_bytes"),
+            "remote_sha256": remote_sha256 or None,
+            "remote_mode": payload.get("remote_mode"),
+            "error": payload.get("error"),
+        }
+    )
+    if not uploaded:
+        return ToolResult(
+            output={
+                "target": target,
+                "remote_path": remote_path,
+                "local_path": str(source),
+                "uploaded_bytes": payload.get("uploaded_bytes"),
+                "remote_sha256": remote_sha256 or None,
+                "error": payload.get("error") or "ssh upload failed",
+            },
+            verified=False,
+            verification_method="ssh_upload_failed",
+            evidence=evidence,
+            exit_code=result.exit_code,
+            accepted_exit_codes=(0,),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    if remote_sha256 != local_sha256:
+        return ToolResult(
+            output={
+                "target": target,
+                "remote_path": remote_path,
+                "local_path": str(source),
+                "local_sha256": local_sha256,
+                "remote_sha256": remote_sha256 or None,
+                "uploaded_bytes": payload.get("uploaded_bytes"),
+                "error": "remote sha256 does not match the local source",
+            },
+            verified=False,
+            verification_method="ssh_upload_hash_mismatch",
+            evidence=evidence,
+            exit_code=result.exit_code,
+            accepted_exit_codes=(0,),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    return ToolResult(
+        output={
+            "target": target,
+            "username": username,
+            "local_path": str(source),
+            "remote_path": remote_path,
+            "uploaded_bytes": payload.get("uploaded_bytes"),
+            "sha256": remote_sha256,
+            "remote_mode": payload.get("remote_mode"),
+        },
+        verified=True,
+        verification_method="ssh_upload_verified_sha256",
+        evidence=evidence,
+        exit_code=result.exit_code,
+        accepted_exit_codes=(0,),
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
+
+
+__all__ = [
+    "ENUM_COMMANDS",
+    "SSH_CLIENT_SCRIPT",
+    "enum_system_definition",
+    "enum_system_handler",
+    "parse_sudo_rules",
+    "ssh_exec_definition",
+    "ssh_exec_handler",
+    "ssh_upload_definition",
+    "ssh_upload_handler",
+]

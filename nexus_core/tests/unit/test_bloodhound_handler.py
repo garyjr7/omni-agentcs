@@ -147,6 +147,8 @@ def test_handler_returns_unverified_without_output(tmp_path, monkeypatch):
         result = _run({"domain": "corp.local", "dc": "10.0.0.10"})
     assert result.success is False
     assert result.verification_method == "bloodhound_no_output"
+    # Nothing to collect is an answer about the target (V0-22).
+    assert result.outcome == "negative"
 
 
 def test_handler_uses_sandbox_and_no_subprocess(tmp_path, monkeypatch):

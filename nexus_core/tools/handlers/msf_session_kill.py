@@ -39,7 +39,7 @@ def msf_session_kill_definition(tenant_id: str = "system") -> ToolDefinition:
             "additionalProperties": False,
         },
         risk=RiskLevel.MEDIUM,
-        effect="read_only",
+        effect="post_exploitation",
         required_permissions=["execute:tool:nexus.session.kill"],
         timeout_seconds=60,
         max_output_bytes=100_000,

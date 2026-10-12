@@ -21,7 +21,7 @@ def test_plan_mode_blocks_active_and_audits(tmp_path):
     modes.plan(ctx, 'Review target; then execute')
     gateway = ToolGateway(PolicyEngine(store), AuditWriter(store))
     calls=[]
-    gateway.register(ToolDefinition('probe','system',{},tool_id='probe',effect='active'), lambda args,ctx:calls.append(1))
+    gateway.register(ToolDefinition('probe','system',{},tool_id='probe',effect='exploit'), lambda args,ctx:calls.append(1))
     with pytest.raises(PermissionError,match='plan'):
         asyncio.run(gateway.invoke('probe',{},ctx))
     assert not calls
@@ -56,7 +56,7 @@ def test_exec_still_requires_per_tool_approval(tmp_path):
     state=modes.plan(ctx,'Execute probe')
     modes.approve(ctx,state['plan_hash'],Identity('alice','system',kind='human',roles=('operator',)))
     gateway=ToolGateway(PolicyEngine(store),AuditWriter(store))
-    gateway.register(ToolDefinition('probe','system',{},tool_id='probe',effect='active'),lambda a,c:ToolResult({},True,'probe',{}))
+    gateway.register(ToolDefinition('probe','system',{},tool_id='probe',effect='exploit'),lambda a,c:ToolResult({},True,'probe',{}))
     from nexus_core.kernel.errors import ApprovalRequired
     with pytest.raises(ApprovalRequired):
         asyncio.run(gateway.invoke('probe',{},ctx))
@@ -87,7 +87,7 @@ def test_plan_mode_all_routes_reject_before_handler(tmp_path,monkeypatch,route):
     ctx=session.build_run_context()
     calls=[]
     tool_id='mcp.test.exec' if route=='mcp' else 'probe'
-    definition=ToolDefinition('probe','system',{},tool_id=tool_id,effect='active')
+    definition=ToolDefinition('probe','system',{},tool_id=tool_id,effect='exploit')
     monkeypatch.setattr('nexus_core.tools.registry.durable_tool_definitions',lambda tenant:{tool_id:(definition,lambda a,c:calls.append(1))})
     payload={'tool_id':tool_id,'arguments':{},'session_id':ctx.session_id,'identity':session.agent_identity_payload}
     if route=='repl':
@@ -115,7 +115,7 @@ def test_approved_exec_invocation_consumes_approval(tmp_path):
     approval=service.request(ctx,'execute:tool:probe')
     service.decide(approval['id'],'system','alice',True)
     gateway=ToolGateway(PolicyEngine(store),AuditWriter(store),service)
-    gateway.register(ToolDefinition('probe','system',{},tool_id='probe',effect='active'),
+    gateway.register(ToolDefinition('probe','system',{},tool_id='probe',effect='exploit'),
                      lambda a,c:ToolResult({},True,'probe'))
     assert asyncio.run(gateway.invoke('probe',{},ctx,approval_id=approval['id']))['verified']
     with pytest.raises(PermissionError):

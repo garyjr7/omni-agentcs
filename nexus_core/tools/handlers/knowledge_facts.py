@@ -8,6 +8,8 @@ tools discovered. This is the memory the planner chains on.
 
 from __future__ import annotations
 
+from typing import Any
+
 from nexus_core.kernel.blackboard import FACT_TYPES, Blackboard
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 
@@ -16,6 +18,7 @@ def record_fact_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.knowledge.record_fact``."""
     return ToolDefinition(
         tool_id="nexus.knowledge.record_fact",
+        effect="state_write",
         name="Record engagement fact",
         tenant_id=tenant_id,
         description=(
@@ -47,6 +50,7 @@ def query_facts_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.knowledge.query_facts``."""
     return ToolDefinition(
         tool_id="nexus.knowledge.query_facts",
+        effect="read_only",
         name="Query engagement facts",
         tenant_id=tenant_id,
         description=(
@@ -85,7 +89,9 @@ async def record_fact_handler(arguments: dict, context: RunContext) -> ToolResul
         return ToolResult(verification_method="blackboard_no_engagement")
     fact_type = str(arguments.get("fact_type") or "").strip()
     key = str(arguments.get("key") or "").strip()
-    value = arguments.get("value") if isinstance(arguments.get("value"), dict) else {}
+    raw_value = arguments.get("value")
+    # Bind once: calling ``get`` twice in a conditional defeats static narrowing.
+    value: dict[str, Any] = raw_value if isinstance(raw_value, dict) else {}
     source = "agent"
     verified = False
     created_by = getattr(getattr(context, "identity", None), "subject_id", "agent")

@@ -28,6 +28,17 @@ PD_HTTPX = "ProjectDiscovery's HTTP toolkit\nCurrent Version: v1.7.0\n"
 WHATWEB = "WhatWeb version 0.6.4 ( https://morningstarsecurity.com/research/whatweb/ )\n"
 NMAP = "Nmap version 7.99 ( https://nmap.org )\n"
 RIPGREP = "ripgrep 14.1.0 (rev e50df40a19)\n"
+NIKTO = "Nikto 2.6.1 (LW 2.5)\n"
+
+#: Every identity prober in these tests has to answer for the whole identity
+#: table: an unlisted binary answers 127/"" and would be reported as a problem.
+GOOD_PROBES = {
+    "httpx": (0, PD_HTTPX),
+    "whatweb": (0, WHATWEB),
+    "nmap": (0, NMAP),
+    "rg": (0, RIPGREP),
+    "nikto": (0, NIKTO),
+}
 
 
 def _runner(outputs):
@@ -60,14 +71,7 @@ def test_classify_identity_missing_binary():
 
 def test_check_binary_identities_reports_only_wrong_present_binaries():
     which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-    run = _runner(
-        {
-            "httpx": (2, PYTHON_HTTPX),
-            "whatweb": (0, WHATWEB),
-            "nmap": (0, NMAP),
-            "rg": (0, RIPGREP),
-        }
-    )
+    run = _runner(dict(GOOD_PROBES, httpx=(2, PYTHON_HTTPX)))
     checks = check_binary_identities(which=which, run=run)
     problems = identity_problems(checks)
     assert [item.name for item in problems] == ["httpx"]
@@ -112,14 +116,7 @@ def test_assess_environment_without_probe_keeps_presence_semantics():
 
 def test_preflight_aborts_on_a_wrong_binary_by_default():
     which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-    run = _runner(
-        {
-            "httpx": (2, PYTHON_HTTPX),
-            "whatweb": (0, WHATWEB),
-            "nmap": (0, NMAP),
-            "rg": (0, RIPGREP),
-        }
-    )
+    run = _runner(dict(GOOD_PROBES, httpx=(2, PYTHON_HTTPX)))
     verdict = preflight_binaries(which=which, run=run, env={})
     assert verdict.ok is False
     assert [p.name for p in verdict.problems] == ["httpx"]
@@ -128,14 +125,7 @@ def test_preflight_aborts_on_a_wrong_binary_by_default():
 
 def test_preflight_allows_degraded_mode_with_the_operator_flag():
     which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-    run = _runner(
-        {
-            "httpx": (2, PYTHON_HTTPX),
-            "whatweb": (0, WHATWEB),
-            "nmap": (0, NMAP),
-            "rg": (0, RIPGREP),
-        }
-    )
+    run = _runner(dict(GOOD_PROBES, httpx=(2, PYTHON_HTTPX)))
     verdict = preflight_binaries(which=which, run=run, env={DEGRADED_TOOLS_ENV: "1"})
     assert verdict.degraded is True
     assert verdict.ok is True
@@ -143,14 +133,7 @@ def test_preflight_allows_degraded_mode_with_the_operator_flag():
 
 def test_preflight_passes_when_all_binaries_are_correct():
     which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-    run = _runner(
-        {
-            "httpx": (0, PD_HTTPX),
-            "whatweb": (0, WHATWEB),
-            "nmap": (0, NMAP),
-            "rg": (0, RIPGREP),
-        }
-    )
+    run = _runner(GOOD_PROBES)
     # Pin the module probe so this stays a binary-only assertion (H5 adds a
     # runtime-module check that would otherwise depend on the test venv).
     verdict = preflight_binaries(which=which, run=run, env={}, module_finder=lambda name: object())
@@ -162,7 +145,7 @@ def test_preflight_passes_when_all_binaries_are_correct():
 def test_missing_binary_retires_its_tool_without_blocking_the_run():
     """B6: a missing ``rg`` must not fail the preflight, just retire the tool."""
     which = lambda name: None if name == "rg" else f"/usr/bin/{name}"  # noqa: E731
-    run = _runner({"httpx": (0, PD_HTTPX), "whatweb": (0, WHATWEB), "nmap": (0, NMAP)})
+    run = _runner({k: v for k, v in GOOD_PROBES.items() if k != "rg"})
     verdict = preflight_binaries(which=which, run=run, env={}, module_finder=lambda name: object())
     assert verdict.ok is True
     assert verdict.unavailable_tools == ("nexus.workspace.search",)
@@ -173,7 +156,10 @@ def test_missing_python_module_retires_its_tools():
     """Without paramiko, the SSH post-exploitation tools are retired (H5)."""
     assert missing_python_modules(find_spec=lambda name: None) == (
         "nexus.post.enum_system",
+        "nexus.post.pivot_bruteforce",
+        "nexus.post.pivot_http",
         "nexus.post.ssh_exec",
+        "nexus.post.ssh_upload",
     )
     present = missing_python_modules(find_spec=lambda name: object())
     assert present == ()
@@ -181,9 +167,7 @@ def test_missing_python_module_retires_its_tools():
 
 def test_preflight_retires_ssh_tools_without_paramiko():
     which = lambda name: f"/usr/bin/{name}"  # noqa: E731
-    run = _runner(
-        {"httpx": (0, PD_HTTPX), "whatweb": (0, WHATWEB), "nmap": (0, NMAP), "rg": (0, RIPGREP)}
-    )
+    run = _runner(GOOD_PROBES)
     verdict = preflight_binaries(which=which, run=run, env={}, module_finder=lambda name: None)
     # A missing runtime module never blocks the run; it only retires tools.
     assert verdict.ok is True

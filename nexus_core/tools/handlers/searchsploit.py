@@ -38,6 +38,7 @@ def searchsploit_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.exploit.searchsploit``."""
     return ToolDefinition(
         tool_id="nexus.exploit.searchsploit",
+        effect="read_only",
         name="SearchSploit local Exploit-DB lookup",
         tenant_id=tenant_id,
         description=(

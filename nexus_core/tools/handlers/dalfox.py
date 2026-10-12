@@ -159,6 +159,7 @@ def dalfox_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.web.dalfox``."""
     return ToolDefinition(
         tool_id="nexus.web.dalfox",
+        effect="read_only",
         name="Dalfox XSS scanner",
         tenant_id=tenant_id,
         description=(

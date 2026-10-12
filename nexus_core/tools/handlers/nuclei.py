@@ -307,6 +307,7 @@ def nuclei_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.web.nuclei``."""
     return ToolDefinition(
         tool_id="nexus.web.nuclei",
+        effect="read_only",
         name="Nuclei template vulnerability scan",
         tenant_id=tenant_id,
         description=(

@@ -1,48 +1,108 @@
-"""Small dependency-free validator for the JSON Schema subset used by tools."""
+"""Strict JSON Schema enforcement for tool inputs (V1-10).
+
+The previous validator hand-implemented a subset of JSON Schema: ``type``,
+``enum``, ``required``, ``properties``, ``additionalProperties``, ``items``,
+``minLength`` and ``maxLength``. Every other keyword the catalog declares was
+silently ignored —``minimum``/``maximum``, ``minItems``/``maxItems``,
+``minProperties``/``maxProperties`` and ``pattern``— so a tool advertised limits
+that no caller had to honour and each handler had to re-implement (or forget)
+its own bounds. An out-of-range port, a 500-entry target list or a session id
+with the wrong shape reached the handler as if the contract allowed it.
+
+This module delegates to ``jsonschema`` with the Draft 2020-12 validator the
+schemas are written against, so a declared keyword is an enforced keyword.
+``check_schema`` fails closed when a definition carries a malformed schema,
+which turns "discovered on the first invocation" into "rejected at
+registration".
+"""
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import json
+from functools import lru_cache
+from typing import Any, Dict, Mapping
+
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError, ValidationError
 
 
 class SchemaValidationError(ValueError):
-    pass
+    """Invalid arguments or an invalid schema, reported with a JSON path."""
 
 
-TYPE_MAP: dict[str, type | tuple[type, ...]] = {
-    "object": dict, "array": list, "string": str, "integer": int,
-    "number": (int, float), "boolean": bool, "null": type(None),
-}
+def _cache_key(schema: Mapping[str, Any]) -> str:
+    """Canonical form used to memoize compiled validators.
+
+    Catalog schemas are built once per definition but validated on every
+    invocation, and ``jsonschema`` compiles a validator per call. Keying on the
+    serialized schema keeps the hot path cheap without holding references to
+    mutable dicts.
+    """
+    return json.dumps(schema, sort_keys=True, default=str)
+
+
+@lru_cache(maxsize=512)
+def _compiled(key: str) -> Draft202012Validator:
+    return Draft202012Validator(json.loads(key))
+
+
+def _validator(schema: Mapping[str, Any]) -> Draft202012Validator:
+    try:
+        return _compiled(_cache_key(schema))
+    except TypeError:  # pragma: no cover - non JSON-serializable schema value
+        return Draft202012Validator(dict(schema))
+
+
+def check_schema(schema: Mapping[str, Any] | None) -> None:
+    """Reject a definition whose schema is not valid Draft 2020-12.
+
+    Raises ``SchemaValidationError`` (a ``ValueError``) so a malformed contract
+    fails where the tool is registered, not where it is first invoked.
+    """
+    if not schema:
+        return
+    try:
+        _checked(_cache_key(schema))
+    except SchemaError as exc:
+        location = "/".join(str(part) for part in exc.absolute_path) or "<root>"
+        raise SchemaValidationError(
+            f"invalid tool schema at {location}: {exc.message}"
+        ) from None
+    except TypeError:  # pragma: no cover - non JSON-serializable schema value
+        try:
+            Draft202012Validator.check_schema(dict(schema))
+        except SchemaError as exc:
+            raise SchemaValidationError(f"invalid tool schema: {exc.message}") from None
+
+
+@lru_cache(maxsize=512)
+def _checked(key: str) -> None:
+    Draft202012Validator.check_schema(json.loads(key))
+
+
+def _location(path: str, error: ValidationError) -> str:
+    """Join the caller's prefix with the failing JSON path.
+
+    Keeps the previous ``$.field: message`` convention while reporting the
+    nested location jsonschema resolved.
+    """
+    location = error.json_path or "$"
+    if location in ("$", ""):
+        return path
+    if path in ("$", ""):
+        return location
+    return path + location[1:]
 
 
 def validate(instance: Any, schema: Dict[str, Any], path: str = "$") -> None:
-    expected = schema.get("type")
-    if expected:
-        accepted = TYPE_MAP.get(expected)
-        if not accepted:
-            raise SchemaValidationError(f"{path}: unsupported schema type {expected}")
-        if not isinstance(instance, accepted) or (expected in {"integer", "number"} and isinstance(instance, bool)):
-            raise SchemaValidationError(f"{path}: expected {expected}")
-    if "enum" in schema and instance not in schema["enum"]:
-        raise SchemaValidationError(f"{path}: value is not in enum")
-    if isinstance(instance, dict):
-        required = schema.get("required", [])
-        missing = [name for name in required if name not in instance]
-        if missing:
-            raise SchemaValidationError(f"{path}: missing required fields {missing}")
-        properties = schema.get("properties", {})
-        if schema.get("additionalProperties") is False:
-            extras = set(instance) - set(properties)
-            if extras:
-                raise SchemaValidationError(f"{path}: unexpected fields {sorted(extras)}")
-        for name, value in instance.items():
-            if name in properties:
-                validate(value, properties[name], f"{path}.{name}")
-    if isinstance(instance, list) and "items" in schema:
-        for index, value in enumerate(instance):
-            validate(value, schema["items"], f"{path}[{index}]")
-    if isinstance(instance, str):
-        if "minLength" in schema and len(instance) < schema["minLength"]:
-            raise SchemaValidationError(f"{path}: string is too short")
-        if "maxLength" in schema and len(instance) > schema["maxLength"]:
-            raise SchemaValidationError(f"{path}: string is too long")
+    """Validate ``instance`` against ``schema`` or raise ``SchemaValidationError``.
+
+    Every keyword in the schema is enforced; the first failure (in document
+    order) is reported so the operator sees the field the contract rejects
+    instead of a generic "invalid arguments".
+    """
+    validator = _validator(schema)
+    error = next(validator.iter_errors(instance), None)
+    if error is None:
+        return
+    raise SchemaValidationError(f"{_location(path, error)}: {error.message}") from None

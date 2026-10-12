@@ -83,6 +83,33 @@ class SandboxResult:
     duration_seconds: float = 0.0
 
 
+def merge_extra_env(env: dict[str, str], extra_env: dict[str, str] | None) -> dict[str, str]:
+    """Merge caller-provided variables into a sandbox environment, safely.
+
+    Sandboxed children get a fixed environment (``PATH``, ``HOME``, the XDG
+    dirs). A handler may still need to hand a tool-specific variable to the
+    child -- ``KRB5CCNAME`` for the Kerberos tooling is the measured case
+    (RUN_sala10 §7.6) -- so unknown keys are accepted while the sandbox's own
+    controls stay non-overridable (fail closed, never silently ignore).
+    """
+    extra = {str(key): str(value) for key, value in (extra_env or {}).items()}
+    if any(key in env or key.startswith("XDG_") for key in extra):
+        raise PermissionError("cannot override sandbox environment controls")
+    env.update(extra)
+    return env
+
+
+def _insert_oci_env(command: list[str], image: str, extra_env: dict[str, str] | None) -> None:
+    """Insert ``--env`` pairs before the image, refusing sandbox controls."""
+    for key, value in (extra_env or {}).items():
+        if key in {"HOME", "PATH"} or str(key).startswith("XDG_"):
+            raise PermissionError("cannot override sandbox environment controls")
+    position = command.index(image)
+    for key, value in (extra_env or {}).items():
+        command[position:position] = ["--env", f"{key}={value}"]
+        position += 2
+
+
 def _count_process_group(pgid: int) -> int:
     """Best-effort count of live processes whose process group is ``pgid``.
 
@@ -218,11 +245,7 @@ class LocalSandbox:
         """Streaming child with the same argv/cwd/env policy as run()."""
         if not argv or argv[0] not in self.allowed_programs:
             raise PermissionError("program is not allowed in this sandbox")
-        env = self._sandbox_env()
-        extra_env = extra_env or {}
-        if any(key in env or key.startswith("XDG_") for key in extra_env):
-            raise PermissionError("MCP cannot override sandbox environment controls")
-        env.update(extra_env)
+        env = merge_extra_env(self._sandbox_env(), extra_env)
         process = await asyncio.create_subprocess_exec(
             *argv, cwd=str(self.resolve_workspace(cwd)), env=env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -250,6 +273,7 @@ class LocalSandbox:
         cwd: str = ".",
         timeout_seconds: float = 30,
         home_dir: str | Path | None = None,
+        extra_env: dict[str, str] | None = None,
         cancel_event: asyncio.Event | None = None,
         grace_seconds: float = 3.0,
     ) -> SandboxResult:
@@ -259,7 +283,8 @@ class LocalSandbox:
         descendant tree shares one process group. On a timeout or a set
         ``cancel_event`` the group gets SIGTERM, then SIGKILL after
         ``grace_seconds``; an external ``task.cancel()`` is treated the same
-        way before the ``CancelledError`` is re-raised.
+        way before the ``CancelledError`` is re-raised. ``extra_env`` adds
+        tool-specific variables (never PATH/HOME/XDG).
         """
         if not argv or argv[0] not in self.allowed_programs:
             raise PermissionError("program is not allowed in this sandbox")
@@ -271,7 +296,7 @@ class LocalSandbox:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=self._sandbox_env(home_dir),
+            env=merge_extra_env(self._sandbox_env(home_dir), extra_env),
             start_new_session=True,
         )
         communicate = asyncio.ensure_future(process.communicate())
@@ -395,12 +420,7 @@ class OCISandbox:
         """Interactive OCI process; stop the daemon-owned container on exit."""
         command = self.build_argv(image, argv)
         command.insert(2, "--interactive")
-        position = command.index(image)
-        for key, value in (extra_env or {}).items():
-            if key in {"HOME", "PATH"} or key.startswith("XDG_"):
-                raise PermissionError("MCP cannot override sandbox environment controls")
-            command[position:position] = ["--env", f"{key}={value}"]
-            position += 2
+        _insert_oci_env(command, image, extra_env)
         name = command[command.index("--name") + 1]
         process = await asyncio.create_subprocess_exec(
             *command, cwd=str(self.workspace_root), env=dict(SANDBOX_BASE_ENV),
@@ -427,10 +447,12 @@ class OCISandbox:
         image: str,
         command: Sequence[str],
         timeout_seconds: float = 120,
+        extra_env: dict[str, str] | None = None,
         cancel_event: asyncio.Event | None = None,
         grace_seconds: float = 3.0,
     ) -> SandboxResult:
         argv = self.build_argv(image, command)
+        _insert_oci_env(argv, image, extra_env)
         started = time.monotonic()
         process = await asyncio.create_subprocess_exec(
             *argv,

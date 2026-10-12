@@ -28,6 +28,7 @@ def subfinder_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.recon.subfinder``."""
     return ToolDefinition(
         tool_id="nexus.recon.subfinder",
+        effect="read_only",
         name="Subfinder passive subdomain enumeration",
         tenant_id=tenant_id,
         description="Enumera subdominios pasivamente usando fuentes OSINT.",

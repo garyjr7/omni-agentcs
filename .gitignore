@@ -45,6 +45,12 @@ data/logs/
 Thumbs.db
 .sandbox_home/
 
+# Credenciales y artefactos de ejecución contra objetivos (nunca commitear)
+*.ccache
+*.ntds.txt
+nopac_run_*.ldif
+whatweb_run_*.json
+
 .uncover-config/
 .agents/
 .codex/

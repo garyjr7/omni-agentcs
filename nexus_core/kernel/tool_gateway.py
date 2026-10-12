@@ -16,6 +16,7 @@ from .errors import ApprovalRequired, ProviderFailure
 from .audit import AuditWriter
 from .models import Resource, RunContext, ToolDefinition, ToolResult
 from .policy import PolicyEngine
+from .redaction import sanitize
 from .schema_validation import validate
 from .telemetry import metrics, telemetry
 
@@ -43,6 +44,38 @@ def _journal_artifact_store(store):
         return LocalArtifactStore(store, str(root))
     except Exception:  # noqa: BLE001 - the journal must not fail on storage setup
         return None
+
+
+#: Bound on the redacted handler-output fragment attached to a post-condition
+#: failure, so a large evidence blob cannot flood the error, the CLI or the
+#: agent's context.
+_FAILURE_DETAIL_MAX = 480
+
+
+def _bounded(text: str, limit: int = _FAILURE_DETAIL_MAX) -> str:
+    """Truncate a diagnostic string to a fixed budget with a visible marker."""
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _failure_detail(result: ToolResult) -> str:
+    """Redacted, bounded view of the output that failed its post-condition.
+
+    A failed post-condition used to surface only the method name, which hides
+    *what the tool observed*: the NTLM catcher knows the peer it refused, the
+    DNS updater knows the server RCODE. That evidence exists in the handler and
+    was discarded here, which is where "why did the primitive fail" became
+    unanswerable. Only the handler's own observation is included, redacted with
+    the same rules as every persisted record, and always bounded.
+    """
+    try:
+        detail = json.dumps(
+            sanitize(result.output), default=str, ensure_ascii=False, sort_keys=True
+        )
+    except Exception:  # noqa: BLE001 - the diagnostic must never mask the failure
+        return ""
+    if detail in ("", "null", "{}"):
+        return ""
+    return f" output={_bounded(detail)}"
 
 
 class ToolGateway:
@@ -287,14 +320,26 @@ class ToolGateway:
                     result = handler(arguments, context)
                 if not isinstance(result, ToolResult):
                     raise TypeError("tool handlers must return ToolResult with deterministic evidence")
-                if not result.success:
+                if not result.completed:
+                    # V0-22: a declared ``negative``/``denied``/``unsupported``
+                    # result is an observation about the target and completes
+                    # below. Timeouts, an absent binary and an unparsed answer
+                    # keep their own exception type, so "could not look" never
+                    # reads as "looked and found nothing".
                     if result.timed_out or result.verification_method.endswith(("_rpc_failed", "_credentials_missing", "_unavailable", "_timeout")):
                         raise ProviderFailure(result.verification_method)
                     raise RuntimeError(
                         "tool post-condition was not verified "
                         f"(method={result.verification_method})"
+                        f"{_failure_detail(result)}"
                     )
+                from nexus_core.tools.parsers import PARSERS_VERSION
+
                 from .fact_verification import derive_assertions, persist_assertions
+
+                # Pin the contract and parser revision that produced this result
+                # (V1-8) before deriving assertions from it.
+                result = result.stamp_versions(tool_id, definition.version, PARSERS_VERSION)
                 assertions = derive_assertions(tool_id, arguments, result, context)
                 result_value = result.to_dict()
                 result_value.update(invocation_id=context.invocation_id,
@@ -308,7 +353,8 @@ class ToolGateway:
                     resource_type="tool", resource_id=tool_id,
                     payload={"duration_ms": round((time.monotonic() - started) * 1000, 3),
                              "output_bytes": len(encoded), "run_id": context.run_id,
-                             "invocation_id": context.invocation_id, "assertions": assertions},
+                             "invocation_id": context.invocation_id, "assertions": assertions,
+                             "outcome": result.outcome_class},
                     decision="allow",
                 )
                 metrics.increment(
@@ -331,7 +377,8 @@ class ToolGateway:
                     tenant_id=context.tenant_id, trace_id=context.trace_id,
                     actor_id=context.identity.subject_id, action="tool.failed",
                     resource_type="tool", resource_id=tool_id,
-                    payload={"error_type": type(exc).__name__, "run_id": context.run_id},
+                    payload={"error_type": type(exc).__name__, "run_id": context.run_id,
+                             "error": _bounded(str(exc))},
                     decision="error",
                 )
                 metrics.increment(

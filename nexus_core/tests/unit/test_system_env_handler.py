@@ -71,11 +71,29 @@ def test_check_env_registered_in_catalog():
         "nexus.c2.sliver_loot",
         "nexus.orchestrator.playbook",
         "nexus.recon.ftp",
+        "nexus.recon.dns",
+        "nexus.post.dns_update",
+        "nexus.post.tftp",
+        "nexus.post.dpapi",
+        "nexus.post.ssh_upload",
+        "nexus.recon.nikto",
         "nexus.cred.bruteforce",
         "nexus.post.ssh_exec",
         "nexus.post.enum_system",
         "nexus.post.privesc_hints",
+        "nexus.post.pivot_bruteforce",
+        "nexus.post.pivot_http",
         "nexus.knowledge.record_fact",
         "nexus.knowledge.query_facts",
+        "nexus.web.wp_enum",
+        "nexus.web.wp_bruteforce",
+        "nexus.web.wp_exec",
     } <= set(catalog)
-    assert len(catalog) == 49
+    # 64 after RUN_sala12 (THM Intrusion Detection): nexus.post.ssh_upload (SFTP
+    # drop of a PE-assist script onto a host with no outbound network) and
+    # nexus.recon.nikto (web scan with the -Tuning/-evasion/-Pause knobs);
+    # 62 after adding the governed DPAPI/KeePass loot (nexus.post.dpapi) in
+    # the synthetic run; 61 was the governed TFTP payload delivery (nexus.post.tftp) in the
+    # same room; 60 were the governed DNS query, dynamic DNS update, AD password
+    # reset and AD escalation (RUN_sala10); 56 were the two Windows tools.
+    assert len(catalog) == 64

@@ -68,14 +68,30 @@ def test_prompt_catalog_compact_format(catalog):
 
 
 def test_catalog_stays_compact_for_all_tools(catalog):
-    # 49 tools after adding nexus.pwn.analyze and nexus.pwn.ret2libc.
-    assert len(catalog) == 49
-    # Compact catalog only: ~190 chars per tool, never the full JSON schema.
-    assert len(render_tool_catalog(catalog)) < 9600
+    # 64 tools after RUN_sala12 (THM Intrusion Detection): nexus.post.ssh_upload
+    # and nexus.recon.nikto. The catalog has to grow with the surface, so the
+    # guard is a *per-tool* bound (which catches one tool bloating the prompt)
+    # plus an absolute ceiling with a small margin.
+    # Measured at 64 tools: 12.588 chars of catalog / 196.7 per tool — the
+    # per-tool bound is what really protects the prompt, and it barely moves
+    # (194.6 at 56 tools, 194.8 at 58, 195.5 at 59, 195.7 at 60, 195.9 at 61,
+    # 196.1 at 62). The ceiling moved 12.400 -> 12.800 in the same review that
+    # added those two tool lines: both are ordinary 5-argument recon/post lines
+    # (201 and 224 chars), i.e. the growth is two reviewed tools, not one fat one.
+    assert len(catalog) == 64
+    text = render_tool_catalog(catalog)
+    assert len(text) / len(catalog) < 200
+    assert len(text) < 12800
 
 
-def test_prompt_under_18k_chars(catalog):
-    assert len(_prompt(catalog)) < 18000
+def test_prompt_stays_within_the_reviewed_budget(catalog):
+    # Measured 20.097 chars at 64 tools (19.641 at 62, 19.460 at 61, 19.222 at
+    # 60, 19.045 at 59, 18.810 at 58, 18.404 at 56, 18.000 was set at 54).
+    # Bumping this ceiling is a conscious review of the system prompt, not a
+    # formality: the catalog grew by two reviewed tool lines and nothing else
+    # changed. If a future tool pushes *this* number, the review question is
+    # whether the catalog still fits one prompt, not which bound to raise.
+    assert len(_prompt(catalog)) < 20500
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):

@@ -96,7 +96,7 @@ def test_shares_action_parses_share_list():
         result = _run({"target": "203.0.113.10", "action": "shares"})
     argv = sandbox.calls[0][0]
     assert argv[0] == "/usr/bin/smbclient"
-    assert "-N" in argv and f"//203.0.113.10" in argv
+    assert "-N" in argv and "//203.0.113.10" in argv
     assert result.verified is True
     assert result.verification_method == "smb_shares_parsed"
     names = {share["name"] for share in result.output["shares"]}
@@ -112,12 +112,46 @@ def test_list_action_parses_directory_entries():
     assert result.output["entries"][0]["name"] == "passwords.txt"
 
 
+def test_list_keeps_entries_with_combined_attribute_letters():
+    """smbclient combines flags (``Dr``): every such entry used to be dropped."""
+    listing = (
+        "  NRznLVEcPj                          D        0  Sat May  2 10:02:20 2020\n"
+        "  windcorp.thm                       Dr        0  Thu Apr 30 15:10:59 2020\n"
+        "  Flag 1.txt                          A       45  Fri May  1 15:32:36 2020\n"
+    )
+    with _fake_sandbox(_result(listing)):
+        result = _run({"target": "203.0.113.10", "share": "SYSVOL", "action": "list"})
+    names = [entry["name"] for entry in result.output["entries"]]
+    assert names == ["NRznLVEcPj", "windcorp.thm", "Flag 1.txt"]
+    assert result.output["entries"][0]["attrs"] == "D"
+    assert result.output["entries"][1]["attrs"] == "Dr"
+    assert result.output["entries"][2]["size"] == 45
+
+
+def test_list_action_descends_into_a_subdirectory():
+    with _fake_sandbox(_result(LIST_OUTPUT)) as sandbox:
+        result = _run(
+            {
+                "target": "203.0.113.10",
+                "share": "SYSVOL",
+                "action": "list",
+                "remote_path": "windcorp.thm/Policies",
+            }
+        )
+    assert sandbox.calls[0][0][-2:] == ["-c", 'cd "windcorp.thm/Policies"; ls']
+    assert result.output["remote_path"] == "windcorp.thm/Policies"
+    assert result.output["count"] == 1
+
+
 def test_list_action_reports_nt_status_failure():
     with _fake_sandbox(_result("NT_STATUS_ACCESS_DENIED listing \\\\*\n")):
         result = _run({"target": "203.0.113.10", "share": "nt4wrksv", "action": "list"})
     assert result.verified is False
     assert result.verification_method == "smb_listing_failed"
     assert result.output["error"] == "NT_STATUS_ACCESS_DENIED"
+    # The share refused the listing: a determinate answer, not an exception
+    # (V0-22), and distinct from a path that does not exist here.
+    assert result.outcome == "denied"
 
 
 def test_authenticated_request_passes_credentials(tmp_path, monkeypatch):
@@ -127,6 +161,34 @@ def test_authenticated_request_passes_credentials(tmp_path, monkeypatch):
     argv = sandbox.calls[0][0]
     assert "-N" not in argv
     assert "Bob%s3cret" in argv
+
+
+def test_hash_authentication_uses_pw_nt_hash(tmp_path, monkeypatch):
+    """A dumped NT hash must authenticate without a plaintext password."""
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", str(tmp_path))
+    nt = "bfa4cae19504e0591ef0a523a1936cd4"
+    with _fake_sandbox(_result(SHARES_OUTPUT)) as sandbox:
+        result = _run(
+            {
+                "target": "203.0.113.10",
+                "username": "windcorp.thm\\Administrator",
+                "hash": f"aad3b435b51404eeaad3b435b51404ee:{nt}",
+            }
+        )
+    argv = sandbox.calls[0][0]
+    assert "-N" not in argv
+    assert f"windcorp.thm\\Administrator%{nt}" in argv
+    assert "--pw-nt-hash" in argv
+    assert "bfa4cae19504e0591ef0a523a1936cd4" not in str(result.evidence)
+    assert result.evidence["pass_the_hash"] is True
+
+
+def test_hash_requires_a_username_and_must_be_hex():
+    with _fake_sandbox(_result(SHARES_OUTPUT)):
+        with pytest.raises(ValueError, match="requires a username"):
+            _run({"target": "203.0.113.10", "hash": "bfa4cae19504e0591ef0a523a1936cd4"})
+        with pytest.raises(ValueError, match="32-hex NT hash"):
+            _run({"target": "203.0.113.10", "username": "Bob", "hash": "not-a-hash"})
 
 
 def test_get_download_reports_size_and_sha256(tmp_path, monkeypatch):

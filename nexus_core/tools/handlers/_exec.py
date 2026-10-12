@@ -40,11 +40,24 @@ async def run_in_sandbox(
     timeout_seconds: float,
     image_env: str,
     default_image: str,
+    extra_env: dict[str, str] | None = None,
 ) -> SandboxResult:
-    """Run ``argv`` in ``sandbox``, normalizing the OCI container signature."""
+    """Run ``argv`` in ``sandbox``, normalizing the OCI container signature.
+
+    ``extra_env`` passes tool-specific variables to the child (for example
+    ``KRB5CCNAME`` for the Kerberos tooling). The sandbox still refuses to let a
+    handler override its own controls (PATH/HOME/XDG).
+    """
     if isinstance(sandbox, OCISandbox):
+        image = os.getenv(image_env, default_image)
+        if extra_env:
+            return await sandbox.run(
+                image, argv, timeout_seconds=timeout_seconds, extra_env=extra_env
+            )
+        return await sandbox.run(image, argv, timeout_seconds=timeout_seconds)
+    if extra_env:
         return await sandbox.run(
-            os.getenv(image_env, default_image), argv, timeout_seconds=timeout_seconds
+            argv, timeout_seconds=timeout_seconds, extra_env=extra_env
         )
     return await sandbox.run(argv, timeout_seconds=timeout_seconds)
 

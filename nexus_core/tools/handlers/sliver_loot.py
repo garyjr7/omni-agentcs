@@ -39,7 +39,7 @@ def sliver_loot_definition(tenant_id: str = "system") -> ToolDefinition:
             "additionalProperties": False,
         },
         risk=RiskLevel.LOW,
-        effect="read_only",
+        effect="state_write",
         required_permissions=[f"execute:tool:{TOOL_ID}"],
         timeout_seconds=60,
         max_output_bytes=2_000_000,

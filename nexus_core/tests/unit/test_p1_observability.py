@@ -70,7 +70,7 @@ def _definition() -> ToolDefinition:
             "additionalProperties": False,
         },
         risk=RiskLevel.LOW,
-        required_permissions=(),
+        required_permissions=[],
         scope_required=False,
     )
 
@@ -108,3 +108,88 @@ async def test_tool_invoke_audit_records_redacted_arguments(tmp_path):
     assert invoke["payload"]["arguments"]["target"] == "10.0.0.5"
     assert invoke["payload"]["arguments"]["password"] != "s3cr3t"
     assert invoke["payload"]["run_id"] == "run-1"
+
+
+def _failing_definition() -> ToolDefinition:
+    return ToolDefinition(
+        tool_id="nexus.test.audit_args",
+        name="Audit args echo",
+        tenant_id="system",
+        description="test",
+        input_schema={
+            "type": "object",
+            "properties": {"target": {"type": "string"}},
+            "required": ["target"],
+            "additionalProperties": False,
+        },
+        risk=RiskLevel.LOW,
+        required_permissions=[],
+        scope_required=False,
+    )
+
+
+def _failing_handler(output):
+    async def handler(arguments, context):
+        return ToolResult(
+            output=output,
+            verified=False,
+            verification_method="nexus.test.peer_out_of_scope",
+        )
+
+    return handler
+
+
+async def test_post_condition_failure_keeps_the_handler_observation(tmp_path):
+    """A failed post-condition must not discard *what the tool observed*.
+
+    The NTLM catcher learns the peer only after the inbound connection and fails
+    closed when it is out of scope; the DNS updater learns the server RCODE. The
+    gateway used to raise with the method alone, so that evidence died here.
+    """
+    store = ControlStore(Path(tmp_path) / "audit.db")
+    store.initialize()
+    gateway = ToolGateway(PolicyEngine(store), AuditWriter(store))
+    gateway.register(
+        _failing_definition(),
+        _failing_handler({"error": "inbound connection from out-of-scope host",
+                          "peer": "10.9.9.9", "port": 445,
+                          "ntlm_hash": "aabbccdd"}),
+    )
+    context = RunContext(
+        "system",
+        Identity("operator-1", "system", roles=("operator",)),
+        run_id="run-1",
+        trace_id="run-1",
+    )
+    with pytest.raises(RuntimeError) as raised:
+        await gateway.invoke("nexus.test.audit_args", {"target": "10.0.0.5"}, context)
+    message = str(raised.value)
+    assert "nexus.test.peer_out_of_scope" in message
+    # The observation survives, redacted with the same rules as every record.
+    assert "10.9.9.9" in message
+    assert "aabbccdd" not in message
+    # ...and reaches the durable trail the investigation actually reads.
+    failure = next(row for row in AuditWriter(store).export("system")
+                   if row["action"] == "tool.failed")
+    assert "10.9.9.9" in failure["payload"]["error"]
+    assert "aabbccdd" not in failure["payload"]["error"]
+
+
+async def test_post_condition_failure_bounds_the_attached_output(tmp_path):
+    """A huge evidence blob must not flood the error, the CLI or the context."""
+    store = ControlStore(Path(tmp_path) / "audit.db")
+    store.initialize()
+    gateway = ToolGateway(PolicyEngine(store), AuditWriter(store))
+    gateway.register(
+        _failing_definition(),
+        _failing_handler({"blob": "x" * 50_000}),
+    )
+    context = RunContext(
+        "system",
+        Identity("operator-1", "system", roles=("operator",)),
+        run_id="run-1",
+        trace_id="run-1",
+    )
+    with pytest.raises(RuntimeError) as raised:
+        await gateway.invoke("nexus.test.audit_args", {"target": "10.0.0.5"}, context)
+    assert len(str(raised.value)) < 1_000

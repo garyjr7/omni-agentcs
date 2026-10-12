@@ -31,6 +31,9 @@ dependencies = [
     "mcp>=2.3,<3",
     # Phase 3B: OS-keyring backend for the secret store (config/secrets.py).
     "keyring>=25.7,<26",
+    # Tool input contract enforcement (kernel/schema_validation.py, V1-10):
+    # every keyword a catalog schema declares is enforced before the handler.
+    "jsonschema>=4.23,<5",
 ]
 
 [project.optional-dependencies]
@@ -49,6 +52,18 @@ omni = "omni:main"
 
 [project.urls]
 Homepage = "https://github.com/bajioware/omni-agentcs"
+
+[tool.mypy]
+# Contrato de tipado del proyecto (V1-9). No silencia errores del código propio:
+#   * ignore_missing_imports: las dependencias sin stubs (paramiko, pyspnego, sliver,
+#     google-genai…) no aportan tipos; el código propio sí se comprueba.
+#   * follow_imports = "skip": se comprueban los ficheros que se le pasan, que es lo
+#     que hace el gate incremental `make typecheck`.
+ignore_missing_imports = true
+follow_imports = "skip"
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
 
 [tool.setuptools]
 # Top-level entry points installed as importable modules.

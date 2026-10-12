@@ -17,6 +17,7 @@ from nexus_core.provisioner.detector import (
 def check_env_definition(tenant_id="system"):
     return ToolDefinition(
         tool_id="nexus.system.check_env",
+        effect="read_only",
         name="Check system environment",
         tenant_id=tenant_id,
         description="Report OS, package managers and tool availability without installing anything.",

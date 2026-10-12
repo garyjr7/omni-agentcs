@@ -62,10 +62,13 @@ HTTP_MAX_DATA_CHARS = 262_144
 HTTP_MAX_DATA_B64_CHARS = 524_288
 
 #: stdlib client executed inside the sandbox. argv layout (after ``-c``):
-#: method url headers_json data_b64 upload_json follow max_bytes timeout.
+#: method url headers_json data_b64 upload_json follow max_bytes timeout save_path
+#: insecure.
 #: ``upload_json`` is ``null`` or ``{"field","filename","content_type","path"}``.
+#: ``insecure`` (``1``/``0``) disables TLS certificate verification for exactly
+#: one request; it is an explicit operator opt-in, never a default.
 HTTP_CLIENT_SCRIPT = r"""
-import base64, hashlib, json, os, sys, time, urllib.error, urllib.request, uuid
+import base64, hashlib, json, os, ssl, sys, time, urllib.error, urllib.request, uuid
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -73,6 +76,19 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         # Returning None tells urllib to hand back the original 3xx response
         # instead of chasing the redirect (keeps the forensic status code).
         return None
+
+
+def _get_all(headers, name):
+    # Every value of a repeated header (Set-Cookie cannot be joined).
+    if headers is None:
+        return []
+    getter = getattr(headers, "get_all", None)
+    if getter is not None:
+        try:
+            return [str(value) for value in (getter(name) or [])]
+        except Exception:
+            return []
+    return [str(value) for key, value in headers.items() if key.lower() == name.lower()]
 
 
 def _build_upload(upload):
@@ -105,10 +121,11 @@ def _build_upload(upload):
 
 def main():
     (method, url, headers_json, data_b64, upload_json, follow, max_bytes, timeout,
-     save_path) = sys.argv[1:10]
+     save_path, insecure) = sys.argv[1:11]
     method = method.upper()
     headers = json.loads(headers_json or "{}")
     follow = follow == "1"
+    insecure = insecure == "1"
     max_bytes = max(1, int(max_bytes))
     timeout = float(timeout)
     body = base64.b64decode(data_b64) if data_b64 else None
@@ -127,23 +144,38 @@ def main():
             method = "POST"
 
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
-    opener = urllib.request.build_opener() if follow else urllib.request.build_opener(_NoRedirect())
+    # The default context verifies certificates (fail-closed). ``insecure`` only
+    # swaps in an unverified context when the operator asked for it on this call,
+    # which is what a lab target with a self-signed cert requires.
+    handlers = [] if follow else [_NoRedirect()]
+    if insecure:
+        handlers.append(
+            urllib.request.HTTPSHandler(context=ssl._create_unverified_context())
+        )
+    opener = urllib.request.build_opener(*handlers)
     started = time.time()
     status = None
     reason = ""
     response_headers = {}
+    # ``headers`` keeps the last value per name (a plain dict), which silently
+    # drops repeated headers. ``Set-Cookie`` is the one that matters: a login
+    # response carries JSESSIONID *and* csrf, and a session-carrying chain needs
+    # both. Preserve every value in ``set_cookie`` so multi-step flows work.
+    set_cookie = []
     raw = b""
     try:
         with opener.open(request, timeout=timeout) as response:
             status = response.status
             reason = response.reason or ""
             response_headers = {k.lower(): v for k, v in response.headers.items()}
+            set_cookie = _get_all(response.headers, "Set-Cookie")
             raw = response.read(max_bytes + 1)
     except urllib.error.HTTPError as exc:
         status = exc.code
         reason = getattr(exc, "reason", "") or ""
         try:
             response_headers = {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}
+            set_cookie = _get_all(exc.headers, "Set-Cookie")
         except Exception:
             response_headers = {}
         try:
@@ -180,6 +212,7 @@ def main():
         "status": status,
         "reason": reason,
         "headers": response_headers,
+        "set_cookie": set_cookie,
         "content_type": response_headers.get("content-type"),
         "content_length_header": response_headers.get("content-length"),
         "body_bytes": len(raw),
@@ -200,6 +233,7 @@ def http_request_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.web.request``."""
     return ToolDefinition(
         tool_id="nexus.web.request",
+        effect="target_write",
         name="Scoped HTTP request",
         tenant_id=tenant_id,
         description=(
@@ -238,6 +272,14 @@ def http_request_definition(tenant_id: str = "system") -> ToolDefinition:
                     "additionalProperties": False,
                 },
                 "follow_redirects": {"type": "boolean"},
+                "insecure": {
+                    "type": "boolean",
+                    "description": (
+                        "Desactiva la verificación del certificado TLS SOLO para esta "
+                        "petición (objetivos con certificado autofirmado o que no "
+                        "coincide con el host). Por defecto false y queda en evidencia."
+                    ),
+                },
                 "save_path": {
                     "type": "string",
                     "minLength": 1,
@@ -419,6 +461,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
         max(5, int(requested_timeout) if requested_timeout else HTTP_DEFAULT_TIMEOUT_SECONDS),
     )
     follow = bool(arguments.get("follow_redirects", False))
+    insecure = bool(arguments.get("insecure", False))
 
     argv = [
         "python3",
@@ -433,6 +476,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
         str(max_bytes),
         str(timeout_seconds),
         save_path,
+        "1" if insecure else "0",
     ]
     sandbox = sandbox_for_environment(root, allowed_programs=HTTP_ALLOWED_PROGRAMS)
     result = await run_in_sandbox(
@@ -450,6 +494,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
         "host": urlsplit(url).hostname,
         "noise_level": noise_level,
         "follow_redirects": follow,
+        "insecure": insecure,
         "upload": upload is not None,
         "save_path": save_path or None,
         "timeout_seconds": timeout_seconds,
@@ -492,6 +537,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
                 "body_sha256": payload.get("body_sha256"),
                 "preview_truncated": payload.get("preview_truncated"),
                 "elapsed_ms": payload.get("elapsed_ms"),
+                "set_cookie_count": len(payload.get("set_cookie") or ()),
             }
         )
         if upload:
@@ -509,6 +555,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
             "status": payload.get("status"),
             "reason": payload.get("reason"),
             "headers": payload.get("headers") or {},
+            "set_cookie": payload.get("set_cookie") or [],
             "content_type": payload.get("content_type"),
             "body_bytes": payload.get("body_bytes"),
             "body_sha256": payload.get("body_sha256"),

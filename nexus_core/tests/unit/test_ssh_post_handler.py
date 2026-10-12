@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 from unittest import mock
 
@@ -18,6 +19,8 @@ from nexus_core.tools.handlers.ssh_post import (
     parse_sudo_rules,
     ssh_exec_definition,
     ssh_exec_handler,
+    ssh_upload_definition,
+    ssh_upload_handler,
 )
 
 
@@ -198,3 +201,169 @@ def test_enum_system_reports_paramiko_missing():
         )
     assert result.verified is False
     assert result.verification_method == "ssh_unavailable"
+
+
+# -------------------------------------------------------------------- ssh_upload
+def _workspace(tmp_path, content: bytes = b"#!/bin/sh\necho pe\n") -> tuple[str, str]:
+    """Write a file in a temp workspace and return (root, sha256)."""
+    (tmp_path / "pe.sh").write_bytes(content)
+    return str(tmp_path), hashlib.sha256(content).hexdigest()
+
+
+def test_ssh_upload_is_medium_risk_and_scope_gated():
+    definition = ssh_upload_definition()
+    assert definition.risk.value == "medium"
+    assert definition.effect == "exploit"
+    assert definition.scope_target_field == "target"
+    assert definition.scope_required is True
+
+
+def test_ssh_upload_verifies_the_remote_sha256(tmp_path, monkeypatch):
+    root, digest = _workspace(tmp_path)
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", root)
+    payload = {
+        "ok": True,
+        "connected": True,
+        "mode": "upload",
+        "remote_path": "/tmp/pe.sh",
+        "uploaded_bytes": 19,
+        "remote_sha256": digest,
+        "remote_mode": "0o755",
+    }
+    with _fake_sandbox(_sandbox_for(payload)) as sandbox:
+        result = _run(
+            ssh_upload_handler,
+            {
+                "target": "10.64.182.188",
+                "username": "grafana-admin",
+                "password": "pw",
+                "local_path": "pe.sh",
+                "remote_path": "/tmp/pe.sh",
+                "file_mode": "755",
+            },
+        )
+    argv = sandbox.calls[0][0]
+    # python3 -c <script> upload <host> <port> <user> <password> <payload>
+    assert argv[:5] == ["python3", "-c", module.SSH_CLIENT_SCRIPT, "upload", "10.64.182.188"]
+    request = json.loads(argv[8])
+    assert request["local_path"].endswith("pe.sh")
+    assert request["remote_path"] == "/tmp/pe.sh"
+    assert request["file_mode"] == "755"
+    assert result.verified is True
+    assert result.verification_method == "ssh_upload_verified_sha256"
+    assert result.output["sha256"] == digest
+    assert result.evidence["local_sha256"] == digest
+
+
+def test_ssh_upload_declares_a_hash_mismatch(tmp_path, monkeypatch):
+    root, _ = _workspace(tmp_path)
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", root)
+    payload = {
+        "ok": True,
+        "connected": True,
+        "remote_path": "/tmp/pe.sh",
+        "uploaded_bytes": 19,
+        "remote_sha256": "0" * 64,
+    }
+    with _fake_sandbox(_sandbox_for(payload)):
+        result = _run(
+            ssh_upload_handler,
+            {
+                "target": "10.64.182.188",
+                "username": "grafana-admin",
+                "password": "pw",
+                "local_path": "pe.sh",
+                "remote_path": "/tmp/pe.sh",
+            },
+        )
+    assert result.verified is False
+    assert result.verification_method == "ssh_upload_hash_mismatch"
+
+
+def test_ssh_upload_refuses_a_path_outside_the_workspace(tmp_path, monkeypatch):
+    root, _ = _workspace(tmp_path)
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", root)
+    with _fake_sandbox(_sandbox_for({"ok": True, "connected": True})):
+        with pytest.raises(ValueError):
+            _run(
+                ssh_upload_handler,
+                {
+                    "target": "10.64.182.188",
+                    "username": "lin",
+                    "password": "pw",
+                    "local_path": "../../etc/passwd",
+                    "remote_path": "/tmp/x",
+                },
+            )
+
+
+def test_ssh_upload_refuses_a_traversing_remote_path(tmp_path, monkeypatch):
+    root, _ = _workspace(tmp_path)
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", root)
+    with _fake_sandbox(_sandbox_for({"ok": True, "connected": True})):
+        with pytest.raises(ValueError):
+            _run(
+                ssh_upload_handler,
+                {
+                    "target": "10.64.182.188",
+                    "username": "lin",
+                    "password": "pw",
+                    "local_path": "pe.sh",
+                    "remote_path": "/tmp/../etc/cron.d/backdoor",
+                },
+            )
+
+
+def test_ssh_upload_refuses_an_invalid_file_mode(tmp_path, monkeypatch):
+    root, _ = _workspace(tmp_path)
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", root)
+    with _fake_sandbox(_sandbox_for({"ok": True, "connected": True})):
+        with pytest.raises(ValueError):
+            _run(
+                ssh_upload_handler,
+                {
+                    "target": "10.64.182.188",
+                    "username": "lin",
+                    "password": "pw",
+                    "local_path": "pe.sh",
+                    "remote_path": "/tmp/pe.sh",
+                    "file_mode": "888",
+                },
+            )
+
+
+def test_ssh_upload_reports_paramiko_missing(tmp_path, monkeypatch):
+    root, _ = _workspace(tmp_path)
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", root)
+    payload = {"ok": False, "connected": False, "error": "ssh_unavailable", "detail": "x"}
+    with _fake_sandbox(_sandbox_for(payload)):
+        result = _run(
+            ssh_upload_handler,
+            {
+                "target": "10.64.182.188",
+                "username": "lin",
+                "password": "pw",
+                "local_path": "pe.sh",
+                "remote_path": "/tmp/pe.sh",
+            },
+        )
+    assert result.verified is False
+    assert result.verification_method == "ssh_unavailable"
+
+
+def test_ssh_upload_reports_a_timeout(tmp_path, monkeypatch):
+    root, _ = _workspace(tmp_path)
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", root)
+    with _fake_sandbox(SandboxResult(-1, "", "", timed_out=True)):
+        result = _run(
+            ssh_upload_handler,
+            {
+                "target": "10.64.182.188",
+                "username": "lin",
+                "password": "pw",
+                "local_path": "pe.sh",
+                "remote_path": "/tmp/pe.sh",
+            },
+        )
+    assert result.verified is False
+    assert result.verification_method == "ssh_upload_timeout"

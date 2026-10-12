@@ -229,7 +229,12 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
     if password and not arguments.get("username"):
         raise ValueError("password authentication requires a username")
 
-    argv = [binary, protocol, "--no-progress", "-t", str(threads)]
+    # Several netexec options take ``nargs='+'``/``'*'`` (``-u``, ``-p``,
+    # ``--users``, ``--groups`` ...). The positional target must therefore be
+    # emitted *before* them or argparse consumes it as a value of the option
+    # (measured: ``-p ChangeMe#1234 10.66.164.10 --users`` makes nxc exit 2 with
+    # "the following arguments are required: target" — a false tool failure).
+    argv = [binary, protocol, "--no-progress", "-t", str(threads), target]
     if domain:
         argv.extend(["-d", domain])
     if username:
@@ -242,7 +247,6 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
     operation_flag = NETEXEC_OPERATIONS[operation]
     if operation_flag:
         argv.append(operation_flag)
-    argv.append(target)
 
     noise_level = netexec_noise_level(threads)
     warnings: list[str] = []

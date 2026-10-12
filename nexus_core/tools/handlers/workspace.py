@@ -42,6 +42,7 @@ def workspace_search_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.workspace.search``."""
     return ToolDefinition(
         tool_id="nexus.workspace.search",
+        effect="read_only",
         name="Workspace search",
         tenant_id=tenant_id,
         description=(
@@ -105,6 +106,7 @@ def workspace_read_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.workspace.read``."""
     return ToolDefinition(
         tool_id="nexus.workspace.read",
+        effect="read_only",
         name="Workspace read",
         tenant_id=tenant_id,
         description=(

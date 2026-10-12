@@ -75,8 +75,11 @@ def _build_elf(
         (0, SHT_RELA, 0x2, RELA_OFF, RELA_OFF, max(len(rela), 1), 3, 0, 24),
         (0, SHT_NOBITS, 0x3, 0x2100, 0, 0x40, 0, 0, 0),
     ]
-    for i, (name, stype, flags, addr, off, size, link, info, ent) in enumerate(sections):
-        place(SHOFF + i * 64, struct.pack("<IIQQQQIIQQ", name, stype, flags, addr, off, size, link, info, 16, ent))
+    for i, (sh_name, sh_type, sh_flags, sh_addr, sh_offset, sh_size, sh_link, sh_info, sh_ent) in enumerate(sections):
+        place(SHOFF + i * 64, struct.pack(
+            "<IIQQQQIIQQ", sh_name, sh_type, sh_flags, sh_addr, sh_offset, sh_size,
+            sh_link, sh_info, 16, sh_ent,
+        ))
 
     phdrs = [
         struct.pack("<IIQQQQQQ", PT_LOAD, 0x5, TEXT_OFF, TEXT_OFF, TEXT_OFF, max(len(text), 1), max(len(text), 1), 0x1000),
@@ -174,6 +177,29 @@ def test_parse_libc_reports_offsets():
     info = parse_libc(data)
     assert info["puts"] == 0x84420 and info["system"] == 0x52290
     assert info["binsh"] is not None
+
+
+def test_elf_undefined_stack_chk_fail_sets_canary():
+    """V0-29: the stack protector is an *undefined* import in .dynsym.
+
+    The analyzer used to skip undefined symbols before checking the name, so a
+    binary importing ``__stack_chk_fail`` was reported with canary=false.
+    """
+    data = _build_elf(
+        dynstr=b"\x00__stack_chk_fail\x00",
+        dynsym_entries=[("__stack_chk_fail", 0, 0)],
+    )
+    assert parse_binary(data)["canary"] is True
+    # The injected copy must agree with the module copy on the same bytes.
+    ns: dict = {}
+    exec(compile(ANALYZER_SOURCE, "<analyzer>", "exec"), ns)
+    assert ns["parse_binary"](data)["canary"] is True
+
+
+def test_other_undefined_imports_do_not_set_canary():
+    """Negative control: an unrelated undefined symbol must not turn it on."""
+    data = _build_elf(dynstr=b"\x00gets\x00", dynsym_entries=[("gets", 0, 0)])
+    assert parse_binary(data)["canary"] is False
 
 
 def test_injected_source_compiles_and_matches_module():

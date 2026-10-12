@@ -142,6 +142,7 @@ def parse_binary(data: bytes) -> dict:
     canary = False
 
     def _parse_symtab(sec: dict, want_names: bool) -> list[str]:
+        nonlocal canary
         names: list[str] = []
         link = sec["link"]
         if not (0 <= link < len(sections)):
@@ -158,10 +159,13 @@ def parse_binary(data: bytes) -> dict:
             name = _cstr(strtab, st_name)
             if want_names:
                 names.append(name)
-            if not name or st_shndx == 0:  # undefined (imported) symbol
-                continue
+            # ``__stack_chk_fail`` is normally an UNDEFINED import from libc, so
+            # it has to be checked before the undefined-symbol skip below;
+            # otherwise the stack protector is never detected.
             if name == "__stack_chk_fail":
                 canary = True
+            if not name or st_shndx == 0:  # undefined (imported) symbol
+                continue
             if (st_info & 0xF) == STT_FUNC and name not in symbols:
                 symbols[name] = st_value
         return names

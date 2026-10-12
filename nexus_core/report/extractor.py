@@ -64,6 +64,9 @@ ARTIFACT = "artifact"
 #: Target field per tool, used when the catalog cannot be consulted.
 _FALLBACK_TARGET_FIELDS: dict[str, str] = {
     "nexus.recon.nmap": "target",
+    "nexus.recon.dns": "target",
+    "nexus.post.dns_update": "target",
+    "nexus.attack.impacket_changepasswd": "target",
     "nexus.recon.subfinder": "domain",
     "nexus.recon.httpx": "targets",
     "nexus.web.nuclei": "targets",
@@ -531,11 +534,27 @@ def _finding_id(kind: str, observation: Observation, suffix: str = "") -> str:
     return "finding_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
+def _as_dict(value: object) -> dict:
+    """Return ``value`` when it is a mapping, else an empty one.
+
+    Tool output is untrusted JSON: reading a field meant repeating
+    ``x.get(k) if isinstance(x.get(k), dict) else {}``, which calls ``get`` twice
+    and defeats static narrowing. Binding it once keeps the defensive read *and*
+    lets the type checker follow the rest of the builder.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list:
+    """Return ``value`` when it is a list, else an empty one."""
+    return value if isinstance(value, list) else []
+
+
 # ------------------------------------------------------------- per-tool builders
 def _nmap_findings(observation: Observation, context: _Context) -> list[Finding]:
     output = observation.output or {}
-    scan = output.get("scan") if isinstance(output.get("scan"), dict) else {}
-    hosts = scan.get("hosts") if isinstance(scan.get("hosts"), list) else []
+    scan = _as_dict(output.get("scan"))
+    hosts = _as_list(scan.get("hosts"))
     open_entries: list[str] = []
     severities: list[str] = []
     for host in hosts:
@@ -586,7 +605,7 @@ def _nmap_findings(observation: Observation, context: _Context) -> list[Finding]
 
 def _nuclei_findings(observation: Observation, context: _Context) -> list[Finding]:
     output = observation.output or {}
-    findings = output.get("findings") if isinstance(output.get("findings"), list) else []
+    findings = _as_list(output.get("findings"))
     results: list[Finding] = []
     for index, item in enumerate(findings):
         if not isinstance(item, dict):
@@ -678,7 +697,7 @@ def _subfinder_findings(observation: Observation, context: _Context) -> list[Fin
 
 def _ffuf_findings(observation: Observation, context: _Context) -> list[Finding]:
     output = observation.output or {}
-    matches = output.get("matches") if isinstance(output.get("matches"), list) else []
+    matches = _as_list(output.get("matches"))
     base_url = str(output.get("url") or "")
     exposed: list[str] = []
     protected: list[str] = []
@@ -757,7 +776,7 @@ def _exploit_findings(
     status = str(output.get("status") or "")
     module = str(output.get("module") or "")
     target = str(output.get("target") or "")
-    session = output.get("session") if isinstance(output.get("session"), dict) else {}
+    session = _as_dict(output.get("session"))
     if status == "session_opened":
         uuid = str((session or {}).get("uuid") or "")
         username = str((session or {}).get("username") or "")
@@ -904,7 +923,7 @@ def _fact_targets(fact: dict[str, Any]) -> tuple[str, ...]:
     key = str(fact.get("key") or "")
     if key:
         targets.append(key.split()[0])
-    value = fact.get("value") if isinstance(fact.get("value"), dict) else {}
+    value = _as_dict(fact.get("value"))
     for field_name in ("target", "host", "hosts", "ip", "url", "dc", "targets"):
         candidate = value.get(field_name)
         if isinstance(candidate, str) and candidate.strip():
@@ -926,7 +945,7 @@ def _fact_findings(facts: Iterable[dict[str, Any]]) -> list[Finding]:
             continue
         fact_type = str(fact.get("fact_type") or "hint")
         key = str(fact.get("key") or "")
-        value = fact.get("value") if isinstance(fact.get("value"), dict) else {}
+        value = _as_dict(fact.get("value"))
         severity = _FACT_SEVERITY.get(fact_type, "info")
         kind, cwe, owasp, techniques = _FACT_META.get(
             fact_type, (f"fact_{fact_type}", None, None, ())
@@ -1361,9 +1380,13 @@ def _psexec_findings(observation: Observation, context: _Context) -> list[Findin
 def _deduplicate(findings: list[Finding]) -> list[Finding]:
     """Merge identical observations within :data:`DEDUP_WINDOW_SECONDS`."""
     merged: list[Finding] = []
-    index: dict[tuple[str, str, tuple[str, ...]], Finding] = {}
+    # The key has four components (kind, title, targets, verification status);
+    # the annotation used to declare only three.
+    index: dict[tuple[str, str, tuple[str, ...], str], Finding] = {}
     for finding in findings:
-        key = (finding.kind, finding.title, finding.affected_targets, finding.verification_status)
+        key: tuple[str, str, tuple[str, ...], str] = (
+            finding.kind, finding.title, finding.affected_targets, finding.verification_status,
+        )
         previous = index.get(key)
         if previous is not None and _within_window(previous.discovered_at, finding.discovered_at):
             from dataclasses import replace
@@ -1696,7 +1719,7 @@ def _sessions_opened(observations: Iterable[Observation], selected: set[str]) ->
         output = observation.output or {}
         if str(output.get("status")) != "session_opened":
             continue
-        session = output.get("session") if isinstance(output.get("session"), dict) else {}
+        session = _as_dict(output.get("session"))
         uuids.add(str((session or {}).get("uuid") or observation.message_id))
     return len(uuids)
 

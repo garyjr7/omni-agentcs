@@ -260,6 +260,9 @@ async def bloodhound_handler(arguments: dict, context: RunContext) -> ToolResult
             },
             verified=False,
             verification_method="bloodhound_no_output",
+            # The collector ran to completion and produced nothing to collect:
+            # a negative about the target/credentials, not a failure (V0-22).
+            outcome="negative",
             evidence=evidence,
             exit_code=result.exit_code,
             accepted_exit_codes=(0,),
@@ -277,7 +280,10 @@ async def bloodhound_handler(arguments: dict, context: RunContext) -> ToolResult
         return ToolResult(
             output={"error": "bloodhound output was unreadable", "dc": dc},
             verified=False,
-            verification_method="bloodhound_no_output",
+            # Distinct from "no output": the collector *wrote* files and none of
+            # them could be read, which is a failure of the body, not an answer
+            # about the target (V0-22).
+            verification_method="bloodhound_output_unreadable",
             evidence=evidence,
             exit_code=result.exit_code,
             accepted_exit_codes=(0,),

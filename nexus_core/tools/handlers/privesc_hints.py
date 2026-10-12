@@ -116,6 +116,7 @@ def privesc_hints_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.post.privesc_hints``."""
     return ToolDefinition(
         tool_id="nexus.post.privesc_hints",
+        effect="read_only",
         name="Privilege-escalation hints",
         tenant_id=tenant_id,
         description=(

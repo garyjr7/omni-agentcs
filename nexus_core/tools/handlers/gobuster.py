@@ -132,6 +132,7 @@ def gobuster_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.recon.gobuster``."""
     return ToolDefinition(
         tool_id="nexus.recon.gobuster",
+        effect="read_only",
         name="Gobuster directory and DNS busting",
         tenant_id=tenant_id,
         description=(

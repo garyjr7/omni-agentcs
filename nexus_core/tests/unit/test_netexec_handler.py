@@ -96,7 +96,11 @@ def test_handler_builds_enumeration_command():
     assert argv[argv.index("-p") + 1] == "Passw0rd"
     # The real enumeration flag, never the "-M module" form.
     assert "--shares" in argv
-    assert argv[-1] == "10.0.0.5"
+    assert argv[-1] == "--shares"
+    # The target precedes every value-taking option so argparse cannot swallow
+    # it (netexec's -u/-p/--users/--groups accept multiple values).
+    assert argv.index("10.0.0.5") < argv.index("-u")
+    assert argv.index("10.0.0.5") < argv.index("--shares")
     assert result.output["count"] == 3
     assert result.evidence["operation"] == "shares"
 
@@ -162,6 +166,27 @@ def test_parser_treats_empty_output_as_no_observation():
     parsed = parse_netexec_output("", protocol="smb")
     assert parsed.entries == ()
     assert parsed.targets == ()
+
+
+def test_greedy_operation_places_target_before_the_flag():
+    """``--users`` takes ``nargs='*'``: the target must not be swallowed by it."""
+    with _fake_sandbox(SandboxResult(1, SAMPLE, "")) as (sandbox, _):
+        _run(
+            {
+                "protocol": "ldap",
+                "target": "10.0.0.5",
+                "operation": "users",
+                "domain": "windcorp.thm",
+                "username": "lilyle",
+                "password": "ChangeMe#1234",
+            }
+        )
+    argv = sandbox.calls[0]
+    assert "--users" in argv
+    assert argv.index("10.0.0.5") < argv.index("-u")
+    assert argv.index("10.0.0.5") < argv.index("-p")
+    assert argv.index("10.0.0.5") < argv.index("--users")
+    assert argv[-1] == "--users"
 
 
 def test_operations_map_to_the_real_netexec_flags():

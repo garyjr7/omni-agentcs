@@ -7,7 +7,8 @@ import shlex
 from ..theme import AQUA, AQUA_DIM, GRAY, GREEN, OFFWHITE, RED, RESET
 
 PREFIXES = {
-    "nexus.recon.nmap": "Recon-NMAP", "nexus.recon.subfinder": "Recon-Subfinder",
+    "nexus.recon.nmap": "Recon-NMAP", "nexus.recon.dns": "Recon-DNS",
+    "nexus.recon.subfinder": "Recon-Subfinder",
     "nexus.recon.httpx": "Web-HTTPS", "nexus.web.nuclei": "Web-Nuclei",
     "nexus.web.ffuf": "Web-Ffuf", "nexus.exploit.msf_search": "Exploit-Search",
     "nexus.exploit.msf_auxiliary": "Exploit-Auxiliary", "nexus.exploit.msf_exploit": "Exploit-MSF",
@@ -33,7 +34,7 @@ def data_lines(output: str, *, width: int = 100) -> tuple[list[str], bool]:
     Empty/separator lines and adjacent duplicate progress lines are discarded;
     every kept line is bounded to ``width``.
     """
-    lines = []
+    lines: list[str] = []
     clipped = False
     for raw in str(output or "").splitlines():
         if not raw.strip() or re.fullmatch(r"[\s\-_=─━]+", raw):

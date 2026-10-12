@@ -68,6 +68,7 @@ def whatweb_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.recon.whatweb``."""
     return ToolDefinition(
         tool_id="nexus.recon.whatweb",
+        effect="read_only",
         name="WhatWeb deep fingerprinting",
         tenant_id=tenant_id,
         description=(

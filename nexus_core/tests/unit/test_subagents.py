@@ -16,7 +16,13 @@ from nexus_core.tools.registry import durable_tool_definitions
 def test_registry_is_healthy_against_the_durable_catalog():
     catalog = durable_tool_definitions("system")
     assert subagents.validate_registry(catalog) == []
-    assert len(catalog) == 49
+    # 56 tools after adding the two Windows tools (ntlm_capture, winrm_exec).
+    # + nexus.recon.dns, nexus.post.dns_update,
+    # nexus.attack.impacket_changepasswd and nexus.attack.nopac (RUN_sala10/Ra 2).
+    # + nexus.post.tftp (the synthetic run/the synthetic lab: only UDP/69 was reachable).
+    # + nexus.post.dpapi (the synthetic run/the synthetic lab: the KeePass flag behind user DPAPI).
+    # + nexus.post.ssh_upload, nexus.recon.nikto (RUN_sala12/Intrusion Detection).
+    assert len(catalog) == 64
 
 
 def test_read_only_profiles_list_no_active_tool():

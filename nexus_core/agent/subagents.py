@@ -66,7 +66,16 @@ ACTIVE_TOOLS: frozenset[str] = frozenset(
         "nexus.attack.impacket_getuserspns",
         "nexus.attack.impacket_psexec",
         "nexus.post.ssh_exec",
+        "nexus.post.ssh_upload",
+        "nexus.post.pivot_bruteforce",
+        "nexus.post.pivot_http",
+        "nexus.post.ntlm_capture",
+        "nexus.attack.impacket_changepasswd",
+        "nexus.attack.nopac",
+        "nexus.win.winrm_exec",
         "nexus.pwn.ret2libc",
+        "nexus.web.wp_bruteforce",
+        "nexus.web.wp_exec",
         "nexus.recon.netexec",
         "nexus.recon.bloodhound_python",
         "nexus.web.sqlmap",
@@ -111,9 +120,12 @@ WEB_ENUM_TOOLS: frozenset[str] = frozenset(
         "nexus.recon.httpx",
         "nexus.recon.gobuster",
         "nexus.recon.whatweb",
+        # Web scan with the evasion knobs of RUN_sala12 (-Tuning/-evasion/-Pause).
+        "nexus.recon.nikto",
         "nexus.web.nuclei",
         "nexus.web.ffuf",
         "nexus.web.dalfox",
+        "nexus.web.wp_enum",
     }
 )
 
@@ -190,11 +202,13 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         tools=_with_common(
             {
                 "nexus.recon.nmap",
+                "nexus.recon.dns",
                 "nexus.recon.subfinder",
                 "nexus.recon.httpx",
                 "nexus.recon.ftp",
                 "nexus.recon.gobuster",
                 "nexus.recon.whatweb",
+                "nexus.recon.nikto",
             }
         ),
         # 5x the original 20k: each iteration re-sends ~7k tokens of system
@@ -242,6 +256,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         tools=_with_common(
             {
                 "nexus.cred.bruteforce",
+                "nexus.web.wp_bruteforce",
                 "nexus.recon.netexec",
                 "nexus.recon.ftp",
             }
@@ -264,6 +279,8 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.recon.netexec",
                 "nexus.pwn.analyze",
                 "nexus.pwn.ret2libc",
+                "nexus.web.wp_bruteforce",
+                "nexus.web.wp_exec",
             }
         ),
         token_budget=60_000,
@@ -278,7 +295,18 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         tools=_with_common(
             {
                 "nexus.post.ssh_exec",
+                "nexus.post.ssh_upload",
                 "nexus.post.enum_system",
+                "nexus.post.pivot_bruteforce",
+                "nexus.post.pivot_http",
+                "nexus.post.ntlm_capture",
+                "nexus.post.dns_update",
+                "nexus.post.tftp",
+                "nexus.post.dpapi",
+                "nexus.attack.impacket_changepasswd",
+                "nexus.attack.nopac",
+                "nexus.win.winrm_exec",
+                "nexus.web.wp_exec",
                 "nexus.session.list",
                 "nexus.session.interact",
                 "nexus.session.kill",
@@ -301,6 +329,9 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.post.enum_system",
                 "nexus.post.privesc_hints",
                 "nexus.post.ssh_exec",
+                # A PE-assist script has to be pushed when the target has no
+                # outbound network (RUN_sala12: the host could not fetch it).
+                "nexus.post.ssh_upload",
             }
         ),
         token_budget=60_000,
@@ -319,8 +350,12 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.attack.impacket_secretsdump",
                 "nexus.attack.impacket_getuserspns",
                 "nexus.attack.impacket_psexec",
+                "nexus.attack.impacket_changepasswd",
+                "nexus.attack.nopac",
                 "nexus.cred.bruteforce",
                 "nexus.post.ssh_exec",
+                "nexus.post.pivot_bruteforce",
+                "nexus.post.pivot_http",
                 "nexus.session.list",
                 "nexus.session.interact",
                 "nexus.c2.sliver_sessions",

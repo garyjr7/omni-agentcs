@@ -135,3 +135,200 @@ del cliente) y la primera de explotación de binarios: se añadieron
 | V0-18 · Detección de offset | El offset del desbordamiento se infiere del patrón `lea rax,[rbp-disp]` antes de un `call gets@plt`. Otro compilador (`strcpy`, `read`, `scanf`, buffer en otro registro) no se detecta. | `nexus.pwn.ret2libc` puede no auto-resolver en binarios distintos y exige las constantes a mano. | Detección genérica de buffers en pila (o patrón cíclico ejecutado en el objetivo) y soporte de `strcpy`/`read`/`scanf`; pruebas con varios binarios. |
 | V0-19 · Comando plantado | La explotación usa `gets(<writable>)` + `system(<comando>)` (canal no-TTY). Depende de que exista un segmento escribible y de la dirección de `.bss`. | Un binario sin región escribible útil o con binario PIE no tiene dónde plantar el comando. | Alternativa con shell interactiva sobre PTY cuando el canal lo permita, o `execve` con argv construido sin depender de `gets`. |
 | V0-2/V0-13 · Verificador de loot (Linux pwn) | **Parcialmente cerrado**: `derive_assertions` ya promueve `privilege {uid:0}` y `loot` (flag) desde `nexus.pwn.ret2libc` con `asserted_by=verifier`. Sigue pendiente el parser de loot de Windows (V0-13). | En pwn, el `uid=0` y la flag dejan de ser `asserted_by=agent`. | Parser por tipo para Windows (`user.txt`/`root.txt`) y para rutas de loot arbitrarias. |
+| V0-29 · Detección de canary rota (bug medido en la puerta de lint) | `ruff check nexus_core omni.py nexus_worker.py --select F,E9` está **rojo en HEAD** con 4 hallazgos que **no** introduce este run: `_pwn.py:164 F841` (`canary = True` dentro de `_parse_symtab` asigna una variable **local** —falta `nonlocal`— y además la rama queda **detrás** del `continue` de símbolos indefinidos, así que `out["canary"]` es siempre `False`), `pwn.py:28 F401` (`re` sin usar), `smb.py:27 F401` y `test_smb_handler.py:99 F541`. | `nexus.pwn.analyze` puede reportar un binario con `__stack_chk_fail` como **sin canary** y llevar a una estrategia de explotación equivocada; el gate de lint está rojo y nadie lo mira. | Comprobar `__stack_chk_fail` **antes** del `continue` + `nonlocal`, limpiar los 3 restos, `make lint` verde y un test con un binario que tenga canary (la suite actual de 2563 no lo cubre). |
+
+## Fase V0 · Validación con salas (deudas de RUN_sala07 · Internal / pivote interno)
+
+Sala #7 **cerrada** (Ubuntu 20.04; WordPress 5.4.2 → `www-data` → `aubreanna` →
+Jenkins en `127.0.0.1:8080` → `root`). Ver `docs/missions/salas/RUN_sala07.md`.
+Engagement `eng-ed4eb06d55c4`. Se añadieron `nexus.post.pivot_bruteforce` y
+`nexus.post.pivot_http` (catálogo 52 → 54) y se corrigió el transporte de
+`nexus.web.wp_bruteforce`.
+
+| ID | Pendiente | Impacto actual | Criterio de cierre |
+| --- | --- | --- | --- |
+| V0-20 · Sesión de pivote durable | Cada llamada al pivote repite *warm-up* + login (medido ≈4,6 s por petición en Jenkins) y solo habla **HTTP**. No hay handle de sesión reutilizable entre llamadas ni pivote a otros protocolos internos (SMB/MySQL/Redis en `127.0.0.1`). | Un flujo interno de N pasos paga N logins; un servicio interno que no sea HTTP no se alcanza. | Handle de sesión de pivote (crear/usar/cerrar) con cookie+token persistidos y expiración, más transporte de al menos un protocolo no-HTTP; pruebas de reutilización y de cierre. |
+| V0-21 · Transferencia de ficheros por el pivote | `nexus.post.pivot_http` solo devuelve un cuerpo acotado (`max_body_bytes`); no hay *download*/*upload* a través del host interno (leer un binario, exfiltrar un fichero grande o subir un artefacto a un servicio interno). | El operador no puede sacar artefactos del segmento interno ni alimentar una tool que necesite fichero. | `nexus.post.pivot_transfer` (get/put por SFTP local vía el host autorizado) con límites, hash de integridad y limpieza de artefactos. |
+| V0-22 · Vocabulario de post-condición en fuerza bruta | `nexus.web.wp_bruteforce` devuelve `verified=false` con método `wp_credential_validated` cuando el barrido termina **sin** credencial: el gateway eleva `RuntimeError` ("post-condition not verified") y clasifica un negativo legítimo como tool rota. El pivote ya usa `_completed` / `_unavailable`; `cred_bruteforce` usa `_completed`. | Un barrido sin acierto retira la tool de la fase y aparece como fallo del motor, no como resultado negativo. | Unificar el vocabulario (`*_completed` para el barrido, `*_credentials_missing` cuando aplique) en todas las tools de fuerza bruta con casos positivos y negativos. |
+| V0-24 · Extracción de loot desde cuerpos HTTP | El verificador promueve `credential`/`access` del pivote, pero **no** extrae credenciales ni flags que aparezcan *dentro* de un cuerpo HTTP (`/opt/note.txt` lo leyó el operador; el verificador solo acredita el uso posterior por SSH). | Un loot leído de un servicio interno queda `asserted_by=agent` hasta que otra tool lo usa; una flag en un cuerpo HTTP no se promueve sola. | Parser determinista de loot para cuerpos de texto (`user:pass`, `flag{fake_flag}`) con reglas estrictas y casos positivos/negativos, integrado en `derive_assertions`. |
+
+## Fase V0 · Validación con salas (deudas de RUN_sala08 · Frankesqwen / LLM local)
+
+Sala #8 **cerrada** (Ubuntu 24.04; **caja blanca**; el objetivo era **extraer una
+bandera memorizada en un LLM local**, no escalar privilegios). Ver
+`docs/missions/salas/RUN_sala08.md`. Engagement `eng-627f37a6508c`. **Sin cambios
+de código en el motor**: se usaron tools existentes (`nexus.post.ssh_exec`,
+`nexus.recon.nmap`, `nexus.post.enum_system`, `nexus.web.request`) y las
+carencias medidas quedan aquí, no como supuestos.
+
+| ID | Pendiente | Impacto actual | Criterio de cierre |
+| --- | --- | --- | --- |
+| V0-25 · Consulta gobernada de modelos locales (LLM) | No hay tool para cargar/consultar un modelo Hugging Face **local en el objetivo**: la sala se resolvió con `nexus.post.ssh_exec` + un script `transformers` ad-hoc (modos `chat` y *raw completion*), sin schema, límites ni parser. | Un reto de *AI data extraction* no se cubre con el catálogo de tools; el operador escribe y ejecuta código a mano en el objetivo. | `nexus.ai.model_prompt` (ruta local `local_files_only`, modo `chat`/`raw`, lista de prompts, `max_new_tokens` acotado, CPU, salida confinada al workspace, HIGH) con scope+sandbox y casos positivos/negativos. |
+| V0-26 · Artefactos desde el objetivo | El modelo (1,9 GB) vive en el objetivo y no hay tool para traerlo: cada sonda obliga a ejecutar *dentro* del host (relacionado con V0-21). | No se puede analizar el artefacto fuera del objetivo ni reutilizarlo entre salas. | `nexus.post.fetch` (descarga con `sha256`, límite de tamaño, confinada al workspace) y su reutilización por V0-25. |
+| V0-27 · Loot en texto libre **no fiable** | La bandera aparece **dentro** de la respuesta de un LLM; ningún parser determinista la promueve, así que queda fuera de los hallazgos acreditados. Un LLM puede alucinar: promover texto generado sin más sería un falso positivo estructural. | La captura central de la sala no se acredita sola (sale solo como salida de tool). | Parser de loot de texto plano (regex estricta por formato, p. ej. `flag{fake_flag}`, `user:pass`) que exija **reproducibilidad** (≥2 prompts/muestras coincidentes) o la evidencia cruda adjunta, con casos positivos y negativos explícitos. |
+| V0-28 · `ssh_exec`: timeout reportado como denegación + huérfanos | 9 de 117 invocaciones terminaron en `RuntimeError` y el wrapper devolvió `status=denied_or_failed` con resultado `null` y sin motivo; el proceso remoto **siguió vivo** (varios `python /tmp/ask_v7*.py` compitiendo por CPU hasta matarlos a mano). | El operador no distingue «denegado por política» de «se agotó el tiempo» y no puede cancelar el efecto remoto; quedan cargas de CPU huérfanas en el objetivo. | Clasificar timeout y fallo por separado, devolver el motivo y un identificador de cancelación, y terminar el grupo de procesos del sandbox al vencer (o documentar el canal de cancelación); prueba con un comando que excede el límite. |
+
+Nota: `V0-5` (SARIF) **se reproduce** en esta sala — `sarif_size_bytes=17.321`
+con `report_path_sarif` vacío — y sigue abierta.
+
+## Fase V0 · Validación con salas (deudas de RUN_sala09 · WindCorp / AD)
+
+Sala #9 **cerrada** (Windows Server 2019 · DC `FIRE` de `windcorp.thm`; web de
+*password reset* → Openfire → NetNTLM de `buse` → WinRM → Account Operators →
+`hosts.txt` → tarea SYSTEM → `tom` *domain admin*; 3 banderas). Ver
+`docs/missions/salas/RUN_sala09.md`. Engagement `eng-059e4da8e9bc`. Se añadieron
+`nexus.post.ntlm_capture` y `nexus.win.winrm_exec` (catálogo 54 → 56) y una rama
+del verificador para `winrm_exec`.
+
+| ID | Pendiente | Impacto actual | Criterio de cierre |
+| --- | --- | --- | --- |
+| V0-2/V0-13 · Verificador de loot (Windows) | **Parcialmente cerrado**: `derive_assertions` promueve `access`, `privilege` (dominio, desde `net (local)group <grupo admin> /domain` o un `whoami` que nombre grupo/SID administrativo) y `loot` (solo desde la lectura literal de **un** fichero) de `nexus.win.winrm_exec`. Con eso, los dos `domain-admin` y las 3 banderas pasan a `confirmed_finding` (10 tests nuevos). Sigue pendiente el loot que sale de un **bucle** (`Get-ChildItem … \| ForEach-Object { Get-Content $_.FullName }`, la forma que dio la bandera 3 en la primera pasada). | El *domain admin* y las banderas de un Windows ya se acreditan solos; una lectura envuelta en bucle queda en hipótesis. | Parser de loot por ruta cuando el comando enumera y lee (con atribución explícita de la ruta) o `nexus.win.loot` dedicada (V0-13). |
+| V0-30 · Loot desde SMB y `workspace.read` | `nexus.recon.smb` en `get` devuelve `sha256` + `preview` y `smb_download_verified`, pero el verificador **no** promueve la bandera del fichero descargado; tampoco `nexus.workspace.read`. En esta sala las 3 banderas se bajaron por SMB (02:06:13, 02:51:42, 02:51:45) y solo se acreditaron al repetir la lectura por WinRM. | Una bandera obtenida por SMB queda en hipótesis hasta que otra tool distinta la vuelva a leer. | Rama `smb_download_verified` → `loot` con la ruta remota como clave, sha256 del fichero en el valor y casos positivos/negativos (fichero que *menciona* una bandera vs. fichero que *es* el loot). Depende de V0-33 para no duplicar claves. |
+| V0-31 · Vocabulario de post-condición en SMB/AD | 13 invocaciones de `nexus.recon.smb` y 7 de `nexus.recon.netexec` terminaron en `RuntimeError` ("tool post-condition was not verified") por **negativos legítimos**: listar una ruta que no existe devuelve `smb_listing_failed` con `verified=false` y el gateway lo clasifica como tool rota. Extiende V0-22 a SMB/AD. | Un barrido de rutas produce una lista de fallos de motor en lugar de un mapa de lo que hay y lo que no; el reporte no cuenta esos intentos. | Unificar el vocabulario (`*_completed` para el barrido; `*_not_found`/`*_denied` para el negativo) con casos positivos y negativos por tool. |
+| V0-32 · Render del reporte: lista de `run_id` | «Alcance» imprime **todos** los `run_id` del engagement (≈133 en una sesión de 69 min) en una sola línea; `report.md` = 1.221.960 B y `report.html` = 1.940.383 B, dominados por ids. | El entregable al cliente es inmanejable y el tamaño crece linealmente con las llamadas, no con los hallazgos. | Resumen acotado (N ids + «y M más») o el propio `run_id` fuera del documento; test de tamaño con un engagement de >100 runs. |
+| V0-33 · El blackboard no superpone hechos | `Blackboard.record` crea un documento nuevo por `(fact_type, key)`: cuando el verificador acredita el mismo hallazgo con **su** clave, la hipótesis del operador sobrevive con **otra** y el reporte lista el mismo dato dos veces (3 banderas + 2 `domain-admin` duplicados en esta sala). No hay operación de retirar ni de *supersede*. | El reporte infla hallazgos duplicados y no queda claro cuál es la versión acreditada. | Relación explícita entre un hecho acreditado y la hipótesis que lo anticipaba (o clave canónica compartida) con migración aditiva y test de no duplicación. |
+
+Nota: `V0-5` (SARIF) **se reproduce** también aquí (`format=both` no escribe el
+`.sarif` y reporta `sarif_size_bytes` > 0). `V0-12` (kill-chain) es el patrón
+medido de esta sala: cinco saltos encadenados uno por **llamada**, sin planificador
+que reutilice credenciales ni puntúe vectores.
+
+Bug propio medido y **corregido** en esta sala (no queda como deuda): el catcher
+`nexus.post.ntlm_capture` devolvía `status="no_ntlm"` **junto a** `captured=true`
+porque etiquetaba el estado por conexión y ganaba la última (una sonda previa al
+handshake). El estado es ahora monótono (`ok` → `challenged` → `captured`) y un test
+ejecuta el **script realmente embarcado** (subprocess + handshake NTLM sintético):
+`test_shipped_catcher_labels_a_probe_then_handshake_as_captured`.
+
+## Fase V0 · Validación con salas (deudas de RUN_sala10 · RA2 / WindCorp)
+
+Sala #10 **cerrada** (caja negra: `10.64.147.184` = FIRE, DC de `windcorp.thm`, 23
+puertos, **sin WinRM**, IIS HTTPS autofirmado, Openfire 4.5.1, XMPP real y SOCKS5 sin
+autenticación en `:7777`; después, **pase con credenciales Ra 2**). Ver
+`docs/missions/salas/RUN_sala10.md`. Engagement `eng-ca20df309205`. **3 flags**: 1 por
+**DNS TXT** (acreditada por el verificador, no tecleada) y 2 desde `C$` con
+`smb_download_verified`. Seis cambios de motor aportados —TLS autofirmado, cookies de
+sesión, la tool **`nexus.recon.dns`**, la tool **`nexus.post.dns_update`** (ADIDNS
+gobernado), la tool **`nexus.attack.impacket_changepasswd`** (primitiva *Account
+Operators*) y la tool **`nexus.attack.nopac`** (CVE-2021-42278/87 con cleanup
+verificado)—, catálogo 56 → **60**, y **cinco deudas** (la última, V0-38, medida en el
+pase con credenciales):
+
+| ID | Pendiente | Impacto actual | Criterio de cierre |
+| --- | --- | --- | --- |
+| V0-34 · Tool DNS gobernada | **CERRADA**: `nexus.recon.dns` (consulta A/AAAA/CNAME/MX/NS/SOA/SRV/TXT/PTR/ANY por el sandbox, parser determinista de la sección ANSWER, `NXDOMAIN` como negativo válido, promoción a `loot` en `derive_assertions`; 19 tests) y **`nexus.post.dns_update`** (update dinámico RFC 2136 add/delete de UN registro, cliente embarcado porque el sandbox cierra `stdin`, post-condición = RCODE del servidor con id de transacción comprobado, apex de zona rechazado; 17 tests, 3 de ellos ejecutan el cliente real contra un servidor UDP local que guarda el paquete). Medido en el objetivo: `NOERROR` al crear, resolución verificada por la tool de consulta, borrado con cleanup verificado. | El vector que el TXT describe ya es gobernado (scope, aprobación, auditoría) y no depende de `nsupdate` a mano. El salto a *domain admin* no lo cierra el catálogo, sino el alcance (V0-37). | Cumplido: positivos (aceptado), negativos declarados (`refused`, `unanswered`), validación de nombre/tipo/apex y el invariante de *no-spawn*. |
+| V0-35 · Tool XMPP gobernada | En sala09 el cebo NetNTLM por mensajería se hizo con `nexus.web.request` sobre **BOSH** (`:7070`). En esta sala BOSH **no está** (7070/7443 cerrados): el único canal es XMPP real (`5223/5262/5263/5269`) y ninguna tool lo habla. | Un objetivo sin BOSH no permite el cebo de captura NetNTLM, aunque el catcher (`nexus.post.ntlm_capture`) exista. | `nexus.post.xmpp` (login SASL PLAIN sobre TLS + envío de mensaje con marcador de éxito) con scope y casos positivos/negativos (credencial inválida). |
+| V0-36 · Negativos legítimos elevados a fallo de motor | `nexus.recon.smb action=shares` en anónimo devuelve `verified=false` (`smb_shares_empty`) y el gateway eleva `RuntimeError`, igual que el `smb_listing_failed` de V0-31: un negativo legítimo (no hay shares anónimos) se reporta como tool rota. Lo mismo ocurre ahora con `nexus.post.ntlm_capture` cuando el listener se enlaza y **nadie se conecta** (`ntlm_capture_no_connection`, y su hermano `ntlm_capture_no_hash`): el run es correcto y el gateway lo convierte en `RuntimeError`. | La ausencia de acceso anónimo o de conexión al cebo no queda registrada como resultado, sino como fallo; el reporte no la cuenta. | Extender el vocabulario de V0-22/V0-31 a `shares` y a los negativos del catcher (`*_completed` / `*_empty` / `*_no_connection`) con casos positivos y negativos. |
+| V0-37 · El cebo ADIDNS provoca autenticación fuera del scope | En sala10, el envenenamiento ADIDNS gobernado (`nexus.post.dns_update`) hace que un host de la **red interna del DC** se autentique contra `nexus.post.ntlm_capture`; ese host está **fuera del `/32` firmado**, así que el catcher (correctamente) lo rechaza y la captura **nunca puede completarse** con este scope. Medido: `ntlm_capture_peer_out_of_scope`, y en una segunda ejecución el cebo ya no fue tomado (`connections=0`). **Acotada**: en el pase con credenciales el mismo cebo sobre `443` (WebDAV) **sí** capturó (peer dentro del `/32`) y, sobre todo, la sala ya no necesita ese vector: noPac escala desde cualquier usuario de dominio. | El vector que la sala nombra queda demostrado y gobernado; el pase de caja negra no se cerraba por una decisión de alcance, no por falta de tool. | Decidir el scope (incluir la red interna) o documentar el flujo del operador; el peer rechazado ya queda en la evidencia (§7.5 de RUN_sala10). |
+| V0-38 · `bloodhound_python` sin salida se eleva a fallo de motor | En el pase con credenciales, el colector devuelve `bloodhound_no_output` («bloodhound produced no JSON output») y el gateway lo convierte en `RuntimeError` ("tool post-condition was not verified"), igual que V0-31/V0-36: un perfil de lectura que no tiene material que colectar aparece como tool rota y no como resultado negativo. | El reporte no distingue «no hay nada que colectar» de «la tool falló», y el perfil de reconocimiento queda retirado de la fase. | Unificar el vocabulario (`bloodhound_completed` con `collected=0`) con casos positivos y negativos, y un test que fije que la rama vacía no es un fallo. |
+
+Nota de este run: el gate `make lint` **no es ejecutable tal cual** en este entorno
+(`make: ruff: No such file or directory`); el gate se corrió como
+`.venv/bin/python -m ruff check … --select F,E9` → **mismos 4 hallazgos preexistentes**
+de V0-29 (ninguno nuevo). Limpiar el gate (o documentar la invocación) queda como
+tarea de mantenimiento, no como deuda de sala.
+
+Bug propio medido y **corregido** en esta sala (no queda como deuda):
+`nexus.web.request` **colapsaba las cabeceras repetidas** (un dict conserva solo la
+última `Set-Cookie`), así que una respuesta de login que trae `JSESSIONID` **y**
+`csrf` perdía el primero y **ninguna cadena multi-paso con sesión podía funcionar**
+(el CVE de Openfire la exige). Ahora la tool expone `set_cookie: [...]` con todos los
+valores y `evidence.set_cookie_count`; un test unitario y uno real (servidor local
+que emite dos cookies) lo fijan. Igualmente corregido: **`insecure`** (opt-in por
+petición para objetivos HTTPS con certificado autofirmado), con dos tests que
+ejecutan el script embarcado contra un servidor TLS autofirmado local.
+
+Dos defectos de **fidelidad de evidencia** medidos y **corregidos** en el cebo ADIDNS
+(no quedan como deuda):
+
+1. **El gateway descartaba la observación del handler al fallar la post-condición**
+   (`kernel/tool_gateway.py`): el `RuntimeError` solo llevaba el `method` y el
+   `tool.failed` solo `error_type`/`run_id`, así que un fallo quedaba sin causa
+   observable — en la primera captura el catcher **sí sabía el host** que se autenticó y
+   ese dato se perdía en la frontera. Ahora el error incluye el `output` redactado y
+   acotado (≤480 chars) y el `tool.failed` persiste el mismo texto en `error`. 2 tests
+   (`test_p1_observability.py`), incluido uno con 50 KB de output para fijar la cota.
+2. **`nexus.post.ntlm_capture` confundía «nadie se conectó» con «rechacé un peer»**:
+   ambos salían con `ntlm_capture_peer_out_of_scope` y el mismo mensaje, de modo que un
+   run sin ninguna conexión era indistinguible de una denegación real. Se separaron
+   (`ntlm_capture_no_connection` con `connections`/`status` en evidencia y output), con
+   un test que fija que la rama «sin conexión» no consulta el scope.
+
+### Pase con credenciales (Ra 2) — la sala se cierra
+
+Cadena medida (todo gobernado salvo donde se indica): credencial de `edwardle`
+capturada por el cebo **ADIDNS + WebDAV sobre 443** (peer **dentro** del `/32`) y
+craqueada a `!Angelus25!` → enumeración SMB/LDAP con la tool → **primitiva Account
+Operators** medida por LDAP (`edwardle` ∈ `IT` ∈ `Account Operators`; la víctima
+`brittanycr` es **no protegida**: sin `memberOf` ni `adminCount`) → cebo de `hosts.txt`
+en el home (subido y **releído** con sha256 idéntico) que **no dispara**: watchdog de
+**40 ciclos** sin marcador y `Domain Admins` sigue siendo `{cert owner, Administrator}`
+→ escalada a *domain admin* con **`nexus.attack.nopac`** verificada por DRSUAPI
+(`nopac_domain_admin_dumped`, cuenta de máquina creada/renombrada/restaurada y
+**borrada**; `ldapsearch "(sAMAccountName=OMNI*)"` devuelve **cero**) → loot con
+pass-the-hash por SMB (`C$\flag2.txt`, `C$\flag3.txt`, `smb_download_verified` + sha256).
+
+Evidencia nueva para las deudas abiertas: **13 `smb_listing_failed` + 2
+`smb_shares_empty`** elevados a `RuntimeError` en este pase (V0-36 sigue siendo la
+deuda más ruidosa) y 1 `bloodhound_no_output` (**V0-38**). Verificación del pase: suite
+completa **2667 passed, 36 skipped, 0 failed**, `ruff check` **limpio** en los ficheros
+nuevos y los **4 hallazgos preexistentes** de V0-29 sin cambios (comprobados contra
+`HEAD`), catálogo **60** tools con el per-tool de siempre (195,7 chars/tool).
+
+## Fase V0 · Validación con salas (deudas de the synthetic run · the synthetic lab / WindCorp · endgame)
+
+Sala #11 **cerrada** (caja negra: `10.66.173.92` = **the synthetic lab**, Windows 10 19041, unida
+a `windcorp.thm`, **solo UDP/69 TFTP** — todos los TCP `filtered`; la entrada es un
+*ducky* que se sube por TFTP y la víctima teclea ⇒ `alcrez`, y de ahí **SYSTEM** por
+*unquoted service path* en el servicio `IVPN Client`). La **Flag 3** (KeePass/DPAPI de
+`chajoh`) exigía el DC, así que se abrió un **segundo engagement firmado** que sí lo
+incluye: escalada gobernada con `nexus.attack.nopac` y cadena DPAPI→KDBX verificada
+offline. Ver `docs/missions/salas/the synthetic run.md`. Engagements `eng-e8074a112ecf`
+(`the synthetic lab-osiris`) y `eng-da320a6df76f` (`the synthetic lab-flag3-dc`). **3 flags** (2 leídas en
+disco + 1 en `Database.kdbx` de `chajoh`). **Dos cambios de motor** — **`nexus.post.tftp`**
+(entrega de payload por TFTP, 19 tests) y **`nexus.post.dpapi`** (loot DPAPI/KeePass
+offline, 26 tests + 1), catálogo 60 → **62** — que cierran la deuda medida en esta sala
+(V0-39):
+
+| ID | Pendiente | Impacto actual | Criterio de cierre |
+| --- | --- | --- | --- |
+| V0-39 · Loot DPAPI/KeePass sin tool gobernada | **CERRADA**: `nexus.post.dpapi` (`nexus_core/tools/handlers/dpapi.py` + cliente embarcado `nexus_core/tools/dpapi_client.py`, stdlib puro, **26 tests** + 1 que se omite cuando falta un lector de referencia). Offline, por el sandbox, `risk=MEDIUM`, `effect=credential_access`, `scope_required=False` (sin red: el dato ya está exfiltrado). Caso de aceptación = la cadena **real** de the synthetic run con los artefactos de `chajoh` (`ProtectedUserKey.bin`, `chajoh_masterkey.hex`, `Database.kdbx`): reproduce el material (sha256 `009e32…6c0d`) y la Flag 3, contrastado con **implementaciones de referencia** (dploot y pykeepass) cuando están presentes. El cliente se ejecuta como subprocess real (no se prueba contra sí mismo) y las primitivas se fijan contra vectores FIPS/eSTREAM. Catálogo 61 → **62**. | El loot final que vive en un almacén DPAPI (KeePass, Chrome, vault) queda **acreditado por el motor**: `verified` + promoción a `loot`/`credential` en `derive_assertions`, artefacto del material en el workspace gobernado y auditoría del paso. | Cumplido: `unwrap` prueba la **firma HMAC** del blob antes de devolver material (negativo declarado `dpapi_signature_invalid` con masterkey o entropía equivocadas); `open_kdbx` prueba `StreamStartBytes` y el hash de cada bloque (`kdbx_credentials_invalid` si el material no abre); los dos errores que costaron tiempo (entropía ausente, KDF con `master_seed`) son casos negativos; `test_definition_*` y el invariante de *no-spawn* (`asyncio.create_subprocess_exec` prohibido en el handler). |
+
+## Fase V0 · Validación con salas (deudas de RUN_sala12 · Intrusion Detection / `idsevasion`)
+
+Sala #12 **cerrada** (guía + CTF con **dos IDS reales evaluando el run**): `10.64.182.188`
+= Ubuntu `reversegear` con 22 SSH, 80 Apache, **3000 Grafana 8.2.5** y **8000 CTFScore**
+(el evaluador que puntúa cada alerta en vivo), más **Suricata** (NIDS) y **Wazuh** (HIDS
+en el host con FIM sobre `/etc`). Cadena: LFI de Grafana (`CVE-2021-43798`) →
+`grafana-admin:GraphingTheWorld32` → SSH (`grafana-admin` ∈ grupo `docker`) → *PE-assist*
+subido con la tool nueva (el objetivo **no tiene salida a Internet**) → `docker run -v /:/mnt`
++ regla en `sudoers` → **`uid=0`** → flag `/root/root.txt` = `{SNEAK_ATTACK_CRITICAL}`, y
+persistencia por `docker-compose` (`restart: always`) capturada con `nexus.post.listener`
+y **retirada** después (lab restaurado y verificado). Ver `docs/missions/salas/RUN_sala12.md`.
+Engagement `eng-7247bd3abc1e` (`sala12-idsevasion`). **Dos cambios de motor** —
+**`nexus.post.ssh_upload`** (SFTP del workspace al objetivo, 8 tests) y **`nexus.recon.nikto`**
+(escaneo web con `-Tuning`/`-evasion`/`-Pause` validados, 13 tests + parser), catálogo
+62 → **64** — que cierran la deuda medida en esta sala (V0-40/V0-41):
+
+| ID | Pendiente | Impacto actual | Criterio de cierre |
+| --- | --- | --- | --- |
+| V0-40 · Colocar un fichero en un host Linux sin salida a Internet | **CERRADA**: `nexus.post.ssh_upload` (modo `upload` del cliente paramiko de `ssh_post.py`). `risk=MEDIUM`, `effect=exploit`, `scope_required=True`, sandbox+audit; origen confinado al workspace (`resolve_workspace_path`), destino sin traversal, `file_mode` octal y `make_dirs`. **Post-condición real**: el cliente **relee el fichero remoto por SFTP y hashea en el objetivo**; el handler compara con el sha256 local (`ssh_upload_hash_mismatch` es el negativo declarado). Caso de aceptación = esta sala: `linpeas.sh` (1.783.754 B, sha256 `cc8f3805…5da2`) → `/tmp/pe.sh` con el **mismo sha256 leído del host**. Catálogo 62 → **63**. | Los pasos que necesitan *poner* un fichero (PE-assist, manifiesto de persistencia, payload) dejan de hacerse con heredocs a mano y quedan gobernados y auditados; el homólogo Windows (`nexus.post.smb_upload`) ya existía. | Cumplido: validación de origen/destino (`..`, NUL, caracteres de control, octal), `ssh_unavailable` si falta paramiko (`runtime_deps` lo declara), timeout clasificado, e invariante de *no-spawn* en el handler. |
+| V0-41 · Recon web con evasión no gobernada | **CERRADA**: `nexus.recon.nikto` (`nexus_core/tools/handlers/nikto.py` + `nexus_core/tools/parsers/nikto.py`, **13 tests**). Args validados contra las tablas de nikto (`tuning` ∈ `0123456789abcx`, `evasion` ∈ `12345678ABR`, `pause` 0-30 s, `user_agent`, `request_timeout`, `maxtime_seconds`, `ports`, `ssl`) + flags de opsec fijados por el handler (`-nointeractive -nolookup -nocheck`). Parser determinista con `connected` derivado de la cabecera (sin cabecera ⇒ `nikto_no_target`) y hallazgos con `id`/`path`/mensaje. Catálogo 63 → **64**. | La sala exige bajar el ruido con `-Tuning`/`-evasion`; antes solo se podía hacer a mano, fuera del scope firmado y sin auditoría. | Cumplido: `noise_level` honesto (nikto siempre `high`) separado de `evasion`, con `warnings` cuando no hay `-Pause/-Tuning`; medido en la sala que `-evasion 6AB` **sube** el ruido (`SURICATA HTTP URI/METHOD terminated by non-compliant character` 2221029/2221030 y Wazuh 31101 ×659 + **31151 nivel 10** ×53). |
+| V0-42 · La consola de scoring no correlaciona el HIDS | Medido en RUN_sala12: `ctflog` toma `dest_ip` de Suricata como el contenedor (`172.200.0.2x`) y de Wazuh como el **nombre del agente** (`/agent/name` = `dockerhost`), así que **ningún** evento de Wazuh se atribuye a la IP registrada por el operador. Toda la evidencia HIDS (rule 550 nivel 7 sobre `/etc/sudoers`, rule 554 nivel 5, 31151 nivel 10) hubo que leerla en el host. | El evaluador puntúa el paso ruidoso (NIDS) y silencia el paso grave (HIDS): un operador que solo mire la consola no ve la escalada. | Normalizar el campo de destino del agregador (o aceptar como alias los `agent.ip`/IPs de contenedor) y un test que pruebe que un evento HIDS con `agent.name` aparece bajo la cuenta del operador. |
+| V0-43 · No hay tool para **traer** un artefacto del objetivo | `nexus.post.ssh_upload` cubre workspace → objetivo; el sentido contrario sigue sin tool (relacionado con V0-21/V0-26: el modelo de la sala #8, el `.kdbx` de la #11 y aquí los logs del HIDS). En esta sala el `alerts.json` de Wazuh se leyó con `docker cp` + un script subido a mano. | El *loot* que hay que analizar fuera del host (bases, modelos, logs) obliga a pasos manuales no gobernados (y a `save_path` de `nexus.web.request` cuando el dato sale por HTTP). | `nexus.post.ssh_download` (SFTP get confinado al workspace, con `sha256` remoto calculado en el objetivo, límite de tamaño y `risk=MEDIUM`), más el parser de loot que ya existe. |
+
+### Huecos de numeración del ledger V0
+
+Dos identificadores no tienen fila porque **nunca se abrieron como deuda**: se
+declaran aquí para que el ledger sea continuo y verificable, y para que un hueco
+no se confunda con una fila borrada. No se les atribuye título ni criterio de
+cierre inventado; la consistencia inventario↔ledger↔artefactos se trata como
+**V1-8** (no como deuda de sala).
+
+| ID | Estado | Nota |
+| --- | --- | --- |
+| V0-8 | HUECO | Reservado, sin deuda asociada. La trazabilidad catálogo/ledger/versión de resultados es **V1-8**. |
+| V0-23 | HUECO | Reservado, sin deuda asociada. |
+
+Verificado por `test_audit_ledger_catalog_and_result_versions_consistent`
+(`nexus_core/tests/unit/test_catalog_ledger_consistency.py`).

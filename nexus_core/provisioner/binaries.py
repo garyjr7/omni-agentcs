@@ -98,6 +98,15 @@ BINARY_IDENTITIES: tuple[BinaryIdentity, ...] = (
         install="sudo apt install ripgrep",
         tool_id="nexus.workspace.search",
     ),
+    BinaryIdentity(
+        name="nikto",
+        purpose="Escaneo web con tuning/evasión (nexus.recon.nikto)",
+        version_argv=("-Version",),
+        markers=("nikto",),
+        wrong_markers=(),
+        install="sudo apt install nikto",
+        tool_id="nexus.recon.nikto",
+    ),
 )
 
 BINARY_IDENTITIES_BY_NAME: dict[str, BinaryIdentity] = {

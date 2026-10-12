@@ -43,9 +43,18 @@ class PythonRequirement:
 PYTHON_REQUIREMENTS: tuple[PythonRequirement, ...] = (
     PythonRequirement(
         module="paramiko",
-        purpose="Post-explotación SSH (nexus.post.ssh_exec / enum_system)",
+        purpose=(
+            "Post-explotación SSH (nexus.post.ssh_exec / ssh_upload / "
+            "enum_system / pivot_bruteforce / pivot_http)"
+        ),
         install="pip install 'paramiko>=3.4,<4'",
-        tool_ids=("nexus.post.ssh_exec", "nexus.post.enum_system"),
+        tool_ids=(
+            "nexus.post.ssh_exec",
+            "nexus.post.ssh_upload",
+            "nexus.post.enum_system",
+            "nexus.post.pivot_bruteforce",
+            "nexus.post.pivot_http",
+        ),
     ),
 )
 

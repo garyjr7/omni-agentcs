@@ -26,6 +26,7 @@ from nexus_core.kernel.store_factory import get_control_store
 from nexus_core.kernel.sandbox import OCISandbox
 from nexus_core.kernel.packages import PackageManager
 from nexus_core.kernel.approvals import ApprovalService
+from nexus_core.tools.parsers import PARSERS_VERSION
 
 
 class OfflineKernelTests(unittest.TestCase):
@@ -259,9 +260,16 @@ class OfflineKernelTests(unittest.TestCase):
             self.assertEqual(
                 result,
                 {"success": True, "output": {"result": "ok"}, "verified": True,
-                 "verification_method": "test-observation", "evidence": {},
+                 "verification_method": "test-observation",
+                 # V0-22: the result says which conclusion it reached, so a
+                 # determinate negative is distinguishable from a failure.
+                 "outcome": "success", "evidence": {},
                  "exit_code": None, "accepted_exit_codes": [0], "stdout": "",
-                 "stderr": "", "timed_out": False},
+                 "stderr": "", "timed_out": False,
+                 # V1-8: the canonical result pins the contract and parser
+                 # revision that produced it, so a replay can use them.
+                 "tool_id": tool.tool_id, "contract_version": tool.version,
+                 "parser_version": PARSERS_VERSION},
             )
             with self.assertRaises(PermissionError):
                 asyncio.run(gateway.invoke(tool.tool_id, {"query": "again"}, context))

@@ -100,7 +100,7 @@ def test_plan_denial_precedes_hook_execution(tmp_path,monkeypatch):
     configure(tmp_path,code=f'from pathlib import Path; Path({str(marker)!r}).touch()')
     OperatorMode(ctx.store).plan(ctx,'read only')
     gateway=ToolGateway(PolicyEngine(ctx.store),AuditWriter(ctx.store))
-    gateway.register(ToolDefinition('probe','system',{},tool_id='probe',effect='active'),lambda a,c:ToolResult({},True))
+    gateway.register(ToolDefinition('probe','system',{},tool_id='probe',effect='exploit'),lambda a,c:ToolResult({},True))
     with pytest.raises(PermissionError,match='plan'):
         asyncio.run(gateway.invoke('probe',{},ctx))
     assert not marker.exists()

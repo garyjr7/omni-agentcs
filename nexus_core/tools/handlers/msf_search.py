@@ -30,6 +30,7 @@ def _drop_placeholder_filters(arguments: dict) -> dict:
 def msf_search_definition(tenant_id: str = "system") -> ToolDefinition:
     return ToolDefinition(
         tool_id="nexus.exploit.msf_search",
+        effect="read_only",
         name="Search Metasploit modules",
         description="Search the local Metasploit module catalog without executing modules.",
         tenant_id=tenant_id,

@@ -1,4 +1,8 @@
-"""Registro central de herramientas durables del kernel NEXUS."""
+"""Registro central de herramientas durables del kernel NEXUS.
+
+``tool_catalog`` expone el catálogo tal como lo ve el runtime (V1-8), para que
+el inventario, el CLI y los artefactos de auditoría describan la misma versión.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +41,14 @@ def durable_tool_definitions(
         enum_system_handler,
         ssh_exec_definition,
         ssh_exec_handler,
+        ssh_upload_definition,
+        ssh_upload_handler,
+    )
+    from .handlers.pivot import (
+        pivot_bruteforce_definition,
+        pivot_bruteforce_handler,
+        pivot_http_definition,
+        pivot_http_handler,
     )
     from .handlers.privesc_hints import (
         privesc_hints_definition,
@@ -49,11 +61,23 @@ def durable_tool_definitions(
         record_fact_handler,
     )
     from .handlers.nmap import nmap_definition, nmap_handler
+    from .handlers.dns import dns_query_definition, dns_query_handler
+    from .handlers.dns_update import dns_update_definition, dns_update_handler
+    from .handlers.tftp import tftp_definition, tftp_handler
+    from .handlers.dpapi import dpapi_definition, dpapi_handler
+    from .handlers.impacket_changepasswd import (
+        impacket_changepasswd_definition,
+        impacket_changepasswd_handler,
+    )
+    from .handlers.nopac import nopac_definition, nopac_handler
     from .handlers.sqlmap import sqlmap_definition, sqlmap_handler
     from .handlers.gobuster import gobuster_definition, gobuster_handler
+    from .handlers.nikto import nikto_definition, nikto_handler
     from .handlers.whatweb import whatweb_definition, whatweb_handler
     from .handlers.http_request import http_request_definition, http_request_handler
     from .handlers.listener import listener_definition, listener_handler
+    from .handlers.ntlm_capture import ntlm_capture_definition, ntlm_capture_handler
+    from .handlers.winrm import winrm_exec_definition, winrm_exec_handler
     from .handlers.searchsploit import searchsploit_definition, searchsploit_handler
     from .handlers.dalfox import dalfox_definition, dalfox_handler
     from .handlers.msf_search import msf_search_definition, msf_search_handler
@@ -133,6 +157,14 @@ def durable_tool_definitions(
         ret2libc_definition,
         ret2libc_handler,
     )
+    from .handlers.wp import (
+        wp_bruteforce_definition,
+        wp_bruteforce_handler,
+        wp_enum_definition,
+        wp_enum_handler,
+        wp_exec_definition,
+        wp_exec_handler,
+    )
 
     catalog = {
         "nexus.system.check_env": (check_env_definition(tenant_id), check_env_handler),
@@ -147,6 +179,15 @@ def durable_tool_definitions(
             workspace_read_handler,
         ),
         "nexus.recon.nmap": (nmap_definition(tenant_id), nmap_handler),
+        "nexus.recon.dns": (dns_query_definition(tenant_id), dns_query_handler),
+        "nexus.post.dns_update": (dns_update_definition(tenant_id), dns_update_handler),
+        "nexus.post.tftp": (tftp_definition(tenant_id), tftp_handler),
+        "nexus.post.dpapi": (dpapi_definition(tenant_id), dpapi_handler),
+        "nexus.attack.impacket_changepasswd": (
+            impacket_changepasswd_definition(tenant_id),
+            impacket_changepasswd_handler,
+        ),
+        "nexus.attack.nopac": (nopac_definition(tenant_id), nopac_handler),
         "nexus.recon.subfinder": (subfinder_definition(tenant_id), subfinder_handler),
         "nexus.recon.httpx": (httpx_definition(tenant_id), httpx_handler),
         "nexus.recon.ftp": (ftp_definition(tenant_id), ftp_handler),
@@ -155,7 +196,16 @@ def durable_tool_definitions(
             cred_bruteforce_handler,
         ),
         "nexus.post.ssh_exec": (ssh_exec_definition(tenant_id), ssh_exec_handler),
+        "nexus.post.ssh_upload": (
+            ssh_upload_definition(tenant_id),
+            ssh_upload_handler,
+        ),
         "nexus.post.enum_system": (enum_system_definition(tenant_id), enum_system_handler),
+        "nexus.post.pivot_bruteforce": (
+            pivot_bruteforce_definition(tenant_id),
+            pivot_bruteforce_handler,
+        ),
+        "nexus.post.pivot_http": (pivot_http_definition(tenant_id), pivot_http_handler),
         "nexus.post.privesc_hints": (
             privesc_hints_definition(tenant_id),
             privesc_hints_handler,
@@ -173,9 +223,15 @@ def durable_tool_definitions(
         "nexus.web.sqlmap": (sqlmap_definition(tenant_id), sqlmap_handler),
         "nexus.web.dalfox": (dalfox_definition(tenant_id), dalfox_handler),
         "nexus.recon.gobuster": (gobuster_definition(tenant_id), gobuster_handler),
+        "nexus.recon.nikto": (nikto_definition(tenant_id), nikto_handler),
         "nexus.recon.whatweb": (whatweb_definition(tenant_id), whatweb_handler),
         "nexus.web.request": (http_request_definition(tenant_id), http_request_handler),
         "nexus.post.listener": (listener_definition(tenant_id), listener_handler),
+        "nexus.post.ntlm_capture": (
+            ntlm_capture_definition(tenant_id),
+            ntlm_capture_handler,
+        ),
+        "nexus.win.winrm_exec": (winrm_exec_definition(tenant_id), winrm_exec_handler),
         "nexus.exploit.searchsploit": (
             searchsploit_definition(tenant_id),
             searchsploit_handler,
@@ -244,6 +300,12 @@ def durable_tool_definitions(
         ),
         "nexus.pwn.analyze": (pwn_analyze_definition(tenant_id), pwn_analyze_handler),
         "nexus.pwn.ret2libc": (ret2libc_definition(tenant_id), ret2libc_handler),
+        "nexus.web.wp_enum": (wp_enum_definition(tenant_id), wp_enum_handler),
+        "nexus.web.wp_bruteforce": (
+            wp_bruteforce_definition(tenant_id),
+            wp_bruteforce_handler,
+        ),
+        "nexus.web.wp_exec": (wp_exec_definition(tenant_id), wp_exec_handler),
     }
     # Additive overlay: decorator/entry-point registrations never shadow a
     # builtin unless they explicitly opt in. Discovery is cached and non-fatal.
@@ -263,3 +325,41 @@ def register_durable_tools(gateway: ToolGateway, tenant_id: str = "system") -> N
     """Registra todas las tools durables en un gateway dado."""
     for definition, handler in durable_tool_definitions(tenant_id).values():
         gateway.register(definition, handler)
+
+
+#: Manifest schema version. Bumped when the shape below changes so a consumer
+#: can reject a catalog it does not understand.
+CATALOG_SCHEMA_VERSION = "1.0.0"
+
+
+def tool_catalog(tenant_id: str = "system") -> dict[str, Any]:
+    """Return the *runtime* catalog as machine-readable JSON.
+
+    This is the single source the audit ledger must agree with (V1-8): it is
+    built from the same ``durable_tool_definitions`` the gateway registers, so a
+    regex or a stale document can no longer report a different count.
+    """
+    from nexus_core.tools.parsers import PARSERS_VERSION
+
+    entries = []
+    for tool_id, (definition, _handler) in sorted(durable_tool_definitions(tenant_id).items()):
+        entries.append(
+            {
+                "tool_id": tool_id,
+                "version": definition.version,
+                "risk": definition.risk.value,
+                "effect": definition.effect,
+                "enabled": definition.enabled,
+                "scope_required": definition.scope_required,
+                "scope_target_field": definition.scope_target_field,
+                "sandbox_required": definition.sandbox_required,
+                "idempotent": definition.idempotent,
+                "required_permissions": list(definition.required_permissions),
+            }
+        )
+    return {
+        "schema_version": CATALOG_SCHEMA_VERSION,
+        "parsers_version": PARSERS_VERSION,
+        "tool_count": len(entries),
+        "tools": entries,
+    }
