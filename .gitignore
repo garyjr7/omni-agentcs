@@ -59,3 +59,8 @@ whatweb_run_*.json
 .ruff_cache/
 .mypy_cache/
 *.db-journal
+
+# Evidencia cruda de ejecuciones contra objetivos (efimera, nunca commitear)
+cred_run_*/
+ftp_run_*/
+docs/missions/evidence/raw-runs/

@@ -267,25 +267,25 @@ ella desde el REPL. Todo lo que **no** empieza por `/` se envía a la sesión
 adjunta; los comandos meta siguen funcionando igual.
 
 ```text
-└─$ /sessions
+> /sessions
 
 UUID       Type          Peer             Via                    User
 abc123     meterpreter   10.0.0.1:51234   ms17_010_eternalblue   NT AUTHORITY\SYSTEM
 
-└─$ /session attach abc123
+> /session attach abc123
 Attached to session abc123 (meterpreter)
 Target: 10.0.0.1
 User:   NT AUTHORITY\SYSTEM
 Escribe comandos directamente, /help para los comandos de Omni, /detach para salir.
 
 [session abc123/meterpreter]
-└─$ sysinfo
+> sysinfo
 Computer        : WIN-DC-01
 OS              : Windows Server 2019
 ...
 
 [session abc123/meterpreter]
-└─$ /detach
+> /detach
 Detached from session abc123. Session remains active.
 ```
 
@@ -392,7 +392,7 @@ capa de reporte lee el audit trail y los `ToolResult` persistidos y **nunca
 inventa un hallazgo**: solo transcribe lo que el toolkit verificó.
 
 ```text
-└─$ /report
+> /report
 
 Generating report for engagement scanme-lab...
   ✓ 8 findings de 17 eventos de auditoría
@@ -517,15 +517,20 @@ pensamiento. Si el proveedor no soporta streaming, el `💭` aparece al terminar
 la iteración en lugar de token a token.
 
 ```text
-└─$ _
-groq/openai/gpt-oss-120b · 2.3k tok · ~$0.0200 · 5m12s
+│ > _
+│ groq/openai/gpt-oss-120b · ~/Desktop/salas/tryhackme/rootme
+← for history · ? for help
 ```
 
 La barra de estado es **consciente de prioridad**: muestra alerta (trust/sesión),
 fase del plan, proveedor/modelo, tokens, coste y tiempo, y **descarta primero el
 segmento menos importante** cuando la terminal es estrecha —la alerta y la fase
 nunca se truncan. El engagement vive en la cabecera compacta (una sola vez), no
-en la barra. El panel lateral (F2 o `/panel`) superpone el
+en la barra. En una sesión ligada a un workspace el modelo y el directorio se
+muestran en el pie del **panel de entrada** (nunca la palabra `Build`), así que
+la barra inferior queda reducida a las alertas y a la fase, y no ocupa fila si
+no hay nada que alertar; `/status show` conserva el detalle completo. El panel
+lateral (F2 o `/panel`) superpone el
 plan completo por fases y el desglose del blackboard sin salir del prompt.
 La salida de cada tool se pliega a **5 líneas** con un pie clicable
 `▼ mostrar N líneas más` / `▲ mostrar menos`; el clic expande/contrae esa tarjeta
@@ -580,7 +585,7 @@ Los logs aparecen en el scrollback, sin mover el cursor fuera del renderizador.
 ### Ayuda contextual
 
 ```text
-└─$ /ask que puedes hacer
+> /ask que puedes hacer
 ```
 
 `/ask` construye su *system prompt* con el estado real de la CLI: catálogo de
@@ -604,8 +609,9 @@ estructurado, porque el mensaje durable no conserva el stdout crudo:
    ✓ 2 puertos abiertos · 1 hosts up · noise: high · 1.85s
 
  ⠹ Working... (29s · esc to interrupt)
-└─$ _
-groq/openai/gpt-oss-120b · 6.3k tok · $— · 37s
+│ > _
+│ groq/openai/gpt-oss-120b · ~/Desktop/salas/tryhackme/rootme
+← for history · ? for help
 ```
 
 Cada tool muestra como máximo tres líneas de datos: primera y últimas dos,
@@ -687,11 +693,11 @@ opciones, Tab abre el menú y las siguientes pulsaciones recorren las sugerencia
 El menú también aparece mientras escribes; incluye la ayuda de cada comando.
 
 ```text
-└─$ /he<TAB>                 → /help
-└─$ nexus.recon.<TAB>        → nexus.recon.httpx
+> /he<TAB>                 → /help
+> nexus.recon.<TAB>        → nexus.recon.httpx
                               nexus.recon.nmap
                               nexus.recon.subfinder
-└─$ nexus.recon.nmap <TAB>   → target=, flags=, timeout_seconds=, …
+> nexus.recon.nmap <TAB>   → target=, flags=, timeout_seconds=, …
 ```
 
 Los comandos, tools, argumentos, cadenas y rutas tienen colores distintos;
@@ -772,20 +778,26 @@ Para dudas conversacionales ("qué puedo hacer", "explica este módulo") usa
 engagement ni la auditoría.
 
 ```text
-└─$ /ask para qué sirve el trust mode
+> /ask para qué sirve el trust mode
 
 OmniAgent ·
   El trust mode auto-aprueba las tools de alto riesgo del engagement…
 ```
 
-El prompt es minimalista (`└─$ `); solo añade una línea de chips cuando hay
-estado transitorio: sesión adjunta, trust mode y/o último reporte generado. El
-engagement y el modelo no aparecen en él.
+La entrada de texto es un **panel** estilo Codex/OpenCode Zen: fondo gris oscuro
+(`bg:#2a2a2a`) con una **barra vertical roja a la izquierda** como único borde
+(no hay línea horizontal arriba ni abajo). Dentro del panel, la línea de entrada
+va arriba y abajo a la izquierda queda solo el modelo y el directorio actual
+(`modelo · ~/ruta`); las líneas de ayuda externas van **fuera** del panel, justo
+debajo. El prompt en sí es minimalista (`> `): solo añade una línea de chips
+—sesión adjunta, trust mode y/o último reporte generado— fuera del panel,
+encima de él.
 
 ```text
-└─$ /report
 [TRUST MODE]─[session a1b2c3d4/meterpreter]
-└─$ id
+│ > id
+│ DeepSeekV4.1-flash · ~/Desktop/salas/tryhackme/rootme
+← for history · ? for help
 ```
 
 Control de presentación:
@@ -874,7 +886,7 @@ suite normal. Los scripts manuales pueden ejecutar acciones reales; se invocan
 explícitamente. CI prueba el CLI y el backend PostgreSQL del kernel.
 
 Las decisiones y el balance de tests del cleanup están en
-[CLEANUP_DECISIONS.md](CLEANUP_DECISIONS.md) y
+[CLEANUP_DECISIONS.md](docs/missions/CLEANUP_DECISIONS.md) y
 [el informe final](docs/missions/CLEANUP_RESULT_V3.md).
 
 ## Licencia

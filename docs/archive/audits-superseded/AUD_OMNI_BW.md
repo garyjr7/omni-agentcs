@@ -9,7 +9,7 @@
 **Naturaleza:** crítica y constructiva. No describe solo lo que hay: propone soluciones accionables.
 
 > Nota de método. La TUI se ha auditado leyendo el código real (`nexus_core/cli/`,
-> `nexus_core/cli/tui/`), el documento `TUI_UX_AUDIT.md` y `OMNI.jpg` (captura,
+> `nexus_core/cli/tui/`), el documento `TUI_UX_AUDIT.md` y `docs/assets/OMNI.jpg` (captura,
 > JPEG 1152×922). No se ejecutaron herramientas de reconocimiento ni explotación.
 > Toda afirmación cuantitativa de este informe tiene su evidencia en el repositorio.
 
@@ -194,7 +194,7 @@ control (ver §E.3).
 ## B. Experiencia de Usuario (UX) y Diseño de Interfaz (UI)
 
 > Base: código real de `nexus_core/cli/tui/` y `banner.py`, `status.py`, `render.py`,
-> `theme.py`; captura `OMNI.jpg`; auditoría previa `TUI_UX_AUDIT.md`.
+> `theme.py`; captura `docs/assets/OMNI.jpg`; auditoría previa `TUI_UX_AUDIT.md`.
 
 ### B.1 Crítica constructiva de la TUI actual
 
@@ -270,13 +270,13 @@ discreto**.
 │ sandbox local_strict (sin aislamiento de red)      audit ✓ ok   │
 ╰─────────────────────────────────────────────────────────────────╯
 
-  ❯ Escanea 10.65.151.43 a fondo y obtén acceso inicial
+  ❯ Escanea 10.0.0.1 a fondo y obtén acceso inicial
 
   ● RECON   ▓▓▓▓▓▓▓▓▓▓░░░░░░░░  2/6 fases          F2 plan · /help
 
   💭 El 445/tcp abierto apunta a SMB; enumeraré usuarios antes de explotar.
 
-  ⚙ nmap -p- 10.65.151.43                                 [recon] 1.8s
+  ⚙ nmap -p- 10.0.0.1                                 [recon] 1.8s
      ├─ 21/tcp  open  ftp   vsftpd 3.0.5   (anonymous allowed)
      ├─ 22/tcp  open  ssh   OpenSSH 8.2
      └─ 80/tcp  open  http  Apache 2.4.41
@@ -285,7 +285,7 @@ discreto**.
 
   ⚠ APROBACIÓN HUMANA REQUERIDA — HIGH
      tool      nexus.cred.bruteforce
-     target    10.65.151.43:22 · user lin · wordlist locks.txt
+     target    10.0.0.1:22 · user lin · wordlist locks.txt
      motivo    riesgo alto (requiere aprobación)
      [y] aprobar   [n] rechazar   [e] editar   [?] definición
 
@@ -843,7 +843,7 @@ verificable. Ordenado por prioridad Alta → Media → Baja dentro de cada fase.
 
 Auditoría completada sobre el código en `feat/sliver-bridge`. No se modificó código de
 producción. Las cifras (LOC, tests, tools, comandos) se midieron con `wc`, `grep`, `rg` y
-lectura directa. La TUI se evaluó por código fuente y captura (`OMNI.jpg`), no por
+lectura directa. La TUI se evaluó por código fuente y captura (`docs/assets/OMNI.jpg`), no por
 inspección del emulador gráfico del operador; las mediciones de latencia/arranque/memoria
 quedan como KPI a instrumentar (no se presentan como medidas).
 

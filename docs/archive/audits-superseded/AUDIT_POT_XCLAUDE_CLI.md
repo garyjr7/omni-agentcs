@@ -66,14 +66,14 @@ No es un wrapper pequeño. `nexus_core` contiene **191 archivos Python de produc
 
 | Pieza | Ruta | Responsabilidad observada |
 |---|---|---|
-| Entrada instalada | [pyproject.toml](pyproject.toml), [omni.py](omni.py) | `omni = omni:main`; configuración, secretos, wizard y despacho. |
-| CLI | [cli/main.py](nexus_core/cli/main.py) | Flags, engagement, ejecución interactiva y headless. |
-| Sesión | [cli/session.py](nexus_core/cli/session.py) | REPL, contexto de trabajo, herramientas manuales, aprobación y ejecución del objetivo. |
-| Agente | [agent/react.py](nexus_core/agent/react.py), L743 | Loop iterativo, persistencia, decisión, límites y cierre. |
-| Contrato | [agent/parser.py](nexus_core/agent/parser.py) | JSON textual: `tool_call`, `task_complete`, `request_clarification`. |
-| Plan/perfiles | [planner.py](nexus_core/agent/planner.py), [subagents.py](nexus_core/agent/subagents.py) | Fases derivadas de hechos; subconjuntos de herramientas y presupuestos. |
-| Ejecución gobernada | [runtime.py](nexus_core/kernel/runtime.py), L236; [tool_gateway.py](nexus_core/kernel/tool_gateway.py), L45 | Validación, alcance, RoE, policy, aprobación y resultado. |
-| Trabajo durable | [nexus_worker.py](nexus_worker.py), [workflows.py](nexus_core/kernel/workflows.py) | Claims, leases, heartbeat, retries y reconciliación. |
+| Entrada instalada | [pyproject.toml](../../../pyproject.toml), [omni.py](../../../omni.py) | `omni = omni:main`; configuración, secretos, wizard y despacho. |
+| CLI | [cli/main.py](../../../nexus_core/cli/main.py) | Flags, engagement, ejecución interactiva y headless. |
+| Sesión | [cli/session.py](../../../nexus_core/cli/session.py) | REPL, contexto de trabajo, herramientas manuales, aprobación y ejecución del objetivo. |
+| Agente | [agent/react.py](../../../nexus_core/agent/react.py), L743 | Loop iterativo, persistencia, decisión, límites y cierre. |
+| Contrato | [agent/parser.py](../../../nexus_core/agent/parser.py) | JSON textual: `tool_call`, `task_complete`, `request_clarification`. |
+| Plan/perfiles | [planner.py](../../../nexus_core/agent/planner.py), [subagents.py](../../../nexus_core/agent/subagents.py) | Fases derivadas de hechos; subconjuntos de herramientas y presupuestos. |
+| Ejecución gobernada | [runtime.py](../../../nexus_core/kernel/runtime.py), L236; [tool_gateway.py](../../../nexus_core/kernel/tool_gateway.py), L45 | Validación, alcance, RoE, policy, aprobación y resultado. |
+| Trabajo durable | [nexus_worker.py](../../../nexus_worker.py), [workflows.py](../../../nexus_core/kernel/workflows.py) | Claims, leases, heartbeat, retries y reconciliación. |
 
 ```mermaid
 flowchart TD
@@ -109,10 +109,10 @@ El contrato usa JSON dentro de texto del asistente, no tool calling nativo: el p
 
 **La brecha es la fuerza de la prueba:**
 
-1. [knowledge_facts.py](nexus_core/tools/handlers/knowledge_facts.py), L78, deja que el modelo proporcione `source` y `verified`; este último vale `True` por defecto. Confirma que guardó un registro, no que el hecho ocurrió.
-2. [blackboard.py](nexus_core/kernel/blackboard.py), L163, cuenta hechos sin filtrar `verified`, procedencia ni vigencia.
-3. [planner.py](nexus_core/agent/planner.py), L224, completa una fase cuando basta un conteo del tipo adecuado.
-4. [evidence.py](nexus_core/agent/evidence.py), L158, considera soporte una intersección de tokens. Compartir la IP no demuestra que se obtuvo root.
+1. [knowledge_facts.py](../../../nexus_core/tools/handlers/knowledge_facts.py), L78, deja que el modelo proporcione `source` y `verified`; este último vale `True` por defecto. Confirma que guardó un registro, no que el hecho ocurrió.
+2. [blackboard.py](../../../nexus_core/kernel/blackboard.py), L163, cuenta hechos sin filtrar `verified`, procedencia ni vigencia.
+3. [planner.py](../../../nexus_core/agent/planner.py), L224, completa una fase cuando basta un conteo del tipo adecuado.
+4. [evidence.py](../../../nexus_core/agent/evidence.py), L158, considera soporte una intersección de tokens. Compartir la IP no demuestra que se obtuvo root.
 5. `fabricated_evidence`, L221, bloquea cuando hay stale **y ningún** grounded; con uno grounded y otro stale devuelve falso. No valida semánticamente `final_summary`.
 
 **Sondas:** guardar cinco hechos sintéticos no verificados (`host`, `endpoint`, `access`, `privilege`, `artifact`) produjo `plan_phase=reporting` y `completion_objections=[]`. Una observación que solo decía que un host estaba vivo bastó para clasificar como grounded una afirmación de acceso root con la misma IP; al añadir otra afirmación stale, `blocks_completion=False`.
@@ -139,7 +139,7 @@ Hay nueve perfiles con tools, foco y presupuesto. El loop selecciona uno en L951
 
 ### 2.6 O-04 — Fan-out: la seguridad declarada pertenece al perfil, no a cada llamada **[P1 · confirmado por lectura]**
 
-`fan_out_tool`, [session.py](nexus_core/cli/session.py) L1107, construye llamadas con un `tool_id` arbitrario y `arguments={"target": ...}`. `gather_readonly` solo comprueba `subagent.parallel_safe`; no inspecciona el tool ni sus efectos. No basta pasar un perfil readonly para demostrar que todos los callables son readonly.
+`fan_out_tool`, [session.py](../../../nexus_core/cli/session.py) L1107, construye llamadas con un `tool_id` arbitrario y `arguments={"target": ...}`. `gather_readonly` solo comprueba `subagent.parallel_safe`; no inspecciona el tool ni sus efectos. No basta pasar un perfil readonly para demostrar que todos los callables son readonly.
 
 El gateway sigue aplicando policy y aprobaciones; no se afirma un bypass universal. La brecha es que puede paralelizar una tool no segura para concurrencia si su propia policy la permite. Además, tools con parámetros distintos de `target` no encajan.
 
@@ -149,7 +149,7 @@ El gateway sigue aplicando policy y aprobaciones; no se afirma un bypass univers
 
 Falta un contrato general `CompletionVerifier` configurable por misión. La suite de CI valida el producto durante desarrollo; no verifica automáticamente cada misión que ejecuta el usuario. Tampoco se necesita ejecutar `npm test` al cerrar cualquier pentest: el verificador debe comprobar sus propios criterios, incluyendo reportes, cobertura y referencias.
 
-En [headless.py](nexus_core/cli/headless.py), L276, el proceso devuelve **0 para `max_iterations` y `clarification`**, además de `completed`. Puede ser una convención válida para “proceso ejecutado”, pero resulta peligrosa si una automatización interpreta exit 0 como objetivo cumplido.
+En [headless.py](../../../nexus_core/cli/headless.py), L276, el proceso devuelve **0 para `max_iterations` y `clarification`**, además de `completed`. Puede ser una convención válida para “proceso ejecutado”, pero resulta peligrosa si una automatización interpreta exit 0 como objetivo cumplido.
 
 **Corrección:** documentar y versionar códigos: éxito verificable, incompleto, bloqueado por aprobación/clarificación, fallo y cancelado. Añadir `completion_verified` y `termination_reason` al JSON. Los verificadores deben tener timeout, salida acotada, entorno definido y digest de configuración; una excepción debe impedir declarar éxito. No cargar comandos ejecutables automáticamente desde instrucciones de un repositorio no confiable.
 
@@ -173,13 +173,13 @@ No introducir microservicios ni otro framework de agentes solo para reducir el t
 
 ### 3.1 Base que conviene conservar
 
-[layout.py](nexus_core/cli/tui/layout.py) separa transcript, actividad, entrada y HUD. La aplicación de `prompt_toolkit` corre en un hilo propio; las mutaciones de buffer se despachan al loop de UI. Existe captura de stdout/stderr y logs, tarjetas colapsables, panel de plan, modal de aprobación, Markdown, streaming y fallback sin TUI. `NO_COLOR` y ancho en celdas están contemplados.
+[layout.py](../../../nexus_core/cli/tui/layout.py) separa transcript, actividad, entrada y HUD. La aplicación de `prompt_toolkit` corre en un hilo propio; las mutaciones de buffer se despachan al loop de UI. Existe captura de stdout/stderr y logs, tarjetas colapsables, panel de plan, modal de aprobación, Markdown, streaming y fallback sin TUI. `NO_COLOR` y ancho en celdas están contemplados.
 
 El spinner braille funciona a **4 Hz** en `_render_busy`; el refresco es adaptable y no bloquea la ejecución del agente. No hay razón funcional para imponer 120 ms: la frecuencia es una decisión de rendimiento y accesibilidad. No observé un panel de progreso de agentes paralelos; hoy se representa principalmente el run/perfil activo.
 
 ### 3.2 U-01 — Pegado largo: conserva contenido, pero no lo colapsa **[P0 de UX · confirmado]**
 
-`test_tui_multiline.py` verifica bracketed paste y preservación de saltos de línea. El editor es multilínea y `_input_height`, [session.py](nexus_core/cli/tui/session.py) L198, limita la región a cinco filas. Esto **evita crecimiento ilimitado en altura**, pero no crea `[Pasted Content N chars]`: el texto sigue entero en el buffer y `_accept`, L393, lo imprime completo al transcript.
+`test_tui_multiline.py` verifica bracketed paste y preservación de saltos de línea. El editor es multilínea y `_input_height`, [session.py](../../../nexus_core/cli/tui/session.py) L198, limita la región a cinco filas. Esto **evita crecimiento ilimitado en altura**, pero no crea `[Pasted Content N chars]`: el texto sigue entero en el buffer y `_accept`, L393, lo imprime completo al transcript.
 
 No confundir el colapso de **salidas de herramientas** con el colapso del **prompt de entrada**. El primero ya existe; el segundo es la brecha que motivó esta auditoría. No se midió lag con un pegado masivo; el riesgo se deduce del recorrido completo de líneas y del eco.
 
@@ -198,13 +198,13 @@ La referencia actual de Claude documenta colapso con **más de 800 caracteres o 
 
 ### 3.3 U-02 — Historial de entrada pierde estructura **[P1 · confirmado]**
 
-[history.py](nexus_core/cli/tui/history.py), L24, comparte formato con readline y sustituye `\n` por espacios al persistir. Un prompt multilínea reabierto pierde estructura: afecta código, YAML, logs y ejemplos. No significa que se haya perdido el original enviado o toda la conversación; son almacenes distintos.
+[history.py](../../../nexus_core/cli/tui/history.py), L24, comparte formato con readline y sustituye `\n` por espacios al persistir. Un prompt multilínea reabierto pierde estructura: afecta código, YAML, logs y ejemplos. No significa que se haya perdido el original enviado o toda la conversación; son almacenes distintos.
 
 **Corrección:** historial versionado JSONL/SQLite con texto y segmentos; migrador del formato antiguo; índice acotado para navegar. Separar historial de edición, transcript de UI y contexto del modelo. La entrada de secretos ya tiene un flujo enmascarado sin historial: conservarlo y extender la redacción a pegados sensibles.
 
 ### 3.4 U-03 — HUD útil, con métricas incompletas **[P1 · confirmado]**
 
-[status.py](nexus_core/cli/tui/status.py) muestra modelo/proveedor, tokens acumulados, coste aproximado, tiempo, fase, hechos y alertas de trust/session. Recorta segmentos por prioridad y protege alertas/fase; esto es una buena decisión de UX.
+[status.py](../../../nexus_core/cli/tui/status.py) muestra modelo/proveedor, tokens acumulados, coste aproximado, tiempo, fase, hechos y alertas de trust/session. Recorta segmentos por prioridad y protege alertas/fase; esto es una buena decisión de UX.
 
 Faltan **ocupación de contexto**, límite de ventana, indicador de compacción, rama Git, permisos efectivos y lista de tareas/agentes. Los tokens se pintan siempre verdes: no es un indicador de saturación. Gasto acumulado no equivale a tokens presentes en el próximo prompt. Git puede ser opcional en este producto; sandbox, engagement y alcance tienen más prioridad.
 
@@ -225,7 +225,7 @@ La status line de Claude permite campos de contexto y personalización; Codex do
 
 ### 3.5 U-04 — `/plan` es un visor, no Plan Mode **[P0 · confirmado]**
 
-`cmd_plan`, [commands.py](nexus_core/cli/commands.py) L608, imprime fases o abre el panel; F2 cambia su visibilidad. No persiste un modo de permisos ni impide invocaciones con efectos. `/ask` tampoco lo reemplaza: es consulta al modelo, no investigación autónoma con herramientas restringidas.
+`cmd_plan`, [commands.py](../../../nexus_core/cli/commands.py) L608, imprime fases o abre el panel; F2 cambia su visibilidad. No persiste un modo de permisos ni impide invocaciones con efectos. `/ask` tampoco lo reemplaza: es consulta al modelo, no investigación autónoma con herramientas restringidas.
 
 **Diseño:** diferenciar `/plan show` de `/mode plan`. Persistir modo, versión del plan y aprobación de transición; imponer restricciones en el gateway para REPL, headless, worker, MCP y tool manual. Permitir lectura de evidencia existente; un escaneo de red no es automáticamente “sin efectos” por llamarse reconocimiento. Admitir la escritura del artefacto de plan como excepción explícita y confinada.
 
@@ -258,7 +258,7 @@ La separación `handler → parser → ToolResult`, el gateway y las capas `agen
 
 ### 4.2 S-01 — El sandbox anunciado puede no ser el ejecutado **[P0 · reproducido]**
 
-[sandbox_modes.py](nexus_core/kernel/sandbox_modes.py), L109, interpreta `NEXUS_SANDBOX_MODE`; doctor y banner lo consultan. Pero [sandbox.py](nexus_core/kernel/sandbox.py), L447, `sandbox_for_environment` solo consulta `NEXUS_ENV`, y numerosos handlers llaman esta última función.
+[sandbox_modes.py](../../../nexus_core/kernel/sandbox_modes.py), L109, interpreta `NEXUS_SANDBOX_MODE`; doctor y banner lo consultan. Pero [sandbox.py](../../../nexus_core/kernel/sandbox.py), L447, `sandbox_for_environment` solo consulta `NEXUS_ENV`, y numerosos handlers llaman esta última función.
 
 **Reproducción sin ejecutar procesos:** con `NEXUS_ENV=development` y `NEXUS_SANDBOX_MODE=oci`, `active_mode()` devuelve `oci`, mientras `sandbox_for_environment(tempdir)` crea **`LocalSandbox`**. Es una divergencia de configuración efectiva, no una opinión sobre el nivel de aislamiento.
 
@@ -270,7 +270,7 @@ OCI usa `--network none`, restricciones de recursos, usuario no root y bind del 
 
 ### 4.3 S-02 — Firma de alcance opcional en el verificador **[P0 · confirmado]**
 
-[validator.py](nexus_core/scope/validator.py), L86, retorna sin verificar si falta firma **o** `signing_secret`. El loader no sustituye esa comprobación. La ruta normal del wizard crea engagements firmados, pero el runtime no exige esa propiedad universalmente. El worker tampoco carga el secret store como `omni.py`: usa `.env` y configuración, con riesgo de divergencia cuando el secreto vive solo en keyring.
+[validator.py](../../../nexus_core/scope/validator.py), L86, retorna sin verificar si falta firma **o** `signing_secret`. El loader no sustituye esa comprobación. La ruta normal del wizard crea engagements firmados, pero el runtime no exige esa propiedad universalmente. El worker tampoco carga el secret store como `omni.py`: usa `.env` y configuración, con riesgo de divergencia cuando el secreto vive solo en keyring.
 
 **Corrección:** distinguir expresamente un modo de laboratorio con scopes sin firma y un modo gobernado que los rechaza. Compartir bootstrap de secretos/configuración entre CLI y worker; exigir validación de firma, vigencia y tenant antes de cualquier ruta que prometa alcance firmado. Redacción de secretos y mensajes de error accionables, sin exponer claves.
 
@@ -280,7 +280,7 @@ Validar el target inicial no garantiza confinamiento de conexiones posteriores: 
 
 Fortalezas: allowlist de servidores/tools, entorno reducido para stdio, timeouts, descripción marcada como no confiable, registro sin reemplazar builtins por defecto y ejecución a través del gateway.
 
-Brechas en [gateway_bridge.py](nexus_core/integrations/mcp/gateway_bridge.py), L91, y [client.py](nexus_core/integrations/mcp/client.py), L235:
+Brechas en [gateway_bridge.py](../../../nexus_core/integrations/mcp/gateway_bridge.py), L91, y [client.py](../../../nexus_core/integrations/mcp/client.py), L235:
 
 - La definición MCP no declara `scope_required` ni `scope_target_field`; ambos quedan con sus defaults. No obtiene validación de target solo por atravesar el gateway.
 - El servidor stdio se inicia mediante el SDK, fuera de `LocalSandbox`/`OCISandbox`. Un entorno reducido no confina el proceso. Un servidor HTTP ejecuta efectos en otro entorno.
@@ -319,7 +319,7 @@ SQLite usa WAL y claims con transacción; existen leases, renovación, reintento
 
 ### 4.8 A-03 — Contexto y presupuesto: varias cotas, sin una contabilidad integral **[P1 · confirmado]**
 
-Ya hay compacción lógica, redacción, aislamiento por run, cola durable de mensajes y artefactos para observaciones grandes. [observations.py](nexus_core/agent/observations.py) limita historial crudo a 8.000 caracteres y compacta observaciones mayores de 20.000; [memory.py](nexus_core/agent/memory.py) resume a partir de una estimación de tokens, preservando diez mensajes finales.
+Ya hay compacción lógica, redacción, aislamiento por run, cola durable de mensajes y artefactos para observaciones grandes. [observations.py](../../../nexus_core/agent/observations.py) limita historial crudo a 8.000 caracteres y compacta observaciones mayores de 20.000; [memory.py](../../../nexus_core/agent/memory.py) resume a partir de una estimación de tokens, preservando diez mensajes finales.
 
 Límites que deben hacerse explícitos:
 
@@ -333,7 +333,7 @@ Límites que deben hacerse explícitos:
 
 ### 4.9 A-04 — Proveedores: buena abstracción, soporte desigual **[P1]**
 
-[abstraction.py](nexus_core/llm/abstraction.py) incluye OpenAI-compatible, Gemini async, Ollama, Fake y coordinación de fallback; Anthropic tiene adapter propio sobre HTTP. OpenAI-compatible tiene streaming y lógica de 413/429; los demás heredan en varios casos un `stream` que entrega la respuesta completa de una vez. **Tener el método no implica streaming incremental.**
+[abstraction.py](../../../nexus_core/llm/abstraction.py) incluye OpenAI-compatible, Gemini async, Ollama, Fake y coordinación de fallback; Anthropic tiene adapter propio sobre HTTP. OpenAI-compatible tiene streaming y lógica de 413/429; los demás heredan en varios casos un `stream` que entrega la respuesta completa de una vez. **Tener el método no implica streaming incremental.**
 
 La elección de cliente puede caer a Fake cuando falta el proveedor seleccionado. El README lo reconoce; en un producto operativo debe ser imposible confundir simulación con una misión real. El modo Fake debe ser explícito o estar acompañado de estado/exit code inequívocos, especialmente en automatizaciones.
 
@@ -347,7 +347,7 @@ El registro permite decoradores y entry points `nexus.tools`, con catálogo buil
 
 Dos límites:
 
-- [schema_validation.py](nexus_core/kernel/schema_validation.py) valida un subconjunto de JSON Schema, pero ignora `minimum`, `maximum`, `pattern`, combinadores y otras restricciones. La sonda aceptó `limit=-1` con `minimum=1`. Para MCP puede aceptar entradas inválidas o rechazar schemas legales con tipos compuestos. Usar un validador estándar con dialecto explícito y comprobar schemas al registrarlos.
+- [schema_validation.py](../../../nexus_core/kernel/schema_validation.py) valida un subconjunto de JSON Schema, pero ignora `minimum`, `maximum`, `pattern`, combinadores y otras restricciones. La sonda aceptó `limit=-1` con `minimum=1`. Para MCP puede aceptar entradas inválidas o rechazar schemas legales con tipos compuestos. Usar un validador estándar con dialecto explícito y comprobar schemas al registrarlos.
 - Los entry points se importan como código Python dentro del proceso y pueden solicitar reemplazo de builtins. No son extensiones no confiables aisladas. Exigir inventario, opt-in, procedencia y versión; no prometer sandbox por el hecho de usar el gateway.
 
 Las instrucciones de proyecto se escanean y delimitan, pero solo se carga el primer archivo candidato de la raíz y se trunca a 16 KB. No hay semántica jerárquica completa por subdirectorio. Además, llamarlas “instrucciones” y luego “solo datos” crea una ambigüedad: definir niveles de confianza sin permitir que un repo amplíe permisos. Las heurísticas de prompt injection son defensa adicional, no una frontera de seguridad.
@@ -373,7 +373,7 @@ La redacción reconoce campos y asignaciones nombradas; no detecta cualquier sec
 ### 4.13 A-08 — Distribución, documentación y CI **[P1 · confirmado/riesgo estático]**
 
 - Los paquetes pip/npm aún no se anuncian como publicados en README. Debe evaluarse la instalación desde checkout como ruta actual, no fingir disponibilidad de distribución.
-- [packaging/npm/bin/omni.js](packaging/npm/bin/omni.js) publica el comando `omni` y ejecuta `spawnSync("omni", ...)`. Si el shim es el primer `omni` en PATH, puede invocarse a sí mismo recursivamente. **Riesgo estático no ejecutado**. Usar ruta inequívoca al backend o un nombre diferente.
+- [packaging/npm/bin/omni.js](../../../packaging/npm/bin/omni.js) publica el comando `omni` y ejecuta `spawnSync("omni", ...)`. Si el shim es el primer `omni` en PATH, puede invocarse a sí mismo recursivamente. **Riesgo estático no ejecutado**. Usar ruta inequívoca al backend o un nombre diferente.
 - `postinstall` invoca `pipx install --force` como best effort; el fallo acaba en exit 0. La instalación npm puede parecer correcta sin backend utilizable. Probar ese escenario antes de publicar.
 - Los manifiestos usan rangos y hay varias listas de dependencias. README reconoce que no prometen resolución reproducible. Crear un lock de release para plataformas soportadas y ensayar wheel/sdist/launcher fuera del checkout.
 - README afirma que keyring está pendiente, pero `config/secrets.py` y `/secrets` ya lo implementan. Documenta 42 tools; se observaron 43, incluyendo `workspace.read`. Generar catálogo y flags desde definiciones para reducir deriva.
