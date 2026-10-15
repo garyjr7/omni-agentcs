@@ -12,9 +12,16 @@ from uuid import uuid4
 from typing import Any, Awaitable, Callable, Dict
 
 from .approvals import ApprovalService
-from .errors import ApprovalRequired, ProviderFailure
+from .errors import ApprovalRequired
 from .audit import AuditWriter
-from .models import Resource, RunContext, ToolDefinition, ToolResult
+from .models import (
+    PROVIDER_UNAVAILABLE_SUFFIXES,
+    Resource,
+    RunContext,
+    ToolDefinition,
+    ToolResult,
+    provider_unavailable_result,
+)
 from .policy import PolicyEngine
 from .redaction import sanitize
 from .schema_validation import validate
@@ -375,16 +382,28 @@ class ToolGateway:
                 if not result.completed:
                     # V0-22: a declared ``negative``/``denied``/``unsupported``
                     # result is an observation about the target and completes
-                    # below. Timeouts, an absent binary and an unparsed answer
-                    # keep their own exception type, so "could not look" never
-                    # reads as "looked and found nothing".
-                    if result.timed_out or result.verification_method.endswith(("_rpc_failed", "_credentials_missing", "_unavailable", "_timeout")):
-                        raise ProviderFailure(result.verification_method)
-                    raise RuntimeError(
-                        "tool post-condition was not verified "
-                        f"(method={result.verification_method})"
-                        f"{_failure_detail(result)}"
-                    )
+                    # below. What is left is "could not look": a timeout, an
+                    # absent binary or an unparsed answer. Fase 3b separates the
+                    # one case that is *not* a defect of the tool - its backend
+                    # is not serving right now- from an invariant a handler
+                    # broke, which still fails closed.
+                    if result.timed_out or result.verification_method.endswith(
+                        PROVIDER_UNAVAILABLE_SUFFIXES
+                    ):
+                        # Measured in run_434f5eeadb104b11ba0c80bce16f8d08: this
+                        # used to raise ``ProviderFailure``, and a dead MSF RPC
+                        # ended the whole run (exit 3, ``provider_error``) with
+                        # five other routes still available. Now the tool answers
+                        # ``unavailable`` -audited and journaled like the other
+                        # determinate outcomes- so the loop can count it, retire
+                        # the tool after repeated attempts and pivot.
+                        result = provider_unavailable_result(tool_id, result)
+                    else:
+                        raise RuntimeError(
+                            "tool post-condition was not verified "
+                            f"(method={result.verification_method})"
+                            f"{_failure_detail(result)}"
+                        )
                 from nexus_core.tools.parsers import PARSERS_VERSION
 
                 from .fact_verification import derive_assertions, persist_assertions

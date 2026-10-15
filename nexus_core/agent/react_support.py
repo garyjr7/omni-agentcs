@@ -133,6 +133,21 @@ def _audit_step(
     )
 
 
+def unavailable_guidance(tool_id: Any, reason: str) -> str:
+    """Model-facing sentence for a tool whose backend stopped serving (Fase 3b).
+
+    The agent has to learn three things at once from the observation: *which*
+    tool is out, *why* (so it stops retrying a dead backend), and that the rest
+    of the phase is still open—so it pivots instead of insisting. Measured in
+    run_434f5eeadb104b11ba0c80bce16f8d08: the dead MSF RPC had no such message
+    and the whole run ended with it.
+    """
+    return (
+        f"tool '{tool_id}' is temporarily unavailable (reason: {reason}). "
+        "Consider using an alternative or continuing with the other routes of the phase."
+    )
+
+
 def _failure_kind(exc: BaseException) -> str:
     """Classify a tool exception as ``"input"`` or ``"tool"``.
 
@@ -383,6 +398,10 @@ def _observation_payload(invocation: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "tool returned no structured output"}
     return {
         "success": bool(output.get("success")),
+        # Explicit classification of the invocation (V0-22/Fase 3b). The loop
+        # reads it to tell a tool that *failed* from one whose backend is not
+        # serving (``unavailable``), which must not end the run.
+        "outcome": output.get("outcome") or "",
         "verification_method": output.get("verification_method"),
         "evidence": output.get("evidence"),
         "invocation_id": output.get("invocation_id"),

@@ -116,6 +116,15 @@ class ToolDefinition:
     effects: tuple[str, ...] = ()
     sandbox_required: bool = False
     idempotent: bool = False
+    #: Argument values the handler refuses although the JSON Schema accepts them,
+    #: keyed by argument name: ``{"options": ["RHOSTS", "LHOST", ...]}`` (Fase
+    #: 3b). The schema is permissive on purpose (any datastore key is a scalar),
+    #: so the hand-written validator is the real contract and the model could only
+    #: learn it by being rejected -measured in run_434f5eeadb104b11ba0c80bce16f8d08:
+    #: two turns lost to ``options.RHOSTS``. Declaring it here is what lets the
+    #: catalog publish the constraint. Optional: only a tool that has one declares
+    #: it, and the handler keeps enforcing it (this field never authorizes).
+    forbidden_argument_values: Dict[str, List[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Fail closed on an invented effect: the gate compares against
@@ -168,10 +177,75 @@ OUTCOME_TAXONOMY = frozenset({
     "error",
 })
 
-#: Outcomes that mean the invocation reached a determinate conclusion *against
-#: the target*. They complete the invocation (audited and journaled) instead of
-#: raising, and derive no positive assertion.
-COMPLETED_OUTCOMES = frozenset({"negative", "denied", "unsupported"})
+#: Outcomes that mean the invocation reached a determinate conclusion. They
+#: complete the invocation (audited and journaled) instead of raising, and derive
+#: no positive assertion.
+#:
+#: ``unavailable`` belongs here (Fase 3b): a body whose backend/binary is not
+#: there has *decided* -the target was never contacted- and the loop must count
+#: it, retire the tool after repeated attempts and pivot. Raising instead is what
+#: turned a dead MSF RPC into the end of a whole run (measured in
+#: run_434f5eeadb104b11ba0c80bce16f8d08). The distinction that matters is kept:
+#: the outcome is ``unavailable``, never ``negative``, so nothing reads as "we
+#: looked and there was nothing" and no assertion is derived. A *bare* failure
+#: that declares no outcome still keeps its own error and does not complete.
+COMPLETED_OUTCOMES = frozenset({"negative", "denied", "unsupported", "unavailable"})
+
+#: ``verification_method`` suffixes that mean "the backend this tool talks to did
+#: not serve the call" -MSF RPC down, missing RPC credentials, absent binary,
+#: timeout- as opposed to "the check ran and the answer was no" (Fase 3b). These
+#: are the shapes the handlers already emitted; what changes is that the gateway
+#: re-classifies them instead of raising.
+PROVIDER_UNAVAILABLE_SUFFIXES = (
+    "_rpc_failed",
+    "_credentials_missing",
+    "_unavailable",
+    "_timeout",
+)
+#: Method stamped on a result the gateway re-classified as ``unavailable``.
+PROVIDER_UNAVAILABLE_METHOD = "provider_unavailable"
+
+
+def provider_unavailable_result(tool_id: str, result: "ToolResult") -> "ToolResult":
+    """Re-classify a backend failure as a determinate ``unavailable`` outcome.
+
+    Measured in run_434f5eeadb104b11ba0c80bce16f8d08: ``msf_auxiliary`` could not
+    reach ``msfrpcd``, the gateway raised ``ProviderFailure`` and a six-turn run
+    with a live target ended as ``provider_error``. A backend that is not serving
+    is not a broken tool and it is not the end of the mission: the tool says so
+    (``outcome="unavailable"``, never ``negative`` -nothing was observed), the
+    loop counts it like any other tool failure and retires the tool after
+    repeated attempts so the agent pivots to the rest of the phase.
+
+    The original method and the handler's evidence are kept under ``cause`` so no
+    diagnostic is lost, and ``provider`` names the backend the way an operator
+    would (``msf_rpc`` for ``msf_rpc_failed``): the trailing verdict
+    (``_failed``) is stripped first, then the failure shape.
+    """
+    from dataclasses import replace
+
+    method = str(result.verification_method or "unspecified")
+    provider = method[: -len("_failed")] if method.endswith("_failed") else method
+    for suffix in PROVIDER_UNAVAILABLE_SUFFIXES:
+        if provider.endswith(suffix):
+            provider = provider[: -len(suffix)]
+            break
+    provider = provider or tool_id or method
+    evidence: Dict[str, Any] = {
+        "provider": provider,
+        "detail": f"{method} (the backend did not serve the call)",
+    }
+    if result.evidence:
+        evidence["cause"] = dict(result.evidence)
+    return replace(
+        result,
+        verified=False,
+        outcome="unavailable",
+        verification_method=f"{tool_id}_{PROVIDER_UNAVAILABLE_METHOD}",
+        evidence=evidence,
+    )
+
+
 
 
 @dataclass(frozen=True)

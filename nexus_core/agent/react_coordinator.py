@@ -64,6 +64,7 @@ from .react_support import (
     _last_persisted_iteration,
     _action_entry,
     _observation_payload,
+    unavailable_guidance,
     _budget_tokens,
     _budget_used,
     subagent_budget_subject,
@@ -1172,49 +1173,41 @@ class ReActCoordinator:
                     reason=self.status,
                 )
                 return Transition.STOP
-            if isinstance(exc, (ProviderFailure, TimeoutError, ConnectionError)):
+            backend_unavailable = (
+                isinstance(exc, ProviderFailure) and getattr(exc, "kind", "fatal") == "unavailable"
+            )
+            if backend_unavailable:
+                # Fase 3b: a backend that is not serving *now* is not a fatal
+                # provider error. It becomes the same ``unavailable`` observation
+                # a handler returns (never ``negative``: nothing was observed),
+                # counted like any other tool failure, so the tool is retired
+                # after repeated attempts and the run pivots to the rest of the
+                # phase (measured in run_434f5eeadb104b11ba0c80bce16f8d08).
+                reason = str(exc) or type(exc).__name__
+                self.observation = {
+                    "success": False,
+                    "outcome": "unavailable",
+                    "error_type": type(exc).__name__,
+                    "error": reason[:1000],
+                    "failure_kind": "provider_unavailable",
+                    "evidence": {"provider": reason},
+                    "guidance": unavailable_guidance(self.action.tool_id, reason),
+                }
+                self._note_tool_failure(str(self.action.tool_id))
+            elif isinstance(exc, (ProviderFailure, TimeoutError, ConnectionError)):
                 self.status = "provider_error"
                 self.final_summary = type(exc).__name__
                 return Transition.STOP
-            kind = _failure_kind(exc)
-            self.observation = {
-                "success": False,
-                "error_type": type(exc).__name__,
-                "error": str(exc)[:1000],
-                "failure_kind": kind,
-            }
-            failed_tool = str(self.action.tool_id)
-            if kind == "tool":
-                count = self.tool_failures.get(failed_tool, 0) + 1
-                self.tool_failures[failed_tool] = count
-                if (
-                    count >= MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE
-                    and failed_tool not in self.unavailable_tools
-                ):
-                    self.unavailable_tools.add(failed_tool)
-                    self.telemetry.flag(FrictionFlag.TOOL_RETIRED)
-                    self.observation["tool_retired"] = True
-                    self.observation["available_tools"] = sorted(
-                        (tool for tool in self.subagent.tools if tool not in self.unavailable_tools)
-                    )
-                    self.store.append_run_event(
-                        self.tenant_id,
-                        self.run_id,
-                        TOOL_UNAVAILABLE_EVENT_TYPE,
-                        {
-                            "tool_id": self.action.tool_id,
-                            "subagent_id": self.subagent.id,
-                            "failures": count,
-                            "iteration": self.iteration,
-                        },
-                    )
-                    self.audit_step(
-                        iteration=self.iteration,
-                        action="tool_unavailable",
-                        decision="degrade",
-                        tool_id=self.action.tool_id,
-                        failures=count,
-                    )
+            else:
+                kind = _failure_kind(exc)
+                self.observation = {
+                    "success": False,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:1000],
+                    "failure_kind": kind,
+                }
+                if kind == "tool":
+                    self._note_tool_failure(str(self.action.tool_id))
             self.consecutive_failures += 1
         else:
             if cancelled_now:
@@ -1241,6 +1234,19 @@ class ReActCoordinator:
                 del self.run_evidence[:-RUN_EVIDENCE_MAX_OBSERVATIONS]
             else:
                 self.consecutive_failures += 1
+                if str(self.observation.get("outcome") or "") == "unavailable":
+                    # Fase 3b: a handler (or the gateway) declared that the
+                    # backend did not serve the call. It is a *tool* failure -
+                    # not invalid input- so it retires the tool after repeated
+                    # attempts and the next prompt offers the remaining routes.
+                    reason = self.observation.get("failure_kind") or "backend unavailable"
+                    evidence = self.observation.get("evidence")
+                    if isinstance(evidence, dict) and evidence.get("provider"):
+                        reason = str(evidence["provider"])
+                    self.observation["guidance"] = unavailable_guidance(
+                        self.action.tool_id, reason
+                    )
+                    self._note_tool_failure(str(self.action.tool_id))
         self.entry["tool_result"] = self.observation
         self.actions.append(self.entry)
         _inject_observation(
@@ -1271,6 +1277,48 @@ class ReActCoordinator:
         if self.consecutive_failures >= MAX_CONSECUTIVE_TOOL_FAILURES:
             self.consecutive_failures = 0
         return Transition.READY
+
+    def _note_tool_failure(self, tool_id: str) -> int:
+        """Count one *tool* failure and retire the tool once it is exhausted (B3).
+
+        A retired tool leaves the phase's catalog (``_advance_phase``), so the
+        next prompt offers the remaining routes and the refusal path names what
+        is left. Fase 3b routes a backend that stopped serving through here as
+        well: ``unavailable`` is a tool failing *now*, and that is what turns
+        "MSF RPC is down" into a pivot instead of the end of the run (measured in
+        run_434f5eeadb104b11ba0c80bce16f8d08).
+        """
+        count = self.tool_failures.get(tool_id, 0) + 1
+        self.tool_failures[tool_id] = count
+        if (
+            count >= MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE
+            and tool_id not in self.unavailable_tools
+        ):
+            self.unavailable_tools.add(tool_id)
+            self.telemetry.flag(FrictionFlag.TOOL_RETIRED)
+            self.observation["tool_retired"] = True
+            self.observation["available_tools"] = sorted(
+                (tool for tool in self.subagent.tools if tool not in self.unavailable_tools)
+            )
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                TOOL_UNAVAILABLE_EVENT_TYPE,
+                {
+                    "tool_id": tool_id,
+                    "subagent_id": self.subagent.id,
+                    "failures": count,
+                    "iteration": self.iteration,
+                },
+            )
+            self.audit_step(
+                iteration=self.iteration,
+                action="tool_unavailable",
+                decision="degrade",
+                tool_id=tool_id,
+                failures=count,
+            )
+        return count
 
     def _blackboard_counts(self) -> dict[str, int] | None:
         """Counts of the blackboard *after* the turn's tool call (never raises).

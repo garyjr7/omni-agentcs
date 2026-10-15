@@ -41,6 +41,9 @@ FORBIDDEN_OPTIONS = {
     "USERPASS_FILE",
     "SESSION",
 }
+#: Datastore keys the handler itself bounds and sets (RPORT range, THREADS
+#: concurrency): the ones worth naming when a forbidden key is refused.
+SAFE_EXTRA_OPTIONS = "RPORT, THREADS"
 
 
 def msf_auxiliary_definition(tenant_id: str = "system") -> ToolDefinition:
@@ -66,6 +69,9 @@ def msf_auxiliary_definition(tenant_id: str = "system") -> ToolDefinition:
                 "timeout_seconds": {"type": "number", "minimum": 1, "maximum": 300},
             },
         },
+        # Published so the catalog can show the constraint (Fase 3b): the model
+        # used to learn ``RHOSTS`` was refused by being refused.
+        forbidden_argument_values={"options": sorted(FORBIDDEN_OPTIONS)},
     )
 
 
@@ -75,8 +81,16 @@ def validated_options(options: dict) -> dict:
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", key):
             raise ValueError("invalid option name")
         key = key.upper()
-        if key in FORBIDDEN_OPTIONS or key in result:
-            raise ValueError("forbidden or duplicate auxiliary option")
+        if key in FORBIDDEN_OPTIONS:
+            # Name the offending key: the message reaches the model, and "one of
+            # your options is forbidden" is exactly the ambiguity that costs a
+            # whole turn (Fase 3b).
+            raise ValueError(
+                f"option {key!r} is forbidden; the handler sets the host from "
+                f"'target'; safe extra options: {SAFE_EXTRA_OPTIONS}"
+            )
+        if key in result:
+            raise ValueError(f"duplicate option {key!r} was already given")
         if type(value) not in {str, int, float, bool}:
             raise ValueError("options must be scalar values")
         if isinstance(value, float) and not math.isfinite(value):

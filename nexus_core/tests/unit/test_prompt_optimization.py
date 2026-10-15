@@ -71,19 +71,23 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # Fase 3 fixes: legal enum values are part of every line that declares them,
     # because three of eleven turns of run_abe04509c5064c6e8e475f46ba8f8c60 were
     # rejected (30,6 % of that run's tokens) by guessing a value the catalog hid.
-    # Both bounds moved once, by the measured growth of that data: 14,519 chars at
-    # 68 tools (213,5 per tool) against 13,383 / 196,8 before. The ceiling stays a
-    # ceiling: it is the enum values that earned the room, not new prose.
+    # Fase 3b (V1-15) publishes the values a handler *refuses* the same way
+    # (``options ∉ {RHOSTS, LHOST, …}``), because the model could only learn them
+    # by being rejected (run_434f5eeadb104b11ba0c80bce16f8d08). Both bounds moved
+    # once more, by the measured growth of that data: 14,976 chars at 68 tools
+    # (220,2 per tool) against 14,519 / 213,5 before. The total ceiling is also
+    # the ticket's stop threshold (15,500): over it, ask before raising anything,
+    # and it is constraint data -never prose- what earns the room.
     assert len(catalog) == 68
     text = render_tool_catalog(catalog)
-    assert len(text) / len(catalog) < 215
-    assert len(text) < 14700
+    assert len(text) / len(catalog) < 225
+    assert len(text) < 15500
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
-    # Reviewed 68-tool prompt: 22,028 characters, with no repeated schemas
-    # (20,883 before the enum values were made visible).
-    assert len(_prompt(catalog)) < 22400
+    # Reviewed 68-tool prompt: 22,485 characters after the forbidden values were
+    # published (22,028 with the enums only, 20,883 before those).
+    assert len(_prompt(catalog)) < 22600
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):

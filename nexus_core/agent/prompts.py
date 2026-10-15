@@ -183,6 +183,22 @@ def _enum_values(spec: Any) -> tuple[str, ...]:
     return tuple(text for text in (str(value) for value in raw) if text)
 
 
+def _forbidden_values(definition: Any, name: str) -> tuple[str, ...]:
+    """Values the handler refuses although the schema accepts them (Fase 3b).
+
+    The schema is permissive on purpose (any datastore key is a scalar for
+    Metasploit), so the hand-written validator is the real contract:
+    ``options.RHOSTS`` is a hard ``ValueError`` even though the JSON Schema is
+    happy with it. Measured in run_434f5eeadb104b11ba0c80bce16f8d08, the model
+    spent two turns discovering that by rejection.
+    """
+    declared = getattr(definition, "forbidden_argument_values", None) or {}
+    raw = declared.get(name) if isinstance(declared, dict) else None
+    if not isinstance(raw, (list, tuple, frozenset, set)):
+        return ()
+    return tuple(text for text in (str(value) for value in raw) if text)
+
+
 def _schema_arguments(definition: Any) -> str:
     """Compact ``name:type`` list of a tool's declared arguments.
 
@@ -200,17 +216,25 @@ def _schema_arguments(definition: Any) -> str:
     model guesses wrong, whether it is an enum value or a required property. The
     cap therefore falls on the least load-bearing arguments first: required ones
     are always listed (they are half of the rejections), then the ones that
-    declare legal values, and only then plain optional types.
+    declare legal or forbidden values, and only then plain optional types.
+
+    A value the handler *refuses* is shown as ``name ∉ {A, B}`` (Fase 3b), in the
+    same one-pass format as an enum: it is the same class of hidden contract, with
+    the opposite sign, and the validation itself is untouched.
     """
     schema = getattr(definition, "input_schema", None) or {}
     properties = schema.get("properties") if isinstance(schema, dict) else None
     if not isinstance(properties, dict):
         return "-"
     required = set(schema.get("required") or ())
+
+    def constrained(name: str, spec: Any) -> bool:
+        return bool(_enum_values(spec) or _forbidden_values(definition, name))
+
     # Stable sort, so both groups keep their declared order.
     ordered = sorted(
         properties.items(),
-        key=lambda item: (0 if item[0] in required else 1, 0 if _enum_values(item[1]) else 1),
+        key=lambda item: (0 if item[0] in required else 1, 0 if constrained(*item) else 1),
     )
     parts: list[str] = []
     for name, spec in ordered:
@@ -223,6 +247,9 @@ def _schema_arguments(definition: Any) -> str:
         else:
             kind = spec.get("type") if isinstance(spec, dict) else None
             label = f"{name}:{kind or 'any'}"
+        forbidden = _forbidden_values(definition, name)
+        if forbidden:
+            label += f" ∉ {{{', '.join(forbidden)}}}"
         if name in required:
             label += "*"
         parts.append(label)

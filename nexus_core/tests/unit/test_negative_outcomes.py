@@ -19,7 +19,6 @@ import pytest
 
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.control_store import ControlStore
-from nexus_core.kernel.errors import ProviderFailure
 from nexus_core.kernel.invocation_journal import InvocationJournal
 from nexus_core.kernel.models import Identity, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.policy import PolicyEngine
@@ -150,14 +149,39 @@ def test_unknown_nt_status_still_fails_closed(tmp_path):
 
 
 def test_timeout_and_missing_infrastructure_keep_their_own_error(tmp_path):
+    """A backend that is not serving is ``unavailable``, never a negative (Fase 3b).
+
+    These two used to raise ``ProviderFailure``, and that raise is what ended a
+    whole engagement when one backend was down (measured in
+    run_434f5eeadb104b11ba0c80bce16f8d08: a dead ``msfrpcd`` closed a six-turn
+    run as ``provider_error``). The distinction this test protects is kept and
+    sharpened: the invocation completes as ``unavailable`` -the target was never
+    contacted, so nothing was observed- instead of being flattened into the same
+    bucket as "we looked and found nothing".
+    """
     timed_out = ToolResult({}, False, "smb_timeout", {}, timed_out=True)
     unavailable = ToolResult({}, False, "_".join(["smbclient", "unavailable"]))
     # Distinct arguments so the two calls do not share a durable step key.
-    for result, method in ((timed_out, "smb_timeout"), (unavailable, "smbclient_unavailable")):
-        _, gateway = _gateway(tmp_path, result)
-        with pytest.raises(ProviderFailure):
-            asyncio.run(gateway.invoke("probe", {"probe_case": method}, _context()))
+    for result, method, provider in (
+        (timed_out, "smb_timeout", "smb"),
+        (unavailable, "smbclient_unavailable", "smbclient"),
+    ):
+        store, gateway = _gateway(tmp_path, result)
+        returned = asyncio.run(gateway.invoke("probe", {"probe_case": method}, _context()))
+        assert returned["success"] is False
+        assert returned["outcome"] == "unavailable"
+        assert returned["verification_method"] == "probe_provider_unavailable"
+        assert returned["evidence"]["provider"] == provider
+        # ...and it invents no positive fact, nor pretends the target answered.
+        assert returned["assertions"] == []
         assert result.outcome_class != "negative"
+        assert InvocationJournal(store).get(returned["invocation_id"], "system")["state"] == (
+            "succeeded"
+        )
+        trail = AuditWriter(store).export("system")
+        assert [row for row in trail if row["action"] == "tool.failed"] == []
+        completed = next(row for row in trail if row["action"] == "tool.complete")
+        assert completed["payload"]["outcome"] == "unavailable"
 
 
 def test_an_unparsed_answer_is_still_a_failure(tmp_path):
