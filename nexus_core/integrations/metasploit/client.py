@@ -467,6 +467,14 @@ class MetasploitClient:
         together with ``job_id``/``job_uuid``/``duration_seconds``. The loop is
         bounded by both a monotonic deadline and an attempt budget, so it always
         terminates and stays cancellable through ``asyncio`` timeouts.
+
+        ``session.list`` is sampled immediately *before* ``module.execute`` and
+        polled until a session appears, so the difference defines the **job
+        window**: every entry of ``new_sessions`` appeared while this job was
+        running (V1-23). The count is the evidence the caller needs to decide
+        whether the correlation is clean -the session's own target is compared
+        there, never an identifier: the RPC job uuid and the session's
+        ``exploit_uuid`` are different kinds of id and never match.
         """
         if type(wait_for_session_seconds) is not int or not 1 <= wait_for_session_seconds <= 3600:
             raise ValueError("wait_for_session_seconds must be between 1 and 3600")
@@ -499,7 +507,16 @@ class MetasploitClient:
             sessions = await self.list_sessions()
             opened = sorted(set(sessions) - before)
             if opened:
-                return outcome("session_opened", session_uuid=opened[0], session=sessions[opened[0]])
+                return outcome(
+                    "session_opened",
+                    session_uuid=opened[0],
+                    session=sessions[opened[0]],
+                    # All sessions seen in the job window, with their records: the
+                    # handler correlates by window + target and needs the count.
+                    new_sessions=[
+                        {"uuid": str(sid), "record": sessions[sid]} for sid in opened
+                    ],
+                )
             results = await self.get_module_results(job_uuid)
             status = results.get("status")
             if status in {"errored", "failed"}:

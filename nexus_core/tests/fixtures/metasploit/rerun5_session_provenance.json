@@ -1,0 +1,43 @@
+{
+  "_source": {
+    "run_id": "run_cf7e95bdab064ddea36b44255ee86e6c",
+    "engagement_id": "eng-022a4fdb0d0d",
+    "date": "2026-10-15",
+    "target": "10.65.175.32",
+    "module": "exploit/windows/smb/ms17_010_psexec",
+    "msfrpcd": "127.0.0.1:55552 (pid 169492)",
+    "how": [
+      "The session record and its exploit_uuid were read verbatim from msfrpcd session.list right after the run (the run's own result carried no evidence: that is the bug).",
+      "The job_uuid is the 24-character RPC job uuid the same run recorded for the previous msf_exploit call (iteration 11, ms17_010_eternalblue).",
+      "The psexec job uuid was never captured, because the rejected result (session_provenance_unverified) exposed neither uuid.",
+      "The two ids are the same kind of pair the handler used to compare: an 8-character module uuid against a 24-character job uuid. They can never be equal, so the old check rejected every real session (V1-23)."
+    ],
+    "observed_result": {
+      "iteration": 12,
+      "verified": false,
+      "verification_method": "session_provenance_unverified",
+      "duration_seconds": 9.94
+    }
+  },
+  "job_uuid": "E7pL2s8DZTFpZF7DoYiVUMwC",
+  "session_uuid": "xakn99q0",
+  "session": {
+    "type": "meterpreter",
+    "tunnel_local": "192.168.144.132:4444",
+    "tunnel_peer": "10.65.175.32:50197",
+    "via_exploit": "exploit/windows/smb/ms17_010_psexec",
+    "via_payload": "payload/windows/x64/meterpreter/reverse_tcp",
+    "desc": "Meterpreter",
+    "info": "NT AUTHORITY\\SYSTEM @ WIN-JO6REVNMMMP",
+    "workspace": "",
+    "session_host": "10.65.175.32",
+    "session_port": 445,
+    "target_host": "10.65.175.32",
+    "username": "kali",
+    "uuid": "xakn99q0",
+    "exploit_uuid": "w87amfh3",
+    "routes": "",
+    "arch": "x64",
+    "platform": "windows"
+  }
+}
