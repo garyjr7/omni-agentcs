@@ -338,13 +338,28 @@ async def listener_handler(arguments: dict, context: RunContext) -> ToolResult:
         )
 
     if not payload.get("ok"):
-        # Distinguish "nothing connected" from "could not bind".
-        method = "listener_no_connection" if payload.get("bound") else "listener_bind_failed"
+        # Distinguish "nothing connected" from "could not bind". A catch nobody
+        # took is a determinate answer about the target, so it completes with
+        # its outcome instead of raising (V0-36, same vocabulary as
+        # ``ntlm_capture``); a bind that never happened stays a failure of the
+        # body.
+        bound = bool(payload.get("bound"))
+        method = "listener_no_connection" if bound else "listener_bind_failed"
         evidence["error"] = payload.get("error")
+        evidence["bound"] = bound
+        evidence["listened_seconds"] = payload.get("listened_seconds")
+        if bound:
+            evidence["reason"] = str(payload.get("error") or "no connection within timeout")
         return ToolResult(
-            output={"error": payload.get("error"), "port": port},
+            output={
+                "error": payload.get("error"),
+                "port": port,
+                "bound": bound,
+                "listened_seconds": payload.get("listened_seconds"),
+            },
             verified=False,
             verification_method=method,
+            outcome="negative" if bound else "",
             evidence=evidence,
             exit_code=result.exit_code,
             accepted_exit_codes=(0,),

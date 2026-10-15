@@ -678,6 +678,13 @@ async def wp_bruteforce_handler(arguments: dict, context: RunContext) -> ToolRes
     }
     if resumed_from:
         evidence["payload_source"] = resumed_from
+    # An exhausted sweep with no hit is recorded as the negative it is: the
+    # attempt count stays readable and the credential count is explicit, so the
+    # report can count "tried and rejected" instead of losing it in a
+    # ``RuntimeError`` (V0-22).
+    evidence["credentials_found"] = 1 if verified else 0
+    if exhausted and not verified:
+        evidence["reason"] = "sweep exhausted every candidate without validating a credential"
     return ToolResult(
         output={
             "url": base_url,

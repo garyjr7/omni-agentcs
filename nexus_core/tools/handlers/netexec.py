@@ -6,11 +6,18 @@ exposes; it has no ``-q``), and maps the model's ``operation`` to the real
 enumeration flags (``--shares``, ``--users``, ``--groups``, ``--smb-sessions``,
 ``--disks``). Command execution, module loading and credential dumping are
 forbidden: this tool does not run ``-x``/``-X``/``-M``/``--sam``.
+
+The post-condition separates *the operation ran and the target answered* from
+*the body failed*: a determinate answer netexec prints with an exit code
+outside ``{0, 1}`` (a refusal, a share that is not there) completes with its
+outcome instead of raising (V0-31). An answer the handler cannot classify keeps
+failing closed.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
@@ -109,6 +116,67 @@ NETEXEC_MAX_TIMEOUT_SECONDS = 1800
 
 NOISE_LEVELS = {"low": 0, "medium": 1, "high": 2}
 NOISE_NAMES = ("low", "medium", "high")
+
+#: Determinate answers the target sends back, printed by netexec in place of a
+#: crash. Measured negatives in RUN_sala10 (``smb shares``, ``rid_brute``,
+#: ``ldap users``): ``STATUS_USER_SESSION_DELETED``, ``0xc0000022`` and
+#: ``operationsError`` ("bind must be completed"). Each maps to the outcome
+#: recorded instead of a ``RuntimeError`` (V0-31); a token that is not listed
+#: here stays unclassified and the invocation keeps failing closed.
+NETEXEC_STATUS_OUTCOMES: dict[str, str] = {
+    # The target refused the request, or the operation needs a credential the
+    # caller did not present (SMB ``STATUS_*`` and the LDAP errors netexec
+    # surfaces after parsing the answer).
+    "STATUS_ACCESS_DENIED": "denied",
+    "0XC0000022": "denied",
+    "STATUS_LOGON_FAILURE": "denied",
+    "STATUS_WRONG_PASSWORD": "denied",
+    "STATUS_ACCOUNT_DISABLED": "denied",
+    "STATUS_ACCOUNT_LOCKED_OUT": "denied",
+    "STATUS_ACCOUNT_EXPIRED": "denied",
+    "STATUS_PASSWORD_MUST_CHANGE": "denied",
+    "STATUS_PASSWORD_EXPIRED": "denied",
+    "STATUS_USER_SESSION_DELETED": "denied",
+    "STATUS_INVALID_LOGON_HOURS": "denied",
+    "STATUS_NOT_SUPPORTED": "unsupported",
+    "STATUS_NOT_IMPLEMENTED": "unsupported",
+    "OPERATIONSERROR": "denied",
+    "INSUFFICIENTACCESSRIGHTS": "denied",
+    "STRONGERAUTHREQUIRED": "denied",
+    "INVALIDCREDENTIALS": "denied",
+    # The target answered that what was asked for is not here / not spoken.
+    "STATUS_BAD_NETWORK_NAME": "unsupported",
+    "0XC00000CC": "unsupported",
+    "STATUS_BAD_NETWORK_PATH": "unsupported",
+    "STATUS_OBJECT_NAME_NOT_FOUND": "unsupported",
+    "STATUS_OBJECT_PATH_NOT_FOUND": "unsupported",
+    "STATUS_NO_SUCH_FILE": "unsupported",
+    "STATUS_INVALID_PARAMETER": "unsupported",
+    "STATUS_SMB_BAD_TID": "unsupported",
+}
+
+#: The tokens above as netexec prints them: ``NT_STATUS_x``/``STATUS_x``, the
+#: raw ``0x``-hex HRESULT, or the LDAP error name.
+_NXC_STATUS_RE = re.compile(
+    r"NT_STATUS_[A-Z_]+|STATUS_[A-Z_]+|0[xX][0-9a-fA-F]{8}"
+    r"|operationsError|insufficientAccessRights|strongerAuthRequired|invalidCredentials"
+)
+
+
+def netexec_status_outcome(text: str) -> tuple[str, str]:
+    """Return ``(token, outcome)`` for the first determinate answer in *text*.
+
+    An empty outcome means the handler cannot classify what it saw; the caller
+    must then fail closed instead of reporting an observation (V0-31).
+    """
+    match = _NXC_STATUS_RE.search(text or "")
+    if match is None:
+        return "", ""
+    token = match.group(0)
+    key = token.upper()
+    if key.startswith("NT_"):
+        key = key[3:]
+    return token, NETEXEC_STATUS_OUTCOMES.get(key, "")
 
 
 def netexec_noise_level(threads: int) -> str:
@@ -291,9 +359,23 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
         )
 
     parsed = parse_netexec_output(result.stdout, protocol=protocol)
+    verified = result.exit_code in {0, 1}
+    nt_status, status_outcome = netexec_status_outcome(result.stdout)
+    # netexec closes with an exit code outside ``{0, 1}`` while still printing a
+    # determinate answer from the target (measured: ``STATUS_ACCESS_DENIED`` on
+    # ``rid_brute``, ``operationsError`` on ``ldap users``). That is an answer,
+    # not a broken body: it completes with its outcome and derives nothing
+    # (V0-31). Anything the vocabulary does not cover keeps failing closed.
+    outcome = "" if verified else status_outcome
     evidence.update(
-        {"count": len(parsed.entries), "raw_output_sha256": parsed.raw_output_sha256}
+        {
+            "count": len(parsed.entries),
+            "raw_output_sha256": parsed.raw_output_sha256,
+            "nt_status": nt_status or None,
+        }
     )
+    if outcome:
+        evidence["reason"] = f"{operation} answered {nt_status} on {target}"
     return ToolResult(
         output={
             "protocol": protocol,
@@ -303,8 +385,9 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
             "count": len(parsed.entries),
             **parsed.to_dict(),
         },
-        verified=result.exit_code in {0, 1},
+        verified=verified,
         verification_method="netexec_text_parsed",
+        outcome=outcome,
         evidence=evidence,
         exit_code=result.exit_code,
         accepted_exit_codes=(0, 1),

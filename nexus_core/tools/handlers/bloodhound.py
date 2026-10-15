@@ -252,11 +252,23 @@ async def bloodhound_handler(arguments: dict, context: RunContext) -> ToolResult
 
     output_files = sorted(Path(workspace_root).glob(f"bh_{run_id}_*.json"))
     if not output_files:
+        # ``collected``/``file_count`` are recorded explicitly so the report can
+        # count the run as a negative with material 0 instead of losing it in an
+        # exception (V0-38).
+        evidence.update(
+            {
+                "collected": 0,
+                "file_count": 0,
+                "reason": "collector ran and produced no JSON output",
+            }
+        )
         return ToolResult(
             output={
                 "error": "bloodhound produced no JSON output",
                 "domain": domain,
                 "dc": dc,
+                "collected": 0,
+                "file_count": 0,
             },
             verified=False,
             verification_method="bloodhound_no_output",
