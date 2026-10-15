@@ -17,6 +17,19 @@ PHASE_TIMEOUT_EVENT_TYPE = "react.phase_timeout"
 #: Optional per-phase wall-clock budget (0 disables it). When exceeded the
 #: phase's already-failing tools are retired and the event is audited.
 PHASE_TIMEOUT_ENV = "NEXUS_PHASE_TIMEOUT_SECONDS"
+#: Emitted when the loop has spent N turns in a row without a single new
+#: verified fact (measured in run_abe04509c5064c6e8e475f46ba8f8c60: 10 turns
+#: with ``blackboard_delta = 0``). It is a *signal*: it never stops the run and
+#: never changes the phase by itself; the next prompt tells the model to pivot.
+STUCK_EVENT_TYPE = "react.stuck_detected"
+#: Env var that overrides the no-progress threshold (default 5 turns).
+STUCK_THRESHOLD_ENV = "NEXUS_STUCK_THRESHOLD"
+DEFAULT_STUCK_THRESHOLD = 5
+#: Appended to the system prompt once the loop is stuck (P2, Fase 3 fixes).
+STUCK_PROMPT_LINE = (
+    "Detectado estancamiento: {iterations} turnos sin hechos nuevos. "
+    "Cambia de estrategia o propón task_complete si ya no hay rutas viables."
+)
 #: Output-token ceiling for one ReAct turn. Providers with a low tokens-per-
 #: minute budget count the *reserved* ``max_tokens`` against the request, so an
 #: oversized default (4096) makes every call fail even when the prompt is small

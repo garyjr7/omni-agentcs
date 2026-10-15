@@ -34,6 +34,7 @@ from .react_support import (
 from .observations import bounded_context
 from .injection import render_for_model
 from .prompts import render_system_prompt, describe_scope
+from .react_types import DEFAULT_STUCK_THRESHOLD, STUCK_PROMPT_LINE
 from .project_context import render_project_instruction
 from .skills import render_skills
 from .evidence import annotate_findings
@@ -228,6 +229,8 @@ class ContextBuilder:
         active_skills: list[Skill],
         store: ControlStore,
         tenant_id: str,
+        no_progress: int = 0,
+        stuck_threshold: int = DEFAULT_STUCK_THRESHOLD,
     ) -> list[LLMMessage]:
         history_summary, plan, facts_text = (
             snapshot.history_summary,
@@ -248,6 +251,14 @@ class ContextBuilder:
             skills_summary=render_skills(active_skills),
             playbook_summary=_playbook_guidance(store, tenant_id, engagement_id, run_id=snapshot.run_id),
         )
+        # A stalled loop (no new verified fact for N turns) gets one explicit
+        # line: measured in run_abe04509c5064c6e8e475f46ba8f8c60, ten such turns
+        # went by with the same instruction and no pivot (Fase 3 fixes).
+        if stuck_threshold > 0 and no_progress >= stuck_threshold:
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                + STUCK_PROMPT_LINE.format(iterations=int(no_progress))
+            )
         messages: list[LLMMessage] = [LLMMessage(role="system", content=system_prompt)]
         # Bound the raw history: a shared work session accumulates every prior
         # run's messages, and paying for all of them on every turn can exceed a

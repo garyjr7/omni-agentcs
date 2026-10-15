@@ -176,6 +176,10 @@ class TurnTelemetry:
     blackboard_facts: int = 0
     blackboard_delta: int = 0
     blackboard_added: tuple[str, ...] = ()
+    #: Turns in a row (including this one) that ended without a new verified
+    #: fact. Audit trail of the ``react.stuck_detected`` signal (Fase 3 fixes):
+    #: the record and the event are computed from the same counter.
+    consecutive_no_progress: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -196,6 +200,7 @@ class TurnTelemetry:
             "blackboard_facts": self.blackboard_facts,
             "blackboard_delta": self.blackboard_delta,
             "blackboard_added": list(self.blackboard_added),
+            "consecutive_no_progress": self.consecutive_no_progress,
         }
 
     def attributes(self) -> dict[str, Any]:
@@ -213,6 +218,7 @@ class TurnTelemetry:
             "turn.tokens.completion": self.completion_tokens,
             "turn.blackboard.facts": self.blackboard_facts,
             "turn.blackboard.delta": self.blackboard_delta,
+            "turn.blackboard.no_progress": self.consecutive_no_progress,
             "turn.friction": ",".join(self.friction) or "none",
         }
         if self.subagent_id:
@@ -238,6 +244,7 @@ class _TurnDraft:
     completion_tokens: int = 0
     reasoning_ms: int = 0
     tool_ms: int = 0
+    consecutive_no_progress: int = 0
     friction: list[str] = field(default_factory=list)
 
 
@@ -375,6 +382,26 @@ class TurnTelemetryRecorder:
         if counts is not None:
             draft.counts = dict(counts)
 
+    def note_no_progress(self, *, consecutive: int) -> None:
+        """Record the run's no-progress streak *including* the open turn."""
+        draft = self._draft
+        if draft is None:
+            return
+        draft.consecutive_no_progress = _nonnegative(consecutive)
+
+    def current_delta(self) -> int | None:
+        """Delta of the open turn, or ``None`` when its state is incomplete.
+
+        Read *after* :meth:`note_blackboard` and *before* :meth:`finish`, so the
+        loop can act on the same number the record will publish instead of
+        recomputing it (a second implementation is a second truth).
+        """
+        draft = self._draft
+        if draft is None:
+            return None
+        delta, _ = blackboard_delta(self._previous_counts, draft.counts)
+        return delta
+
     # -------------------------------------------------------------- publishing
     def finish(self, *, outcome: str, turn_ms: int = 0) -> TurnTelemetry | None:
         """Close the open turn, publish it and return the record."""
@@ -401,6 +428,7 @@ class TurnTelemetryRecorder:
             blackboard_facts=draft.facts_total,
             blackboard_delta=delta,
             blackboard_added=added,
+            consecutive_no_progress=draft.consecutive_no_progress,
         )
         self.turns.append(record)
         if self.emit:

@@ -50,6 +50,58 @@ def _bounded(text: str, limit: int = _FAILURE_DETAIL_MAX) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+#: Verification method of a result answered from the journal instead of being
+#: executed again. The data of the previous invocation travels with it; what the
+#: model was missing is the *fact* that it is the same data.
+ALREADY_INVOKED_METHOD = "tool_already_invoked"
+
+
+def _already_invoked(result: Dict[str, Any], previous: Dict[str, Any]) -> Dict[str, Any]:
+    """Mark a reused result as a repeat, without losing what it reported.
+
+    The journal has always refused to repeat a succeeded effect, but it answered
+    with the previous result verbatim, so the model could not tell a fresh
+    observation from an old one. Measured in run_abe04509c5064c6e8e475f46ba8f8c60,
+    the model re-issued ``netexec shares`` (iterations 3 and 8) and ``netexec
+    rid_brute`` (iterations 4 and 11) with identical arguments, read the same data
+    twice as progress, and enumerated until its profile budget killed the run.
+
+    The previous output and evidence are kept (callers that parse them keep
+    working) and the repeat becomes explicit: the method, the invocation it
+    reused and a direct instruction to change strategy. ``invocation_id`` stays
+    the previous one on purpose - no new invocation happened.
+    """
+    previous_id = str(previous.get("invocation_id") or "")
+    marked = dict(result)
+    output = dict(marked.get("output") or {})
+    output.update(
+        {
+            "deduplicated": True,
+            "previous_invocation_id": previous_id,
+            "previous_outcome": "succeeded",
+            "message": (
+                f"Esta misma invocación ya se ejecutó con éxito en este run "
+                f"(invocación previa {previous_id}): devuelve los mismos datos y no "
+                f"aporta información nueva. Considera cambiar de estrategia."
+            ),
+        }
+    )
+    evidence = dict(marked.get("evidence") or {})
+    evidence.update(
+        {
+            "previous_invocation_id": previous_id,
+            "previous_outcome": "succeeded",
+        }
+    )
+    marked["output"] = output
+    marked["evidence"] = evidence
+    # A determinate completion: nothing failed, nothing new happened.
+    marked["success"] = True
+    marked["verified"] = True
+    marked["verification_method"] = ALREADY_INVOKED_METHOD
+    return marked
+
+
 def _failure_detail(result: ToolResult) -> str:
     """Redacted, bounded view of the output that failed its post-condition.
 
@@ -274,14 +326,21 @@ class ToolGateway:
             previous = journal.matching(context, tool_id, arguments, step_key=step_key)
             retry_of = None
             if previous and previous['state'] == 'succeeded' and not definition.idempotent:
+                # The reuse branch *is* the deduplication (Fase 3 fixes): the
+                # effect already happened, so it never happens twice. What changed
+                # is the answer - it now says so (``_already_invoked``) instead of
+                # handing back the same data as if it were new. Keyed by the
+                # engine's ``step_key``, so a repeat in another phase or against
+                # another objective stays a different intent and really runs.
                 self.audit.append(tenant_id=context.tenant_id, trace_id=context.trace_id,
                     actor_id=context.identity.subject_id, action='invocation.reused',
                     resource_type='tool', resource_id=tool_id,
                     payload={'invocation_id': previous['invocation_id'], 'run_id': context.run_id,
-                             'step_key': step_key}, decision='allow')
+                             'step_key': step_key,
+                             'verification_method': ALREADY_INVOKED_METHOD}, decision='allow')
                 reused = journal.result_of(
                     previous, artifact_store=journal_artifacts)
-                return reused
+                return _already_invoked(reused, previous)
             if previous and previous['state'] in {'running', 'prepared'}:
                 raise PermissionError('invocation is already running or prepared; reconcile before retry')
             if previous and previous['state'] == 'unknown':

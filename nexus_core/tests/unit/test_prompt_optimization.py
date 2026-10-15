@@ -68,30 +68,22 @@ def test_prompt_catalog_compact_format(catalog):
 
 
 def test_catalog_stays_compact_for_all_tools(catalog):
-    # 64 tools after RUN_sala12 (THM Intrusion Detection): nexus.post.ssh_upload
-    # and nexus.recon.nikto. The catalog has to grow with the surface, so the
-    # guard is a *per-tool* bound (which catches one tool bloating the prompt)
-    # plus an absolute ceiling with a small margin.
-    # Measured at 64 tools: 12.588 chars of catalog / 196.7 per tool — the
-    # per-tool bound is what really protects the prompt, and it barely moves
-    # (194.6 at 56 tools, 194.8 at 58, 195.5 at 59, 195.7 at 60, 195.9 at 61,
-    # 196.1 at 62). The ceiling moved 12.400 -> 12.800 in the same review that
-    # added those two tool lines: both are ordinary 5-argument recon/post lines
-    # (201 and 224 chars), i.e. the growth is two reviewed tools, not one fat one.
-    assert len(catalog) == 64
+    # Fase 3 fixes: legal enum values are part of every line that declares them,
+    # because three of eleven turns of run_abe04509c5064c6e8e475f46ba8f8c60 were
+    # rejected (30,6 % of that run's tokens) by guessing a value the catalog hid.
+    # Both bounds moved once, by the measured growth of that data: 14,519 chars at
+    # 68 tools (213,5 per tool) against 13,383 / 196,8 before. The ceiling stays a
+    # ceiling: it is the enum values that earned the room, not new prose.
+    assert len(catalog) == 68
     text = render_tool_catalog(catalog)
-    assert len(text) / len(catalog) < 200
-    assert len(text) < 12800
+    assert len(text) / len(catalog) < 215
+    assert len(text) < 14700
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
-    # Measured 20.097 chars at 64 tools (19.641 at 62, 19.460 at 61, 19.222 at
-    # 60, 19.045 at 59, 18.810 at 58, 18.404 at 56, 18.000 was set at 54).
-    # Bumping this ceiling is a conscious review of the system prompt, not a
-    # formality: the catalog grew by two reviewed tool lines and nothing else
-    # changed. If a future tool pushes *this* number, the review question is
-    # whether the catalog still fits one prompt, not which bound to raise.
-    assert len(_prompt(catalog)) < 20500
+    # Reviewed 68-tool prompt: 22,028 characters, with no repeated schemas
+    # (20,883 before the enum values were made visible).
+    assert len(_prompt(catalog)) < 22400
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):

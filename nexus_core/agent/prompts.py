@@ -175,22 +175,54 @@ CATALOG_DESCRIPTION_CHARS = 64
 CATALOG_MAX_ARGUMENTS = 5
 
 
+def _enum_values(spec: Any) -> tuple[str, ...]:
+    """Declared ``enum`` values of one argument (empty when it declares none)."""
+    raw = spec.get("enum") if isinstance(spec, dict) else None
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(text for text in (str(value) for value in raw) if text)
+
+
 def _schema_arguments(definition: Any) -> str:
-    """Compact ``name:type`` list of a tool's declared arguments."""
+    """Compact ``name:type`` list of a tool's declared arguments.
+
+    An argument that declares an ``enum`` lists its **legal values** instead of
+    its type (``name∈{a, b}``): the model has to know them *before* proposing the
+    call. Measured in run_abe04509c5064c6e8e475f46ba8f8c60, three of eleven turns
+    were rejected by the gateway's schema check (``enum_shares``, ``winrm``,
+    ``login``) because the catalog said ``operation:string`` and the model
+    guessed: 30,6 % of that run's tokens went to those three rejections. The
+    values are never abbreviated -a hidden value is exactly the error the model
+    then repeats- and nothing else about the line changes.
+
+    ``CATALOG_MAX_ARGUMENTS`` still caps how many arguments are listed, so an
+    argument living past the cap stays hidden -and a hidden argument is what the
+    model guesses wrong, whether it is an enum value or a required property. The
+    cap therefore falls on the least load-bearing arguments first: required ones
+    are always listed (they are half of the rejections), then the ones that
+    declare legal values, and only then plain optional types.
+    """
     schema = getattr(definition, "input_schema", None) or {}
     properties = schema.get("properties") if isinstance(schema, dict) else None
     if not isinstance(properties, dict):
         return "-"
     required = set(schema.get("required") or ())
+    # Stable sort, so both groups keep their declared order.
+    ordered = sorted(
+        properties.items(),
+        key=lambda item: (0 if item[0] in required else 1, 0 if _enum_values(item[1]) else 1),
+    )
     parts: list[str] = []
-    for name, spec in properties.items():
+    for name, spec in ordered:
         if len(parts) >= CATALOG_MAX_ARGUMENTS:
             parts.append("…")
             break
-        kind = spec.get("type") if isinstance(spec, dict) else None
-        if kind is None and isinstance(spec, dict) and "enum" in spec:
-            kind = "enum"
-        label = f"{name}:{kind or 'any'}"
+        values = _enum_values(spec)
+        if values:
+            label = f"{name}∈{{{', '.join(values)}}}"
+        else:
+            kind = spec.get("type") if isinstance(spec, dict) else None
+            label = f"{name}:{kind or 'any'}"
         if name in required:
             label += "*"
         parts.append(label)

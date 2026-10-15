@@ -13,7 +13,7 @@ unit-test, exactly like the tool parsers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping
 
 #: Statuses of one phase inside a plan.
@@ -440,6 +440,104 @@ def attack_surface(facts: Iterable[Any]) -> AttackSurface:
     )
 
 
+#: Reason recorded when an exhausted enumeration is handed over to initial
+#: access (Fase 3 fixes). Measured in run_abe04509c5064c6e8e475f46ba8f8c60: the
+#: ``services`` profile spent its whole budget enumerating SMB/AD -SMBv1=true,
+#: signing=false, null_auth=denied on the board- with no credential and no
+#: access, and never changed profile. This is the *first deterministic step* of
+#: V0-12 (the full kill-chain planner stays open): one rule, one case, no LLM.
+ENUMERATION_EXHAUSTED_REASON = "enumeration_exhausted_to_exploit"
+#: No-progress turns that make enumeration count as exhausted. Stricter than the
+#: global stuck signal (5) because this rule also changes the profile.
+ENUMERATION_EXHAUSTED_NO_PROGRESS = 3
+#: Profiles the rule applies to (the enumeration and credential profiles).
+ENUMERATION_EXHAUSTED_SUBAGENTS: frozenset[str] = frozenset({"services", "cred"})
+#: Markers that identify an SMB/AD surface inside a ``service`` fact key.
+SMB_SERVICE_MARKERS: tuple[str, ...] = (
+    "smb",
+    "microsoft-ds",
+    "netbios",
+    ":445",
+    "445/tcp",
+    ":139",
+    "139/tcp",
+)
+
+
+@dataclass(frozen=True)
+class EnumerationEscalation:
+    """Deterministic proposal: leave ``enumeration`` for initial access."""
+
+    phase: str
+    subagent: str
+    reason: str
+
+
+def smb_surface(services: Iterable[str] | None) -> bool:
+    """True when any verified ``service`` key looks like SMB/AD (no inference)."""
+    for service in services or ():
+        text = str(service or "").lower()
+        if any(marker in text for marker in SMB_SERVICE_MARKERS):
+            return True
+    return False
+
+
+def enumeration_escalation(
+    plan: Plan,
+    *,
+    subagent_id: str | None,
+    no_progress: int,
+    services: Iterable[str] | None = None,
+) -> EnumerationEscalation | None:
+    """Rule ``si X entonces Y`` (no inference): an SMB/AD surface plus no
+    credential and no access plus the enumeration profile stuck for N turns
+    hands the engagement over to ``exploit``/``exploitation``.
+
+    Anything outside that shape returns ``None``: the rest of the kill-chain
+    planning (web-only, AD-only, other profiles) is V0-12 and stays open.
+    """
+    if str(getattr(plan, "current", "")) != "enumeration":
+        return None
+    if int(no_progress or 0) < ENUMERATION_EXHAUSTED_NO_PROGRESS:
+        return None
+    if str(subagent_id or "") not in ENUMERATION_EXHAUSTED_SUBAGENTS:
+        return None
+    counts = normalize_counts(counts=getattr(plan, "counts", None))
+    if any(counts.get(kind, 0) > 0 for kind in ("credential", *ACCESS_TYPES)):
+        return None
+    if counts.get("host", 0) < 1:
+        return None
+    if not services or not smb_surface(services):
+        return None
+    return EnumerationEscalation(
+        phase="exploitation", subagent="exploit", reason=ENUMERATION_EXHAUSTED_REASON
+    )
+
+
+def escalate_enumeration(plan: Plan, escalation: EnumerationEscalation) -> Plan:
+    """Return *plan* with *escalation* applied (pure; statuses stay coherent).
+
+    The exhausted phase is **not** marked done -no evidence closed it- so the
+    pipeline shows it as unfinished while the current phase moves on.
+    """
+    counts = normalize_counts(counts=getattr(plan, "counts", None))
+    statuses: list[PhaseStatus] = []
+    for item in plan.phases:
+        if item.id == escalation.phase:
+            status = STATUS_CURRENT
+        elif _is_done(_BY_ID[item.id], counts):
+            status = STATUS_DONE
+        else:
+            status = STATUS_PENDING
+        statuses.append(PhaseStatus(item.id, item.label, status, item.optional))
+    return replace(
+        plan,
+        phases=tuple(statuses),
+        current=escalation.phase,
+        next_hint=_BY_ID[escalation.phase].hint,
+    )
+
+
 def plan_from_summary(
     summary: Mapping[str, Any] | None,
     *,
@@ -459,8 +557,16 @@ def plan_from_summary(
 
 __all__ = [
     "ACCESS_TYPES",
+    "ENUMERATION_EXHAUSTED_NO_PROGRESS",
+    "ENUMERATION_EXHAUSTED_REASON",
+    "ENUMERATION_EXHAUSTED_SUBAGENTS",
     "MARKERS",
     "PHASES",
+    "SMB_SERVICE_MARKERS",
+    "EnumerationEscalation",
+    "enumeration_escalation",
+    "escalate_enumeration",
+    "smb_surface",
     "PHASE_IDS",
     "STATUS_CURRENT",
     "STATUS_DONE",

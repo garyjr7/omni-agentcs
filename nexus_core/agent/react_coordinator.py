@@ -29,6 +29,7 @@ from .react_types import (
     MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE,
     TOOL_UNAVAILABLE_EVENT_TYPE,
     PHASE_TIMEOUT_EVENT_TYPE,
+    STUCK_EVENT_TYPE,
     PREMATURE_COMPLETION_EVENT_TYPE,
     MAX_PREMATURE_COMPLETIONS,
     RUN_EVIDENCE_MAX_OBSERVATIONS,
@@ -55,6 +56,7 @@ from .react_support import (
     _elapsed_ms,
     _failure_kind,
     _phase_timeout_seconds,
+    stuck_threshold,
     _keep_going_after_failures,
     _run_messages,
     _premature_completion_message,
@@ -72,7 +74,13 @@ from .react_support import (
     _maybe_autospawn,
 )
 from enum import Enum
-from .planner import Plan
+from .planner import (
+    ENUMERATION_EXHAUSTED_REASON,
+    EnumerationEscalation,
+    Plan,
+    enumeration_escalation,
+    escalate_enumeration,
+)
 from .subagents import SubAgentDefinition
 from .project_context import ProjectInstruction
 from .skills import Skill
@@ -137,6 +145,19 @@ class ReActCoordinator:
     evidence_stats: dict[str, int] | None
     premature_rejections: int
     completion_objections: list[str]
+    #: Turns in a row without a new verified fact (Fase 3 fixes). Drives the
+    #: ``react.stuck_detected`` signal and the enumeration→exploit hand-over.
+    consecutive_no_progress: int
+    stuck_threshold: int
+    #: Reason of the last deterministic phase change, copied into the
+    #: ``orchestrator.plan`` event so the hand-over is auditable and never reads
+    #: as a model inference.
+    plan_reason: str | None
+    #: The enumeration→exploit hand-over is one-way. The plan is rebuilt from the
+    #: blackboard on every turn, so without this the phase would flap back to
+    #: ``enumeration`` as soon as the active profile is ``exploit`` - which is
+    #: exactly what the hand-over asked for (Fase 3 fixes).
+    enumeration_escalated: bool
     #: Per-turn operational telemetry (tokens, reasoning duration, friction,
     #: blackboard delta). Built in ``_initialize`` and published one record per
     #: iteration; it is the only place those four signals are joined.
@@ -319,6 +340,10 @@ class ReActCoordinator:
         self.evidence_stats = None
         self.premature_rejections = 0
         self.completion_objections = []
+        self.consecutive_no_progress = 0
+        self.stuck_threshold = stuck_threshold()
+        self.plan_reason = None
+        self.enumeration_escalated = False
         self.telemetry = TurnTelemetryRecorder(
             store=self.store, tenant_id=self.tenant_id, run_id=self.run_id
         )
@@ -388,8 +413,50 @@ class ReActCoordinator:
             engagement_id=self.engagement_id,
         )
         self.plan = self.snapshot.plan
+        # The reason of a deterministic hand-over is *per iteration*: the plan is
+        # rebuilt from the blackboard on every turn, so a reason from an earlier
+        # turn must never ride along on a later, organic phase change.
+        self.plan_reason = None
+        self._apply_enumeration_exhaustion()
         self.last_plan = self.plan
         return Transition.READY
+
+    def _apply_enumeration_exhaustion(self) -> None:
+        """Hand an exhausted enumeration over to initial access (Fase 3 fixes).
+
+        The rule lives in the planner (deterministic, unit-tested); here it is
+        only *applied* to the plan of this iteration. The new phase makes the
+        profile selector pick ``exploit`` on its own, and ``_advance_phase``
+        audits the change with its reason. Nothing is authorized by this: the
+        gateway keeps governing every tool of the new profile.
+        """
+        if self.enumeration_escalated:
+            # Already handed over: keep it handed over while the evidence still
+            # describes an ``enumeration`` phase, instead of falling back to the
+            # profile that just failed. Evidence that closes the phase (a
+            # credential, an access) moves ``current`` on its own and the rule
+            # stops applying there.
+            self.plan = escalate_enumeration(
+                self.plan,
+                EnumerationEscalation(
+                    phase="exploitation",
+                    subagent="exploit",
+                    reason=ENUMERATION_EXHAUSTED_REASON,
+                ),
+            )
+            self.plan_reason = ENUMERATION_EXHAUSTED_REASON
+            return
+        escalation = enumeration_escalation(
+            self.plan,
+            subagent_id=self.last_subagent_id,
+            no_progress=self.consecutive_no_progress,
+            services=self._blackboard_services(),
+        )
+        if escalation is None:
+            return
+        self.plan = escalate_enumeration(self.plan, escalation)
+        self.plan_reason = escalation.reason
+        self.enumeration_escalated = True
 
     async def _select_profile(self) -> Transition:
         selected = select_for_plan(self.plan, override=self.subagent_override)
@@ -502,6 +569,9 @@ class ReActCoordinator:
                     "facts_total": self.plan.facts_total,
                     "subagent_id": self.subagent.id,
                     "iteration": self.iteration,
+                    # Present only when the change came from a deterministic
+                    # rule (never from the model); absent on organic progress.
+                    **({"reason": self.plan_reason} if self.plan_reason else {}),
                 },
             )
             self.last_phase = self.plan.current
@@ -519,6 +589,8 @@ class ReActCoordinator:
             active_skills=self.active_skills,
             store=self.store,
             tenant_id=self.tenant_id,
+            no_progress=self.consecutive_no_progress,
+            stuck_threshold=self.stuck_threshold,
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)
@@ -1220,6 +1292,65 @@ class ReActCoordinator:
             return None
         return None
 
+    def _track_no_progress(self) -> None:
+        """Count turns without a new verified fact and signal a stuck loop.
+
+        Measured in run_abe04509c5064c6e8e475f46ba8f8c60: 10 consecutive turns
+        with ``blackboard_delta = 0`` went unnoticed and the model kept proposing
+        the same enumeration until its profile budget killed the run. The signal
+        is informational -it never stops the run nor changes the phase by
+        itself-; what asks for a pivot is the line injected into the next system
+        prompt (see ``ContextBuilder.render``). Emitted at the threshold and then
+        once per further threshold, so the log records a long stall without one
+        event per turn.
+        """
+        delta = self.telemetry.current_delta()
+        if delta is None:
+            return
+        self.consecutive_no_progress = self.consecutive_no_progress + 1 if delta <= 0 else 0
+        self.telemetry.note_no_progress(consecutive=self.consecutive_no_progress)
+        threshold = self.stuck_threshold
+        if threshold <= 0 or self.consecutive_no_progress < threshold:
+            return
+        if self.consecutive_no_progress % threshold:
+            return
+        self.context.event(
+            STUCK_EVENT_TYPE,
+            iterations_stuck=self.consecutive_no_progress,
+            phase=self.plan.current,
+            subagent_id=self.subagent.id,
+            last_tools=self._last_tools(),
+        )
+
+    def _last_tools(self, limit: int = 5) -> list[str]:
+        """Tool ids of the most recent tool calls (payload of the stuck event)."""
+        tools: list[str] = []
+        for entry in reversed(self.actions):
+            tool_id = entry.get("tool_id")
+            if tool_id and str(tool_id) not in tools:
+                tools.append(str(tool_id))
+            if len(tools) >= limit:
+                break
+        return tools
+
+    def _blackboard_services(self) -> list[str]:
+        """Keys of the verified ``service`` facts (never raises).
+
+        The deterministic enumeration→exploit rule needs to know *which* surface
+        is on the board; counts alone cannot tell SMB from HTTP.
+        """
+        if not self.engagement_id or not getattr(self, "store", None):
+            return []
+        try:
+            from nexus_core.kernel.blackboard import Blackboard
+
+            facts = Blackboard(self.store).list_facts(
+                self.tenant_id, self.engagement_id, fact_type="service"
+            )
+            return [str(fact.get("key") or "") for fact in facts if isinstance(fact, dict)]
+        except Exception:  # noqa: BLE001 - a missing board must not abort a run
+            return []
+
     def _turn_outcome(self, transition: Transition) -> str:
         """Outcome label of a finished turn (the run status when it stopped)."""
         if transition is Transition.STOP and self.status:
@@ -1291,6 +1422,7 @@ class ReActCoordinator:
             counts = self._blackboard_counts()
             if counts is not None:
                 self.telemetry.note_blackboard(facts_total=sum(counts.values()), counts=counts)
+                self._track_no_progress()
             self.telemetry.finish(
                 outcome=self._turn_outcome(transition),
                 turn_ms=_elapsed_ms(turn_started),

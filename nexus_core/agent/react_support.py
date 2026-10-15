@@ -27,6 +27,8 @@ from .react_types import (
     MAX_CONSECUTIVE_TOOL_FAILURES,
     CANCEL_EVENT_TYPE,
     PHASE_TIMEOUT_ENV,
+    STUCK_THRESHOLD_ENV,
+    DEFAULT_STUCK_THRESHOLD,
     REACT_MAX_TOKENS_ENV,
     REACT_DEFAULT_MAX_TOKENS,
     REACT_MIN_MAX_TOKENS,
@@ -156,6 +158,23 @@ def _phase_timeout_seconds() -> float:
         return max(0.0, float(str(raw).strip() or 0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def stuck_threshold() -> int:
+    """Turns in a row without a new verified fact that count as stuck.
+
+    ``NEXUS_STUCK_THRESHOLD`` overrides it; the default (5) is the value the run
+    of 2026-10-15 justifies: it burned 10 turns with ``blackboard_delta = 0``
+    before dying of subagent budget, so half of those are enough signal to tell
+    the model to pivot. A malformed or non-positive value falls back to the
+    default instead of disabling the signal by accident.
+    """
+    raw = os.getenv(STUCK_THRESHOLD_ENV, "")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return int(DEFAULT_STUCK_THRESHOLD)
+    return value if value > 0 else int(DEFAULT_STUCK_THRESHOLD)
 
 
 def react_max_tokens() -> int:
