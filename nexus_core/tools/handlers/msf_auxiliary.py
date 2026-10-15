@@ -95,6 +95,9 @@ def msf_auxiliary_definition(tenant_id: str = "system") -> ToolDefinition:
         # Published so the catalog can show the constraint (Fase 3b): the model
         # used to learn ``RHOSTS`` was refused by being refused.
         forbidden_argument_values={"options": sorted(FORBIDDEN_OPTIONS)},
+        # This tool takes the callback as datastore options, so the operator-owned
+        # keys are published with their argument path (Fase 3d).
+        fixed_by_env={"options.LHOST": "MSF_LHOST", "options.LPORT": "MSF_LPORT"},
     )
 
 

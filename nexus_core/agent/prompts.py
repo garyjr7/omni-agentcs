@@ -199,6 +199,48 @@ def _forbidden_values(definition: Any, name: str) -> tuple[str, ...]:
     return tuple(text for text in (str(value) for value in raw) if text)
 
 
+def _env_fixed_by_env(definition: Any) -> dict[str, str]:
+    """Arguments whose value the operator fixes through the environment (Fase 3d).
+
+    The callback of a reverse payload is not the model's to choose: the handler
+    pins it to ``MSF_LHOST``/``MSF_LPORT`` and refuses any other value. Measured
+    in rerun 4 (``run_44b43bad8c5e4a998cf06b513c3eba60``, iteration 11) the
+    catalog line published ``lhost:string``, the model filled it with an invented
+    ``10.65.175.1`` and the turn was lost to a guaranteed rejection. Publishing
+    the operator's ownership travels in the same one-pass shape as the forbidden
+    values, with the opposite sign: ``name:env(MSF_LHOST)``.
+    """
+    declared = getattr(definition, "fixed_by_env", None) or {}
+    if not isinstance(declared, dict):
+        return {}
+    return {
+        str(name): str(env)
+        for name, env in declared.items()
+        if str(name) and str(env)
+    }
+
+
+def _env_fixed_label(name: str) -> str:
+    """Leaf of a declared argument path: ``options.LHOST`` becomes ``LHOST``."""
+    return name.rsplit(".", 1)[-1]
+
+
+def _env_fixed_note(definition: Any) -> str:
+    """One line naming what the environment owns, appended to the catalog line.
+
+    It is generated from the declaration (never hand-written), and it sits
+    outside the ``args[…]`` list on purpose: ``CATALOG_MAX_ARGUMENTS`` truncates
+    that list, and a constraint the model cannot see is exactly the error it
+    repeats.
+    """
+    declared = _env_fixed_by_env(definition)
+    if not declared:
+        return ""
+    names = "/".join(_env_fixed_label(name) for name in declared)
+    envs = "/".join(declared[name] for name in declared)
+    return f"{names} fijos por env {envs} (no ajustables)"
+
+
 def _schema_arguments(definition: Any) -> str:
     """Compact ``name:type`` list of a tool's declared arguments.
 
@@ -221,6 +263,10 @@ def _schema_arguments(definition: Any) -> str:
     A value the handler *refuses* is shown as ``name ∉ {A, B}`` (Fase 3b), in the
     same one-pass format as an enum: it is the same class of hidden contract, with
     the opposite sign, and the validation itself is untouched.
+
+    An argument the *operator* owns through the environment is *not* listed here:
+    it is stated once per tool by :func:`_env_fixed_note`, outside this capped
+    list, so ``CATALOG_MAX_ARGUMENTS`` cannot hide it (Fase 3d).
     """
     schema = getattr(definition, "input_schema", None) or {}
     properties = schema.get("properties") if isinstance(schema, dict) else None
@@ -276,9 +322,11 @@ def render_tool_catalog(catalog: dict[str, Any]) -> str:
             scope = f"scope:{getattr(definition, 'scope_target_field', None) or '?'}"
         else:
             scope = "sin scope"
+        note = _env_fixed_note(definition)
+        owned = f" | {note}" if note else ""
         lines.append(
             f"- {tool_id}: {description or '(sin descripción)'} | "
-            f"args[{_schema_arguments(definition)}] | riesgo:{risk} | {scope}"
+            f"args[{_schema_arguments(definition)}]{owned} | riesgo:{risk} | {scope}"
         )
     return "\n".join(lines)
 

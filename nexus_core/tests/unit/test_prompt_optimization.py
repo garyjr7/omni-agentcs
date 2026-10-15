@@ -85,9 +85,13 @@ def test_catalog_stays_compact_for_all_tools(catalog):
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
-    # Reviewed 68-tool prompt: 22,485 characters after the forbidden values were
-    # published (22,028 with the enums only, 20,883 before those).
-    assert len(_prompt(catalog)) < 22600
+    # Reviewed 68-tool prompt: 22,613 characters after the operator-owned callback
+    # was published (22,485 after the forbidden values, 22,028 with the enums only,
+    # 20,883 before those). Fase 3d (V1-20) costs 128 characters for the two tools
+    # that own a callback: what earns the room is the constraint the ticket asked
+    # for -that ``lhost``/``lport`` are the operator's- not prose. The catalog
+    # ceilings (15,500 total, 225 per tool) were not moved and still hold.
+    assert len(_prompt(catalog)) < 22700
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):

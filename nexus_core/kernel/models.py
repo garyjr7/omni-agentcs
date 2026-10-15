@@ -125,6 +125,17 @@ class ToolDefinition:
     #: catalog publish the constraint. Optional: only a tool that has one declares
     #: it, and the handler keeps enforcing it (this field never authorizes).
     forbidden_argument_values: Dict[str, List[str]] = field(default_factory=dict)
+    #: Arguments whose value is *the operator's*, taken from the environment,
+    #: keyed by argument name: ``{"lhost": "MSF_LHOST"}`` (Fase 3d). The handler
+    #: pins them and refuses anything else, so the schema cannot make them
+    #: settable and the catalog has to publish who owns them. Measured in rerun 4
+    #: (``run_44b43bad8c5e4a998cf06b513c3eba60``, iteration 11): the catalog line
+    #: said ``lhost:string``, the model filled it with an invented ``10.65.175.1``
+    #: and the turn was spent on a rejection it could not have avoided. A nested
+    #: key (the callback living inside ``options``) is written as its argument
+    #: path, e.g. ``options.LHOST``. Optional: only a tool that has one declares
+    #: it, and the handler keeps enforcing it (this field never authorizes).
+    fixed_by_env: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Fail closed on an invented effect: the gate compares against

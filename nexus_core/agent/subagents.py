@@ -307,7 +307,11 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
             }
         ),
         token_budget=60_000,
-        max_iterations=8,
+        # 2026-10-15 (experimento rerun 5): 8 → 15. Razón: el run4 gastó sus 8
+        # iteraciones en 3 turnos de relleno y 2 rechazos evitables antes de
+        # poder probar alternativas tras el fallo de MS17-010. Se mide si con más
+        # espacio el agente pivota. Si no pivota, el problema NO es presupuesto.
+        max_iterations=15,
         read_only=False,
     ),
     SubAgentDefinition(
