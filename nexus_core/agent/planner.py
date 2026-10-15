@@ -13,7 +13,7 @@ unit-test, exactly like the tool parsers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 #: Statuses of one phase inside a plan.
@@ -132,6 +132,11 @@ class Plan:
     phases: tuple[PhaseStatus, ...]
     current: str
     next_hint: str
+    #: Counts of *unverified* facts (agent-recorded leads). They never change
+    #: ``current`` or a phase status - only verified evidence does - but they do
+    #: steer which capability profile is useful next (see
+    #: :func:`nexus_core.agent.subagents.select_for_plan`).
+    leads: Mapping[str, int] = field(default_factory=dict)
 
     # ------------------------------------------------------------- derived
     @property
@@ -225,6 +230,30 @@ def normalize_counts(
     return normalized
 
 
+def count_leads(facts: Iterable[Any] | None = None) -> dict[str, int]:
+    """Count the *unverified* facts per type: leads, not evidence.
+
+    A lead must never advance a phase (``test_unverified_fact_does_not_advance_plan``
+    pins that): only a deterministic parser's fact does. It only informs the
+    profile choice, so an agent-recorded ``user``/``credential`` moves the loop to
+    the credential profile instead of leaving it enumerating forever.
+    """
+    from nexus_core.kernel.blackboard import is_verified_fact
+
+    leads: dict[str, int] = {}
+    for fact in facts or ():
+        if is_verified_fact(fact):
+            continue
+        if isinstance(fact, Mapping):
+            fact_type = fact.get("fact_type") or fact.get("type")
+        else:
+            fact_type = getattr(fact, "fact_type", None)
+        if not fact_type:
+            continue
+        leads[str(fact_type)] = leads.get(str(fact_type), 0) + 1
+    return leads
+
+
 def _is_done(phase: Phase, counts: Mapping[str, int]) -> bool:
     if not phase.evidence:
         return False
@@ -249,9 +278,11 @@ def build_plan(
     facts: Iterable[Any] | None = None,
     engagement_id: str | None = None,
     facts_total: int | None = None,
+    leads: Mapping[str, int] | None = None,
 ) -> Plan:
     """Build the plan from blackboard evidence (never raises on bad input)."""
     normalized = normalize_counts(counts=counts, facts=facts)
+    lead_counts = normalize_counts(counts=leads) if leads is not None else count_leads(facts)
     current = active_phase(normalized)
     statuses: list[PhaseStatus] = []
     for phase in PHASES:
@@ -271,6 +302,141 @@ def build_plan(
         phases=tuple(statuses),
         current=current,
         next_hint=_BY_ID[current].hint,
+        leads=lead_counts,
+    )
+
+
+#: Fact types that describe what can be reached or tried on the target.
+SURFACE_TYPES: tuple[str, ...] = (
+    "host",
+    "service",
+    "web_app",
+    "endpoint",
+    "vulnerability",
+    "user",
+    "email",
+    "credential",
+)
+
+#: Fact types that describe access the engagement already obtained.
+ACCESS_TYPES: tuple[str, ...] = ("access", "privilege", "session", "loot", "artifact")
+
+#: Maximum entries listed per surface bucket before the rest is summarized.
+SURFACE_PREVIEW = 12
+
+
+@dataclass(frozen=True)
+class AttackSurface:
+    """Deterministic map of the verified attack surface of an engagement.
+
+    Built only from *verified* facts, so the tactic the operator sees is the
+    same evidence the planner and the gateway trust. Unverified facts are
+    counted but never listed: they are leads, not surface.
+    """
+
+    hosts: tuple[str, ...] = ()
+    services: tuple[str, ...] = ()
+    web: tuple[str, ...] = ()
+    endpoints: tuple[str, ...] = ()
+    vulnerabilities: tuple[str, ...] = ()
+    identities: tuple[str, ...] = ()
+    credentials: int = 0
+    access: int = 0
+    verified_facts: int = 0
+    unverified_facts: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.verified_facts + self.unverified_facts
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hosts": list(self.hosts),
+            "services": list(self.services),
+            "web": list(self.web),
+            "endpoints": list(self.endpoints),
+            "vulnerabilities": list(self.vulnerabilities),
+            "identities": list(self.identities),
+            "credentials": self.credentials,
+            "access": self.access,
+            "verified_facts": self.verified_facts,
+            "unverified_facts": self.unverified_facts,
+        }
+
+    @staticmethod
+    def _line(label: str, values: tuple[str, ...]) -> str | None:
+        if not values:
+            return None
+        shown = ", ".join(values[:SURFACE_PREVIEW])
+        if len(values) > SURFACE_PREVIEW:
+            shown += f" (+{len(values) - SURFACE_PREVIEW} más)"
+        return f"  {label}: {shown}"
+
+    def render(self) -> str:
+        """Multi-line, operator-ready surface map."""
+        lines = ["SUPERFICIE DE ATAQUE (hechos verificados)"]
+        for label, values in (
+            ("hosts", self.hosts),
+            ("servicios", self.services),
+            ("web", self.web),
+            ("endpoints", self.endpoints),
+            ("vulnerabilidades", self.vulnerabilities),
+            ("identidades", self.identities),
+        ):
+            line = self._line(label, values)
+            if line is not None:
+                lines.append(line)
+        lines.append(
+            f"  credenciales: {self.credentials} · accesos/privilegios: {self.access}"
+        )
+        if not self.verified_facts:
+            lines.append("  (sin hechos verificados todavía)")
+        if self.unverified_facts:
+            lines.append(
+                f"  ({self.unverified_facts} hecho(s) sin verificar, no cuentan como superficie)"
+            )
+        return "\n".join(lines)
+
+
+def _unique_sorted(values: Iterable[str]) -> tuple[str, ...]:
+    return tuple(sorted({value for value in values if value}))
+
+
+def attack_surface(facts: Iterable[Any]) -> AttackSurface:
+    """Build the verified attack surface from blackboard facts (never raises)."""
+    from nexus_core.kernel.blackboard import is_verified_fact
+
+    buckets: dict[str, list[str]] = {fact_type: [] for fact_type in SURFACE_TYPES}
+    credentials = 0
+    access = 0
+    verified = 0
+    unverified = 0
+    for fact in facts or ():
+        if not isinstance(fact, Mapping):
+            continue
+        if not is_verified_fact(fact):
+            unverified += 1
+            continue
+        verified += 1
+        fact_type = str(fact.get("fact_type") or "")
+        key = str(fact.get("key") or "")
+        if fact_type == "credential":
+            credentials += 1
+        if fact_type in ACCESS_TYPES:
+            access += 1
+        if fact_type in buckets and key:
+            buckets[fact_type].append(key)
+    return AttackSurface(
+        hosts=_unique_sorted(buckets["host"]),
+        services=_unique_sorted(buckets["service"]),
+        web=_unique_sorted(buckets["web_app"]),
+        endpoints=_unique_sorted(buckets["endpoint"]),
+        vulnerabilities=_unique_sorted(buckets["vulnerability"]),
+        identities=_unique_sorted([*buckets["user"], *buckets["email"]]),
+        credentials=credentials,
+        access=access,
+        verified_facts=verified,
+        unverified_facts=unverified,
     )
 
 
@@ -287,21 +453,28 @@ def plan_from_summary(
         counts=summary.get("counts") if isinstance(summary, Mapping) else None,
         engagement_id=engagement_id or (summary.get("engagement_id") if isinstance(summary, Mapping) else None),
         facts_total=int(summary.get("total") or 0) if isinstance(summary, Mapping) else 0,
+        leads=summary.get("leads") if isinstance(summary, Mapping) else None,
     )
 
 
 __all__ = [
+    "ACCESS_TYPES",
     "MARKERS",
     "PHASES",
     "PHASE_IDS",
     "STATUS_CURRENT",
     "STATUS_DONE",
     "STATUS_PENDING",
+    "SURFACE_PREVIEW",
+    "SURFACE_TYPES",
+    "AttackSurface",
     "Phase",
     "PhaseStatus",
     "Plan",
     "active_phase",
+    "attack_surface",
     "build_plan",
+    "count_leads",
     "normalize_counts",
     "plan_from_summary",
 ]

@@ -1,0 +1,170 @@
+"""Stable public configuration and result types for ReAct."""
+
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Any, Callable
+from nexus_core.kernel.domain_dto import ApprovalDecisionDTO
+
+DEFAULT_AGENT_ID = "omni"
+MAX_CONSECUTIVE_TOOL_FAILURES = 3
+CANCEL_EVENT_TYPE = "react.cancel_requested"
+#: A tool that fails this many times *as a tool* (not as invalid input) is
+#: marked unavailable for the rest of the run, so the agent pivots instead of
+#: the whole engagement dying (B3).
+MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE = 3
+TOOL_UNAVAILABLE_EVENT_TYPE = "react.tool_unavailable"
+PHASE_TIMEOUT_EVENT_TYPE = "react.phase_timeout"
+#: Optional per-phase wall-clock budget (0 disables it). When exceeded the
+#: phase's already-failing tools are retired and the event is audited.
+PHASE_TIMEOUT_ENV = "NEXUS_PHASE_TIMEOUT_SECONDS"
+#: Output-token ceiling for one ReAct turn. Providers with a low tokens-per-
+#: minute budget count the *reserved* ``max_tokens`` against the request, so an
+#: oversized default (4096) makes every call fail even when the prompt is small
+#: (B4 / Groq TPM=8000 in the E2E run #2). A ReAct reply is a small JSON object,
+#: so a lean ceiling keeps requests inside the budget.
+REACT_MAX_TOKENS_ENV = "NEXUS_REACT_MAX_TOKENS"
+REACT_DEFAULT_MAX_TOKENS = 1536
+REACT_MIN_MAX_TOKENS = 256
+
+#: Kick-off user turn (Fase 3.8). The loop rebuilds the conversation on every
+#: iteration as ``[system] + bounded history``; on the *first* iteration the
+#: history is empty, so the request carried no ``user`` message at all. Most
+#: OpenAI-style models accept that, but a strict chat template does not: Qwen
+#: rejects it with HTTP 400 ("No user query found in messages"), which made
+#: ``qwen/qwen3.8-27b`` unusable as the default. The turn is inserted only when
+#: the context has no user message, so a model that already accepted the
+#: system-only prompt keeps the exact same input as before.
+KICKOFF_USER_PROMPT = (
+    "OBJETIVO DE LA MISIÓN: {objective}\n\n"
+    "Comienza o continúa la misión proponiendo UN único objeto JSON con la "
+    "siguiente acción a ejecutar."
+)
+
+#: Last phase of the deterministic plan. Only when the planner has reached it
+#: (every earlier required phase backed by blackboard evidence) may a
+#: ``task_complete`` be accepted (B8.2.2). Kept as a literal so this module keeps
+#: importing the planner lazily; a test asserts it matches ``PHASES[-1].id``.
+FINAL_PHASE_ID = "reporting"
+PREMATURE_COMPLETION_EVENT_TYPE = "react.premature_completion"
+#: How many times a premature ``task_complete`` is refused before the loop stops
+#: with ``premature_completion``. A model that will not continue must not burn
+#: the whole iteration budget arguing with the frame (and the operator needs a
+#: distinct status, not a fake ``completed``).
+MAX_PREMATURE_COMPLETIONS = 3
+#: Observations of the current run kept as the evidence corpus for findings.
+RUN_EVIDENCE_MAX_OBSERVATIONS = 40
+
+STATUS_COMPLETED = "completed"
+STATUS_MAX_ITERATIONS = "max_iterations"
+STATUS_CLARIFICATION = "clarification"
+STATUS_FAILED = "failed"
+#: The model kept declaring the task complete while the plan said otherwise, or
+#: while its findings cited evidence from nowhere (B8.2.2/B8.2.3).
+STATUS_PREMATURE_COMPLETION = "premature_completion"
+STATUS_CANCELLED = "cancelled"
+STATUS_SCOPE_VIOLATION = "scope_violation_aborted"
+STATUS_BUDGET_EXCEEDED = "budget_exceeded"
+#: A subagent exhausted its own iteration/token allowance.
+STATUS_SUBAGENT_BUDGET = "subagent_budget_exceeded"
+SUBAGENT_EVENT_TYPE = "orchestrator.subagent"
+BUDGET_EVENT_TYPE = "react.budget_exceeded"
+#: Subject under which the loop books its own token spend.
+BUDGET_SUBJECT_TYPE = "model_route"
+BUDGET_SUBJECT_ID = "react"
+BUDGET_METRIC = "tokens"
+
+
+@dataclass(frozen=True)
+class ApprovalDecision:
+    """Answer of a human operator to one high-risk tool request.
+
+    ``edited_arguments`` lets the operator amend the target or the flags before
+    the call is authorized; the amended call still goes through policy, scope
+    and sandbox, so an operator cannot widen an engagement.
+    """
+
+    approved: bool
+    approval_id: str | None = None
+    edited_arguments: dict[str, Any] | None = None
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        self.to_dto()
+
+    def to_dto(self) -> ApprovalDecisionDTO:
+        return ApprovalDecisionDTO(
+            approved=self.approved,
+            approval_id=self.approval_id,
+            edited_arguments=self.edited_arguments,
+            reason=self.reason,
+        )
+
+
+@dataclass(frozen=True)
+class ReActConfig:
+    """Tunables of one ReAct run."""
+
+    max_iterations: int = 12
+    timeout_per_tool_seconds: int = 600
+    enable_summarization: bool = True
+    max_history_messages: int = 40
+    #: Enforce the completion gates (B8.2.2/B8.2.3): refuse a ``task_complete``
+    #: while the deterministic plan still has pending phases, and refuse one whose
+    #: findings cite evidence no observation of this run supports. Disable only
+    #: for a caller that deliberately scripts a completion out of order (e.g.
+    #: loop-mechanics tests); production always leaves it on.
+    enforce_completion_gates: bool = True
+    #: Interactive approval hook. When set, the loop asks policy *before* every
+    #: tool invocation and, if the decision requires human approval, calls this
+    #: callback with ``(tool_id, arguments, decision)``. Returning ``None`` or a
+    #: denying :class:`ApprovalDecision` injects a ``denied_by_operator``
+    #: observation and continues (a human refusal is not a tool failure). Without
+    #: a callback, the gateway fails the call with ``PermissionError`` as before.
+    on_approval_needed: Callable[[str, dict[str, Any], Any], ApprovalDecision | None] | None = None
+    #: Live reasoning hook: receives the partial ``thought`` text as the model
+    #: writes it, so the CLI can stream the cognitive loop. Only used when the
+    #: client reports ``supports_streaming``; otherwise the loop calls
+    #: ``complete`` exactly as before.
+    on_thought: Callable[[str], None] | None = None
+    #: Called once when a streamed turn ends (success, error or fallback), so the
+    #: live indicator closes before the durable thought is rendered.
+    on_thought_done: Callable[[], None] | None = None
+    #: Durable budget reservation, run *before* the provider call (P2-C2).
+    #: Receives the estimated request tokens and returns an opaque handle (or
+    #: ``None`` to skip). Raising :class:`BudgetExceeded` aborts the turn cleanly
+    #: with ``status='budget_exceeded'`` *before* the provider is contacted.
+    before_provider_call: Callable[[int], Any] | None = None
+    #: Settle (or release) the handle returned by ``before_provider_call`` with
+    #: the real token usage reported by the provider.
+    after_provider_call: Callable[[Any, int], None] | None = None
+    #: Durable root of the spawning tree, for budget attribution and audit.
+    root_id: str = ""
+
+
+@dataclass
+class ReActResult:
+    """Outcome of a ReAct run."""
+
+    status: str
+    iterations: int
+    final_summary: str
+    findings: list[dict[str, Any]]
+    conversation_id: str
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    question: str | None = None
+    #: Final plan snapshot (``Plan.to_dict()``) when the loop produced one.
+    plan: dict[str, Any] | None = None
+    #: Subagent that owned the last iteration (audited in the action log).
+    subagent_id: str | None = None
+    #: Evidence-grounding counters of the accepted completion (B8.2.3).
+    evidence_stats: dict[str, int] | None = None
+    #: One operational telemetry record per iteration (token consumption,
+    #: reasoning duration, friction flags and blackboard delta). The same
+    #: records are emitted durably as ``react.turn_telemetry`` run events; they
+    #: travel in the result so a caller can render a cost/friction summary
+    #: without re-reading the store.
+    turns: list[dict[str, Any]] = field(default_factory=list)
+    #: Why the completion was refused, when ``status`` is
+    #: ``premature_completion``.
+    completion_objections: list[str] = field(default_factory=list)
+    completion_verified: bool = False

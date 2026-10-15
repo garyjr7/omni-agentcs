@@ -59,6 +59,16 @@ COMMON_TOOLS: frozenset[str] = frozenset(
 #: deliberately explicit - a new durable tool must be triaged here on purpose.
 ACTIVE_TOOLS: frozenset[str] = frozenset(
     {
+        # The application-boundary pair of the declarative red_team_base chain
+        # (staging_and_interaction): staging a component and triggering it change
+        # the target, so both are active by classification.
+        "nexus.web.request",
+        "nexus.web.upload",
+        # Owned-session command execution and its durable handoff. Both were in
+        # the catalog but reachable from no profile, which made the
+        # command_execution / local_elevation_heuristics phases unimplementable.
+        "nexus.post.shell_exec",
+        "nexus.post.job",
         "nexus.cred.bruteforce",
         "nexus.exploit.msf_auxiliary",
         "nexus.exploit.msf_exploit",
@@ -126,6 +136,9 @@ WEB_ENUM_TOOLS: frozenset[str] = frozenset(
         "nexus.web.ffuf",
         "nexus.web.dalfox",
         "nexus.web.wp_enum",
+        # Recovering a repository the target itself is serving is read-only
+        # reconnaissance of the application surface (red_team_base phase 2).
+        "nexus.web.git_dump",
     }
 )
 
@@ -242,7 +255,12 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         phase="enumeration",
         focus="enumerar cada servicio hallado (FTP, SMB, HTTP…) y registrar usuarios y pistas",
         tools=_with_common(
-            WEB_ENUM_TOOLS | {"nexus.recon.ftp", "nexus.recon.netexec", "nexus.pwn.analyze"}
+            WEB_ENUM_TOOLS
+            | {"nexus.recon.ftp", "nexus.recon.netexec", "nexus.pwn.analyze"}
+            # Enumerating the *application boundary* includes touching it: probing
+            # a panel and staging a component against it are part of phase 2 of
+            # red_team_base, which starts while the phase is still `enumeration`.
+            | {"nexus.web.request", "nexus.web.upload"}
         ),
         token_budget=80_000,
         max_iterations=10,
@@ -281,6 +299,11 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.pwn.ret2libc",
                 "nexus.web.wp_bruteforce",
                 "nexus.web.wp_exec",
+                # Application-boundary staging/triggering (red_team_base phase 2)
+                # and the web-repository recovery that feeds it.
+                "nexus.web.request",
+                "nexus.web.upload",
+                "nexus.web.git_dump",
             }
         ),
         token_budget=60_000,
@@ -297,6 +320,10 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.post.ssh_exec",
                 "nexus.post.ssh_upload",
                 "nexus.post.enum_system",
+                # Stable command handling on an owned session: interactive execution
+                # plus the durable handoff for long-running commands (phase 3).
+                "nexus.post.shell_exec",
+                "nexus.post.job",
                 "nexus.post.pivot_bruteforce",
                 "nexus.post.pivot_http",
                 "nexus.post.ntlm_capture",
@@ -332,6 +359,12 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 # A PE-assist script has to be pushed when the target has no
                 # outbound network (RUN_sala12: the host could not fetch it).
                 "nexus.post.ssh_upload",
+                # red_team_base phases 3 and 4 run in this profile: inventory the
+                # owned sessions, execute one verified command per hypothesis and
+                # hand a long verification routine to a durable job.
+                "nexus.session.list",
+                "nexus.post.shell_exec",
+                "nexus.post.job",
             }
         ),
         token_budget=60_000,
@@ -380,6 +413,43 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
 
 SUBAGENTS_BY_ID: Mapping[str, SubAgentDefinition] = {item.id: item for item in SUBAGENTS}
 SUBAGENT_IDS: tuple[str, ...] = tuple(item.id for item in SUBAGENTS)
+
+#: Operator-facing vocabulary for the specialization "jobs" a caller may ask
+#: for, bound to the canonical kill-chain profile that implements them. The
+#: alias never creates a new execution path: it only resolves to an existing
+#: capability profile, so the tool subset and capability boundary are unchanged.
+#: - ``target-mapper`` maps hosts/services (read-only recon).
+#: - ``tactical-planner`` analyses the blackboard read-only to propose the next
+#:   phase (the deterministic planner, not a model, owns the phase itself).
+#: - ``exploit-scripter`` turns a finding into initial access.
+#: - ``stealth-validator`` reviews evidence and formats deliverables.
+#: - ``c2-operator`` drives owned sessions, jobs and C2.
+#: - ``deep-reasoning`` is the largest read-only analysis budget.
+SUBAGENT_ALIASES: Mapping[str, str] = {
+    "target-mapper": "recon",
+    "tactical-planner": "recon",
+    "exploit-scripter": "exploit",
+    "stealth-validator": "reporter",
+    "c2-operator": "postexploit",
+    "deep-reasoning": "recon",
+}
+
+
+def resolve_subagent_id(identifier: str | None) -> str | None:
+    """Resolve a profile id or an alias to a canonical profile id.
+
+    Returns ``None`` for an unknown/empty identifier so callers fail closed
+    (the same contract :func:`select_subagent` enforces on an override).
+    """
+    if not identifier:
+        return None
+    value = str(identifier).strip()
+    if not value:
+        return None
+    canonical = SUBAGENT_ALIASES.get(value.lower())
+    if canonical is not None:
+        return canonical
+    return value if value in SUBAGENTS_BY_ID else None
 
 #: Deterministic phase -> profile table. Mirrors the planner's phase ids.
 #: ``enumeration`` enters through ``services`` (any service), and ``_refine``
@@ -438,10 +508,10 @@ def select_subagent(
     ``NEXUS_SUBAGENT_BUDGET_<ID>`` when present.
     """
     if override:
-        profile = SUBAGENTS_BY_ID.get(str(override))
-        if profile is None:
+        resolved = resolve_subagent_id(override)
+        if resolved is None:
             raise ValueError(f"unknown subagent: {override}")
-        return apply_budget_overrides(profile, env=env)
+        return apply_budget_overrides(SUBAGENTS_BY_ID[resolved], env=env)
     normalized = {str(key): int(value or 0) for key, value in (counts or {}).items()}
     refined = _refine(str(phase or ""), normalized)
     subagent_id = refined or PHASE_SUBAGENT.get(str(phase or ""), DEFAULT_SUBAGENT_ID)
@@ -490,10 +560,22 @@ def with_phase_grace(
 
 
 def select_for_plan(plan: Any, *, override: str | None = None) -> SubAgentDefinition:
-    """Pick the profile for a planner :class:`~nexus_core.agent.planner.Plan`."""
+    """Pick the profile for a planner :class:`~nexus_core.agent.planner.Plan`.
+
+    The phase (``plan.current``) comes from verified evidence only, but profile
+    refinement also reads the plan's *leads* (agent-recorded, unverified facts):
+    a user the agent found but no parser attested still has to reach the
+    credential profile, otherwise the loop enumerates forever with no tool that
+    can test what it found. Leads can only choose among existing profiles, so
+    they never widen the tool surface.
+    """
+    counts = {str(key): int(value or 0) for key, value in (getattr(plan, "counts", None) or {}).items()}
+    for fact_type, amount in (getattr(plan, "leads", None) or {}).items():
+        name = str(fact_type)
+        counts[name] = max(counts.get(name, 0), int(amount or 0))
     return select_subagent(
         getattr(plan, "current", None),
-        counts=getattr(plan, "counts", None) or {},
+        counts=counts,
         override=override,
     )
 
@@ -503,7 +585,7 @@ def is_external(tool_id: str) -> bool:
     return str(tool_id).startswith(EXTERNAL_TOOL_PREFIXES)
 
 
-def permits(subagent: SubAgentDefinition, tool_id: str, definition=None) -> bool:
+def permits(subagent: SubAgentDefinition, tool_id: str, definition: Any = None) -> bool:
     """External tools require known effects, restricted by the active profile."""
     if not is_external(tool_id):
         return subagent.allows(tool_id)
@@ -595,7 +677,7 @@ async def gather_readonly(
             return await call()
 
     tasks = [asyncio.ensure_future(_run(call)) for call in calls]
-    watcher: asyncio.Future | None = None
+    watcher: asyncio.Future[None] | None = None
     if cancel_event is not None:
 
         async def _watch() -> None:
@@ -621,6 +703,7 @@ __all__ = [
     "EXTERNAL_TOOL_PREFIXES",
     "PHASE_GRACE_ITERATIONS",
     "PHASE_SUBAGENT",
+    "SUBAGENT_ALIASES",
     "SUBAGENTS",
     "SUBAGENTS_BY_ID",
     "SUBAGENT_IDS",
@@ -633,6 +716,7 @@ __all__ = [
     "gather_readonly",
     "is_external",
     "permits",
+    "resolve_subagent_id",
     "select_for_plan",
     "select_subagent",
     "validate_registry",

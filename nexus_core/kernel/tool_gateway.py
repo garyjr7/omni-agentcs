@@ -20,30 +20,23 @@ from .redaction import sanitize
 from .schema_validation import validate
 from .telemetry import metrics, telemetry
 
+from .artifacts import ArtifactStore
+from .control_store import ControlStore
+
 ToolHandler = Callable[[Dict[str, Any], RunContext], ToolResult | Awaitable[ToolResult]]
 
 
-def _journal_artifact_store(store):
-    """Content-addressed store for invocation results (local backend for now).
+def _journal_artifact_store(store: ControlStore) -> ArtifactStore:
+    """Resolve storage explicitly; setup failures must not silently lose evidence."""
+    from nexus_core.config.loader import load_config
+    from nexus_core.config.xdg import resolve_xdg_paths
+    from .artifacts import configured_artifact_store
 
-    Returns ``None`` when no usable location is configured, in which case the
-    journal falls back to an inline sanitized JSON reference.
-    """
-    try:
-        from nexus_core.config.loader import load_config
-        from nexus_core.config.xdg import resolve_xdg_paths
-        from pathlib import Path as _Path
-        from .artifacts import LocalArtifactStore
+    paths = resolve_xdg_paths()
+    config = load_config(paths)
+    configured = config.get('artifacts_dir') if isinstance(config, dict) else getattr(config, 'artifacts_dir', None)
+    return configured_artifact_store(store, configured or (paths.data_dir / 'artifacts'))
 
-        paths = resolve_xdg_paths()
-        config = load_config(paths)
-        # ``load_config`` returns a typed config object (a mapping is also
-        # tolerated) so the fallback must not assume ``.get``.
-        configured = config.get('artifacts_dir') if isinstance(config, dict) else getattr(config, 'artifacts_dir', None)
-        root = configured or (_Path(paths.data_dir) / 'artifacts')
-        return LocalArtifactStore(store, str(root))
-    except Exception:  # noqa: BLE001 - the journal must not fail on storage setup
-        return None
 
 
 #: Bound on the redacted handler-output fragment attached to a post-condition
@@ -269,6 +262,7 @@ class ToolGateway:
 
             store = self.audit.store
             from .invocation_journal import InvocationJournal
+            journal_artifacts = _journal_artifact_store(store)
             journal = InvocationJournal(store)
             # P2-D1: the gateway derives the intent key; the model cannot supply
             # it. Only the engine-provided phase/objective distinguish two calls
@@ -285,11 +279,8 @@ class ToolGateway:
                     resource_type='tool', resource_id=tool_id,
                     payload={'invocation_id': previous['invocation_id'], 'run_id': context.run_id,
                              'step_key': step_key}, decision='allow')
-                try:
-                    reused = journal.result_of(
-                        previous, artifact_store=_journal_artifact_store(store))
-                except Exception:  # noqa: BLE001 - fall back to the inline reference
-                    reused = journal.result_of(previous)
+                reused = journal.result_of(
+                    previous, artifact_store=journal_artifacts)
                 return reused
             if previous and previous['state'] in {'running', 'prepared'}:
                 raise PermissionError('invocation is already running or prepared; reconcile before retry')
@@ -309,6 +300,7 @@ class ToolGateway:
                 context.tenant_id, context.run_id, "tool", tool_id, "calls", 1,
                 {"trace_id": context.trace_id},
             )
+            context = replace(context, authorized_permissions=tuple(permissions))
             handler = self._handlers[tool_id]
             started = time.monotonic()
             try:
@@ -320,6 +312,7 @@ class ToolGateway:
                     result = handler(arguments, context)
                 if not isinstance(result, ToolResult):
                     raise TypeError("tool handlers must return ToolResult with deterministic evidence")
+                result.to_dto()  # Validate before domain decisions or assertions.
                 if not result.completed:
                     # V0-22: a declared ``negative``/``denied``/``unsupported``
                     # result is an observation about the target and completes
@@ -342,8 +335,11 @@ class ToolGateway:
                 result = result.stamp_versions(tool_id, definition.version, PARSERS_VERSION)
                 assertions = derive_assertions(tool_id, arguments, result, context)
                 result_value = result.to_dict()
-                result_value.update(invocation_id=context.invocation_id,
-                                    run_id=context.run_id, assertions=assertions)
+                from .domain_dto import ToolResultDTO
+                result_value = ToolResultDTO.model_validate({
+                    **result_value, "invocation_id": context.invocation_id,
+                    "run_id": context.run_id, "engagement_id": context.engagement_id, "assertions": assertions,
+                }).to_dict()
                 encoded = json.dumps(result_value, default=str).encode("utf-8")
                 if len(encoded) > definition.max_output_bytes:
                     raise ValueError("tool output exceeds configured limit")
@@ -368,7 +364,7 @@ class ToolGateway:
                 )
                 persist_assertions(assertions, context, tool_id)
                 journal.finish(context.invocation_id, context.tenant_id, result_value,
-                               artifact_store=_journal_artifact_store(store))
+                               artifact_store=journal_artifacts)
                 await hooks.emit('post_tool_use', tool_id=tool_id, result=result_value)
                 return result_value
             except BaseException as exc:
