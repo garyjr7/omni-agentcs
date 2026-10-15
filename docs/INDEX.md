@@ -17,17 +17,14 @@
 | Instrucciones de proyecto para el agente | `OMNI.md` | `/` | Contexto no confiable, delimitado y auditado |
 | Guía de uso manual de las OMNI tools | `GUIA_MANUAL_1.md` | `docs/guides/` | 68 tools gobernadas paso a paso, sin LLM |
 | Guía del agente autónomo y comandos `/` | `GUIA_AGENTE_1.md` | `docs/guides/` | ReAct, subagentes, playbooks y los 41 comandos `/` |
-| Auditoría UX/CLI | `AUDIT_POTENCIA_CLI.md` | `docs/archive/audits-superseded/` | 8.3/10, sustituye a `AUD_OMNI_BW` |
-| Auditoría técnica integral | `AUDIT_POT_XCLAUDE_CLI.md` | `docs/archive/audits-superseded/` | 6,0/10, segunda opinión; origen de Fase 0/1/2 |
+| Auditoría UX/CLI | `AUDIT_POTENCIA_CLI.md` | `docs/archive/audits/` | 8.3/10, sustituye a `AUD_OMNI_BW` |
+| Auditoría técnica integral | `AUDIT_POT_XCLAUDE_CLI.md` | `docs/archive/audits/` | 6,0/10, segunda opinión; origen de Fase 0/1/2 |
 | Auditoría del cuerpo | `FASE_V1_AUDITORIA_CUERPO_PROMPT.md` | `docs/missions/` | Prompt de auditoría V1 |
 | Resultado de la auditoría V1 | `docs/missions/audit-v1/00_DICTAMEN.md` | `docs/missions/audit-v1/` | 12 informes + `audit_v1.json` + `catalog.json` |
 | Plan estratégico | `PLAN_OMNIAGENTCS_V4.md` | `docs/missions/` | Parcialmente ejecutado, ver §10 |
 | Comparación manual/agente | `MANUAL_VS_AGENT.md` | `docs/missions/` | n=1, no concluyente |
 | Fase en curso | `FASE2_ORQUESTACION_AVANZADA.md` | `docs/missions/` | Rama `feat/orchestration-phase-2-close` |
-| Roadmap técnico post-auditoría | `roadmap_12/10.md` | `roadmap_12/` | Auditoría 2026-10-12 sobre `363bba9`; **sin commitear** |
-| Ejecución por fases del roadmap | `roadmap_12/Fase2_*.md`, `Fase3_*.md`, `Fase4_*.md`, `Fase5_1_DeepSeek.md`, `P0_concurrencia.md` | `roadmap_12/` | Informes de fase; Fase 5 en curso. **Sin commitear** |
-| Auditoría del playbook y la telemetría | `roadmap_12/Auditoria_playbook_telemetria.md` | `roadmap_12/` | 3 hallazgos P1 abiertos; `mypy --strict` no pasa. **Sin commitear** |
-| Interfaz de terminal (Rich en la TUI) | `roadmap_12/UI_terminal_14_10.md` | `roadmap_12/` | Iteración 2026-10-14. **Sin commitear** |
+| Roadmap técnico post-auditoría | `roadmap_12/10.md` | `roadmap_12/` | **WIP no versionado — no forma parte del ledger oficial** |
 | Cleanup de código legado | `CLEANUP_RESULT_V3.md` | `docs/missions/` | Resultado final; decisiones por archivo en `CLEANUP_DECISIONS.md` |
 | Decisiones de arquitectura | `ADR-004-sandbox-modes.md` | `docs/adr/` | Aceptado; modos de sandbox y sus garantías |
 | Último run E2E autónomo | `TEST_E2E_BOUNTY_HACKER_RUN6.md` | `docs/missions/` | Bounty Hacker; fuente de `MANUAL_VS_AGENT.md` |
@@ -36,6 +33,8 @@
 | Campaña QA de laboratorio | `QA_RESULT.md` | `qa_runs/` | BUG-002/003/004/006/007/008 citados por `PLAN_OMNIAGENTCS_V4` §10 |
 | Evidencia de runs (trazas) | `docs/missions/examples/` | `docs/missions/examples/` | NDJSON de los runs E2E + informes |
 | Evidencia por fase | `docs/missions/evidence/phase0|phase1|phase2|phase2-close/` | `docs/missions/evidence/` | Capturas de validación por fase |
+
+> `roadmap_12/` (auditoría `10.md`, informes Fase 2–5, `Auditoria_playbook_telemetria.md`, `UI_terminal_14_10.md` y su evidencia) es **WIP no versionado — no forma parte del ledger oficial**: se conserva sin commitear y no se cita como fuente de verdad.
 
 ---
 
@@ -88,7 +87,7 @@ Informes de misión cerradas cuyos hallazgos ya están en el código o en un doc
 
 Material superado o ruido operativo. Se conserva solo por trazabilidad; **no es verdad actual**. Ver `docs/archive/`.
 
-### `docs/archive/audits-superseded/` — auditorías
+### `docs/archive/audits/` — auditorías
 
 - `AUD_OMNI_BW.md` — auditoría UX/UI integral sustituida por `AUDIT_POTENCIA_CLI.md`
 - `TUI_UX_AUDIT.md` — auditoría visual previa a B3, absorbida por `AUD_OMNI_BW.md`
