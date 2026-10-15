@@ -565,6 +565,96 @@ def escalate_enumeration(plan: Plan, escalation: EnumerationEscalation) -> Plan:
     return hand_over_phase(plan, phase=escalation.phase)
 
 
+#: Reason recorded when an established session hands the engagement over to
+#: post-exploitation (V1-25). Measured in rerun 6: the MSF session was verified
+#: and registered while the plan stayed on ``exploitation`` (``progress [2, 6]``)
+#: until the ``exploit`` profile ran out of tokens, because nothing connected the
+#: session to the profile that can use one.
+SESSION_ESTABLISHED_REASON = "session_established_to_post"
+#: Profiles whose turn may trigger the hand-over: the one that owns initial
+#: access. A session opened by any other profile is not this rule's case.
+SESSION_HANDOVER_SUBAGENTS: frozenset[str] = frozenset({"exploit"})
+#: Phases the hand-over may leave. ``privilege_escalation`` belongs here because
+#: the plan is rebuilt from the blackboard on every turn and ``session`` is itself
+#: the evidence that closes ``exploitation`` for the table above: the iteration
+#: right after the session lands is *already* on ``privilege_escalation``, so a
+#: rule that only accepted ``exploitation`` could never fire on the measured case
+#: -and the phase would snap back, every turn, to a profile that cannot use the
+#: session. The rule still keys on a provenanced MSF session alone: web, AD or a
+#: bare credential never reach it.
+SESSION_HANDOVER_PHASES: frozenset[str] = frozenset(
+    {"exploitation", "privilege_escalation"}
+)
+
+
+@dataclass(frozen=True)
+class SessionHandover:
+    """Deterministic proposal: leave initial access for post-exploitation."""
+
+    phase: str
+    subagent: str
+    reason: str
+
+
+def established_msf_session(facts: Iterable[Any] | None = None) -> bool:
+    """True when the board carries a *verified* MSF session fact (never raises).
+
+    The flag the rule below keys on is computed from the facts themselves, not
+    from counts: a session the model recorded by hand is a lead (``source=agent``,
+    ``verified=False``), and a lead must never move a phase. Measured in rerun 6:
+    the agent tried exactly that and the fact stayed a lead.
+    """
+    from nexus_core.kernel.blackboard import is_verified_fact
+    from nexus_core.kernel.fact_verification import MSF_SESSION_METHOD
+
+    for fact in facts or ():
+        if not isinstance(fact, Mapping) or not is_verified_fact(fact):
+            continue
+        if str(fact.get("fact_type") or "") != "session":
+            continue
+        if str(fact.get("verification_method") or "") == MSF_SESSION_METHOD:
+            return True
+    return False
+
+
+def session_handover(
+    plan: Plan,
+    *,
+    subagent_id: str | None,
+    session_established: bool,
+) -> SessionHandover | None:
+    """Rule ``si X entonces Y`` (no inference): an engagement that holds a session
+    the verifier proved has finished initial access, so its next phase is
+    post-exploitation -where the ``session.*`` / ``post.*`` tools live- instead of
+    more turns of the profile that opened it.
+
+    Anything outside that shape returns ``None``: this is not a general
+    "access→post" rule (V1-25 is scoped to the measured MSF case; web, AD and
+    credential-derived access keep their own phases).
+    """
+    if not session_established:
+        return None
+    if str(getattr(plan, "current", "")) not in SESSION_HANDOVER_PHASES:
+        return None
+    if str(subagent_id or "") not in SESSION_HANDOVER_SUBAGENTS:
+        return None
+    return SessionHandover(
+        phase="post_exploitation",
+        subagent="postexploit",
+        reason=SESSION_ESTABLISHED_REASON,
+    )
+
+
+def escalate_session(plan: Plan, handover: SessionHandover) -> Plan:
+    """Return *plan* with the session hand-over applied (pure).
+
+    Same contract as :func:`escalate_enumeration`: the phase the plan leaves is
+    closed by the hand-off itself, so the completion gate can reach ``reporting``
+    instead of waiting for a phase nobody is going to work on again.
+    """
+    return hand_over_phase(plan, phase=handover.phase)
+
+
 def plan_from_summary(
     summary: Mapping[str, Any] | None,
     *,
@@ -589,10 +679,17 @@ __all__ = [
     "ENUMERATION_EXHAUSTED_SUBAGENTS",
     "MARKERS",
     "PHASES",
+    "SESSION_ESTABLISHED_REASON",
+    "SESSION_HANDOVER_PHASES",
+    "SESSION_HANDOVER_SUBAGENTS",
     "SMB_SERVICE_MARKERS",
     "EnumerationEscalation",
+    "SessionHandover",
     "enumeration_escalation",
     "escalate_enumeration",
+    "escalate_session",
+    "established_msf_session",
+    "session_handover",
     "smb_surface",
     "PHASE_IDS",
     "STATUS_CURRENT",

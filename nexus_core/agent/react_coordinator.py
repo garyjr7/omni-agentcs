@@ -77,10 +77,15 @@ from .react_support import (
 from enum import Enum
 from .planner import (
     ENUMERATION_EXHAUSTED_REASON,
+    SESSION_ESTABLISHED_REASON,
     EnumerationEscalation,
     Plan,
+    SessionHandover,
     enumeration_escalation,
     escalate_enumeration,
+    escalate_session,
+    established_msf_session,
+    session_handover,
 )
 from .subagents import SubAgentDefinition
 from .project_context import ProjectInstruction
@@ -159,6 +164,10 @@ class ReActCoordinator:
     #: ``enumeration`` as soon as the active profile is ``exploit`` - which is
     #: exactly what the hand-over asked for (Fase 3 fixes).
     enumeration_escalated: bool
+    #: The session→post-exploitation hand-over (V1-25) is one-way for the same
+    #: reason: ``session`` evidence is what closes ``exploitation`` for the plan
+    #: table, so a non-sticky rule would be undone by the next rebuild.
+    session_handed_over: bool
     #: Per-turn operational telemetry (tokens, reasoning duration, friction,
     #: blackboard delta). Built in ``_initialize`` and published one record per
     #: iteration; it is the only place those four signals are joined.
@@ -345,6 +354,7 @@ class ReActCoordinator:
         self.stuck_threshold = stuck_threshold()
         self.plan_reason = None
         self.enumeration_escalated = False
+        self.session_handed_over = False
         self.telemetry = TurnTelemetryRecorder(
             store=self.store, tenant_id=self.tenant_id, run_id=self.run_id
         )
@@ -419,6 +429,7 @@ class ReActCoordinator:
         # turn must never ride along on a later, organic phase change.
         self.plan_reason = None
         self._apply_enumeration_exhaustion()
+        self._apply_session_handover()
         self.last_plan = self.plan
         return Transition.READY
 
@@ -458,6 +469,59 @@ class ReActCoordinator:
         self.plan = escalate_enumeration(self.plan, escalation)
         self.plan_reason = escalation.reason
         self.enumeration_escalated = True
+
+    def _apply_session_handover(self) -> None:
+        """Hand an established session over to post-exploitation (V1-25).
+
+        The rule lives in the planner (deterministic, unit-tested); here it is
+        only *applied* to the plan of this iteration, exactly like the
+        enumeration hand-over above. Measured in rerun 6: the MSF session was
+        verified and registered but the plan stayed on ``exploitation`` until the
+        ``exploit`` profile exhausted its token budget, because nothing connected
+        the session to the profile that owns ``session.*`` / ``post.*`` tools.
+        """
+        if self.session_handed_over:
+            # Already handed over: keep it handed over while the session evidence
+            # is on the board, instead of falling back, every turn, to the phase
+            # the blackboard's own counts compute (``privilege_escalation``).
+            self.plan = escalate_session(
+                self.plan,
+                SessionHandover(
+                    phase="post_exploitation",
+                    subagent="postexploit",
+                    reason=SESSION_ESTABLISHED_REASON,
+                ),
+            )
+            self.plan_reason = SESSION_ESTABLISHED_REASON
+            return
+        handover = session_handover(
+            self.plan,
+            subagent_id=self.last_subagent_id,
+            session_established=self._msf_session_established(),
+        )
+        if handover is None:
+            return
+        self.plan = escalate_session(self.plan, handover)
+        self.plan_reason = handover.reason
+        self.session_handed_over = True
+
+    def _msf_session_established(self) -> bool:
+        """Whether the board holds a verified MSF session fact (never raises).
+
+        Read from the facts, not from counts: the flag must be able to tell a
+        session this engine proved from the lead the model records by hand.
+        """
+        if not self.engagement_id or not getattr(self, "store", None):
+            return False
+        try:
+            from nexus_core.kernel.blackboard import Blackboard
+
+            facts = Blackboard(self.store).list_facts(
+                self.tenant_id, self.engagement_id, fact_type="session"
+            )
+            return established_msf_session(facts)
+        except Exception:  # noqa: BLE001 - a missing board must not abort a run
+            return False
 
     async def _select_profile(self) -> Transition:
         selected = select_for_plan(self.plan, override=self.subagent_override)

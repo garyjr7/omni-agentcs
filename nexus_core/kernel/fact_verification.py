@@ -11,6 +11,20 @@ from .blackboard import Blackboard
 #: turning any brace-wrapped text into "loot".
 FLAG_RE = re.compile(r"(?:THM|HTB|FLAG|flag|CTF|ctf)\{[^}\s\x00]{4,200}\}")
 
+#: ``verification_method`` of the facts an accepted MSF session asserts (V1-24).
+#: Distinct from the handler's ``session_established``: that one is the *result's*
+#: method, this one is the *fact's*, so the planner can tell a session this engine
+#: proved (window + target) from any other ``session`` fact.
+MSF_SESSION_METHOD = "msf_session_established"
+
+#: ``verification_method`` of the msf_exploit result that owns a provenanced
+#: session (the only one this module promotes).
+_MSF_SESSION_RESULT_METHOD = "session_established"
+
+#: Separator of MSF's canonical session descriptor, ``<USER> @ <HOST>``
+#: (``NT AUTHORITY\SYSTEM @ WIN-JO6REVNMMMP``).
+_SESSION_INFO_SEPARATOR = " @ "
+
 #: Windows identity queries whose output states the *invoking* account's own
 #: group membership. ``whoami; hostname`` deliberately does not match: the marker
 #: must come from an identity query, not from whatever else shares the line.
@@ -85,18 +99,48 @@ def _net_group_members(text):
     return members
 
 
+def _session_owner(record):
+    """Account named by an MSF session descriptor, or ``""`` when it names none.
+
+    Only the canonical ``<USER> @ <HOST>`` shape counts. A record whose ``info``
+    is a bare product word (``Meterpreter``) names no account, and an empty
+    ``info`` -what msfrpcd answered when the session had just opened, measured in
+    rerun 6- must never be read as a username.
+    """
+    if not isinstance(record, dict):
+        return ""
+    info = str(record.get("info") or "").strip()
+    account, separator, _host = info.rpartition(_SESSION_INFO_SEPARATOR)
+    if not separator:
+        return ""
+    return account.strip()
+
+
+def _session_sid(result):
+    """Numeric sid of the session, when the result exposes it.
+
+    The sid is the ``session.list`` key; the handler's result carries the RPC
+    ``job_id`` instead (a different number: 9 vs 2 in the measured run), so the
+    key is read from the evidence when present and left null when not. Inventing
+    it from the job id would be a lie about which session this is.
+    """
+    evidence = result.evidence if isinstance(result.evidence, dict) else {}
+    sid = evidence.get("sid")
+    return sid if isinstance(sid, int) and not isinstance(sid, bool) else None
+
+
 def derive_assertions(tool_id, arguments, result, context):
     if not result.success or not context.invocation_id:
         return []
     output = result.output
     rows = []
 
-    def add(kind, target, value, key=None):
+    def add(kind, target, value, key=None, method=None):
         if not target:
             return
         rows.append(dict(fact_type=kind, target=str(target), key=str(key or target),
                          value=value, verified=True, asserted_by='verifier',
-                         verification_method=result.verification_method,
+                         verification_method=method or result.verification_method,
                          invocation_id=context.invocation_id, run_id=context.run_id))
 
     if tool_id == 'nexus.recon.nmap' and result.verification_method == 'nmap_xml_parsed':
@@ -262,6 +306,41 @@ def derive_assertions(tool_id, arguments, result, context):
         for flag in output.get('flags') or ():
             add('loot', flag, {'flag': flag, 'record_type': output.get('record_type'),
                                'name': output.get('name'), 'server': server}, flag)
+    elif (tool_id == 'nexus.exploit.msf_exploit'
+          and result.verification_method == _MSF_SESSION_RESULT_METHOD):
+        # A session the provenance verifier accepted (V1-24): the exploit really
+        # ran against the engaged target and the session that appeared while the
+        # job ran reports that same host. Measured in rerun 6
+        # (run_66eb363ed2fd42bf9d30985b76bf3248): ms17_010_psexec opened a SYSTEM
+        # Meterpreter, the handler verified it and `kernel_sessions` got its
+        # first row -and the planner never saw any of it, because this function
+        # asserted nothing for the tool and `exploitation` could not close.
+        #
+        # Only `session_established` promotes: `session_provenance_ambiguous`
+        # (zero or several candidates in the window) and
+        # `session_provenance_unverified` (a session reporting another host)
+        # describe a session whose origin is not proven to be this job, so they
+        # assert nothing about the engagement -the 9A verifier already decided
+        # that, this module only stops contradicting it.
+        record = output.get('session') if isinstance(output.get('session'), dict) else {}
+        session_uuid = str(output.get('session_uuid') or record.get('uuid') or '')
+        target = str(output.get('target') or record.get('session_host') or '')
+        if session_uuid and target:
+            via_exploit = str(record.get('via_exploit') or output.get('module') or '')
+            owner = _session_owner(record)
+            sid = _session_sid(result)
+            add('session', target,
+                {'session_uuid': session_uuid, 'via_exploit': via_exploit,
+                 'target': target, 'user': owner or None, 'sid': sid},
+                f'{target}:{session_uuid}', method=MSF_SESSION_METHOD)
+            if owner:
+                # Only a descriptor that names an account can substantiate the
+                # access claim: the fact is keyed on that account, and without
+                # one there is no identity to key it on.
+                add('access', target,
+                    {'kind': str(record.get('type') or ''), 'user': owner,
+                     'via_exploit': via_exploit},
+                    f'{target}:{owner}@{session_uuid}', method=MSF_SESSION_METHOD)
     elif tool_id == 'nexus.c2.sliver_loot' and result.verification_method == 'sliver_loot_recorded':
         loot = output.get('loot') or {}
         if loot.get('sha256'):

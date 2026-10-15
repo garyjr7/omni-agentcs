@@ -324,6 +324,12 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.post.ssh_exec",
                 "nexus.post.ssh_upload",
                 "nexus.post.enum_system",
+                # The session→post hand-over (V1-25) lands here, so this profile
+                # needs the elevation heuristics too: it is the only profile that
+                # both owns a session and can look for the vector (measured in
+                # rerun 6: `exploit` opened a SYSTEM Meterpreter with no tool to
+                # use it, and `privesc` was never reached).
+                "nexus.post.privesc_hints",
                 # Stable command handling on an owned session: interactive execution
                 # plus the durable handoff for long-running commands (phase 3).
                 "nexus.post.shell_exec",
