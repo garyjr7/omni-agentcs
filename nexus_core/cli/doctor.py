@@ -3,6 +3,7 @@
 from dataclasses import asdict
 import json
 import os
+from pathlib import Path
 import platform
 import socket
 import sqlite3
@@ -38,6 +39,77 @@ def _rpc_status():
         "systemd_active": service.returncode == 0 and service.stdout.strip() == "active",
         "transport": os.getenv("MSF_RPC_TRANSPORT", "msgpack"),
     }
+
+
+#: Where nuclei looks for its templates when the env var is not set.
+NUCLEI_DEFAULT_TEMPLATES = "/opt/nuclei-templates"
+
+
+def _unset(names: tuple[str, ...]) -> list[str]:
+    return [name for name in names if not str(os.getenv(name) or "").strip()]
+
+
+def _runtime_preconditions(tools, rpc) -> list[dict]:
+    """Config the tools need *at run time*, checked before a run starts (Fase 3c).
+
+    The doctor already answers "is the binary there?" and "is the service
+    listening?". Rerun #3 (commit ``8de386b``) showed the next question is just
+    as expensive to answer mid-run: ``msfrpcd`` was up, ``MSF_LHOST`` was unset,
+    so every reverse payload died on arrival and the ``exploit`` profile burned
+    three turns retrying MSF until it exhausted its budget.
+
+    Every entry is a *warning*, never an error: running only the auxiliaries that
+    need no callback is a legitimate choice, so the run is not refused -the
+    operator just gets the missing variable and the one command that fixes it.
+    """
+    entries: list[dict] = []
+    if rpc.get("listening"):
+        missing = _unset(("MSF_LHOST", "MSF_LPORT"))
+        if missing:
+            entries.append(
+                {
+                    "service": "msfrpcd",
+                    "missing_env": missing,
+                    "severity": "warning",
+                    "action": (
+                        "sin callback los payloads reverse quedan unavailable; "
+                        "exporta MSF_LHOST=<tu-IP-de-tun0> (y MSF_LPORT=4444)"
+                    ),
+                    "observed": "listening=true",
+                }
+            )
+    if str(os.getenv("SLIVER_OPERATOR_CONFIG") or "").strip():
+        missing = _unset(("SLIVER_LHOST", "SLIVER_LPORT"))
+        if missing:
+            entries.append(
+                {
+                    "service": "sliver",
+                    "missing_env": missing,
+                    "severity": "warning",
+                    "action": (
+                        "el team server se resolverá en 127.0.0.1:31337 (defaults); "
+                        "exporta SLIVER_LHOST/SLIVER_LPORT si escucha en otro sitio"
+                    ),
+                    "observed": "operator_config=set",
+                }
+            )
+    if getattr(tools.get("nuclei"), "present", False):
+        configured = str(os.getenv("NEXUS_NUCLEI_TEMPLATES") or "").strip()
+        templates = Path(configured) if configured else Path(NUCLEI_DEFAULT_TEMPLATES)
+        if not templates.is_dir():
+            entries.append(
+                {
+                    "service": "nuclei",
+                    "missing_env": ["NEXUS_NUCLEI_TEMPLATES"],
+                    "severity": "warning",
+                    "action": (
+                        f"instala los templates en {NUCLEI_DEFAULT_TEMPLATES} "
+                        "o exporta NEXUS_NUCLEI_TEMPLATES=<ruta>"
+                    ),
+                    "observed": f"templates_dir={templates}",
+                }
+            )
+    return entries
 
 
 def _audit(path):
@@ -76,6 +148,8 @@ def run_doctor(paths, config, *, as_json=False) -> int:
         for provider in PROVIDERS
         if provider not in {"fake", "ollama"}
     }
+    tools = check_all_tools()
+    rpc = _rpc_status()
     report = {
         "os": asdict(detect_os()),
         "python": platform.python_version(),
@@ -110,8 +184,11 @@ def run_doctor(paths, config, *, as_json=False) -> int:
             **effective_guarantees().to_dict(),
         },
         "managers": list(detect_managers()),
-        "tools": {name: asdict(status) for name, status in check_all_tools().items()},
-        "msfrpcd": _rpc_status(),
+        "tools": {name: asdict(status) for name, status in tools.items()},
+        "msfrpcd": rpc,
+        # Operator config the tools need at run time (never a secret: only the
+        # *names* of unset variables and what to do about them).
+        "runtime_preconditions": _runtime_preconditions(tools, rpc),
         "audit": [] if postgres else _audit(db),
     }
     # Protect against a secret accidentally echoed by a local version command.
@@ -151,6 +228,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
             ("Gestores", "managers"),
             ("Herramientas", "tools"),
             ("msfrpcd", "msfrpcd"),
+            ("Precondiciones de runtime", "runtime_preconditions"),
             ("Auditoría (últimos 5 eventos)", "audit"),
         ):
             print(f"\n{title}:")
@@ -169,6 +247,16 @@ def run_doctor(paths, config, *, as_json=False) -> int:
                 print(f"  process isolation: {'sí' if value['process_isolation'] else 'no'}")
                 print(f"  límites recursos:  {'sí' if value['resource_limits'] else 'no'}")
                 print(f"  tools network:     {'OK' if value['supports_network_tools'] else 'no'}")
+            elif key == "runtime_preconditions":
+                if not value:
+                    print("  (sin avisos)")
+                for item in value:
+                    missing = ", ".join(f"{name}=unset" for name in item["missing_env"])
+                    observed = f"{item['observed']} · " if item.get("observed") else ""
+                    print(
+                        f"  {item['service']}: {observed}{missing} "
+                        f"({item['severity'].upper()}: {item['action']})"
+                    )
             elif isinstance(value, dict):
                 for name, item in value.items():
                     print(f"  {name}: {json.dumps(item, ensure_ascii=False)}")

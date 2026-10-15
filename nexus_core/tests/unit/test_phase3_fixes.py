@@ -434,10 +434,15 @@ def test_planner_hands_exhausted_smb_enumeration_to_exploit(subagent_id: str) ->
     assert escalated.current == "exploitation"
     # The phase the plan moves to is the one that makes the loop pick ``exploit``.
     assert select_for_plan(escalated).id == "exploit"
-    # No evidence closed the exhausted phase, so it is not reported as done.
+    # The hand-off *is* the decision that the exhausted phase yielded all it will
+    # yield, so it closes as ``done`` (V1-18/Fase 3c). Leaving it ``pending``
+    # behind a ``current`` phase is a plan the completion gate can never close:
+    # measured in the rerun #3 as ``enumeration: pending`` + ``exploitation:
+    # current`` with ``progress=[1, 6]``.
     statuses = {item.id: item.status for item in escalated.phases}
     assert statuses["exploitation"] == "current"
-    assert statuses["enumeration"] != "done"
+    assert statuses["enumeration"] == "done"
+    assert escalated.progress == (2, 6)
 
 
 @pytest.mark.parametrize(

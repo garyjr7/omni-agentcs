@@ -514,18 +514,34 @@ def enumeration_escalation(
     )
 
 
-def escalate_enumeration(plan: Plan, escalation: EnumerationEscalation) -> Plan:
-    """Return *plan* with *escalation* applied (pure; statuses stay coherent).
+def hand_over_phase(plan: Plan, *, phase: str) -> Plan:
+    """Return *plan* focused on *phase*, closing the phase it leaves (Fase 3c).
 
-    The exhausted phase is **not** marked done -no evidence closed it- so the
-    pipeline shows it as unfinished while the current phase moves on.
+    Every *deliberate* hand-off goes through here, so the statuses stay coherent
+    with the completion gate: the phase the plan leaves is marked ``done`` (the
+    hand-off **is** the deterministic decision that it yielded all it will
+    yield), the target phase becomes ``current``, and whatever evidence already
+    closed behind it stays ``done``. A hand-off that does not move forward in the
+    kill chain changes nothing but the focus -it never invents a close.
+
+    Measured in rerun #3 (commit `8de386b`): ``enumeration`` stayed ``pending``
+    while ``exploitation`` was ``current`` and ``progress`` showed ``[1, 6]``, a
+    state the gate can never leave, because a plan with a mandatory pending phase
+    never reaches ``reporting``.
     """
+    previous = str(getattr(plan, "current", "") or "")
+    target = str(phase or "")
+    if target not in _BY_ID:
+        raise ValueError(f"unknown phase {phase!r}")
     counts = normalize_counts(counts=getattr(plan, "counts", None))
+    forward = (
+        PHASE_IDS.index(target) > PHASE_IDS.index(previous) if previous in _BY_ID else True
+    )
     statuses: list[PhaseStatus] = []
     for item in plan.phases:
-        if item.id == escalation.phase:
+        if item.id == target:
             status = STATUS_CURRENT
-        elif _is_done(_BY_ID[item.id], counts):
+        elif (item.id == previous and forward) or _is_done(_BY_ID[item.id], counts):
             status = STATUS_DONE
         else:
             status = STATUS_PENDING
@@ -533,9 +549,20 @@ def escalate_enumeration(plan: Plan, escalation: EnumerationEscalation) -> Plan:
     return replace(
         plan,
         phases=tuple(statuses),
-        current=escalation.phase,
-        next_hint=_BY_ID[escalation.phase].hint,
+        current=target,
+        next_hint=_BY_ID[target].hint,
     )
+
+
+def escalate_enumeration(plan: Plan, escalation: EnumerationEscalation) -> Plan:
+    """Return *plan* with *escalation* applied (pure; statuses stay coherent).
+
+    The exhausted phase closes as ``done``: the rule *is* the decision that
+    enumeration has yielded all it will yield. Before Fase 3c it stayed
+    ``pending`` and left the plan in a state the completion gate cannot close
+    (V1-18).
+    """
+    return hand_over_phase(plan, phase=escalation.phase)
 
 
 def plan_from_summary(

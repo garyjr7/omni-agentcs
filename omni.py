@@ -68,7 +68,7 @@ def main(argv=None) -> int:
             print("--json requiere --doctor, --setup o un objetivo headless", file=sys.stderr)
             return 2
         if should_run_wizard(paths, force_no_wizard=args.no_wizard):
-            config = run_wizard(paths)
+            config = run_wizard(paths, root=ROOT)
         elif args.reset_config:
             save_config(config, paths)
         apply_environment(config, paths)

@@ -3,6 +3,7 @@
 import asyncio
 import ipaddress
 import math
+import os
 import re
 
 from nexus_core.integrations.metasploit.client import (
@@ -10,13 +11,24 @@ from nexus_core.integrations.metasploit.client import (
     MetasploitConfig,
     MetasploitError,
 )
-from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
+from nexus_core.kernel.models import (
+    RiskLevel,
+    RunContext,
+    ToolDefinition,
+    ToolResult,
+    config_missing_result,
+)
 from nexus_core.kernel.schema_validation import validate
 from nexus_core.kernel.scope_loader import scope_signing_secret
 from nexus_core.scope import ScopeValidator
 from nexus_core.tools.parsers.metasploit import parse_msf_auxiliary
 
 MODULE_PATTERN = r"auxiliary/[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*"
+#: Module families whose datastore needs the operator's callback address
+#: (``LHOST``): they open a listener or spoof/relay traffic towards us. The model
+#: cannot supply it -``LHOST`` is a forbidden option here- so without
+#: ``MSF_LHOST`` these modules are not runnable at all (Fase 3c).
+CALLBACK_MODULE_PREFIXES = ("auxiliary/server/", "auxiliary/spoof/", "auxiliary/relay/")
 FORBIDDEN_OPTIONS = {
     "PROXIES",
     "LHOST",
@@ -44,6 +56,17 @@ FORBIDDEN_OPTIONS = {
 #: Datastore keys the handler itself bounds and sets (RPORT range, THREADS
 #: concurrency): the ones worth naming when a forbidden key is refused.
 SAFE_EXTRA_OPTIONS = "RPORT, THREADS"
+
+
+def requires_callback(module: str) -> bool:
+    """True when the auxiliary module binds a listener/a callback towards us.
+
+    Deterministic on the module fullname, so no RPC round-trip is needed to
+    answer the precondition. A module outside these families never reads
+    ``LHOST``: the scanner families (the ones this profile uses to confirm a
+    surface) must keep running with the callback unset.
+    """
+    return str(module or "").startswith(CALLBACK_MODULE_PREFIXES)
 
 
 def msf_auxiliary_definition(tenant_id: str = "system") -> ToolDefinition:
@@ -143,6 +166,18 @@ async def msf_auxiliary_handler(arguments: dict, context: RunContext) -> ToolRes
     if not addresses:
         raise ValueError("target has no validated address")
     options.update(RHOSTS=addresses[0], RHOST=addresses[0])
+    if requires_callback(module) and not str(os.getenv("MSF_LHOST") or "").strip():
+        # Fase 3c: same contract as ``msf_exploit``. The operator's callback
+        # address is missing, so this call cannot work no matter how many times
+        # the model retries it; ``unavailable`` + the variable's name lets it
+        # pivot (``msf_search``, ``searchsploit``, ``impacket_*``) and gives the
+        # operator one line to fix. Placement is deliberate: after scope/address
+        # validation, so governance still refuses a target out of scope first.
+        return config_missing_result(
+            "nexus.exploit.msf_auxiliary",
+            ["MSF_LHOST"],
+            detail=f"{module} needs a callback address (LHOST)",
+        )
     secrets = tuple(
         str(v)
         for k, v in options.items()

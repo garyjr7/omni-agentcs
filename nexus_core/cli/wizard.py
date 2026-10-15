@@ -3,9 +3,13 @@
 from dataclasses import asdict
 import getpass
 import os
+from pathlib import Path
+import re
 import secrets
+import subprocess
 import sys
 
+from nexus_core.config.bootstrap import set_env_values
 from nexus_core.config.loader import config_exists, effective_db_path, load_config, save_config
 from nexus_core.config.schema import DEFAULT_MODELS, OmniConfig, PROVIDERS
 from nexus_core.provisioner.detector import check_all_tools, detect_managers, detect_os
@@ -15,6 +19,12 @@ from nexus_core.provisioner.installer import (
     plan_install,
     update_shell_path,
 )
+
+
+#: Interface the reverse-shell callback is read from on Kali.
+TUN0_INTERFACE = "tun0"
+#: Upstream default of ``msfrpcd`` payloads; the handler uses the same one.
+DEFAULT_MSF_LPORT = "4444"
 
 
 class WizardAborted(Exception):
@@ -42,9 +52,65 @@ def _initial_scope(name, entries, secret):
     return build_scope(name, entries, secret, tenant_id="system", client="onboarding")
 
 
-def run_wizard(paths) -> OmniConfig:
+def detect_tun0_ip() -> str | None:
+    """IPv4 address of the Kali ``tun0`` interface, or ``None`` when there is none.
+
+    The reverse-shell callback has to be an address the target can reach, which
+    on Kali is the VPN tunnel. Detection is best-effort and never fatal: a host
+    without ``ip``, without VPN or with a differently named interface returns
+    ``None`` and the operator types the address by hand. Measured need (rerun #3,
+    commit ``8de386b``): ``MSF_LHOST`` absent from ``.env`` left every reverse
+    payload dead, and nothing surfaced it before the run (Fase 3c).
+    """
+    try:
+        completed = subprocess.run(
+            ["ip", "-o", "-4", "addr", "show", TUN0_INTERFACE],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    for match in re.finditer(r"\binet (\d+\.\d+\.\d+\.\d+)/", completed.stdout):
+        candidate = match.group(1)
+        if not candidate.startswith("127."):
+            return candidate
+    return None
+
+
+def _configure_msf_callback(root) -> str | None:
+    """Optional ``MSF_LHOST``/``MSF_LPORT``, auto-detected from ``tun0``.
+
+    Returns the persisted callback host (or ``None`` if the operator skipped
+    it). The values go to the project ``.env`` -the file the runtime loads- so a
+    restart is enough to make them effective.
+    """
+    detected = detect_tun0_ip()
+    print("\nCallback de reverse shells de Metasploit (MSF_LHOST / MSF_LPORT):")
+    if detected:
+        print(f"  tun0 detectada: {detected}")
+    else:
+        print(
+            "  AVISO: no se detecta tun0 (¿VPN sin conectar?). Si lo dejas vacío,\n"
+            "  las tools con payload reverse quedarán unavailable hasta que\n"
+            "  exportes MSF_LHOST con una IP alcanzable desde el objetivo."
+        )
+    answer = input(f"MSF_LHOST [{detected or 'vacío'}]: ").strip() or (detected or "")
+    if not answer:
+        return None
+    port = input("MSF_LPORT [4444]: ").strip() or DEFAULT_MSF_LPORT
+    written = set_env_values(root, {"MSF_LHOST": answer, "MSF_LPORT": port})
+    print(f"Guardado en {written}: MSF_LHOST={answer} MSF_LPORT={port}")
+    return answer
+
+
+def run_wizard(paths, *, root=None) -> OmniConfig:
     if config_exists(paths):
         return load_config(paths)
+    root = Path(root) if root is not None else Path(__file__).resolve().parents[2]
     created = None
     store = None
     try:
@@ -107,6 +173,9 @@ def run_wizard(paths) -> OmniConfig:
             config.llm.api_keys[provider] = getpass.getpass(
                 "API key (oculta, Enter para configurar después): "
             ).strip()
+        # Optional, but it is the difference between a working reverse payload
+        # and three wasted turns (V1-17/Fase 3c). Never fatal: Enter skips it.
+        _configure_msf_callback(root)
         # No paid or remote API calls are needed to save onboarding.
         if _yes("¿Crear engagement inicial con alcance autorizado por ti (24 horas)? [y/N]: "):
             name = input("Nombre: ").strip() or "Engagement inicial"

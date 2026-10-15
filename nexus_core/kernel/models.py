@@ -204,6 +204,44 @@ PROVIDER_UNAVAILABLE_SUFFIXES = (
 )
 #: Method stamped on a result the gateway re-classified as ``unavailable``.
 PROVIDER_UNAVAILABLE_METHOD = "provider_unavailable"
+#: Method stamped on a result whose *operator* configuration is incomplete.
+CONFIG_MISSING_METHOD = "config_missing"
+
+
+def config_missing_result(
+    tool_id: str, missing_env: "tuple[str, ...] | list[str]", *, detail: str = ""
+) -> "ToolResult":
+    """Result for a tool whose operator configuration is incomplete (Fase 3c).
+
+    Measured in the rerun #3 of Fase 3 (commit 8de386b): ``MSF_LHOST`` was unset,
+    ``msf_exploit`` answered ``msf_lhost_missing`` and the loop read that as a
+    plain tool failure -the model kept retrying MSF while ``searchsploit`` or the
+    ``impacket_*`` tools of the same profile were available. An incomplete
+    *operator* configuration is not a broken tool and it is not invalid input
+    from the model: it is ``unavailable`` (nobody can make it work from inside
+    the run), audited with the exact variable that is missing, so the agent
+    pivots and the operator has one actionable line to fix.
+
+    Only the variables a tool really needs are passed here: the result never
+    covers a value the tool can default (``MSF_LPORT`` has one), and the runtime
+    precondition is also reported by ``omni --doctor`` *before* a run
+    (see ``nexus_core/cli/doctor.py``).
+    """
+    env = tuple(str(name) for name in missing_env if str(name))
+    return ToolResult(
+        output={
+            "status": "configuration_error",
+            "reason": detail or f"{', '.join(env)} is required",
+        },
+        verified=False,
+        outcome="unavailable",
+        verification_method=f"{tool_id}_{CONFIG_MISSING_METHOD}",
+        evidence={
+            "missing_env": list(env),
+            "tool_id": str(tool_id),
+            **(({"detail": detail}) if detail else {}),
+        },
+    )
 
 
 def provider_unavailable_result(tool_id: str, result: "ToolResult") -> "ToolResult":
@@ -244,8 +282,6 @@ def provider_unavailable_result(tool_id: str, result: "ToolResult") -> "ToolResu
         verification_method=f"{tool_id}_{PROVIDER_UNAVAILABLE_METHOD}",
         evidence=evidence,
     )
-
-
 
 
 @dataclass(frozen=True)

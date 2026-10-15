@@ -249,6 +249,25 @@ de `options`. Si el modelo omite `RPORT`, se usa el default declarado por el
 módulo (`module.options`), no uno inventado. Un exploit que corre sin abrir
 sesión devuelve `status=timeout` con `verified=true` (la ejecución se verificó).
 
+**Callback de reverse shells (`MSF_LHOST` / `MSF_LPORT`).** Sin `MSF_LHOST`, un
+payload reverse no tiene a dónde conectar: el handler devuelve
+`outcome=unavailable` con `verification_method=nexus.exploit.msf_exploit_config_missing`
+y `evidence.missing_env=["MSF_LHOST"]`, así que el agente pivota en vez de
+reintentar MSF en bucle (antes era un fallo de contrato `msf_lhost_missing`). En
+Kali la dirección es la de `tun0` (la VPN):
+
+```bash
+ip -o -4 addr show tun0 | awk '{print $4}'   # p.ej. 10.0.0.1/23
+export MSF_LHOST=10.0.0.1                  # o escríbela en el .env del proyecto
+```
+
+El wizard de primer arranque autodetecta esa IP y la persiste en el `.env` del
+proyecto (el fichero que carga el runtime); si no hay `tun0`, avisa y deja el
+campo vacío. `omni --doctor` valida la precondición **antes** de lanzar un run:
+con `msfrpcd` escuchando y `MSF_LHOST` sin definir emite un *warning* con la
+acción concreta, y el detalle viaja en el bloque `runtime_preconditions` de
+`omni --doctor --json`.
+
 Las sesiones se gestionan con `nexus.session.list` (solo lectura, filtra por
 tipo y engagement) y `nexus.session.kill` (MEDIUM, cleanup por UUID). Ambas
 van por el gateway y quedan auditadas; ningún handler abre un shell.
