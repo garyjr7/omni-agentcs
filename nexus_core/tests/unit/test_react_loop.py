@@ -252,8 +252,14 @@ async def test_loop_retires_a_broken_tool_and_keeps_running(harness):
         )
 
     assert result.status == STATUS_MAX_ITERATIONS
-    # The tool actually ran three times, then was retired and refused.
-    assert len(spy.payloads) == 3
+    # The tool ran once; the two turns that repeated the identical call were
+    # answered with a correction instead of a re-execution (V1-26), and those
+    # repeats still count as tool failures -so it is retired after three attempts and
+    # the following turns are refused. Which is exactly what this regression
+    # protects: retire the tool, never abort the engagement.
+    assert len(spy.payloads) == 1
+    # The correction is what the model reads on the prompt *after* the repeat.
+    assert "Repetiste la invocación" in _messages_text(llm, 2)
     events = [
         event
         for event in store.list_run_events("system", context.run_id)

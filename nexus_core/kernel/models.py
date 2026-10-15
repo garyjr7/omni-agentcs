@@ -295,6 +295,37 @@ def provider_unavailable_result(tool_id: str, result: "ToolResult") -> "ToolResu
     )
 
 
+def tool_timeout_result(tool_id: str, timeout_seconds: Any) -> "ToolResult":
+    """Result for a tool the engine had to cut off at its own ``timeout_seconds``.
+
+    Measured in the rerun #7 (attempt 1, 2026-10-15): the model asked ``nmap -p-``
+    for ``timeout_seconds=600`` against a slow target, the gateway's own
+    ``asyncio.wait_for`` fired at 600 s, and the bare ``TimeoutError`` escaped the
+    tool layer: the *whole run* closed as ``provider_error`` with
+    ``summary: "TimeoutError"`` (exit 3) from iteration 1, while five other routes
+    of the profile were still available. A tool that runs out of time is a tool
+    failing *now*, exactly like a missing binary: it has to reach the loop as a
+    determinate ``timeout`` outcome, count as one tool failure, and let the tool be
+    retired after repeated attempts so the agent pivots.
+
+    It is deliberately not ``unavailable`` (the backend answered; the call just did
+    not finish inside the budget the caller declared) and never ``negative``
+    (nothing was observed about the target). A *provider* (LLM) timeout keeps its
+    own ``provider_error`` path: it is raised by the model call, never here.
+    """
+    return ToolResult(
+        output={
+            "status": "timeout",
+            "reason": f"the handler exceeded its {timeout_seconds}s budget",
+        },
+        verified=False,
+        timed_out=True,
+        outcome="timeout",
+        verification_method=f"{tool_id}_timeout",
+        evidence={"timeout_seconds": timeout_seconds, "tool_id": str(tool_id)},
+    )
+
+
 @dataclass(frozen=True)
 class ToolResult:
     """Canonical, evidence-backed result returned by every governed tool.

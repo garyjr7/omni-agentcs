@@ -65,6 +65,9 @@ from .react_support import (
     _action_entry,
     _observation_payload,
     unavailable_guidance,
+    timeout_guidance,
+    repeated_action_correction,
+    _invocation_signature,
     _budget_tokens,
     _budget_used,
     subagent_budget_subject,
@@ -984,6 +987,12 @@ class ReActCoordinator:
             arguments=memory._redact_arguments(self.action.arguments),
             warnings=self.action.warnings,
             expected_outcome=self.action.expected_outcome,
+            # Canonical identity of this call, computed from the raw arguments: it
+            # is what lets the next turn recognise an identical repeat (V1-26)
+            # without comparing redacted copies of the persisted entry.
+            invocation_signature=_invocation_signature(
+                self.action.tool_id, self.action.arguments
+            ),
         )
         return Transition.READY
 
@@ -1145,7 +1154,92 @@ class ReActCoordinator:
                 return Transition.NEXT_TURN
         return Transition.READY
 
+    def _repeated_failed_action(self) -> str | None:
+        """Tool id when this turn repeats, adjacently, an action that just failed (V1-26).
+
+        Measured in the rerun #7 (2026-10-15): iteration 9 spent ``msf_exploit``
+        (``method=msf_exploit_failed``) and iteration 10 proposed the byte-identical
+        invocation. The gateway keeps a failed invocation journaled as ``unknown``
+        -its effect may have happened- so the repeat demanded a human approval the
+        ``--trust-mode`` run does not hold: ``termination_reason="blocked"`` with the
+        ``exploit`` profile 10 iterations and ~17k tokens short of its budget. In the
+        rerun #6 the same failure produced a correction instead, and the model
+        pivoted to ``psexec``, which opened the session.
+
+        The trigger is the measured one, and only that: same ``tool_id``, same
+        canonical arguments, and the *immediately preceding* turn. A repeat somewhere
+        else in the history, or a repeat of something that worked, is a different
+        case (the latter belongs to the gateway's dedup, V1-14) and keeps its own
+        governance.
+        """
+        previous = self.actions[-1] if self.actions else None
+        if not previous or not isinstance(self.action, ToolCall):
+            return None
+        signature = previous.get("invocation_signature")
+        if not signature:
+            return None
+        result = previous.get("tool_result")
+        if not isinstance(result, dict) or result.get("success"):
+            return None
+        if signature != _invocation_signature(self.action.tool_id, self.action.arguments):
+            return None
+        return str(self.action.tool_id)
+
+    def _correct_repeated_action(self, tool_id: str) -> Transition:
+        """Answer an identical repeat of a failed action with a correction (V1-26).
+
+        The turn is a normal turn of the loop -it consumes the iteration and the
+        tokens of the active subagent- and it never reaches the gateway. The policy
+        gate of the turn (``_approve_tool``) already ran; what is avoided here is the
+        journal's ``retry:invocation:<id>`` approval for an unknown outcome, which a
+        ``--trust-mode`` run cannot grant and which closed the rerun #7 as
+        ``blocked``. So no approval is requested or consumed and the run continues:
+        the model gets text telling it what to do next, never a silent refusal.
+        """
+        self.telemetry.flag(FrictionFlag.REPEATED_ACTION)
+        correction = repeated_action_correction(tool_id)
+        self.observation = {
+            "success": False,
+            "outcome": "repeated_action",
+            "tool_id": tool_id,
+            "error": correction,
+            "failure_kind": "repeated_action",
+            "guidance": correction,
+            "available_tools": sorted(self.allowed_catalog),
+        }
+        # The repeat counts as a tool failure (B3): a model that keeps insisting on a
+        # route that produced nothing ends up with the tool retired after repeated
+        # attempts -exactly as if it had failed again- so the next prompt only offers
+        # the remaining routes. Without this, insisting could burn the whole profile
+        # budget one correction at a time without ever retiring anything. It is the
+        # per-tool counter that moves, never the run-level ``consecutive_failures``:
+        # a correction must not be able to abort an engagement.
+        self._note_tool_failure(tool_id)
+        self.entry["tool_result"] = self.observation
+        self.actions.append(self.entry)
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            self.action,
+            self.observation,
+            subagent_id=self.active_subagent_id,
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=self.action.action,
+            decision="deny",
+            tool_id=tool_id,
+            reason="repeated_failed_action",
+        )
+        return Transition.NEXT_TURN
+
     async def _execute_tool(self) -> Transition:
+        repeated_tool = self._repeated_failed_action()
+        if repeated_tool is not None:
+            return self._correct_repeated_action(repeated_tool)
         tool_started = time.perf_counter()
         try:
             invocation, cancelled_now = await self.tool_execution.execute(
@@ -1240,7 +1334,30 @@ class ReActCoordinator:
             backend_unavailable = (
                 isinstance(exc, ProviderFailure) and getattr(exc, "kind", "fatal") == "unavailable"
             )
-            if backend_unavailable:
+            if isinstance(exc, TimeoutError):
+                # V1-27: the per-call ceiling of the loop (or a timeout raised by
+                # the tool layer) is the *tool* running out of time, never the
+                # provider failing. It becomes the same determinate ``timeout``
+                # observation the gateway returns for a handler that outlived its
+                # contract (``tool_timeout_result``), so it counts as one tool
+                # failure and the tool is retired after repeated attempts instead
+                # of closing the run as ``provider_error`` -the measured death of
+                # the rerun #7 attempt 1: a 600 s ``nmap -p-`` ended the whole run
+                # with ``summary: "TimeoutError"`` (exit 3) from iteration 1.
+                self.observation = {
+                    "success": False,
+                    "outcome": "timeout",
+                    "error_type": type(exc).__name__,
+                    "error": (str(exc) or "the tool call exceeded its time budget")[:1000],
+                    "failure_kind": "tool_timeout",
+                    "evidence": {
+                        "tool_id": str(self.action.tool_id),
+                        "timeout_seconds": self.config.timeout_per_tool_seconds,
+                    },
+                    "guidance": timeout_guidance(self.action.tool_id),
+                }
+                self._note_tool_failure(str(self.action.tool_id))
+            elif backend_unavailable:
                 # Fase 3b: a backend that is not serving *now* is not a fatal
                 # provider error. It becomes the same ``unavailable`` observation
                 # a handler returns (never ``negative``: nothing was observed),
@@ -1258,7 +1375,10 @@ class ReActCoordinator:
                     "guidance": unavailable_guidance(self.action.tool_id, reason),
                 }
                 self._note_tool_failure(str(self.action.tool_id))
-            elif isinstance(exc, (ProviderFailure, TimeoutError, ConnectionError)):
+            elif isinstance(exc, (ProviderFailure, ConnectionError)):
+                # A provider failure (the model call) still ends the run as
+                # ``provider_error``; a *tool* timeout never reaches this branch
+                # (V1-27, handled above).
                 self.status = "provider_error"
                 self.final_summary = type(exc).__name__
                 return Transition.STOP
@@ -1298,7 +1418,8 @@ class ReActCoordinator:
                 del self.run_evidence[:-RUN_EVIDENCE_MAX_OBSERVATIONS]
             else:
                 self.consecutive_failures += 1
-                if str(self.observation.get("outcome") or "") == "unavailable":
+                failure_outcome = str(self.observation.get("outcome") or "")
+                if failure_outcome == "unavailable":
                     # Fase 3b: a handler (or the gateway) declared that the
                     # backend did not serve the call. It is a *tool* failure -
                     # not invalid input- so it retires the tool after repeated
@@ -1310,6 +1431,13 @@ class ReActCoordinator:
                     self.observation["guidance"] = unavailable_guidance(
                         self.action.tool_id, reason
                     )
+                    self._note_tool_failure(str(self.action.tool_id))
+                elif failure_outcome == "timeout":
+                    # V1-27: a tool that ran out of time is a *tool* failure. It
+                    # counts, the model is told the call was cut off (so a repeat
+                    # with the same arguments is pointless) and the tool is retired
+                    # after repeated attempts so the phase pivots.
+                    self.observation["guidance"] = timeout_guidance(self.action.tool_id)
                     self._note_tool_failure(str(self.action.tool_id))
         self.entry["tool_result"] = self.observation
         self.actions.append(self.entry)

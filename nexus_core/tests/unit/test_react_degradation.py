@@ -191,8 +191,12 @@ async def test_agent_pivots_after_a_broken_tool_is_retired(harness):
     assert llm.kwargs and all(
         item.get("max_tokens") == REACT_DEFAULT_MAX_TOKENS for item in llm.kwargs
     )
+    # V1-26: an identical repeat of an action that *just failed* is answered with a
+    # correction instead of being re-executed, and it still counts as a tool failure -
+    # so the retirement after three attempts (B3, what this test protects) happens
+    # exactly as before and the pivot to the other route of the phase is unchanged.
     executed = [payload["tool_id"] for payload in spy.payloads]
-    assert executed == ["nexus.recon.httpx"] * 3 + ["nexus.recon.ftp"]
+    assert executed == ["nexus.recon.httpx", "nexus.recon.ftp"]
     retired = _events(store, context.run_id, "react.tool_unavailable")
     assert len(retired) == 1
     assert retired[0]["payload"]["tool_id"] == "nexus.recon.httpx"
@@ -224,8 +228,11 @@ async def test_invalid_input_does_not_retire_the_tool(harness):
 
     assert result.status == STATUS_COMPLETED
     assert _events(store, context.run_id, "react.tool_unavailable") == []
-    # The tool kept executing after the invalid attempts.
-    assert [p["tool_id"] for p in spy.payloads] == ["nexus.recon.nmap"] * 4
+    # The first attempt really ran and was rejected as invalid input; the two
+    # identical repeats that follow get a correction instead of a re-execution
+    # (V1-26), and the fourth turn -different arguments- runs. The point of the test
+    # is untouched: invalid input never retires the tool.
+    assert [p["tool_id"] for p in spy.payloads] == ["nexus.recon.nmap"] * 2
 
 
 async def test_phase_timeout_retires_failing_tools_and_is_audited(harness, monkeypatch):
@@ -266,15 +273,17 @@ async def test_run_continues_to_budget_while_any_route_remains(harness):
             config=_loop_config(max_iterations=6),
         )
 
-    # The broken tool was retired after three *tool* failures, but the phase has
-    # other routes, so the run keeps going to the iteration budget (B3).
+    # The broken tool was retired after three *tool* failures -the first attempt ran
+    # and failed, the two identical repeats of it were answered with a correction
+    # (V1-26)- but the phase has other routes, so the run keeps going to the
+    # iteration budget (B3).
     assert result.status == STATUS_MAX_ITERATIONS
     retired = {
         event["payload"]["tool_id"]
         for event in _events(store, context.run_id, "react.tool_unavailable")
     }
     assert retired == {"nexus.recon.ftp"}
-    assert len([p for p in spy.payloads if p["tool_id"] == "nexus.recon.ftp"]) == 3
+    assert len([p for p in spy.payloads if p["tool_id"] == "nexus.recon.ftp"]) == 1
 
 
 def _loop_config(**kwargs):

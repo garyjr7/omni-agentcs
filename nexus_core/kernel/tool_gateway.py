@@ -21,6 +21,7 @@ from .models import (
     ToolDefinition,
     ToolResult,
     provider_unavailable_result,
+    tool_timeout_result,
 )
 from .policy import PolicyEngine
 from .redaction import sanitize
@@ -370,16 +371,30 @@ class ToolGateway:
             handler = self._handlers[tool_id]
             started = time.monotonic()
             try:
+                # Only the timeout the gateway itself has to impose is a V1-27
+                # ``timeout``; a handler that declares its own subprocess timeout
+                # keeps the Fase 3b reading (``unavailable``: the backend did not
+                # serve the call).
+                handler_timed_out = False
                 if inspect.iscoroutinefunction(handler):
-                    result = await asyncio.wait_for(
-                        handler(arguments, context), timeout=definition.timeout_seconds
-                    )
+                    try:
+                        result = await asyncio.wait_for(
+                            handler(arguments, context), timeout=definition.timeout_seconds
+                        )
+                    except (TimeoutError, asyncio.TimeoutError):
+                        # V1-27: the handler outlived the budget of its own contract.
+                        # That is a *tool* running out of time -never the provider
+                        # failing- so it becomes the determinate ``timeout`` result
+                        # of ``tool_timeout_result`` instead of a bare ``TimeoutError``
+                        # that used to close the whole run as ``provider_error``.
+                        result = tool_timeout_result(tool_id, definition.timeout_seconds)
+                        handler_timed_out = True
                 else:
                     result = handler(arguments, context)
                 if not isinstance(result, ToolResult):
                     raise TypeError("tool handlers must return ToolResult with deterministic evidence")
                 result.to_dto()  # Validate before domain decisions or assertions.
-                if not result.completed:
+                if not result.completed and not handler_timed_out:
                     # V0-22: a declared ``negative``/``denied``/``unsupported``
                     # result is an observation about the target and completes
                     # below. What is left is "could not look": a timeout, an
@@ -411,7 +426,13 @@ class ToolGateway:
                 # Pin the contract and parser revision that produced this result
                 # (V1-8) before deriving assertions from it.
                 result = result.stamp_versions(tool_id, definition.version, PARSERS_VERSION)
-                assertions = derive_assertions(tool_id, arguments, result, context)
+                # A call that timed out observed nothing about the target: it derives
+                # no assertion (V1-27), so a run that only collected timeouts can
+                # never advance a phase.
+                assertions = (
+                    [] if handler_timed_out
+                    else derive_assertions(tool_id, arguments, result, context)
+                )
                 result_value = result.to_dict()
                 from .domain_dto import ToolResultDTO
                 result_value = ToolResultDTO.model_validate({
@@ -441,8 +462,15 @@ class ToolGateway:
                     tool_id=tool_id, tenant_id=context.tenant_id,
                 )
                 persist_assertions(assertions, context, tool_id)
-                journal.finish(context.invocation_id, context.tenant_id, result_value,
-                               artifact_store=journal_artifacts)
+                if handler_timed_out:
+                    # The effect of a timed-out call is *not* confirmed, so the journal
+                    # keeps it ``unknown`` exactly like any other failed invocation: a
+                    # repeat is never answered with data this run never obtained
+                    # (``tool_already_invoked`` is only for a confirmed success, V1-27).
+                    journal.unknown(context.invocation_id, context.tenant_id)
+                else:
+                    journal.finish(context.invocation_id, context.tenant_id, result_value,
+                                   artifact_store=journal_artifacts)
                 await hooks.emit('post_tool_use', tool_id=tool_id, result=result_value)
                 return result_value
             except BaseException as exc:

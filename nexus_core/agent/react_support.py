@@ -148,6 +148,61 @@ def unavailable_guidance(tool_id: Any, reason: str) -> str:
     )
 
 
+def timeout_guidance(tool_id: Any) -> str:
+    """Model-facing sentence for a tool that ran out of its time budget (V1-27).
+
+    The agent has to learn three things from the observation: the call was *cut
+    off* (so nothing was observed about the target), repeating it unchanged will
+    be cut off again, and the phase still has other routes. Measured in the rerun
+    #7 (attempt 1, 2026-10-15): a timed-out ``nmap -p-`` had no such message and
+    the whole run closed as ``provider_error`` from iteration 1.
+    """
+    return (
+        f"tool '{tool_id}' exceeded its time budget and was aborted: it observed "
+        "nothing about the target. Reduce the work it has to do (fewer ports or "
+        "options) or use another route of the phase; repeating the same call will "
+        "run out of time again."
+    )
+
+
+def repeated_action_correction(tool_id: Any) -> str:
+    """Model-facing correction for an identical repeat of a failed action (V1-26).
+
+    Measured in the rerun #7 (2026-10-15): the ``msf_exploit`` call of iteration 9
+    failed and iteration 10 proposed it byte-identically. The gateway keeps a
+    failed invocation journaled as ``unknown`` (its effect may have happened), so
+    the repeat demanded a human approval that the ``--trust-mode`` run does not
+    hold, and the loop closed as ``blocked`` with budget to spare. In the rerun #6
+    the same failure produced a correction and the model pivoted to ``psexec``,
+    which opened the session. What the correction has to say is *what to do next*,
+    never a silent refusal.
+    """
+    return (
+        f"Repetiste la invocación de '{tool_id}' con los mismos argumentos. La "
+        "anterior falló o no tuvo efecto, así que repetirla no aporta información "
+        "nueva. Propón UNA acción NUEVA: otra tool, otros argumentos, o "
+        "task_complete si ya no quedan rutas viables."
+    )
+
+
+def _invocation_signature(tool_id: Any, arguments: Any) -> str:
+    """Canonical signature of one tool call (tool id + redacted arguments).
+
+    The loop uses it to tell a repeat of the *immediately preceding* action from a
+    new attempt (V1-26). The arguments are redacted with the same field policy
+    used to persist them, so the signature never carries a credential and still
+    matches the copy kept in the action log.
+    """
+    import hashlib
+
+    payload = [str(tool_id or ""), memory._redact_arguments(arguments or {})]
+    try:
+        text = json.dumps(payload, sort_keys=True, default=str)
+    except (TypeError, ValueError, RecursionError):
+        text = str(payload)
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
 def _failure_kind(exc: BaseException) -> str:
     """Classify a tool exception as ``"input"`` or ``"tool"``.
 
