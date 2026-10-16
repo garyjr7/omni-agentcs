@@ -208,7 +208,7 @@ def findings_from_collection(
     # The blackboard is part of the durable record too: a fact the operator
     # logged (credential, access, privilege, vulnerability...) must show up as a
     # finding, not be dropped just because it came from a bookkeeping tool (H3).
-    findings.extend(_fact_findings(facts))
+    findings.extend(_fact_findings(facts, scope=collection.scope))
     findings = [mitre.enrich_finding_with_mitre(finding) for finding in _deduplicate(findings)]
     findings.sort(key=lambda item: (severity_rank(item.severity), item.discovered_at))
     failed.sort(key=lambda item: item.attempted_at)

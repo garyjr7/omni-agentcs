@@ -24,7 +24,9 @@ from .parser import (
 )
 
 from .react_types import (
+    BUDGET_EXEMPT_EVENT_TYPE,
     DEFAULT_AGENT_ID,
+    OBJECTIVE_COMPLETE_EVENT_TYPE,
     MAX_CONSECUTIVE_TOOL_FAILURES,
     MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE,
     TOOL_UNAVAILABLE_EVENT_TYPE,
@@ -86,12 +88,15 @@ from .planner import (
     EnumerationEscalation,
     Plan,
     SessionHandover,
+    apply_objective_completion,
     credential_handover,
     enumeration_escalation,
+    enumeration_still_open,
     escalate_credential,
     escalate_enumeration,
     escalate_session,
     established_msf_session,
+    objective_completion,
     session_handover,
     verified_credential,
 )
@@ -181,6 +186,15 @@ class ReActCoordinator:
     #: cannot close its own phase); it is dropped as soon as the evidence moves
     #: the phase forward, so it never drags the plan backwards.
     credential_handed_over: bool
+    #: The board already proves the objective (verified top privilege + verified
+    #: loot). Refreshed every turn from the facts; it adds the closure hint to the
+    #: plan and exempts the active profile's token ceiling (V1-35, V1-38).
+    objective_complete: bool
+    #: Whether the ``orchestrator.objective_complete`` event was already emitted
+    #: for this run (the signal is per run, not per turn).
+    objective_complete_emitted: bool
+    #: Whether the last budget check was waived because the objective is complete.
+    budget_exempt: bool
     #: Per-turn operational telemetry (tokens, reasoning duration, friction,
     #: blackboard delta). Built in ``_initialize`` and published one record per
     #: iteration; it is the only place those four signals are joined.
@@ -369,6 +383,9 @@ class ReActCoordinator:
         self.enumeration_escalated = False
         self.session_handed_over = False
         self.credential_handed_over = False
+        self.objective_complete = False
+        self.objective_complete_emitted = False
+        self.budget_exempt = False
         self.telemetry = TurnTelemetryRecorder(
             store=self.store, tenant_id=self.tenant_id, run_id=self.run_id
         )
@@ -445,6 +462,7 @@ class ReActCoordinator:
         self._apply_enumeration_exhaustion()
         self._apply_credential_handover()
         self._apply_session_handover()
+        self._refresh_objective_complete()
         self.last_plan = self.plan
         return Transition.READY
 
@@ -458,20 +476,24 @@ class ReActCoordinator:
         gateway keeps governing every tool of the new profile.
         """
         if self.enumeration_escalated:
-            # Already handed over: keep it handed over while the evidence still
-            # describes an ``enumeration`` phase, instead of falling back to the
+            # Already handed over: keep it handed over *while the evidence still
+            # describes an enumeration phase*, instead of falling back to the
             # profile that just failed. Evidence that closes the phase (a
-            # credential, an access) moves ``current`` on its own and the rule
-            # stops applying there.
-            self.plan = escalate_enumeration(
-                self.plan,
-                EnumerationEscalation(
-                    phase="exploitation",
-                    subagent="exploit",
-                    reason=ENUMERATION_EXHAUSTED_REASON,
-                ),
-            )
-            self.plan_reason = ENUMERATION_EXHAUSTED_REASON
+            # credential, an access) moves ``current`` forward on its own, and
+            # from that turn on the latch lets go (V1-36): an unconditional
+            # re-apply monopolised the phase forever, so a run that once escaped
+            # an exhausted enumeration could never reach
+            # ``privilege_escalation``/``post_exploitation`` again.
+            if enumeration_still_open(self.plan):
+                self.plan = escalate_enumeration(
+                    self.plan,
+                    EnumerationEscalation(
+                        phase="exploitation",
+                        subagent="exploit",
+                        reason=ENUMERATION_EXHAUSTED_REASON,
+                    ),
+                )
+                self.plan_reason = ENUMERATION_EXHAUSTED_REASON
             return
         escalation = enumeration_escalation(
             self.plan,
@@ -520,6 +542,49 @@ class ReActCoordinator:
         self.plan = escalate_credential(self.plan, handover)
         self.plan_reason = handover.reason
         self.credential_handed_over = True
+
+    def _refresh_objective_complete(self) -> None:
+        """Detect that the engagement's objective is already met (V1-35).
+
+        The rule lives in the planner (deterministic, unit-tested); here it is
+        only *applied*: the plan carries a hint that says the objective is met,
+        and the run audits the verdict once with the refs that prove it. Nothing
+        is authorized and nothing is closed by this - the phases were closed by
+        their own evidence, and ``task_complete`` stays the model's decision.
+        """
+        completion = objective_completion(
+            self._blackboard_facts(), subagent_id=self.last_subagent_id
+        )
+        self.objective_complete = completion.complete
+        if not completion.complete:
+            return
+        self.plan = apply_objective_completion(self.plan, completion)
+        if self.objective_complete_emitted:
+            return
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            OBJECTIVE_COMPLETE_EVENT_TYPE,
+            {
+                **completion.to_payload(),
+                "hint": completion.hint,
+                "iteration": self.iteration,
+                "phase": self.plan.current,
+                "subagent_id": self.last_subagent_id,
+            },
+        )
+        self.objective_complete_emitted = True
+
+    def _blackboard_facts(self) -> list[dict[str, Any]]:
+        """Every fact of the engagement (never raises)."""
+        if not self.engagement_id or not getattr(self, "store", None):
+            return []
+        try:
+            from nexus_core.kernel.blackboard import Blackboard
+
+            return list(Blackboard(self.store).list_facts(self.tenant_id, self.engagement_id))
+        except Exception:  # noqa: BLE001 - a missing board must not abort a run
+            return []
 
     def _verified_credential(self) -> bool:
         """Whether the board holds a verified credential fact (never raises)."""
@@ -643,9 +708,32 @@ class ReActCoordinator:
                 self.store, self.tenant_id, self.run_id, subagent_budget_subject(self.subagent.id)
             )
             if spent >= self.subagent.token_budget:
-                self.status = STATUS_SUBAGENT_BUDGET
-                self.final_summary = f"subagent '{self.subagent.id}' exhausted its token budget: {spent} >= {self.subagent.token_budget}"
-                return Transition.STOP
+                # V1-38: an engagement whose objective is already met does not die
+                # of bookkeeping. Spending a few more turns closing (with
+                # ``task_complete``) is worth more than stopping with the work done
+                # and the run reported as failed (measured in rerun 10: 63 224 of
+                # 60 000 tokens spent by ``privesc`` *after* root.txt was on the
+                # board, and the run ended without ``task_complete``). The ceiling
+                # is waived, audited and counted as friction - never silently.
+                if self.objective_complete:
+                    self.budget_exempt = True
+                    self.store.append_run_event(
+                        self.tenant_id,
+                        self.run_id,
+                        BUDGET_EXEMPT_EVENT_TYPE,
+                        {
+                            "subagent_id": self.subagent.id,
+                            "spent": spent,
+                            "token_budget": self.subagent.token_budget,
+                            "budget_exempt_if_objective_complete": True,
+                            "iteration": self.iteration,
+                        },
+                    )
+                    self.telemetry.flag(FrictionFlag.BUDGET_EXEMPT)
+                else:
+                    self.status = STATUS_SUBAGENT_BUDGET
+                    self.final_summary = f"subagent '{self.subagent.id}' exhausted its token budget: {spent} >= {self.subagent.token_budget}"
+                    return Transition.STOP
         return Transition.READY
 
     def _advance_phase(self) -> Transition:

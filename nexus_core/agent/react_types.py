@@ -80,7 +80,15 @@ STATUS_BUDGET_EXCEEDED = "budget_exceeded"
 #: A subagent exhausted its own iteration/token allowance.
 STATUS_SUBAGENT_BUDGET = "subagent_budget_exceeded"
 SUBAGENT_EVENT_TYPE = "orchestrator.subagent"
+#: Emitted once when the planner sees the objective *completed* on the board:
+#: a verified top privilege plus verified loot. It is a signal with a hint, never
+#: an order -the model still decides to close with ``task_complete`` (V1-35).
+OBJECTIVE_COMPLETE_EVENT_TYPE = "orchestrator.objective_complete"
 BUDGET_EVENT_TYPE = "react.budget_exceeded"
+#: Emitted when the active subagent is over its token ceiling but the objective is
+#: already complete: the loop spends the turn closing instead of dying without a
+#: ``task_complete`` (V1-38). Payload carries ``budget_exempt_if_objective_complete``.
+BUDGET_EXEMPT_EVENT_TYPE = "react.budget_exempt"
 #: Subject under which the loop books its own token spend.
 BUDGET_SUBJECT_TYPE = "model_route"
 BUDGET_SUBJECT_ID = "react"

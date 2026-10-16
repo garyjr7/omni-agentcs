@@ -209,6 +209,14 @@ def derive_assertions(tool_id, arguments, result, context):
             (command == 'id' and re.fullmatch(r'uid=0\(root\) gid=\d+[^\n]*', stdout))
             or (command == 'id -u' and stdout == '0')
             or (command == 'whoami' and stdout == 'root')
+            # The canonical root identity line substantiates the claim on its own,
+            # whatever ran it: measured in rerun 10, the escalation was proven by
+            # ``sudo /bin/tar … --checkpoint-action=exec=/usr/bin/id``, whose stdout
+            # printed ``uid=0(root) gid=0(root) groups=0(root)``. Requiring the
+            # literal command ``id`` meant the engine recorded **no** ``privilege``
+            # fact at all, so `privilege_escalation` could never close and the
+            # planner could not see that the objective had been reached (V1-35).
+            or re.search(r'uid=0\(root\) gid=\d+', stdout)
         ):
             add('privilege', target, {'uid': 0, 'user': 'root'})
         # A flag-shaped token in the output of a verified authenticated command is

@@ -116,6 +116,9 @@ class FrictionFlag(str, Enum):
     REPEATED_ACTION = "repeated_action"
     #: ``task_complete`` was refused because the completion gates said otherwise.
     PREMATURE_COMPLETION = "premature_completion"
+    #: The subagent was over its token ceiling and the turn was allowed anyway
+    #: because the objective is already complete on the board (V1-38).
+    BUDGET_EXEMPT = "budget_exempt_if_objective_complete"
     #: The tool call was cancelled by the operator.
     CANCELLED = "cancelled"
     #: The call violated the signed engagement scope (the run aborts on this one).

@@ -13,6 +13,7 @@ unit-test, exactly like the tool parsers.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping
 
@@ -137,6 +138,13 @@ class Plan:
     #: steer which capability profile is useful next (see
     #: :func:`nexus_core.agent.subagents.select_for_plan`).
     leads: Mapping[str, int] = field(default_factory=dict)
+    #: True when the objective is already completed on the board (verified top
+    #: privilege plus verified loot). It never changes ``current`` by itself: the
+    #: phases are closed by their own evidence. It adds ``objective_hint`` to the
+    #: prompt and lets the loop exempt the active profile's token ceiling so the
+    #: model can close with ``task_complete`` (V1-35, V1-38).
+    objective_complete: bool = False
+    objective_hint: str = ""
 
     # ------------------------------------------------------------- derived
     @property
@@ -180,6 +188,8 @@ class Plan:
                 suffix = " (opcional)" if item.optional else ""
                 lines.append(f"  {marker} {item.label}{suffix}")
         lines.append(f"SIGUIENTE PASO DEL PLAN: {self.next_hint}")
+        if self.objective_complete and self.objective_hint:
+            lines.append(f"OBJETIVO CUMPLIDO: {self.objective_hint}")
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
@@ -195,6 +205,7 @@ class Plan:
             "done": done,
             "total": total,
             "counts": dict(self.counts),
+            "objective_complete": self.objective_complete,
             "phases": [item.to_dict() for item in self.phases],
         }
 
@@ -260,14 +271,35 @@ def _is_done(phase: Phase, counts: Mapping[str, int]) -> bool:
     return any(counts.get(fact_type, 0) >= phase.min_count for fact_type in phase.evidence)
 
 
+def _last_closed_index(counts: Mapping[str, int]) -> int:
+    """Index of the furthest phase the evidence has closed (``-1`` when none)."""
+    last = -1
+    for index, phase in enumerate(PHASES):
+        if _is_done(phase, counts):
+            last = index
+    return last
+
+
 def active_phase(counts: Mapping[str, int] | None = None) -> str:
-    """Return the id of the phase the engagement is currently in."""
+    """Return the id of the phase the engagement is currently in.
+
+    A phase cannot be *current* while a later one is already closed by evidence:
+    the chain advanced past it, so it is treated as behind the engagement (a
+    plan that reports an earlier phase as current while a later one is ``done``
+    has a mandatory-phase inversion the completion gate can never close).
+    Measured in rerun 10 (``run_179cef8b7b424b339caba3d2093eed9d``): ``access``
+    was verified against SSH while the board carried no
+    ``endpoint``/``credential``/``user`` fact -the flag closes ``exploitation``
+    but is not enumeration evidence-, so ``enumeration`` came back as the current
+    phase with ``exploitation`` already ``done`` and the profile selector sent
+    the run back to enumerating with access in hand.
+    """
     counts = counts or {}
-    for phase in PHASES:
-        if phase.optional:
+    closed = _last_closed_index(counts)
+    for index, phase in enumerate(PHASES):
+        if phase.optional or index <= closed:
             continue
-        if not _is_done(phase, counts):
-            return phase.id
+        return phase.id
     return PHASES[-1].id
 
 
@@ -284,9 +316,17 @@ def build_plan(
     normalized = normalize_counts(counts=counts, facts=facts)
     lead_counts = normalize_counts(counts=leads) if leads is not None else count_leads(facts)
     current = active_phase(normalized)
+    current_index = PHASE_IDS.index(current)
     statuses: list[PhaseStatus] = []
-    for phase in PHASES:
-        if _is_done(phase, normalized):
+    for index, phase in enumerate(PHASES):
+        if _is_done(phase, normalized) or (index < current_index and not phase.optional):
+            # Closed by its own evidence, or left behind by it: a mandatory
+            # phase ``pending`` behind the current one is a plan the completion
+            # gate can never close (V1-18), and the evidence of a later phase is
+            # exactly the deterministic decision that the earlier one yielded.
+            # An *optional* phase is only ever closed by its own evidence: it
+            # blocks nothing, so its status must keep meaning "the engagement did
+            # it" (a single session never closes lateral movement).
             status = STATUS_DONE
         elif phase.id == current:
             status = STATUS_CURRENT
@@ -736,6 +776,166 @@ def escalate_credential(plan: Plan, handover: CredentialHandover) -> Plan:
     return hand_over_phase(plan, phase=handover.phase)
 
 
+#: Reason/hint the planner adds once the objective is complete (V1-35). It is a
+#: *suggestion*: the model decides whether to close (the completion gate keeps its
+#: own rules). Measured in rerun 10 (``run_179cef8b7b424b339caba3d2093eed9d``): with
+#: ``uid=0`` proven and ``root.txt`` already promoted as a verified ``loot`` fact,
+#: the agent kept hunting a ``user.txt`` that does not exist on the instance until
+#: ``privesc`` exhausted its 60 000-token budget, and the run closed with
+#: ``findings: 0`` and no ``task_complete``.
+OBJECTIVE_COMPLETE_HINT = (
+    "Objetivo cumplido: privilegio máximo alcanzado + loot verificado capturado. "
+    "Puedes cerrar con task_complete."
+)
+#: Profiles whose turn may see the objective completed. They are the profiles that
+#: own the last phases of the kill chain; the iteration right after the loot lands
+#: is still running the profile that captured it, because the plan is rebuilt from
+#: the board on the *next* turn.
+OBJECTIVE_COMPLETE_SUBAGENTS: frozenset[str] = frozenset({"privesc", "postexploit", "lateral"})
+#: Accounts whose privilege is "top" for the closure rule. ``root`` is Unix and
+#: ``SYSTEM``/``Administrator`` are Windows; the comparison is case-insensitive and
+#: a ``uid == 0`` value counts on its own (the ssh/ret2libc branches assert it).
+TOP_PRIVILEGE_ACCOUNTS: frozenset[str] = frozenset(
+    {"root", "system", "nt authority\\system", "administrator", "admin"}
+)
+#: ``verification_method`` of a verified SSH channel (V1-31).
+SSH_ACCESS_METHOD = "ssh_exec_completed"
+
+
+@dataclass(frozen=True)
+class ObjectiveCompletion:
+    """Verdict of the objective-completion rule plus the refs that prove it."""
+
+    complete: bool = False
+    privilege_ref: str = ""
+    loot_refs: tuple[str, ...] = ()
+    hint: str = ""
+
+    def to_payload(self) -> dict[str, Any]:
+        """Payload of the ``orchestrator.objective_complete`` event."""
+        return {"privilege_ref": self.privilege_ref, "loot_refs": list(self.loot_refs)}
+
+
+_FLAG_SHAPED = re.compile(r"(?:THM|HTB|FLAG|flag|CTF|ctf)\{[^}\s]{4,200}\}")
+
+
+def _fact_value(fact: Any) -> Mapping[str, Any]:
+    """``value`` of a fact record, as a mapping (never raises)."""
+    if not isinstance(fact, Mapping):
+        return {}
+    value = fact.get("value")
+    return value if isinstance(value, Mapping) else {}
+
+
+def loot_is_evidence(value: Mapping[str, Any] | None) -> bool:
+    """Whether a ``loot`` value is a *captured artifact* rather than a note.
+
+    Two shapes count: a content digest (``sha256``, what ``sliver_loot`` records)
+    or a flag-shaped token (``flag{fake_flag}``, what every command-execution branch
+    records). A loot fact whose value carries neither is a note, not loot.
+    """
+    value = value or {}
+    if str(value.get("sha256") or "").strip():
+        return True
+    for name in ("flag", "value", "content", "excerpt"):
+        if _FLAG_SHAPED.search(str(value.get(name) or "")):
+            return True
+    key_flag = str(value.get("flag") or "").strip()
+    return bool(key_flag and key_flag.upper() != key_flag.lower())
+
+
+def top_privilege(value: Mapping[str, Any] | None) -> bool:
+    """Whether a ``privilege`` value states the maximum privilege level.
+
+    Only two shapes count: ``uid == 0`` (Unix) or an account name in
+    :data:`TOP_PRIVILEGE_ACCOUNTS` (Windows). A ``privilege`` fact naming some
+    other account is real evidence, just not the top of the chain.
+    """
+    value = value or {}
+    uid = value.get("uid")
+    if uid in (0, "0"):
+        return True
+    for name in ("user", "username", "account"):
+        account = str(value.get(name) or "").strip().lower()
+        if account and account in TOP_PRIVILEGE_ACCOUNTS:
+            return True
+    return False
+
+
+def objective_completion(
+    facts: Iterable[Any] | None = None,
+    *,
+    subagent_id: str | None = None,
+) -> ObjectiveCompletion:
+    """Rule ``si X entonces Y`` (no inference): the board already holds a verified
+    top privilege **and** verified loot, and the turn is being run by a profile
+    that owns the tail of the kill chain. Then the engagement's objective is met
+    and the model is *suggested* to close.
+
+    A lead never counts (``is_verified_fact``): an agent-declared ``privilege`` or
+    ``loot`` is a hypothesis. Anything outside the shape returns
+    ``ObjectiveCompletion()`` with ``complete=False``.
+    """
+    from nexus_core.kernel.blackboard import is_verified_fact
+
+    if str(subagent_id or "") not in OBJECTIVE_COMPLETE_SUBAGENTS:
+        return ObjectiveCompletion()
+    privilege_ref = ""
+    loot_refs: list[str] = []
+    for fact in facts or ():
+        if not isinstance(fact, Mapping) or not is_verified_fact(fact):
+            continue
+        fact_type = str(fact.get("fact_type") or "")
+        key = str(fact.get("key") or "")
+        if fact_type == "privilege" and not privilege_ref and top_privilege(_fact_value(fact)):
+            privilege_ref = key
+        elif fact_type == "loot" and loot_is_evidence(_fact_value(fact)):
+            loot_refs.append(key)
+    if not privilege_ref or not loot_refs:
+        return ObjectiveCompletion()
+    return ObjectiveCompletion(
+        complete=True,
+        privilege_ref=privilege_ref,
+        loot_refs=tuple(loot_refs),
+        hint=OBJECTIVE_COMPLETE_HINT,
+    )
+
+
+def apply_objective_completion(plan: Plan, completion: ObjectiveCompletion) -> Plan:
+    """Return *plan* carrying the closure hint, or *plan* unchanged.
+
+    The hint is **not** an order and closes nothing: it only tells the model the
+    objective is met (the phases were closed by their own evidence).
+    """
+    if not completion.complete:
+        return plan
+    return replace(
+        plan,
+        objective_complete=True,
+        objective_hint=completion.hint or OBJECTIVE_COMPLETE_HINT,
+    )
+
+
+def enumeration_still_open(plan: Plan) -> bool:
+    """Whether the *board's own counts* still describe ``enumeration``.
+
+    Used to bound the one-way enumeration hand-over: while the counts still say
+    ``enumeration`` the forced ``exploitation`` must stick (there is no evidence
+    to replace it with), but as soon as the evidence closes the phase the latch
+    has to let go, or the plan can never reach ``privilege_escalation`` /
+    ``post_exploitation`` again (V1-36: measured in rerun 10, where the profile
+    selection could be monopolised by the phase the hand-over forced).
+
+    ``normalize_counts`` drops the two counts that describe *reaching the goal of
+    the hand-over itself* (``access``/``session``): those close ``exploitation``,
+    which is what the forced phase was for, so they end the latch too.
+    """
+    counts = normalize_counts(counts=getattr(plan, "counts", None))
+    if any(counts.get(kind, 0) for kind in ("access", "session")):
+        return False
+    return active_phase(counts) == "enumeration"
+
+
 def plan_from_summary(
     summary: Mapping[str, Any] | None,
     *,
@@ -756,6 +956,10 @@ def plan_from_summary(
 __all__ = [
     "ACCESS_TYPES",
     "CREDENTIAL_FOUND_REASON",
+    "OBJECTIVE_COMPLETE_HINT",
+    "OBJECTIVE_COMPLETE_SUBAGENTS",
+    "SSH_ACCESS_METHOD",
+    "TOP_PRIVILEGE_ACCOUNTS",
     "CREDENTIAL_HANDOVER_SUBAGENTS",
     "ENUMERATION_EXHAUSTED_NO_PROGRESS",
     "ENUMERATION_EXHAUSTED_REASON",
@@ -768,9 +972,15 @@ __all__ = [
     "SMB_SERVICE_MARKERS",
     "CredentialHandover",
     "EnumerationEscalation",
+    "ObjectiveCompletion",
     "SessionHandover",
+    "apply_objective_completion",
     "credential_handover",
     "enumeration_escalation",
+    "enumeration_still_open",
+    "loot_is_evidence",
+    "objective_completion",
+    "top_privilege",
     "escalate_credential",
     "escalate_enumeration",
     "escalate_session",
