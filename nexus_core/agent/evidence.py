@@ -171,11 +171,93 @@ def is_grounded(finding, observations, *, run_id=None):
     return False
 
 
+#: Fields of a rejection that are echoed back to the model verbatim (V1-48).
+_CITED_FIELDS = ("invocation_id", "fact_type", "target")
+
+#: Maximum per-finding detail lines carried in the refusal *message*. The event
+#: keeps them all; the prompt only needs enough to know what to fix.
+CITATION_DETAIL_LIMIT = 5
+
+
+def _finding_ref(record: Mapping[str, Any], index: int) -> str:
+    """How a rejected finding is named in the detail (`title` preferred)."""
+    for name in ("title", "name", "summary", "value"):
+        text = str(record.get(name) or "").strip()
+        if text:
+            return text[:120]
+    return f"finding #{index + 1}"
+
+
+def _cited_reference(record: Mapping[str, Any]) -> dict[str, str]:
+    """The citation a finding made, field by field (empty strings when absent)."""
+    return {name: str(record.get(name) or "") for name in _CITED_FIELDS}
+
+
+def _corpus_observations(observations, run_id) -> list[Mapping[str, Any]]:
+    """The observations grounding accepts at all: verified, and from this run.
+
+    Anything else is not part of the corpus ``is_grounded`` reasons over, so it
+    cannot be offered as a suggestion either.
+    """
+    return [
+        observation
+        for observation in observations
+        if isinstance(observation, Mapping)
+        and observation.get("verified") is True
+        and observation.get("verification_method")
+        and str(observation.get("run_id") or "") == str(run_id or "")
+    ]
+
+
+def _cited_in_corpus(cited: Mapping[str, str], corpus: list[Mapping[str, Any]]) -> bool:
+    """Whether the cited ``invocation_id`` exists in the corpus at all.
+
+    It separates the two mistakes a model makes: "I invented this invocation"
+    from "the invocation is real but I attached the wrong type/target to it".
+    """
+    wanted = cited.get("invocation_id") or ""
+    if not wanted:
+        return False
+    return any(str(item.get("invocation_id") or "") == wanted for item in corpus)
+
+
+def _closest_corpus_match(
+    cited: Mapping[str, str], corpus: list[Mapping[str, Any]]
+) -> dict[str, str] | None:
+    """The corpus observation closest to what the finding cited (``None`` if none).
+
+    Scored by coincidence -the invocation is worth more than the type, which is
+    worth as much as the target- and only returned when something *does*
+    coincide: a suggestion with nothing in common would be a guess.
+    """
+    best: Mapping[str, Any] | None = None
+    best_score = 0
+    for item in corpus:
+        score = 0
+        if cited.get("invocation_id") and str(item.get("invocation_id") or "") == cited["invocation_id"]:
+            score += 2
+        if cited.get("fact_type") and str(item.get("fact_type") or "") == cited["fact_type"]:
+            score += 1
+        if cited.get("target") and str(item.get("target") or "") == cited["target"]:
+            score += 1
+        if score > best_score:
+            best, best_score = item, score
+    if best is None:
+        return None
+    return {name: str(best.get(name) or "") for name in _CITED_FIELDS}
+
+
 def annotate_findings(findings, *, observations=(), corpus=None, run_id=None):
     materialized = list(observations)
+    verified_corpus = _corpus_observations(materialized, run_id)
     annotated = []
     grounded = stale = unsupported = 0
-    for finding in findings or ():
+    #: One record per finding the gate refuses, so the model is told *what* it
+    #: cited wrong instead of only how many findings failed (V1-48). Measured in
+    #: rerun 13: the event said `{findings_total: 8, grounded: 4, stale: 4}` and
+    #: nothing else, so the next turn could not know which citation to repair.
+    rejected: list[dict[str, Any]] = []
+    for index, finding in enumerate(findings or ()):
         record = dict(finding) if isinstance(finding, Mapping) else {"value": finding}
         # Always overwrite model-provided status flags.
         record.pop("stale_evidence", None)
@@ -195,14 +277,30 @@ def annotate_findings(findings, *, observations=(), corpus=None, run_id=None):
         elif finding_text(record) or record.get("invocation_id"):
             record.update(evidence_source="stale_evidence", stale_evidence=True, verification_status="hypothesis")
             stale += 1
+            cited = _cited_reference(record)
+            rejected.append({
+                "finding_ref": _finding_ref(record, index),
+                "reason": "stale_evidence",
+                "cited": cited,
+                "found_in_corpus": _cited_in_corpus(cited, verified_corpus),
+                "closest_match": _closest_corpus_match(cited, verified_corpus),
+            })
         else:
             record.update(evidence_source="no_evidence", verification_status="hypothesis")
             unsupported += 1
+            rejected.append({
+                "finding_ref": _finding_ref(record, index),
+                "reason": "unsupported_evidence",
+                "cited": _cited_reference(record),
+                "found_in_corpus": False,
+                "closest_match": None,
+            })
         annotated.append(record)
     return annotated, {"findings_total": len(annotated), "grounded": grounded,
                        "stale": stale, "unsupported": unsupported,
                        "corpus_tokens": len(evidence_tokens(evidence_corpus(materialized))),
-                       "corpus_observations": len(materialized)}
+                       "corpus_observations": len(materialized),
+                       "rejected_findings": rejected}
 
 
 def fabricated_evidence(stats):

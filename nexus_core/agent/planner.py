@@ -42,6 +42,23 @@ class Phase:
     captured file -the *user* flag included- says there is something to collect,
     not that the engagement reached the tail of the chain. Escalated privilege or
     an interactive session is what says that.
+
+    ``min_turns`` is the other half of the same idea and only applies when the
+    caller supplies the loop's turn history (see :func:`build_plan`): a phase
+    closes by its own evidence only once it has been *current* for that many
+    completed turns of the run. It exists for the phase whose work is to
+    **consume** what the previous one produced: measured in rerun 13 (V1-46),
+    ``privilege`` landed in the same turn that closed ``privilege_escalation``
+    while a ``loot`` from earlier already satisfied ``post_exploitation``, so the
+    phase closed one turn after it opened, the profile that reads ``root.txt``
+    never ran, and the run had no turn left to spend the privilege it had just
+    won.
+
+    The rule is about a phase that *opens during the run*, which is the measured
+    trigger ("it may not close in the same turn the previous phase closed"). A
+    board that arrives already complete -a resumed run, a second objective of the
+    same work session- is not held: its opening turn, if it ever had one, belongs
+    to an earlier run, and the history of *this* one is empty.
     """
 
     id: str
@@ -52,6 +69,7 @@ class Phase:
     min_count: int = 1
     optional: bool = False
     requires: tuple[str, ...] = ()
+    min_turns: int = 0
 
 
 #: The kill chain, in order. Reporting is never auto-completed: only the model's
@@ -96,6 +114,15 @@ PHASES: tuple[Phase, ...] = (
         # produced a verified `loot` fact, that alone closed this phase, and the
         # chain jumped past the escalation it had not performed.
         requires=("privilege", "session"),
+        # V1-46: this is the phase that *consumes* the privilege, so it may not
+        # close in the same turn it opened. Measured in rerun 13
+        # (`run_c1b80861…`): iteration 12 derived `privilege {uid:0}` while the
+        # `loot` from iteration 9 was already on the board, so the phase closed
+        # instantly, the plan jumped to `reporting` and the `postexploit` profile
+        # -the only one with ssh_exec and the ability to read root.txt as root-
+        # never got a turn: iteration 13 was denied (reporter is read_only) and the
+        # run died with the privilege unspent.
+        min_turns=1,
     ),
     Phase(
         "lateral_movement",
@@ -159,6 +186,12 @@ class Plan:
     #: model can close with ``task_complete`` (V1-35, V1-38).
     objective_complete: bool = False
     objective_hint: str = ""
+    #: Completed turns the loop has already spent with each phase as ``current``
+    #: (``{phase_id: turns}``), carried by the plan so every transformation keeps
+    #: it. ``None`` means *untracked*: a plan built outside the loop (CLI, report,
+    #: tests) has no turn history, so ``min_turns`` is not enforced there and the
+    #: statuses are the ones the evidence alone produces (V1-46).
+    phase_turns: Mapping[str, int] | None = None
 
     # ------------------------------------------------------------- derived
     @property
@@ -279,11 +312,32 @@ def count_leads(facts: Iterable[Any] | None = None) -> dict[str, int]:
     return leads
 
 
-def _is_done(phase: Phase, counts: Mapping[str, int]) -> bool:
+def _turns_in(phase_turns: Mapping[str, int] | None, phase_id: str) -> int:
+    """Completed turns a phase has been *current* for (0 when untracked/unknown)."""
+    if not phase_turns:
+        return 0
+    try:
+        return max(0, int(phase_turns.get(phase_id, 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_done(
+    phase: Phase,
+    counts: Mapping[str, int],
+    phase_turns: Mapping[str, int] | None = None,
+) -> bool:
     """Whether *phase* is closed by the evidence on the board.
 
     Its own evidence type must reach ``min_count``; when the phase declares a
-    ``requires`` sustainer, one of those types must be on the board too (V1-39).
+    ``requires`` sustainer, one of those types must be on the board too (V1-39);
+    and when it declares ``min_turns`` **and** the caller tracks the loop's turns,
+    it must already have been current for that many completed turns of the run
+    (V1-46). The turn rule needs a run to have run: an empty/absent history means
+    either a caller that does not track turns at all (CLI, report, tests) or a
+    loop that has not finished its first turn yet -and in the second case the phase
+    it would hold was already closed by evidence before that turn, so there is no
+    "same turn it opened" to protect. From the second turn on, the counter decides.
     """
     if not phase.evidence:
         return False
@@ -291,19 +345,27 @@ def _is_done(phase: Phase, counts: Mapping[str, int]) -> bool:
         return False
     if phase.requires and not any(counts.get(fact_type, 0) >= 1 for fact_type in phase.requires):
         return False
+    if phase.min_turns and phase_turns:
+        return _turns_in(phase_turns, phase.id) >= phase.min_turns
     return True
 
 
-def _last_closed_index(counts: Mapping[str, int]) -> int:
+def _last_closed_index(
+    counts: Mapping[str, int],
+    phase_turns: Mapping[str, int] | None = None,
+) -> int:
     """Index of the furthest phase the evidence has closed (``-1`` when none)."""
     last = -1
     for index, phase in enumerate(PHASES):
-        if _is_done(phase, counts):
+        if _is_done(phase, counts, phase_turns):
             last = index
     return last
 
 
-def active_phase(counts: Mapping[str, int] | None = None) -> str:
+def active_phase(
+    counts: Mapping[str, int] | None = None,
+    phase_turns: Mapping[str, int] | None = None,
+) -> str:
     """Return the id of the phase the engagement is currently in.
 
     A phase cannot be *current* while a later one is already closed by evidence:
@@ -316,9 +378,12 @@ def active_phase(counts: Mapping[str, int] | None = None) -> str:
     but is not enumeration evidence-, so ``enumeration`` came back as the current
     phase with ``exploitation`` already ``done`` and the profile selector sent
     the run back to enumerating with access in hand.
+
+    A phase held open by ``min_turns`` (V1-46) is *not* closed, so it is returned
+    here as the current one: that is precisely the turn it demanded.
     """
     counts = counts or {}
-    closed = _last_closed_index(counts)
+    closed = _last_closed_index(counts, phase_turns)
     for index, phase in enumerate(PHASES):
         if phase.optional or index <= closed:
             continue
@@ -334,14 +399,21 @@ def build_plan(
     engagement_id: str | None = None,
     facts_total: int | None = None,
     leads: Mapping[str, int] | None = None,
+    phase_turns: Mapping[str, int] | None = None,
 ) -> Plan:
-    """Build the plan from blackboard evidence (never raises on bad input)."""
+    """Build the plan from blackboard evidence (never raises on bad input).
+
+    ``phase_turns`` is the ReAct loop's own history (``{phase_id: completed
+    turns}``); passing it is what makes ``min_turns`` effective (V1-46). Callers
+    that do not track turns -the CLI, a report, a test- leave it out and get the
+    plan the evidence alone describes.
+    """
     normalized = normalize_counts(counts=counts, facts=facts)
     lead_counts = normalize_counts(counts=leads) if leads is not None else count_leads(facts)
-    current = active_phase(normalized)
+    current = active_phase(normalized, phase_turns)
     statuses: list[PhaseStatus] = []
     for phase in PHASES:
-        if _is_done(phase, normalized):
+        if _is_done(phase, normalized, phase_turns):
             # Closed by its own evidence, and only by its own evidence: a status
             # of ``done`` is a claim about what the engagement proved, so it can
             # never be derived from the *position* of another phase (V1-40).
@@ -367,6 +439,7 @@ def build_plan(
         current=current,
         next_hint=_BY_ID[current].hint,
         leads=lead_counts,
+        phase_turns=dict(phase_turns) if phase_turns is not None else None,
     )
 
 
@@ -598,6 +671,9 @@ def hand_over_phase(plan: Plan, *, phase: str) -> Plan:
     if target not in _BY_ID:
         raise ValueError(f"unknown phase {phase!r}")
     counts = normalize_counts(counts=getattr(plan, "counts", None))
+    # V1-46: the turn history rides with the plan, so a transformation cannot
+    # silently drop the hold a phase is under.
+    phase_turns = getattr(plan, "phase_turns", None)
     forward = (
         PHASE_IDS.index(target) > PHASE_IDS.index(previous) if previous in _BY_ID else True
     )
@@ -605,7 +681,7 @@ def hand_over_phase(plan: Plan, *, phase: str) -> Plan:
     for item in plan.phases:
         if item.id == target:
             status = STATUS_CURRENT
-        elif (item.id == previous and forward) or _is_done(_BY_ID[item.id], counts):
+        elif (item.id == previous and forward) or _is_done(_BY_ID[item.id], counts, phase_turns):
             status = STATUS_DONE
         else:
             status = STATUS_PENDING
@@ -815,7 +891,19 @@ OBJECTIVE_COMPLETE_HINT = (
 #: own the last phases of the kill chain; the iteration right after the loot lands
 #: is still running the profile that captured it, because the plan is rebuilt from
 #: the board on the *next* turn.
-OBJECTIVE_COMPLETE_SUBAGENTS: frozenset[str] = frozenset({"privesc", "postexploit", "lateral"})
+#:
+#: ``reporter`` belongs here for the same reason and with the same material
+#: condition (V1-47): it is the profile that **closes** the run, and the plan
+#: reaches ``reporting`` precisely when the tail phases are closed by their own
+#: evidence. Leaving it out made the verdict depend on *who* was holding the turn
+#: instead of on the board: measured in rerun 13 (`run_c1b80861…`), iteration 13
+#: was already running ``reporter`` with ``privilege {uid:0}`` and ``loot`` both
+#: verified, ``objective_complete`` came back ``false``, the ``react.budget_exempt``
+#: path never applied, and the profile died at 31 669/30 000 tokens just before it
+#: could close (`premature_completion` on the way).
+OBJECTIVE_COMPLETE_SUBAGENTS: frozenset[str] = frozenset(
+    {"privesc", "postexploit", "lateral", "reporter"}
+)
 #: Accounts whose privilege is "top" for the closure rule. ``root`` is Unix and
 #: ``SYSTEM``/``Administrator`` are Windows; the comparison is case-insensitive and
 #: a ``uid == 0`` value counts on its own (the ssh/ret2libc branches assert it).
@@ -965,6 +1053,7 @@ def plan_from_summary(
     *,
     objective: str | None = None,
     engagement_id: str | None = None,
+    phase_turns: Mapping[str, int] | None = None,
 ) -> Plan:
     """Build a plan from a blackboard ``summary()`` payload."""
     summary = summary or {}
@@ -974,6 +1063,7 @@ def plan_from_summary(
         engagement_id=engagement_id or (summary.get("engagement_id") if isinstance(summary, Mapping) else None),
         facts_total=int(summary.get("total") or 0) if isinstance(summary, Mapping) else 0,
         leads=summary.get("leads") if isinstance(summary, Mapping) else None,
+        phase_turns=phase_turns,
     )
 
 

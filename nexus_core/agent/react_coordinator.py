@@ -374,6 +374,14 @@ class ReActCoordinator:
             else _phase_timeout_seconds()
         )
         self.run_evidence = []
+        #: Completed turns spent with each phase as ``current`` (V1-46). The plan
+        #: for a turn is built with this history, so a phase that declares
+        #: ``min_turns`` cannot be closed by its evidence before it has had its
+        #: turn. Empty means "no turn spent yet in any phase", which is exactly the
+        #: state the loop starts in -and why ``post_exploitation`` can never close
+        #: instantly. A run resumed from history starts untracked for the phases it
+        #: already ran, which at worst costs one extra turn.
+        self.phase_turns: dict[str, int] = {}
         self.evidence_stats = None
         self.premature_rejections = 0
         self.completion_objections = []
@@ -453,6 +461,7 @@ class ReActCoordinator:
             config=self.config,
             hooks=self.hooks,
             engagement_id=self.engagement_id,
+            phase_turns=self.phase_turns,
         )
         self.plan = self.snapshot.plan
         # The reason of a deterministic hand-over is *per iteration*: the plan is
@@ -542,6 +551,18 @@ class ReActCoordinator:
         self.plan = escalate_credential(self.plan, handover)
         self.plan_reason = handover.reason
         self.credential_handed_over = True
+
+    def _note_completed_turn(self) -> None:
+        """Record that the phase of this turn has been *current* once more (V1-46).
+
+        The plan of a turn is built with this history, so ``min_turns`` holds a
+        phase open until it has really had its turn. Called only after the turn
+        finished: a turn that raised never counts as spent.
+        """
+        phase = str(getattr(self.plan, "current", "") or "")
+        if not phase:
+            return
+        self.phase_turns[phase] = self.phase_turns.get(phase, 0) + 1
 
     def _refresh_objective_complete(self) -> None:
         """Detect that the engagement's objective is already met (V1-35).
@@ -1817,6 +1838,7 @@ class ReActCoordinator:
                 outcome=self._turn_outcome(transition),
                 turn_ms=_elapsed_ms(turn_started),
             )
+            self._note_completed_turn()
             if transition is Transition.STOP:
                 break
         await self.telemetry.flush()

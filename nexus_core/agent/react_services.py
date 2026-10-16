@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Any, TypeVar
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from nexus_core.kernel.control_store import ControlStore
 from nexus_core.kernel.runtime import ExecutionContext
 from nexus_core.kernel.models import ToolDefinition
@@ -183,6 +183,7 @@ class ContextBuilder:
         config: ReActConfig,
         hooks: HookRunner,
         engagement_id: str | None,
+        phase_turns: Mapping[str, int] | None = None,
     ) -> ContextSnapshot:
         history = memory.load_history(store, tenant_id, conversation_id, limit=500)
         # B8.2.1: the run reads (and compacts) only its own turns. The shared
@@ -213,7 +214,9 @@ class ContextBuilder:
             bullets = "\n".join(f"- {objective}" for objective in prior)
             history_summary = f"{base}\n\nObjetivos previos de esta sesión de trabajo:\n{bullets}"
 
-        plan, facts_text = _blackboard_view(store, tenant_id, engagement_id)
+        plan, facts_text = _blackboard_view(
+            store, tenant_id, engagement_id, phase_turns=phase_turns
+        )
         return ContextSnapshot(run_history, history_summary, plan, facts_text, run_id)
 
     def render(
@@ -287,7 +290,9 @@ class ContextBuilder:
 @dataclass(frozen=True)
 class CompletionAssessment:
     findings: list[dict[str, Any]]
-    evidence_stats: dict[str, int]
+    #: ``annotate_findings`` payload: integer counters plus, since V1-48, the
+    #: ``rejected_findings`` detail list (which is why this is not ``dict[str, int]``).
+    evidence_stats: dict[str, Any]
     objections: list[str]
 
 

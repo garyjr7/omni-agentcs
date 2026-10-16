@@ -9,14 +9,14 @@ import asyncio
 import json
 import os
 import time
-from typing import Any, Callable, cast
+from typing import Any, Callable, Mapping, cast
 
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.llm.abstraction import LLMMessage
 
 from . import memory
 from nexus_core.kernel.domain_dto import Action
-from .evidence import fabricated_evidence
+from .evidence import CITATION_DETAIL_LIMIT, fabricated_evidence
 from .injection import scan_untrusted_text
 from .observations import prepare_observation
 from .parser import (
@@ -57,18 +57,27 @@ def _blackboard_facts(store: Any, tenant_id: str, engagement_id: str | None) -> 
     return _blackboard_view(store, tenant_id, engagement_id)[1]
 
 
-def _blackboard_view(store: Any, tenant_id: str, engagement_id: str | None) -> tuple[Any, str]:
+def _blackboard_view(
+    store: Any,
+    tenant_id: str,
+    engagement_id: str | None,
+    *,
+    phase_turns: Mapping[str, int] | None = None,
+) -> tuple[Any, str]:
     """Return ``(plan, facts_text)`` for one iteration (never raises).
 
     The plan is derived deterministically from the blackboard summary, so the
     model plans inside a stable frame; the rendered facts stay in the prompt as
     before. Memory failures degrade to an empty plan instead of aborting.
+
+    ``phase_turns`` is the loop's own turn history, forwarded so a phase that
+    declares ``min_turns`` is held open until it has had its turn (V1-46).
     """
     from .planner import build_plan, plan_from_summary
 
     empty = "(sin hechos registrados)"
     if not engagement_id or store is None:
-        return build_plan(engagement_id=engagement_id), empty
+        return build_plan(engagement_id=engagement_id, phase_turns=phase_turns), empty
     try:
         from nexus_core.kernel.blackboard import Blackboard
 
@@ -76,8 +85,11 @@ def _blackboard_view(store: Any, tenant_id: str, engagement_id: str | None) -> t
         summary = board.summary(tenant_id, engagement_id)
         rendered = board.render(tenant_id, engagement_id)
     except Exception:  # noqa: BLE001 - memory must never kill a run
-        return build_plan(engagement_id=engagement_id), empty
-    return plan_from_summary(summary, engagement_id=engagement_id), (rendered or empty)
+        return build_plan(engagement_id=engagement_id, phase_turns=phase_turns), empty
+    return (
+        plan_from_summary(summary, engagement_id=engagement_id, phase_turns=phase_turns),
+        (rendered or empty),
+    )
 
 
 def _playbook_guidance(store: Any, tenant_id: str, engagement_id: str | None,
@@ -292,11 +304,59 @@ def _run_messages(messages: list[dict[str, Any]], run_id: str) -> list[dict[str,
     return [message for message in messages if str(message.get("run_id") or "") == wanted]
 
 
+def _citation_objections(evidence_stats: Mapping[str, Any] | None) -> list[str]:
+    """Per-finding detail of a refused completion (V1-48).
+
+    The counters say *how many* findings failed; without this the model cannot
+    know *which* citation to repair, which is what rerun 13 measured: the gate
+    refused eight findings (four ``stale_evidence``) with nothing but the counts,
+    and the run died before it could try again. Each line names the finding, what
+    it cited, whether that invocation exists at all in the corpus, and the closest
+    observation there is -plus the tool call that lets the model check for itself.
+    """
+    stats = evidence_stats or {}
+    rejected = stats.get("rejected_findings") or []
+    lines: list[str] = []
+    for item in rejected[:CITATION_DETAIL_LIMIT]:
+        if not isinstance(item, Mapping):
+            continue
+        cited = item.get("cited") if isinstance(item.get("cited"), Mapping) else {}
+        ref = str(item.get("finding_ref") or "finding")
+        invocation = str(cited.get("invocation_id") or "(sin invocation_id)")
+        fact_type = str(cited.get("fact_type") or "(sin fact_type)")
+        target = str(cited.get("target") or "(sin target)")
+        reason = str(item.get("reason") or "stale_evidence")
+        line = (
+            f"Hallazgo '{ref}' ({reason}) citó invocation_id={invocation} "
+            f"fact_type={fact_type} target={target}; en el corpus de este run no hay "
+            "ninguna observación que coincida. Verifica tu cita con query_facts antes "
+            "de reintentar."
+        )
+        if not item.get("found_in_corpus") and cited.get("invocation_id"):
+            line += f" Ese invocation_id ({invocation}) no aparece en ninguna observación de este run."
+        match = item.get("closest_match")
+        if isinstance(match, Mapping):
+            line += (
+                " La observación más cercana del corpus: "
+                f"invocation_id={match.get('invocation_id') or '(ninguno)'} "
+                f"fact_type={match.get('fact_type') or '(ninguno)'} "
+                f"target={match.get('target') or '(ninguno)'}."
+            )
+        lines.append(line)
+    remaining = len(rejected) - len(lines)
+    if remaining > 0:
+        lines.append(
+            f"… y {remaining} hallazgo(s) más rechazado(s) por la misma causa "
+            "(el detalle completo está en el evento react.premature_completion)."
+        )
+    return lines
+
+
 def _completion_objections(
     plan: Any,
     *,
     enforce_completion_gates: bool,
-    evidence_stats: dict[str, int] | None = None,
+    evidence_stats: dict[str, Any] | None = None,
     engagement_id: str | None = None,
 ) -> list[str]:
     """Why this ``task_complete`` must not be accepted yet (B8.2.2/B8.2.3).
@@ -310,6 +370,9 @@ def _completion_objections(
     there is no blackboard, so every phase would stay ``pending`` forever and no
     objective could ever complete. The kill-chain frame is a property of an
     engagement, not of a bare objective.
+
+    V1-48 adds *detail* to the second check and nothing else: the gate itself is
+    untouched (``fabricated_evidence`` still refuses the completion).
     """
     objections: list[str] = []
     if enforce_completion_gates and engagement_id and plan is not None:
@@ -330,10 +393,19 @@ def _completion_objections(
                 + (", ".join(pending) if pending else "fases obligatorias")
             )
     if enforce_completion_gates and evidence_stats and fabricated_evidence(evidence_stats):
-        objections.append(
+        counts = (
             f"{evidence_stats.get('stale')} hallazgo(s) citan evidencia que no "
             "aparece en ninguna observación de este run (stale_evidence)"
         )
+        if evidence_stats.get("unsupported"):
+            # Otherwise the line above reads "0 hallazgo(s)…" while the refusal is
+            # real: the same counter pair the gate uses, stated accurately.
+            counts += (
+                f" y {evidence_stats['unsupported']} no citan evidencia alguna "
+                "(no_evidence)"
+            )
+        objections.append(counts)
+        objections.extend(_citation_objections(evidence_stats))
     return objections
 
 
