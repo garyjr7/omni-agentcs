@@ -21,9 +21,10 @@ def main() -> None:
     run = engine.start(tenant_id, workflow["id"], {"ci": True}, "postgres-smoke")
     task = store.claim_task("ci-worker")
     assert task and task["tenant_id"] == tenant_id
-    store.complete_task(task["id"], "ci-worker", result={"ok": True})
+    store.complete_task(task["id"], "ci-worker", result={"ok": True}, lease_generation=task["lease_generation"])
     engine.reconcile(run["id"], tenant_id)
-    assert store.get_run(run["id"], tenant_id)["status"] == "completed"
+    completed = store.get_run(run["id"], tenant_id)
+    assert completed is not None and completed["status"] == "completed"
     conversation = store.create_conversation(tenant_id, "ci-user", "Postgres chat")
     chat_run = store.create_run(tenant_id, {"kind": "conversation"}, "postgres-chat")
     store.append_message(tenant_id, conversation["id"], "user", "postgres",
@@ -33,10 +34,11 @@ def main() -> None:
                        payload={"conversation_id": conversation["id"],
                                 "model_route": "fake"})
     chat_task = store.claim_task("ci-worker")
+    assert chat_task is not None
     result = asyncio.run(build_default_registry().execute(
         chat_task, ExecutionContext(store, chat_task, "ci-worker")
     ))
-    store.complete_task(chat_task["id"], "ci-worker", result=result)
+    store.complete_task(chat_task["id"], "ci-worker", result=result, lease_generation=chat_task["lease_generation"])
     assert len(store.list_messages(tenant_id, conversation["id"])) == 2
     with store.connect() as conn:
         conn.execute("DELETE FROM kernel_audit_events WHERE tenant_id=?", (tenant_id,))

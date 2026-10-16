@@ -15,7 +15,7 @@ from nexus_core.agent.react import STATUS_BUDGET_EXCEEDED, ReActConfig, run_reac
 from nexus_core.hooks import HookRunner  # noqa: F401 - ensures the hooks package imports
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.budget_ledger import BudgetLedger
-from nexus_core.kernel.errors import BudgetExceeded, ProviderFailure
+from nexus_core.kernel.errors import BudgetExceeded
 from nexus_core.kernel.runtime import ExecutionContext
 from nexus_core.tests.unit.test_hooks_lifecycle import context
 from nexus_core.tests.unit.test_react_loop import ScriptedLLM, task_complete
@@ -177,12 +177,13 @@ def test_loop_releases_reservation_on_provider_error(tmp_path, monkeypatch):
 
     config = ReActConfig(max_iterations=1, enforce_completion_gates=False,
                          before_provider_call=before, after_provider_call=after)
-    # A provider failure surfaces as ProviderFailure; the invariant is that the
+    # A provider failure ends the run with a terminal ``provider_error`` status
+    # (it must never escape ``run()``, B8.2); the invariant is that the
     # reservation never stays open.
-    with pytest.raises(ProviderFailure):
-        asyncio.run(run_react_loop(
-            context=exec_ctx, objective="recon", engagement_id=None,
-            llm_client=Boom([]), config=config))
+    result = asyncio.run(run_react_loop(
+        context=exec_ctx, objective="recon", engagement_id=None,
+        llm_client=Boom([]), config=config))
+    assert result.status == "provider_error"
     assert reservations
     assert all(
         ledger.get(reservation, "system")["state"] in {"released", "settled"}

@@ -53,14 +53,16 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgresql://nexus:nexus-ci-password@127.0.0.1:5432/nexus
+      NEXUS_TEST_PG_DSN: postgresql://nexus:nexus-ci-password@127.0.0.1:5432/nexus
       NEXUS_ENV: production
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements-prod.in
+      - run: pip install -r requirements-dev.txt
       - run: make test-postgres
+      - run: python -m pytest nexus_core/tests/integration/test_kernel_concurrency.py -q
 
   secrets:
     runs-on: ubuntu-latest

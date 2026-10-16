@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import re
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Sequence
 
 from .control_store import SCHEMA, ControlStore
+from .database import DatabaseConnection
 from .models import utc_now
+
+if TYPE_CHECKING:
+    from psycopg import Connection, Cursor
 
 
 class _PostgresConnection:
-    def __init__(self, connection):
+    def __init__(self, connection: Connection[dict[str, Any]]) -> None:
         self.connection = connection
 
     @staticmethod
@@ -22,10 +28,10 @@ class _PostgresConnection:
             sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
         return sql
 
-    def execute(self, sql: str, params=()):
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> Cursor[dict[str, Any]]:
         return self.connection.execute(self._query(sql), params)
 
-    def executescript(self, sql: str):
+    def executescript(self, sql: str) -> Cursor[dict[str, Any]]:
         return self.connection.execute(sql)
 
     def commit(self) -> None:
@@ -34,11 +40,17 @@ class _PostgresConnection:
     def rollback(self) -> None:
         self.connection.rollback()
 
-    def __enter__(self):
+    def close(self) -> None:
+        self.connection.close()
+
+    def __enter__(self) -> _PostgresConnection:
         self.connection.__enter__()
         return self
 
-    def __exit__(self, exc_type, exc, traceback):
+    def __exit__(
+        self, exc_type: type[BaseException] | None,
+        exc: BaseException | None, traceback: TracebackType | None,
+    ) -> None:
         return self.connection.__exit__(exc_type, exc, traceback)
 
 
@@ -57,6 +69,27 @@ class PostgresControlStore(ControlStore):
             psycopg.connect(self.database_url, row_factory=dict_row)
         )
 
+    def _lock_transaction(self, conn: DatabaseConnection, key: str) -> None:
+        # READ COMMITTED gives reads *after* a lock wait a fresh snapshot.
+        # ON CONFLICT also serializes concurrent creation of the first lock row.
+        conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        conn.execute(
+            "INSERT INTO kernel_transaction_locks(lock_key) VALUES(?) "
+            "ON CONFLICT(lock_key) DO NOTHING", (key,),
+        )
+        conn.execute(
+            "SELECT lock_key FROM kernel_transaction_locks WHERE lock_key=? FOR UPDATE",
+            (key,),
+        )
+
+    @property
+    def active_lease_sql(self) -> str:
+        return "CAST(lease_until AS TIMESTAMPTZ) > clock_timestamp()"
+
+    @property
+    def task_row_lock_sql(self) -> str:
+        return " FOR UPDATE"
+
     def initialize(self) -> None:
         schema = SCHEMA.replace(
             "sequence INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -66,6 +99,10 @@ class PostgresControlStore(ControlStore):
             conn.executescript(schema)
             conn.execute(
                 "ALTER TABLE kernel_approvals ADD COLUMN IF NOT EXISTS consumed_at TEXT"
+            )
+            conn.execute(
+                "ALTER TABLE kernel_tasks ADD COLUMN IF NOT EXISTS "
+                "lease_generation BIGINT NOT NULL DEFAULT 0"
             )
             conn.execute(
                 """INSERT INTO kernel_tenants(id,name,created_at) VALUES(?,?,?)

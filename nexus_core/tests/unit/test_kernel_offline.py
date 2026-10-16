@@ -135,8 +135,8 @@ class OfflineKernelTests(unittest.TestCase):
             self.assertEqual(claimed["id"], task["id"])
             self.assertIsNone(store.claim_task("worker-2"))
             with self.assertRaises(PermissionError):
-                store.complete_task(task["id"], "worker-2", result={"ok": True})
-            store.complete_task(task["id"], "worker-1", result={"ok": True})
+                store.complete_task(task["id"], "worker-2", result={"ok": True}, lease_generation=claimed["lease_generation"])
+            store.complete_task(task["id"], "worker-1", result={"ok": True}, lease_generation=claimed["lease_generation"])
 
     def test_durable_retry_dead_letter_and_history(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -148,14 +148,14 @@ class OfflineKernelTests(unittest.TestCase):
                 payload={}, max_attempts=2,
             )
             claimed = store.claim_task("worker")
-            self.assertEqual(store.fail_or_retry_task(claimed["id"], "worker", "one"), "queued")
+            self.assertEqual(store.fail_or_retry_task(claimed["id"], "worker", "one", lease_generation=claimed["lease_generation"]), "queued")
             with store.connect() as conn:
                 conn.execute(
                     "UPDATE kernel_tasks SET available_at=? WHERE id=?",
                     ("1970-01-01T00:00:00+00:00", task["id"]),
                 )
             claimed = store.claim_task("worker")
-            self.assertEqual(store.fail_or_retry_task(claimed["id"], "worker", "two"), "dead_letter")
+            self.assertEqual(store.fail_or_retry_task(claimed["id"], "worker", "two", lease_generation=claimed["lease_generation"]), "dead_letter")
             self.assertEqual(
                 [item["to_status"] for item in store.list_task_transitions(task["id"])],
                 ["queued", "running", "queued", "running", "dead_letter"],
@@ -175,7 +175,7 @@ class OfflineKernelTests(unittest.TestCase):
             run = engine.start("system", workflow["id"], {}, "same-request")
             self.assertEqual(sum(bool(step["task_id"]) for step in engine.history(run["id"], "system")), 1)
             first = store.claim_task("worker")
-            store.complete_task(first["id"], "worker", result={"ok": True})
+            store.complete_task(first["id"], "worker", result={"ok": True}, lease_generation=first["lease_generation"])
             DurableWorkflowEngine(store).reconcile(run["id"], "system")
             self.assertEqual(sum(bool(step["task_id"]) for step in engine.history(run["id"], "system")), 2)
 
@@ -193,14 +193,14 @@ class OfflineKernelTests(unittest.TestCase):
             ]})
             run = engine.start("system", workflow["id"], {}, "compensation-request")
             write = store.claim_task("worker")
-            store.complete_task(write["id"], "worker", result={"external_id": "one"})
+            store.complete_task(write["id"], "worker", result={"external_id": "one"}, lease_generation=write["lease_generation"])
             engine.reconcile(run["id"], "system")
             notify = store.claim_task("worker")
-            store.fail_or_retry_task(notify["id"], "worker", "provider rejected")
+            store.fail_or_retry_task(notify["id"], "worker", "provider rejected", lease_generation=notify["lease_generation"])
             engine.reconcile(run["id"], "system")
             compensation = store.claim_task("worker")
             self.assertEqual(compensation["task_type"], "undo")
-            store.complete_task(compensation["id"], "worker", result={"undone": True})
+            store.complete_task(compensation["id"], "worker", result={"undone": True}, lease_generation=compensation["lease_generation"])
             engine.reconcile(run["id"], "system")
             states = {item["step_key"]: item for item in engine.history(run["id"], "system")}
             self.assertEqual(states["write"]["status"], "compensated")
@@ -269,7 +269,10 @@ class OfflineKernelTests(unittest.TestCase):
                  # V1-8: the canonical result pins the contract and parser
                  # revision that produced it, so a replay can use them.
                  "tool_id": tool.tool_id, "contract_version": tool.version,
-                 "parser_version": PARSERS_VERSION},
+                 "parser_version": PARSERS_VERSION,
+                 # A04: the result carries the engagement the gateway stamped it
+                 # with, so playbook progress binds to verified execution.
+                 "engagement_id": context.engagement_id},
             )
             with self.assertRaises(PermissionError):
                 asyncio.run(gateway.invoke(tool.tool_id, {"query": "again"}, context))
@@ -411,10 +414,7 @@ class OfflineKernelTests(unittest.TestCase):
             self.assertEqual(artifacts.get("system", artifact["id"]), b"evidence")
             with self.assertRaises(KeyError):
                 artifacts.get("other", artifact["id"])
-            with store.connect() as conn:
-                path = Path(conn.execute(
-                    "SELECT storage_uri FROM kernel_artifacts WHERE id=?", (artifact["id"],)
-                ).fetchone()["storage_uri"])
+            path = artifacts.root / "system" / artifact["sha256"][:2] / artifact["sha256"]
             path.write_bytes(b"tampered")
             with self.assertRaises(RuntimeError):
                 artifacts.get("system", artifact["id"])

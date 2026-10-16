@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 from uuid import uuid4
 
 from .models import utc_now
+from .database import DatabaseConnection
+from .errors import LeaseLost
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS kernel_transaction_locks (
+    lock_key TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
 );
@@ -131,6 +137,7 @@ CREATE TABLE IF NOT EXISTS kernel_tasks (
     max_attempts INTEGER NOT NULL DEFAULT 3, timeout_seconds INTEGER NOT NULL DEFAULT 300,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
     available_at TEXT NOT NULL, lease_owner TEXT, lease_until TEXT,
+    lease_generation BIGINT NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     FOREIGN KEY(run_id) REFERENCES kernel_runs(id)
 );
@@ -314,15 +321,52 @@ CREATE INDEX IF NOT EXISTS idx_engagements_tenant_time
 
 class ControlStore:
     def __init__(self, path: str | Path):
-        self.path = Path(path)
+        self.path: Path | None = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def connect(self) -> sqlite3.Connection:
+    def connect(self) -> DatabaseConnection:
         conn = sqlite3.connect(str(self.path), timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
+
+    @contextmanager
+    def locked_transaction(self, key: str) -> Iterator[DatabaseConnection]:
+        """Serialize an invariant before its first read, through commit/rollback.
+
+        SQLite serializes writers database-wide. PostgreSQL narrows the lock to
+        a durable key. Never acquire a second connection inside this boundary.
+        """
+        conn = self.connect()
+        try:
+            with conn:
+                self._lock_transaction(conn, key)
+                yield conn
+        finally:
+            conn.close()
+
+    def _lock_transaction(self, conn: DatabaseConnection, key: str) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+
+    @property
+    def active_lease_sql(self) -> str:
+        """Evaluate expiration at the database, not before waiting for a lock."""
+        return "julianday(lease_until) > julianday('now')"
+
+    @property
+    def task_row_lock_sql(self) -> str:
+        return ""  # BEGIN IMMEDIATE already excludes competing SQLite writers.
+
+    def _locked_task(
+        self, conn: DatabaseConnection, task_id: str,
+    ) -> dict[str, Any] | None:
+        """Acquire the row before evaluating a time-sensitive lease predicate."""
+        row = conn.execute(
+            "SELECT * FROM kernel_tasks WHERE id=?" + self.task_row_lock_sql,
+            (task_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
 
     def initialize(self) -> None:
         with self.connect() as conn:
@@ -334,13 +378,14 @@ class ControlStore:
             )
 
     @staticmethod
-    def _migrate_sqlite(conn: sqlite3.Connection) -> None:
+    def _migrate_sqlite(conn: DatabaseConnection) -> None:
         """Apply small forward migrations to pre-control-plane SQLite databases."""
         columns = {row[1] for row in conn.execute("PRAGMA table_info(kernel_tasks)")}
         additions = {
             "max_attempts": "INTEGER NOT NULL DEFAULT 3",
             "timeout_seconds": "INTEGER NOT NULL DEFAULT 300",
             "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+            "lease_generation": "BIGINT NOT NULL DEFAULT 0",
         }
         for name, definition in additions.items():
             if name not in columns:
@@ -495,7 +540,11 @@ class ControlStore:
                          payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         from .redaction import sanitize
 
-        payload = sanitize(payload or {})
+        from .domain_dto import DomainEvent, legacy_json_containers
+
+        event_dto = DomainEvent(tenant_id=tenant_id, run_id=run_id,
+                                event_type=event_type, payload=legacy_json_containers({} if payload is None else payload))
+        payload = sanitize(event_dto.model_dump(mode="json")["payload"])
         event = {
             "event_id": f"event_{uuid4().hex}", "tenant_id": tenant_id,
             "run_id": run_id, "event_type": event_type,
@@ -633,6 +682,8 @@ class ControlStore:
         return {"id": task_id, "run_id": run_id, "status": "queued", "payload": payload}
 
     def claim_task(self, worker_id: str, lease_seconds: int = 60) -> Optional[Dict[str, Any]]:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
         now = datetime.now(timezone.utc)
         now_value = now.isoformat()
         lease_until = (now + timedelta(seconds=lease_seconds)).isoformat()
@@ -650,9 +701,11 @@ class ControlStore:
                 return None
             updated = conn.execute(
                 """UPDATE kernel_tasks SET status='running',lease_owner=?,lease_until=?,
-                   attempts=attempts+1,updated_at=? WHERE id=? AND
+                   attempts=attempts+1,lease_generation=lease_generation+1,updated_at=?
+                   WHERE id=? AND lease_generation=? AND cancel_requested=0 AND
                    ((status='queued' AND available_at<=?) OR (status='running' AND lease_until<?))""",
-                (worker_id, lease_until, now_value, row["id"], now_value, now_value),
+                (worker_id, lease_until, now_value, row["id"], row["lease_generation"],
+                 now_value, now_value),
             )
             if updated.rowcount != 1:
                 return None
@@ -663,95 +716,92 @@ class ControlStore:
         return self._decode_row(claimed, ("payload", "result"))
 
     def renew_task_lease(
-        self,
-        task_id: str,
-        worker_id: str,
-        *,
+        self, task_id: str, worker_id: str, *, lease_generation: int,
         lease_seconds: int = 60,
     ) -> bool:
-        """Extend the lease if ``worker_id`` still owns the running task.
-
-        Returns ``True`` when the lease was renewed and ``False`` when the
-        caller no longer owns an active lease (another worker took over, or the
-        task already finished). A long-running executor must upgrade the
-        heartbeat to a cancel when this returns ``False``.
-        """
-        now = datetime.now(timezone.utc)
-        lease_until = (now + timedelta(seconds=lease_seconds)).isoformat()
-        with self.connect() as conn:
+        """Renew only this live generation; an expired lease cannot be revived."""
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        with self.locked_transaction("task:" + task_id) as conn:
+            self._locked_task(conn, task_id)
+            now = datetime.now(timezone.utc)
+            lease_until = (now + timedelta(seconds=lease_seconds)).isoformat()
             updated = conn.execute(
-                """UPDATE kernel_tasks SET lease_until=?, updated_at=?
-                WHERE id=? AND lease_owner=? AND status='running'""",
-                (lease_until, utc_now(), task_id, worker_id),
+                f"""UPDATE kernel_tasks SET lease_until=?,updated_at=?
+                WHERE id=? AND lease_owner=? AND lease_generation=?
+                AND status='running' AND {self.active_lease_sql}""",
+                (lease_until, now.isoformat(), task_id, worker_id, lease_generation),
             )
             return updated.rowcount == 1
 
     def complete_task(
-        self,
-        task_id: str,
-        worker_id: str,
-        *,
+        self, task_id: str, worker_id: str, *, lease_generation: int,
         result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
     ) -> None:
+        """Commit result and events only if the live fencing token still matches."""
         from .redaction import sanitize
 
         result = sanitize(result)
         error = sanitize(error)
         status = "failed" if error else "completed"
-        now = utc_now()
-        with self.connect() as conn:
+        encoded = json.dumps(result) if result is not None else None
+        with self.locked_transaction("task:" + task_id) as conn:
+            self._locked_task(conn, task_id)
+            now = utc_now()
+            updated = conn.execute(
+                f"""UPDATE kernel_tasks SET status=?,result=?,error=?,lease_owner=NULL,
+                lease_until=NULL,updated_at=? WHERE id=? AND lease_owner=?
+                AND lease_generation=? AND status='running' AND {self.active_lease_sql}""",
+                (status, encoded, error, now, task_id, worker_id, lease_generation),
+            )
+            if updated.rowcount != 1:
+                raise LeaseLost("worker does not own this active task lease generation")
             row = conn.execute(
-                """SELECT t.run_id,r.workflow_id FROM kernel_tasks t
-                JOIN kernel_runs r ON r.id=t.run_id
-                WHERE t.id=? AND t.lease_owner=? AND t.status='running'""",
-                (task_id, worker_id),
+                """SELECT t.run_id,t.tenant_id,r.workflow_id FROM kernel_tasks t
+                JOIN kernel_runs r ON r.id=t.run_id WHERE t.id=?""", (task_id,),
             ).fetchone()
-            if not row:
-                raise PermissionError("worker does not own an active task lease")
-            conn.execute(
-                """UPDATE kernel_tasks SET status=?,result=?,error=?,lease_owner=NULL,
-                   lease_until=NULL,updated_at=? WHERE id=?""",
-                (status, json.dumps(result) if result is not None else None, error, now, task_id),
-            )
             self._transition(conn, task_id, "running", status, error, worker_id)
-            self._outbox(conn, conn.execute(
-                "SELECT tenant_id FROM kernel_tasks WHERE id=?", (task_id,)
-            ).fetchone()["tenant_id"], "task", task_id, f"task.{status}", result or {"error": error})
+            self._outbox(conn, row["tenant_id"], "task", task_id,
+                         f"task.{status}", result or {"error": error})
             run_status = "running" if row["workflow_id"] else status
-            conn.execute(
-                "UPDATE kernel_runs SET status=?,result=?,error=?,updated_at=? WHERE id=?",
-                (run_status, json.dumps(result) if result is not None else None, error, now, row["run_id"]),
+            changed = conn.execute(
+                "UPDATE kernel_runs SET status=?,result=?,error=?,updated_at=? "
+                "WHERE id=? AND tenant_id=?",
+                (run_status, encoded, error, now, row["run_id"], row["tenant_id"]),
             )
+            if changed.rowcount != 1:
+                raise RuntimeError("task run disappeared during completion")
 
-    def fail_or_retry_task(self, task_id: str, worker_id: str, error: str) -> str:
-        """Retry with exponential backoff, or atomically move an exhausted task to DLQ."""
+    def fail_or_retry_task(
+        self, task_id: str, worker_id: str, error: str, *, lease_generation: int,
+    ) -> str:
+        """Retry or dead-letter atomically; stale generations produce no events."""
         from .redaction import sanitize_text
 
         error = sanitize_text(error)
-        now = datetime.now(timezone.utc)
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM kernel_tasks WHERE id=? AND lease_owner=? AND status='running'",
-                (task_id, worker_id),
-            ).fetchone()
-            if not row:
-                raise PermissionError("worker does not own an active task lease")
-            if row["attempts"] < row["max_attempts"]:
-                delay = min(300, 2 ** max(0, row["attempts"] - 1))
-                available = (now + timedelta(seconds=delay)).isoformat()
-                conn.execute(
-                    """UPDATE kernel_tasks SET status='queued',error=?,available_at=?,
-                    lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=?""",
-                    (error, available, now.isoformat(), task_id),
-                )
-                self._transition(conn, task_id, "running", "queued", "retry: " + error, worker_id)
-                return "queued"
-            conn.execute(
-                """UPDATE kernel_tasks SET status='dead_letter',error=?,lease_owner=NULL,
-                lease_until=NULL,updated_at=? WHERE id=?""",
-                (error, now.isoformat(), task_id),
+        with self.locked_transaction("task:" + task_id) as conn:
+            row = self._locked_task(conn, task_id)
+            if row is None:
+                raise LeaseLost("task no longer exists")
+            now = datetime.now(timezone.utc)
+            retry = row["attempts"] < row["max_attempts"]
+            status = "queued" if retry else "dead_letter"
+            delay = min(300, 2 ** max(0, row["attempts"] - 1)) if retry else 0
+            available = (now + timedelta(seconds=delay)).isoformat()
+            updated = conn.execute(
+                f"""UPDATE kernel_tasks SET status=?,error=?,available_at=?,
+                lease_owner=NULL,lease_until=NULL,updated_at=?
+                WHERE id=? AND lease_owner=? AND lease_generation=?
+                AND status='running' AND {self.active_lease_sql}""",
+                (status, error, available, now.isoformat(), task_id, worker_id,
+                 lease_generation),
             )
+            if updated.rowcount != 1:
+                raise LeaseLost("worker does not own this active task lease generation")
+            if retry:
+                self._transition(conn, task_id, "running", status, "retry: " + error, worker_id)
+                return status
             conn.execute(
                 """INSERT INTO kernel_dead_letters
                 (id,tenant_id,task_id,payload,error,attempts,created_at)
@@ -759,13 +809,16 @@ class ControlStore:
                 (f"dlq_{uuid4().hex}", row["tenant_id"], task_id, row["payload"], error,
                  row["attempts"], now.isoformat()),
             )
-            conn.execute(
-                "UPDATE kernel_runs SET status='failed',error=?,updated_at=? WHERE id=?",
-                (error, now.isoformat(), row["run_id"]),
+            changed = conn.execute(
+                "UPDATE kernel_runs SET status='failed',error=?,updated_at=? "
+                "WHERE id=? AND tenant_id=?",
+                (error, now.isoformat(), row["run_id"], row["tenant_id"]),
             )
-            self._transition(conn, task_id, "running", "dead_letter", error, worker_id)
+            if changed.rowcount != 1:
+                raise RuntimeError("task run disappeared during failure")
+            self._transition(conn, task_id, "running", status, error, worker_id)
             self._outbox(conn, row["tenant_id"], "task", task_id, "task.dead_letter", {"error": error})
-            return "dead_letter"
+            return status
 
     def request_task_cancel(self, task_id: str, tenant_id: str, actor_id: str) -> bool:
         now = utc_now()

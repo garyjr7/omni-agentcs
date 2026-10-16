@@ -19,8 +19,11 @@ a durable guardrail, not a distributed lock.
 
 from __future__ import annotations
 
+import json
+from typing import Any
 from uuid import uuid4
 
+from .control_store import ControlStore
 from .errors import BudgetExceeded
 from .models import utc_now
 
@@ -32,7 +35,7 @@ SCHEMA = '''CREATE TABLE IF NOT EXISTS kernel_budget_reservations (
 
 
 class BudgetLedger:
-    def __init__(self, store):
+    def __init__(self, store: ControlStore) -> None:
         self.store = store
         with store.connect() as conn:
             conn.execute(SCHEMA)
@@ -58,8 +61,7 @@ class BudgetLedger:
         amount = int(tokens)
         if amount <= 0:
             raise ValueError('reservation must be positive')
-        with self.store.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
+        with self.store.locked_transaction(self._lock_key(tenant_id, root_id)) as conn:
             committed = conn.execute(
                 '''SELECT COALESCE(SUM(CASE WHEN state='reserved' THEN tokens_reserved
                     ELSE tokens_used END),0) AS total FROM kernel_budget_reservations
@@ -80,9 +82,25 @@ class BudgetLedger:
             )
         return reservation_id
 
+    @staticmethod
+    def _lock_key(tenant_id: str, root_id: str) -> str:
+        return json.dumps(["budget", tenant_id, root_id], separators=(",", ":"))
+
+    def _reservation_key(self, reservation_id: str) -> str:
+        # The reservation's tenant/root never changes. Discover the key before
+        # locking, then guard the state transition in the locked transaction.
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT tenant_id,root_id FROM kernel_budget_reservations "
+                "WHERE reservation_id=?", (reservation_id,),
+            ).fetchone()
+        if row is None:
+            raise PermissionError("reservation is not open")
+        return self._lock_key(row["tenant_id"], row["root_id"])
+
     def settle(self, reservation_id: str, actual_tokens: int) -> None:
         amount = max(0, int(actual_tokens))
-        with self.store.connect() as conn:
+        with self.store.locked_transaction(self._reservation_key(reservation_id)) as conn:
             updated = conn.execute(
                 '''UPDATE kernel_budget_reservations SET tokens_used=?,state='settled',
                 released_at=? WHERE reservation_id=? AND state='reserved' ''',
@@ -92,7 +110,7 @@ class BudgetLedger:
             raise PermissionError('reservation is not open')
 
     def release(self, reservation_id: str) -> None:
-        with self.store.connect() as conn:
+        with self.store.locked_transaction(self._reservation_key(reservation_id)) as conn:
             updated = conn.execute(
                 '''UPDATE kernel_budget_reservations SET state='released',tokens_used=0,
                 released_at=? WHERE reservation_id=? AND state='reserved' ''',
@@ -101,7 +119,7 @@ class BudgetLedger:
         if updated != 1:
             raise PermissionError('reservation is not open')
 
-    def get(self, reservation_id: str, tenant_id: str):
+    def get(self, reservation_id: str, tenant_id: str) -> dict[str, Any] | None:
         with self.store.connect() as conn:
             row = conn.execute(
                 'SELECT * FROM kernel_budget_reservations WHERE reservation_id=? AND tenant_id=?',

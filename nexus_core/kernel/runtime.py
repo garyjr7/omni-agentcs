@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict
 
-from nexus_core.llm.abstraction import LLMFactory, LLMMessage
+from nexus_core.llm.abstraction import LLMFactory, LLMMessage, BaseLLMClient, NexusLLM
 
 from .models import utc_now
 from .telemetry import metrics, telemetry
@@ -15,13 +15,13 @@ from .telemetry import metrics, telemetry
 if TYPE_CHECKING:
     from .models import RunContext
 
-Executor = Callable[[dict, "ExecutionContext"], dict | Awaitable[dict]]
+Executor = Callable[[dict[str, Any], "ExecutionContext"], dict[str, Any] | Awaitable[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
 class ExecutionContext:
     store: Any
-    task: dict
+    task: dict[str, Any]
     worker_id: str
     #: Cooperative cancellation signal consumed by long-running executors
     #: (the ReAct loop and the worker heartbeat). ``None`` = never cancelled.
@@ -52,15 +52,19 @@ class ExecutorRegistry:
     def task_types(self) -> tuple[str, ...]:
         return tuple(sorted(self._executors))
 
-    async def execute(self, task: dict, context: ExecutionContext) -> dict:
+    async def execute(self, task: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
         executor = self._executors.get(task["task_type"])
         if not executor:
             raise ValueError(f"unsupported durable task type: {task['task_type']}")
         if int(task.get('attempts', 1)) > 1 and context.worker_id:
             from .invocation_journal import InvocationJournal
             # Only a claimed, renewed lease may reconcile a previous owner.
-            if not context.store.renew_task_lease(task['id'], context.worker_id):
-                raise PermissionError('cannot recover invocations without active task lease')
+            if not context.store.renew_task_lease(
+                task['id'], context.worker_id, lease_generation=task['lease_generation'],
+            ):
+                from .errors import LeaseLost
+
+                raise LeaseLost('cannot recover invocations without active task lease')
             # P2-D2: fencing — only reconcile the previous owner's running
             # invocations while this worker provably holds the task lease.
             InvocationJournal(context.store).recover(
@@ -85,7 +89,7 @@ class ExecutorRegistry:
         return result
 
 
-def select_llm_client():
+def select_llm_client() -> NexusLLM:
     """Build the resilient LLM client used by agentic executors.
 
     ``LLMFactory.create_from_env()`` always yields the deterministic ``fake``
@@ -109,7 +113,7 @@ def select_llm_client():
     )
 
 
-def _build_run_context(payload: dict, context: ExecutionContext) -> RunContext:
+def _build_run_context(payload: dict[str, Any], context: ExecutionContext) -> RunContext:
     """Build the governed RunContext of one tool invocation.
 
     Shared by ``execute_tool`` and the ReAct approval gate so both authorize
@@ -124,7 +128,7 @@ def _build_run_context(payload: dict, context: ExecutionContext) -> RunContext:
         subject_id=str(actor.get("subject_id") or "nexus-worker"),
         tenant_id=context.tenant_id,
         kind=str(actor.get("kind") or "workload"),
-        roles=tuple(actor.get("roles") or ("operator",)),
+        roles=tuple(actor["roles"]) if actor.get("roles") is not None else ("operator",),
     )
     scope = load_engagement_scope(
         context.store, context.tenant_id, payload.get("engagement_id")
@@ -135,7 +139,11 @@ def _build_run_context(payload: dict, context: ExecutionContext) -> RunContext:
     if not session_id:
         session_id = ensure_work_conversation(context.store, context.tenant_id,
                                              outer.get('agent_id') or 'omni', payload.get('engagement_id'))
+    from .job_authority import parse_authority
+
     return RunContext(
+        job_authority=parse_authority(payload["job_authority"]) if "job_authority" in payload else None,
+        authorized_permissions=tuple(payload.get("permissions") or ()),
         session_id=str(session_id or ''),
         project_root=str(outer.get('project_root') or ''),
         phase=str(payload.get('phase') or outer.get('phase') or ''),
@@ -150,7 +158,7 @@ def _build_run_context(payload: dict, context: ExecutionContext) -> RunContext:
     )
 
 
-def _select_client(route: str | None = None):
+def _select_client(route: str | None = None) -> BaseLLMClient:
     clients = LLMFactory.create_from_env()
     requested = (route or os.getenv("LLM_PROVIDER") or "fake").lower()
     if requested in clients:
@@ -160,7 +168,7 @@ def _select_client(route: str | None = None):
     return clients["fake"]
 
 
-async def execute_llm(payload: dict, context: ExecutionContext) -> dict:
+async def execute_llm(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     messages = payload.get("messages")
     if not messages and "message" in payload:
         messages = [{"role": "user", "content": str(payload["message"])}]
@@ -178,7 +186,7 @@ async def execute_llm(payload: dict, context: ExecutionContext) -> dict:
             "tokens_output": response.tokens_output, "duration_ms": response.duration_ms}
 
 
-async def execute_agent(payload: dict, context: ExecutionContext) -> dict:
+async def execute_agent(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     agent_id = str(payload.get("agent_id") or "nexus")
     definitions = context.store.list_definitions("kernel_agents", context.tenant_id)
     agent = next((item for item in definitions if item.get("agent_id") == agent_id), None)
@@ -200,7 +208,7 @@ async def execute_agent(payload: dict, context: ExecutionContext) -> dict:
     return {"agent_id": agent_id, **llm_result}
 
 
-async def execute_chat(payload: dict, context: ExecutionContext) -> dict:
+async def execute_chat(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     conversation_id = str(payload["conversation_id"])
     conversation = context.store.get_conversation(context.tenant_id, conversation_id)
     if not conversation:
@@ -232,7 +240,7 @@ async def execute_chat(payload: dict, context: ExecutionContext) -> dict:
             "provider": response.provider.value, "model": response.model}
 
 
-async def execute_memory(payload: dict, context: ExecutionContext) -> dict:
+async def execute_memory(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     content = str(payload.get("content") or "").strip()
     if not content:
         raise ValueError("memory content is required")
@@ -248,14 +256,14 @@ async def execute_memory(payload: dict, context: ExecutionContext) -> dict:
     return {"memory_id": result, "indexed_at": utc_now()}
 
 
-async def execute_evaluation(payload: dict, context: ExecutionContext) -> dict:
+async def execute_evaluation(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     expected = payload.get("expected")
     actual = payload.get("actual")
     checks = {"non_empty": bool(actual), "matches_expected": expected is None or actual == expected}
     return {"passed": all(checks.values()), "checks": checks}
 
 
-async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
+async def execute_tool(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     """Invoke only first-party tools through the policy-enforced gateway."""
     from nexus_core.scope import make_roe_validator, make_scope_validator
     from nexus_core.scope.roe import load_enforcer
@@ -287,6 +295,13 @@ async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
     if tool_id not in catalog:
         raise ValueError("tool is not in the first-party runtime catalog")
     definition, handler = catalog[tool_id]
+    from .job_authority import check_authority, verify_job_reservation
+
+    if payload.get("job_owner"):
+        if run_context.job_authority is None:
+            raise PermissionError("legacy job has no delegation envelope; enqueue again")
+        check_authority(run_context.job_authority, run_context, definition)
+        verify_job_reservation(run_context.job_authority, run_context)
     gateway.register(definition, handler)
     result = await gateway.invoke(tool_id, arguments, run_context,
                                   permissions=tuple(payload.get("permissions") or ()),
@@ -295,7 +310,7 @@ async def execute_tool(payload: dict, context: ExecutionContext) -> dict:
     return {"tool_id": tool_id, "output": result}
 
 
-async def execute_brain(payload: dict, context: ExecutionContext) -> dict:
+async def execute_brain(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     """Durable intake → verified action(s) → evaluate pipeline.
 
     ``steps`` is deliberately data, not executable model output: each item is
@@ -368,7 +383,7 @@ async def execute_brain(payload: dict, context: ExecutionContext) -> dict:
             "observations": observations, "evaluation": evaluation}
 
 
-async def execute_react(payload: dict, context: ExecutionContext) -> dict:
+async def execute_react(payload: dict[str, Any], context: ExecutionContext) -> dict[str, Any]:
     """Durable ReAct loop: the model decides one governed step per iteration.
 
     Expected payload: ``objective`` (required), ``engagement_id``,

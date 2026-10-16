@@ -4,6 +4,7 @@
 import sys
 import time
 from pathlib import Path
+from typing import Sequence
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -11,7 +12,7 @@ sys.path.insert(0, str(ROOT / "nexus_core"))
 
 
 
-def main(argv=None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     from nexus_core.cli.llm_env import configure_logging, publish_default_provider
 
     configure_logging()
@@ -45,29 +46,29 @@ def main(argv=None) -> int:
 
             if not paths.config_file.exists():
                 save_config(config, paths)
-            return open_editor(paths.config_file)
+            return int(open_editor(paths.config_file))
         if args.doctor:
             from nexus_core.cli.doctor import run_doctor
 
-            return run_doctor(paths, config, as_json=args.json)
+            return int(run_doctor(paths, config, as_json=args.json))
         if args.setup:
             from nexus_core.cli.setup import run_setup
 
             # run_setup reflects config-derived secrets (scope signing, provider
             # keys) before assessing, not only what the shell already exported.
-            return run_setup(
+            return int(run_setup(
                 paths,
                 config,
                 install=args.install,
                 assume_yes=args.yes,
                 as_json=args.json,
-            )
+            ))
         # ``--json`` is shared by ``--doctor``/``--setup`` and the headless run
         # (``omni run "<objetivo>" --json``): only reject it when neither applies.
         if args.json and not (args.command or args.objective or args.stream_json):
             print("--json requiere --doctor, --setup o un objetivo headless", file=sys.stderr)
             return 2
-        if should_run_wizard(paths, force_no_wizard=args.no_wizard):
+        if args.reset_config and should_run_wizard(paths, force_no_wizard=args.no_wizard):
             config = run_wizard(paths, root=ROOT)
         elif args.reset_config:
             save_config(config, paths)

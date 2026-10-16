@@ -40,7 +40,7 @@ def test_renew_task_lease_extends_until(store):
     claimed = store.claim_task("worker-1", lease_seconds=1)
     original = claimed["lease_until"]
     time.sleep(0.05)
-    assert store.renew_task_lease(claimed["id"], "worker-1", lease_seconds=120) is True
+    assert store.renew_task_lease(claimed["id"], "worker-1", lease_seconds=120, lease_generation=claimed["lease_generation"]) is True
     with store.connect() as conn:
         row = conn.execute(
             "SELECT lease_until, lease_owner FROM kernel_tasks WHERE id=?", (task["id"],)
@@ -52,14 +52,14 @@ def test_renew_task_lease_extends_until(store):
 def test_renew_task_lease_fails_for_other_worker(store):
     _enqueue(store)
     claimed = store.claim_task("worker-1", lease_seconds=60)
-    assert store.renew_task_lease(claimed["id"], "worker-2", lease_seconds=60) is False
+    assert store.renew_task_lease(claimed["id"], "worker-2", lease_seconds=60, lease_generation=claimed["lease_generation"]) is False
 
 
 def test_renew_task_lease_fails_for_completed_task(store):
     _enqueue(store)
     claimed = store.claim_task("worker-1", lease_seconds=60)
-    store.complete_task(claimed["id"], "worker-1", result={"ok": True})
-    assert store.renew_task_lease(claimed["id"], "worker-1", lease_seconds=60) is False
+    store.complete_task(claimed["id"], "worker-1", result={"ok": True}, lease_generation=claimed["lease_generation"])
+    assert store.renew_task_lease(claimed["id"], "worker-1", lease_seconds=60, lease_generation=claimed["lease_generation"]) is False
 
 
 def test_second_worker_cannot_claim_renewed_task(store):
@@ -67,7 +67,7 @@ def test_second_worker_cannot_claim_renewed_task(store):
     claimed = store.claim_task("worker-1", lease_seconds=1)
     # Keep renewing well past the original expiry.
     for _ in range(5):
-        assert store.renew_task_lease(claimed["id"], "worker-1", lease_seconds=5)
+        assert store.renew_task_lease(claimed["id"], "worker-1", lease_seconds=5, lease_generation=claimed["lease_generation"])
         time.sleep(0.05)
     assert store.claim_task("worker-2", lease_seconds=60) is None
 
@@ -105,7 +105,7 @@ def test_heartbeat_renews_on_interval():
         fake_store = SimpleNamespace(renew_task_lease=renew)
         result = await nexus_worker._execute_with_heartbeat(
             fake_store,
-            {"id": "task-1"},
+            {"id": "task-1", "lease_generation": 1},
             "worker-1",
             _Registry(delay=0.2),
             _context(asyncio.Event()),
@@ -126,7 +126,7 @@ def test_heartbeat_stops_on_completion():
         fake_store = SimpleNamespace(renew_task_lease=renew)
         await nexus_worker._execute_with_heartbeat(
             fake_store,
-            {"id": "task-1"},
+            {"id": "task-1", "lease_generation": 1},
             "worker-1",
             _Registry(delay=0.0),
             _context(asyncio.Event()),
@@ -151,20 +151,19 @@ def test_heartbeat_cancels_executor_when_lost():
             await asyncio.wait_for(context.cancel_event.wait(), timeout=2)
             return {"stopped": True}
 
-        result = await nexus_worker._execute_with_heartbeat(
-            fake_store,
-            {"id": "task-1"},
-            "worker-1",
-            _Registry(on_run=executor),
-            _context(cancel_event),
-            timeout_seconds=5,
-            renew_interval=0.05,
-        )
-        return result, cancel_event
+        with pytest.raises(nexus_worker.LeaseLost):
+            await nexus_worker._execute_with_heartbeat(
+                fake_store,
+                {"id": "task-1", "lease_generation": 1},
+                "worker-1",
+                _Registry(on_run=executor),
+                _context(cancel_event),
+                timeout_seconds=5,
+                renew_interval=0.05,
+            )
+        assert cancel_event.is_set()
 
-    result, cancel_event = asyncio.run(scenario())
-    assert cancel_event.is_set()
-    assert result == {"stopped": True}
+    asyncio.run(scenario())
 
 
 def test_heartbeat_propagates_executor_result():
@@ -173,7 +172,7 @@ def test_heartbeat_propagates_executor_result():
         fake_store = SimpleNamespace(renew_task_lease=renew)
         return await nexus_worker._execute_with_heartbeat(
             fake_store,
-            {"id": "task-1"},
+            {"id": "task-1", "lease_generation": 1},
             "worker-1",
             _Registry(delay=0.0),
             _context(asyncio.Event()),

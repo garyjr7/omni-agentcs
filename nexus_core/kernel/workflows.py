@@ -81,8 +81,9 @@ class DurableWorkflowEngine:
 
     def reconcile(self, run_id: str, tenant_id: str) -> Dict[str, Any]:
         """Persist task results and enqueue all newly-unblocked steps exactly once."""
-        now = utc_now()
-        with self.store.connect() as conn:
+        key = json.dumps(["workflow", tenant_id, run_id], separators=(",", ":"))
+        with self.store.locked_transaction(key) as conn:
+            now = utc_now()
             run = conn.execute(
                 "SELECT * FROM kernel_runs WHERE id=? AND tenant_id=?", (run_id, tenant_id)
             ).fetchone()
@@ -133,6 +134,14 @@ class DurableWorkflowEngine:
                     elif (state["status"] == "completed" and state["compensation_type"]
                           and not state["compensation_task_id"]):
                         task_id = f"task_{uuid4().hex}"
+                        claimed = conn.execute(
+                            """UPDATE kernel_workflow_steps SET compensation_task_id=?,
+                            status='compensating',updated_at=? WHERE id=?
+                            AND status='completed' AND compensation_task_id IS NULL""",
+                            (task_id, now, state["id"]),
+                        )
+                        if claimed.rowcount != 1:
+                            continue
                         payload = {
                             "compensates_step": key,
                             "original_result": json.loads(state["task_result"] or "null"),
@@ -145,11 +154,6 @@ class DurableWorkflowEngine:
                             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                             (task_id, tenant_id, run_id, state["compensation_type"], "queued",
                              1, json.dumps(payload), 3, 300, now, now, now),
-                        )
-                        conn.execute(
-                            """UPDATE kernel_workflow_steps SET compensation_task_id=?,
-                            status='compensating',updated_at=? WHERE id=?""",
-                            (task_id, now, state["id"]),
                         )
                         self.store._transition(
                             conn, task_id, None, "queued", "workflow compensation", "workflow-engine"
@@ -168,6 +172,13 @@ class DurableWorkflowEngine:
                     if state["status"] == "pending" and all(states[item]["status"] == "completed" for item in dependencies):
                         step = by_key[key]
                         task_id = f"task_{uuid4().hex}"
+                        claimed = conn.execute(
+                            """UPDATE kernel_workflow_steps SET task_id=?,status='queued',
+                            updated_at=? WHERE id=? AND status='pending' AND task_id IS NULL""",
+                            (task_id, now, state["id"]),
+                        )
+                        if claimed.rowcount != 1:
+                            continue
                         payload = dict(step.get("payload", {}))
                         payload["workflow_context"] = json.loads(run["context"])
                         conn.execute(
@@ -178,10 +189,6 @@ class DurableWorkflowEngine:
                             (task_id, tenant_id, run_id, step["task_type"], "queued",
                              step.get("priority", 5), json.dumps(payload), step.get("max_attempts", 3),
                              step.get("timeout_seconds", 300), now, now, now),
-                        )
-                        conn.execute(
-                            "UPDATE kernel_workflow_steps SET task_id=?,status='queued',updated_at=? WHERE id=? AND task_id IS NULL",
-                            (task_id, now, state["id"]),
                         )
                         self.store._transition(conn, task_id, None, "queued", "workflow step ready", "workflow-engine")
                         self.store._outbox(conn, tenant_id, "task", task_id, "task.queued", {"run_id": run_id, "step": key})

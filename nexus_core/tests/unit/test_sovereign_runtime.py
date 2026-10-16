@@ -20,7 +20,7 @@ def test_conversation_is_tenant_scoped_and_runtime_appends_response(tmp_path, mo
     result = asyncio.run(build_default_registry().execute(
         claimed, ExecutionContext(store, claimed, "worker-test")
     ))
-    store.complete_task(claimed["id"], "worker-test", result=result)
+    store.complete_task(claimed["id"], "worker-test", result=result, lease_generation=claimed["lease_generation"])
 
     messages = store.list_messages("system", conversation["id"])
     assert [message["role"] for message in messages] == ["user", "assistant"]

@@ -46,7 +46,7 @@ def test_renewed_lease_blocks_second_worker(tmp_path):
         tenant_id=TENANT, run_id=run["id"], task_type="noop", payload={}, timeout_seconds=30
     )
     # Worker 1 claims a short lease that it must renew to keep the task.
-    claimed = store.claim_task("worker-1", lease_seconds=1)
+    claimed = store.claim_task("worker-1", lease_seconds=3)
     assert claimed is not None and claimed["lease_owner"] == "worker-1"
 
     async def scenario():
@@ -58,15 +58,17 @@ def test_renewed_lease_blocks_second_worker(tmp_path):
                 store,
                 claimed,
                 "worker-1",
-                _Registry(delay=1.6),
+                _Registry(delay=4.2),
                 context,
                 timeout_seconds=10,
                 renew_interval=0.3,
-                lease_seconds=1,
+                lease_seconds=5,
             )
         )
-        # The original 1s lease would already be expired here without renewal.
-        await asyncio.sleep(0.8)
+        # Past the original 3s deadline; renewals have a 5s scheduling margin.
+        # The old 0.8s check was before the original expiry and could flake
+        # under load because its renewal lease lasted only one second.
+        await asyncio.sleep(3.2)
         second_claim = store.claim_task("worker-2", lease_seconds=60)
         result = await heartbeat
         return result, second_claim
@@ -76,7 +78,7 @@ def test_renewed_lease_blocks_second_worker(tmp_path):
     # Worker 2 could not steal a task whose lease worker 1 kept renewing.
     assert second_claim is None
 
-    store.complete_task(claimed["id"], "worker-1", result=result)
+    store.complete_task(claimed["id"], "worker-1", result=result, lease_generation=claimed["lease_generation"])
     state = _task_state(store, enqueued["id"])
     assert state["status"] == "completed"
     assert state["lease_owner"] is None

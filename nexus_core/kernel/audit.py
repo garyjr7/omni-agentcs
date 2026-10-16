@@ -31,7 +31,9 @@ class AuditWriter:
         event_id = f"audit_{uuid4().hex}"
         created_at = utc_now()
         sanitized = self._sanitize(payload)
-        with self.store.connect() as conn:
+        # Keep the existing global chain format. The lock includes reading its
+        # head and committing the successor, across processes and tenants.
+        with self.store.locked_transaction("audit:global") as conn:
             previous = conn.execute(
                 "SELECT event_hash FROM kernel_audit_events ORDER BY sequence DESC LIMIT 1"
             ).fetchone()
