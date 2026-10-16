@@ -32,9 +32,12 @@ import hashlib
 import json
 import os
 import re
+from dataclasses import replace
+from functools import wraps
 from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
+from nexus_core.kernel.redaction import redact_secret_values
 from nexus_core.kernel.sandbox import sandbox_for_environment
 
 from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox
@@ -90,6 +93,12 @@ SSH_FORBIDDEN_TOKENS: tuple[str, ...] = (
 )
 
 _SUDO_RULE_RE = re.compile(r"^\s*\((?P<who>[^)]*)\)\s+(?P<command>\S.*)$")
+
+#: ``sudo`` options that mean "never ask for a password".
+SUDO_NON_INTERACTIVE_FLAGS: tuple[str, ...] = ("-n", "--non-interactive")
+
+#: Where the first shell command of a line ends (``;``, ``&&``, ``||``, ``|``).
+_SHELL_SEPARATOR_RE = re.compile(r"[;&|\n]")
 
 #: Client script. argv layout after ``-c``: mode host port user password payload.
 SSH_CLIENT_SCRIPT = r"""
@@ -181,10 +190,12 @@ def main():
         elif mode == "exec":
             command = payload.get("command", "")
             stdin_data = payload.get("stdin")
-            # sudo reads the password from a tty; allocate a pty only when we
-            # actually feed stdin, keeping normal commands pty-free.
+            # Never allocate a pty when a secret travels on stdin: a pty echoes
+            # what is written to it, and ``sudo -S`` reads the password from the
+            # pipe perfectly well. V1-46 (rerun 13): the pty echoed the vault
+            # password of a ``sudo -n`` command straight into the observation.
             stdin, stdout, stderr = client.exec_command(
-                command, timeout=payload.get("command_timeout", 60), get_pty=bool(stdin_data)
+                command, timeout=payload.get("command_timeout", 60), get_pty=False
             )
             if stdin_data:
                 stdin.write(stdin_data)
@@ -210,10 +221,15 @@ def main():
                         err = stderr.read().decode("utf-8", "replace")
                         code = stdout.channel.recv_exit_status()
                         if code != 0:
-                            # Non-interactive sudo failed: feed the password to -S
-                            # over a pty (sudo reads the password from the tty).
+                            # Non-interactive sudo failed: feed the password to -S.
+                            # No pty here either (V1-46): sudo reads the password
+                            # from the pipe, and a pty would echo it if sudo never
+                            # got to consume it. Same invariant everywhere -no pty
+                            # on a channel that carries the secret- at the cost of
+                            # hosts with ``Defaults requiretty``, where the
+                            # escalation fails closed instead of leaking.
                             stdin, stdout, stderr = client.exec_command(
-                                "sudo -S -l", timeout=command_timeout, get_pty=True
+                                "sudo -S -l", timeout=command_timeout, get_pty=False
                             )
                             stdin.write(password + "\n")
                             stdin.flush()
@@ -278,6 +294,79 @@ def parse_sudo_rules(text: str) -> list[dict[str, str]]:
             continue
         rules.append({"who": match.group("who").strip(), "command": match.group("command").strip()})
     return rules
+
+
+def sudo_needs_no_password(command: str) -> bool:
+    """Whether the command tells ``sudo`` not to ask for a password (V1-46).
+
+    Deliberately conservative: a ``-n``/``--non-interactive`` token anywhere in
+    the first shell segment of a command that starts with ``sudo`` disables the
+    stdin injection, even when the flag belongs to the wrapped program
+    (``sudo tar cf x -n``). The two mistakes are not symmetric: a false positive
+    costs one call that answers ``sudo: a password is required`` and fails closed
+    (no pty, empty stdin), while a false negative hands the vault password to a
+    ``sudo`` that will not read it -and the pty's echo then prints it into the
+    observation, which is what the rerun 13 measured.
+    """
+    rest = command.removeprefix("sudo")
+    segment = _SHELL_SEPARATOR_RE.split(rest, maxsplit=1)[0]
+    for token in segment.split():
+        if token in SUDO_NON_INTERACTIVE_FLAGS:
+            return True
+        # A clustered short flag carries it too (``sudo -nl``). Long options are
+        # skipped: the flags of the wrapped command are irrelevant here and a
+        # ``--flag`` can never be a sudo short option.
+        if token.startswith("-") and not token.startswith("--") and "n" in token[1:]:
+            return True
+    return False
+
+
+def _secret_values(password: Any) -> tuple[str, ...]:
+    """The literals of this invocation that must never reach an observation.
+
+    ``password`` is the argument the *gateway* fills in when it resolves a
+    ``credential_ref`` (V1-29), so this covers both entry points: the model's
+    manual plaintext and the vault secret it never sees.
+    """
+    return tuple(value for value in {str(password or "")} if value)
+
+
+def _redact_output(payload: Any, secrets: tuple[str, ...]) -> Any:
+    """Apply the value-based redaction to every string of a handler result."""
+    if isinstance(payload, dict):
+        return {key: _redact_output(value, secrets) for key, value in payload.items()}
+    if isinstance(payload, (list, tuple)):
+        return [_redact_output(item, secrets) for item in payload]
+    if isinstance(payload, str):
+        return redact_secret_values(payload, secrets)
+    return payload
+
+
+def _redact_credential_from_result(handler: Any) -> Any:
+    """Never let the resolved credential reach the model or the ledger (V1-46).
+
+    Applied once, at the boundary of the three SSH handlers, so no return branch
+    can forget it: the observation (``output``), the evidence, and the raw client
+    capture (``stdout``/``stderr``) all pass through the same redactor. The
+    upstream defences stay: the secret is not in the remote argv and the gateway
+    keeps it out of the audit trail -this closes the *target's* echo.
+    """
+
+    @wraps(handler)
+    async def invoke(arguments: dict, context: RunContext) -> ToolResult:
+        result = await handler(arguments, context)
+        secrets = _secret_values(arguments.get("password"))
+        if not secrets:
+            return result
+        return replace(
+            result,
+            output=_redact_output(result.output, secrets),
+            evidence=_redact_output(result.evidence, secrets),
+            stdout=redact_secret_values(result.stdout, secrets),
+            stderr=redact_secret_values(result.stderr, secrets),
+        )
+
+    return invoke
 
 
 def ssh_exec_definition(tenant_id: str = "system") -> ToolDefinition:
@@ -528,12 +617,18 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         raise ValueError(f"command contains a forbidden token: {forbidden!r}")
     # ``sudo`` needs a password on a non-interactive channel. Reuse the login
     # credential (the common case) via ``sudo -S`` and feed it on stdin, so the
-    # secret never appears in the remote argv.
+    # secret never appears in the remote argv ... but only when sudo is allowed to
+    # read it: with ``-n``/``--non-interactive`` the password is not consumed, and
+    # the target's echo then prints it into the observation (V1-46, rerun 13).
     stdin_data: str | None = None
     remote_command = command
+    sudo_stdin_skipped = ""
     if command.startswith("sudo ") and " -S" not in command[:16]:
-        remote_command = "sudo -S " + command[len("sudo ") :]
-        stdin_data = password + "\n"
+        if sudo_needs_no_password(command):
+            sudo_stdin_skipped = "non_interactive_flag"
+        else:
+            remote_command = "sudo -S " + command[len("sudo ") :]
+            stdin_data = password + "\n"
     port = int(arguments.get("port") or SSH_DEFAULT_PORT)
     requested_timeout = arguments.get("timeout_seconds")
     timeout_seconds = min(
@@ -561,6 +656,10 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         "port": port,
         "username": username,
     }
+    if sudo_stdin_skipped:
+        # Audited rather than silent: the operator can see that this call did not
+        # get the credential, and why.
+        evidence["sudo_stdin_skipped"] = sudo_stdin_skipped
     if result.timed_out:
         return ToolResult(
             output={"error": "ssh command timed out", "target": target},
@@ -882,9 +981,17 @@ async def ssh_upload_handler(arguments: dict, context: RunContext) -> ToolResult
     )
 
 
+# V1-46: the three handlers that receive a credential run behind the same
+# redaction boundary, so every return branch (success, timeout, parse failure,
+# backend error) is covered by construction.
+ssh_exec_handler = _redact_credential_from_result(ssh_exec_handler)
+enum_system_handler = _redact_credential_from_result(enum_system_handler)
+ssh_upload_handler = _redact_credential_from_result(ssh_upload_handler)
+
 __all__ = [
     "ENUM_COMMANDS",
     "SSH_CLIENT_SCRIPT",
+    "SUDO_NON_INTERACTIVE_FLAGS",
     "enum_system_definition",
     "enum_system_handler",
     "parse_sudo_rules",
@@ -892,4 +999,5 @@ __all__ = [
     "ssh_exec_handler",
     "ssh_upload_definition",
     "ssh_upload_handler",
+    "sudo_needs_no_password",
 ]

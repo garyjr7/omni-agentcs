@@ -2,12 +2,20 @@
 
 This recognizes named credential fields; it is not a general secret detector.
 It never repairs input used for execution. Only persisted copies are changed.
+
+:func:`redact_secret_values` covers the other half of the same problem: a secret
+whose *value* is known to the caller -resolved from ``credential_ref`` for this
+invocation- has to be removed from text even when no named field surrounds it.
+Measured in the rerun 13 (V1-46): a ``sudo -n`` command got the vault password
+injected on stdin, sudo did not consume it, and the remote pty echoed it as a bare
+line of the tool's stdout, which reached the model's context.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from typing import Any
 
 SECRET_TERMS = frozenset({
@@ -22,6 +30,40 @@ _ASSIGNMENT = re.compile(
 )
 _QUOTED = re.compile(r'''"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)''', re.DOTALL)
 _DECODER = json.JSONDecoder()
+
+
+#: Shortest literal secret that is redacted *anywhere* in a text. Below it only
+#: an exact-line match is redacted: a two-character value would collide with
+#: ordinary output and corrupt evidence that has nothing to do with the secret.
+MIN_INLINE_SECRET_LENGTH = 8
+
+#: What replaces a redacted secret value.
+REDACTED = "[REDACTED]"
+
+
+def redact_secret_values(content: str, secrets: Iterable[str]) -> str:
+    """Remove known secret *values* from text (V1-46).
+
+    Two shapes are redacted, in this order:
+
+    * a whole line that is exactly the secret (optionally indented, with or
+      without CR) -the measured echo of a secret written to a remote pty-; and
+    * an occurrence inside a longer line (``[sudo] password for lin: <secret>``),
+      only for values of at least :data:`MIN_INLINE_SECRET_LENGTH` characters.
+
+    It is a complement to :func:`sanitize_text` (which works by field name), not a
+    replacement: this one needs the caller to hand over the literal.
+    """
+    values = [str(value) for value in (secrets or ()) if value]
+    if not content or not values:
+        return content
+    for value in values:
+        escaped = re.escape(value)
+        # Keep the indentation and the line ending: only the value is replaced.
+        content = re.sub(rf"(?m)^([ \t]*)({escaped})(\r?)$", rf"\g<1>{REDACTED}\g<3>", content)
+        if len(value) >= MIN_INLINE_SECRET_LENGTH:
+            content = content.replace(value, REDACTED)
+    return content
 
 
 def sanitize(value: Any) -> Any:
