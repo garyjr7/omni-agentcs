@@ -199,7 +199,7 @@ def test_repl_prompt_shows_trust_mode(tmp_path):
     assert "[TRUST MODE]" not in session.prompt
     session.trust_mode = True
     assert "[TRUST MODE]" in session.prompt
-    assert session.prompt.endswith("└─$ ")
+    assert session.prompt.endswith("> ")
 
 
 def test_trust_command_toggles_at_runtime(tmp_path, capsys):

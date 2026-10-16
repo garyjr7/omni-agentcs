@@ -214,7 +214,7 @@ def test_prompt_includes_session_uuid_and_type(session, daemon):
     session.attach_session(UUID)
     prompt = session.prompt
     assert "[session sess-1/meterpreter]" in prompt
-    assert prompt.endswith("└─$ ")
+    assert prompt.endswith("> ")
 
 
 def test_trust_mode_flag_still_shown_in_session_mode(session, daemon):

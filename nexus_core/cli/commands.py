@@ -38,7 +38,7 @@ def _tool_catalog(session: "OmniSession") -> dict[str, Any]:
     from nexus_core.tools.registry import durable_tool_definitions
 
     try:
-        return durable_tool_definitions(session.tenant_id)
+        return dict(durable_tool_definitions(session.tenant_id))
     except Exception:  # noqa: BLE001 - a broken catalog must not kill the REPL
         return {}
 
@@ -103,7 +103,7 @@ def cmd_scope(session: "OmniSession", args: list[str]) -> None:
         render.write("   (las tools que exigen scope serán denegadas hasta fijar uno)")
 
 
-def _engage_list(session: "OmniSession", engage) -> None:
+def _engage_list(session: "OmniSession", engage: Any) -> None:
     scopes = engage.list_engagements(session.store, session.tenant_id)
     if not scopes:
         render.write(
@@ -120,7 +120,7 @@ def _engage_list(session: "OmniSession", engage) -> None:
         render.write(f"     cidrs={cidrs} · dominios={domains} · hasta {scope.valid_until}")
 
 
-def _engage_create(session: "OmniSession", engage, rest: list[str]) -> None:
+def _engage_create(session: "OmniSession", engage: Any, rest: list[str]) -> None:
     usage = "uso: /engage_create <nombre> <dominios/CIDRs> [--hours N]"
     hours = engage.DEFAULT_VALID_HOURS
     if "--hours" in rest:
@@ -150,7 +150,7 @@ def _engage_create(session: "OmniSession", engage, rest: list[str]) -> None:
     render.render_status(f"engagement activo: {scope.engagement_id} ({scope.name})")
 
 
-def _engage_use(session: "OmniSession", engage, rest: list[str]) -> None:
+def _engage_use(session: "OmniSession", engage: Any, rest: list[str]) -> None:
     if not rest:
         render.render_error("uso: /engage_use <engagement_id>")
         return
@@ -288,10 +288,15 @@ def cmd_history(session: "OmniSession", args: list[str]) -> None:
             render.render_error(f"no se pudo leer el historial: {exc}")
             return
     if not messages and session.history:
+        from .tui.presentation import input_chip, render_rich
         for line in session.history[-limit:]:
-            render.write(line)
+            render.write(render_rich(input_chip(line), no_color=session.no_color or not session._tui.use_tui))
         return
-    render.render_messages(messages)
+    # Copies affect display only; durable history retains the complete input.
+    from .tui.presentation import input_chip
+    visible = [{**message, "content": input_chip(str(message.get("content") or "")).plain}
+               if message.get("role") == "user" else message for message in messages]
+    render.render_messages(visible)
 
 
 def cmd_clear(session: "OmniSession", args: list[str]) -> None:
@@ -530,7 +535,7 @@ def cmd_kill_session(session: "OmniSession", args: list[str]) -> None:
     render.write("cancelado")
 
 
-def _report_tools(session: "OmniSession"):
+def _report_tools(session: "OmniSession") -> Any:
     """Import the report layer lazily (the REPL must survive an import error)."""
     from nexus_core.report import extractor as extractor_module
     from nexus_core.report import markdown as markdown_module
@@ -557,7 +562,7 @@ def cmd_findings(session: "OmniSession", args: list[str]) -> None:
     if not findings and not failed:
         render.write(f"(sin hallazgos verificados en {session.engagement_id})")
         return
-    counts = {}
+    counts: dict[str, int] = {}
     for finding in findings:
         counts[finding.severity] = counts.get(finding.severity, 0) + 1
     render.write(f"Hallazgos del engagement {session.engagement_id}:")
@@ -573,7 +578,8 @@ def cmd_findings(session: "OmniSession", args: list[str]) -> None:
 
 def cmd_facts(session: "OmniSession", args: list[str]) -> None:
     """Lista los hechos registrados (blackboard): /facts [tipo]."""
-    if session.engagement is None:
+    engagement_id = session.engagement_id
+    if engagement_id is None:
         render.render_error("no hay engagement activo (usa /scope)")
         return
     from nexus_core.kernel.blackboard import FACT_TYPES, Blackboard
@@ -587,30 +593,30 @@ def cmd_facts(session: "OmniSession", args: list[str]) -> None:
     try:
         board = Blackboard(session.store)
         facts = board.list_facts(
-            session.tenant_id, session.engagement_id, fact_type=fact_type
+            session.tenant_id, engagement_id, fact_type=fact_type
         )
     except Exception as exc:  # noqa: BLE001 - never break the REPL
         render.render_error(f"no se pudo leer el blackboard: {type(exc).__name__}: {exc}")
         return
     if not facts:
-        render.write(f"(sin hechos registrados en {session.engagement_id})")
+        render.write(f"(sin hechos registrados en {engagement_id})")
         return
-    render.write(f"Hechos del engagement {session.engagement_id} ({len(facts)}):")
+    render.write(f"Hechos del engagement {engagement_id} ({len(facts)}):")
     for fact in facts:
         mark = "" if fact.get("verified") else " [sin verificar]"
         render.write(
             f"  [{fact['fact_type']}] {fact['key']}{mark} via {fact.get('source', '?')}"
         )
-    summary = board.summary(session.tenant_id, session.engagement_id)
+    summary = board.summary(session.tenant_id, engagement_id)
     render.write(f"Resumen: {summary['counts']}")
 
 
 def cmd_mode(session: "OmniSession", args: list[str]) -> None:
     """Permisos persistentes: /mode show | /mode plan on|off (aprobar revisión)."""
-    from nexus_core.kernel.operator_mode import OperatorMode
-    from nexus_core.kernel.models import Identity
     from nexus_core.agent.planner import plan_from_summary
     from nexus_core.kernel.blackboard import Blackboard
+    from nexus_core.kernel.models import Identity
+    from nexus_core.kernel.operator_mode import OperatorMode
 
     if args not in ([], ['show'], ['plan','on'], ['plan','off']):
         render.render_error('uso: /mode show | /mode plan on|off')
@@ -619,8 +625,9 @@ def cmd_mode(session: "OmniSession", args: list[str]) -> None:
     modes = OperatorMode(session.store)
     state = modes.get(context)
     if args == ['plan','on']:
-        summary = Blackboard(session.store).summary(session.tenant_id,session.engagement_id)
-        plan = plan_from_summary(summary, engagement_id=session.engagement_id)
+        engagement_id = session.engagement_id or ''
+        summary = Blackboard(session.store).summary(session.tenant_id, engagement_id)
+        plan = plan_from_summary(summary, engagement_id=engagement_id)
         state = modes.plan(context,plan.render())
     elif args == ['plan','off']:
         if state['mode'] != 'plan':
@@ -647,18 +654,113 @@ def cmd_plan(session: "OmniSession", args: list[str]) -> None:
     if session.engagement is None:
         render.render_error("no hay engagement activo (usa /scope)")
         return
-    from nexus_core.agent.planner import plan_from_summary
+    from nexus_core.agent.planner import attack_surface, plan_from_summary
+    from nexus_core.agent.subagents import select_for_plan
     from nexus_core.kernel.blackboard import Blackboard
 
+    engagement_id = session.engagement.engagement_id
+    board = Blackboard(session.store)
     try:
-        summary = Blackboard(session.store).summary(session.tenant_id, session.engagement_id)
+        summary = board.summary(session.tenant_id, engagement_id)
+        facts = board.list_facts(session.tenant_id, engagement_id)
     except Exception as exc:  # noqa: BLE001 - never break the REPL
         render.render_error(f"no se pudo calcular el plan: {type(exc).__name__}: {exc}")
         return
-    plan = plan_from_summary(summary, engagement_id=session.engagement_id)
+    plan = plan_from_summary(summary, engagement_id=engagement_id)
     session._tui.set_plan(plan.to_dict())
     render.write(plan.render())
+    render.write(attack_surface(facts).render())
+    try:
+        profile = select_for_plan(plan, override=session.subagent_override)
+    except ValueError:
+        profile = None
+    if profile is not None:
+        render.write(
+            render.paint(
+                f"ESTRATEGIA OPERATIVA · perfil táctico: {profile.id} "
+                f"({profile.label}) — {profile.focus}",
+                render.BOLD,
+            )
+        )
     render.write("  (usa /plan on o F2 para el panel lateral en vivo)")
+
+
+def cmd_interview(session: "OmniSession", args: list[str]) -> None:
+    """Intake guiado: objetivo, targets, RoE y restricciones (persistido)."""
+    from .interview import run_interview
+
+    if session.engagement is None:
+        render.render_error(
+            "no hay engagement activo (usa /scope o /engage_create)"
+        )
+        return
+    if args and args[0] not in {"show", "run"}:
+        render.render_error("uso: /interview [show]")
+        return
+    if args and args[0] == "show":
+        brief = session.engagement_brief
+        if not brief:
+            render.write("(sin brief registrado; usa /interview)")
+            return
+        for key in ("objectives", "client", "authorized_targets", "restrictions"):
+            render.write(f"  {key}: {brief.get(key) or '(sin definir)'}")
+        return
+    result = run_interview(session)
+    if result.cancelled:
+        render.write("entrevista cancelada: no se registró nada")
+        return
+    render.write(
+        render.paint(f"Engagement brief {session.engagement_id}", render.BOLD)
+    )
+    render.write(f"  objetivo: {result.objectives or '(sin definir)'}")
+    render.write(f"  cliente: {result.client or '(sin definir)'}")
+    render.write(
+        f"  targets autorizados: {', '.join(result.authorized_targets) or '(ninguno)'}"
+    )
+    if result.rejected_targets:
+        render.write(
+            render.paint(
+                "  ⚠ fuera de scope (no registrados): "
+                + ", ".join(result.rejected_targets),
+                render.RED,
+            )
+        )
+    if result.restrictions:
+        render.write(f"  restricciones: {result.restrictions}")
+    render.write(
+        "  RoE: "
+        + (
+            f"guardada en {result.roe_path}"
+            if result.roe_saved
+            else "sin límites adicionales"
+        )
+    )
+    render.write(
+        "  brief durable: "
+        + ("registrado" if result.brief_recorded else "NO registrado (store no disponible)")
+    )
+    render.write("  (el brief se inyecta como hecho 'hint' en cada iteración)")
+
+
+def cmd_review(session: "OmniSession", args: list[str]) -> None:
+    """/review: valida evidencia, integridad y limpieza; entrega opcional."""
+    from .review import render_review, run_review
+
+    deliver = "--deliver" in args
+    llm_cvss = "--llm-cvss" in args
+    output_format = "both"
+    if "--format" in args:
+        index = args.index("--format")
+        if index + 1 >= len(args) or args[index + 1].lower() not in REPORT_FORMATS:
+            render.render_error(
+                f"uso: /review [--deliver] [--llm-cvss] [--format {REPORT_FORMAT_USAGE}]"
+            )
+            return
+        output_format = args[index + 1].lower()
+    report = run_review(
+        session, deliver=deliver, output_format=output_format, llm_cvss=llm_cvss
+    )
+    render_review(report)
 
 
 def cmd_panel(session: "OmniSession", args: list[str]) -> None:
@@ -683,12 +785,18 @@ def cmd_playbook(session: "OmniSession", args: list[str]) -> None:
     if session.engagement is None:
         render.render_error("no hay engagement activo (usa /scope)")
         return
-    from nexus_core.agent.playbooks import PLAYBOOKS, PRECONDITIONS, select_playbooks
+    from nexus_core.agent.playbooks import (
+        is_applicable,
+        playbook_by_id,
+        registered_playbooks,
+        select_playbooks,
+    )
     from nexus_core.kernel.blackboard import Blackboard
 
+    engagement_id = session.engagement.engagement_id
     try:
         facts = Blackboard(session.store).list_facts(
-            session.tenant_id, session.engagement_id
+            session.tenant_id, engagement_id
         )
     except Exception as exc:  # noqa: BLE001 - never break the REPL
         render.render_error(f"no se pudieron leer los hechos: {type(exc).__name__}: {exc}")
@@ -697,9 +805,10 @@ def cmd_playbook(session: "OmniSession", args: list[str]) -> None:
         if len(args) < 2:
             render.render_error("uso: /playbook show <playbook_id>")
             return
-        playbook = next((item for item in PLAYBOOKS if item.playbook_id == args[1]), None)
+        playbook = playbook_by_id(args[1])
         if playbook is None:
-            render.render_error(f"playbook desconocido: {args[1]!r}")
+            known = ", ".join(sorted(item.playbook_id for item in registered_playbooks()))
+            render.render_error(f"playbook desconocido: {args[1]!r} (disponibles: {known})")
             return
         render.write(f"PLAYBOOK {playbook.playbook_id} — {playbook.title} [{playbook.phase}]")
         render.write(f"  requiere: {playbook.requires}")
@@ -711,7 +820,7 @@ def cmd_playbook(session: "OmniSession", args: list[str]) -> None:
         render.write("(sin playbooks definidos)")
         return
     for match in matches:
-        ready = PRECONDITIONS[match.playbook.playbook_id](facts)
+        ready = is_applicable(match.playbook.playbook_id, facts)
         state = "listo" if ready else "no aplica (faltan hechos)"
         render.write(f"  [{match.playbook.phase}] {match.playbook.playbook_id} — {state}")
         if match.next_step is not None:
@@ -758,7 +867,7 @@ def cmd_expand(session: "OmniSession", args: list[str]) -> None:
     render.write(
         f"tarjetas de tool: {'expandidas' if enabled else 'plegadas'}"
         + (
-            " · clic en el pie (▼/▲) de una tarjeta para una sola"
+            " · clic en [ Show more / Show less ] para una sola"
             if session._tui.use_tui
             else " (solo TUI)"
         )
@@ -814,8 +923,8 @@ def _report_arguments(
     output_dir: str | None,
     llm_cvss: bool,
     output_format: str = "both",
-) -> dict:
-    arguments: dict = {"engagement_id": session.engagement_id, "format": output_format}
+) -> dict[str, Any]:
+    arguments: dict[str, Any] = {"engagement_id": session.engagement_id, "format": output_format}
     if output_dir:
         arguments["output_dir"] = output_dir
     if llm_cvss:
@@ -823,7 +932,7 @@ def _report_arguments(
     return arguments
 
 
-def _run_report_tool(session: "OmniSession", arguments: dict) -> dict | None:
+def _run_report_tool(session: "OmniSession", arguments: dict[str, Any]) -> dict[str, Any] | None:
     """Run ``nexus.report.generate`` through the gateway and report failures.
 
     ``invoke_tool`` returns ``{"tool_id": ..., "output": <ToolResult>}`` (the
@@ -951,7 +1060,7 @@ def _report_export(
     ):
         if output.get(key):
             render.write(f"  ✓ {name}")
-    manifest = {
+    manifest: dict[str, Any] = {
         "engagement_id": output.get("engagement_id"),
         "report_sha256": output.get("report_sha256"),
         "findings": output.get("findings_count"),
@@ -961,9 +1070,9 @@ def _report_export(
     }
     try:
         target.mkdir(parents=True, exist_ok=True)
-        (target / "report.sha256").write_text(
-            f"{output.get('report_sha256')}  report.json\n", encoding="utf-8"
-        )
+        from nexus_core.report.checksums import write_checksums
+
+        write_checksums(target, manifest["artifacts"])
         (target / "manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -1095,7 +1204,7 @@ def _ask_messages(session: "OmniSession", question: str) -> list[Any]:
     return messages
 
 
-def _supports_streaming(client) -> bool:
+def _supports_streaming(client: Any) -> bool:
     """True when the client can emit real token deltas (not a single dump)."""
     return bool(getattr(client, "supports_streaming", False)) and hasattr(client, "stream")
 
@@ -1135,7 +1244,7 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
                 tui.begin_answer()
                 collected: list[str] = []
 
-                async def consume():
+                async def consume() -> None:
                     async for chunk in metered.stream(messages):
                         collected.append(chunk)
                         tui.append_answer(chunk)
@@ -1203,19 +1312,32 @@ def cmd_subagent(session: "OmniSession", args: list[str]) -> None:
             f"subagente: {session.subagent_override or '(automático)'} · "
             f"disponibles: {', '.join(subagents.SUBAGENT_IDS)}"
         )
-    elif value.lower() in {"auto", "off", "none", "clear"}:
+        render.write(
+            "  alias: "
+            + ", ".join(
+                f"{alias}→{target}"
+                for alias, target in sorted(subagents.SUBAGENT_ALIASES.items())
+            )
+        )
+        return
+    if value.lower() in {"auto", "off", "none", "clear"}:
         session.subagent_override = None
         render.write("subagente: (automático, lo elige el planner)")
-    elif value in subagents.SUBAGENT_IDS:
-        session.subagent_override = value
-        render.write(f"subagente: {value} (se aplica al siguiente objetivo)")
-    else:
-        render.render_error(f"perfil desconocido: {value} (usa /subagent sin argumentos)")
+        return
+    resolved = subagents.resolve_subagent_id(value)
+    if resolved is None:
+        render.render_error(
+            f"perfil desconocido: {value} (usa /subagent sin argumentos)"
+        )
+        return
+    session.subagent_override = resolved
+    note = f" (alias de {value})" if resolved != value else ""
+    render.write(f"subagente: {resolved}{note} (se aplica al siguiente objetivo)")
 
 
 def cmd_status(session: "OmniSession", args: list[str]) -> None:
     """/status [on|off|show]: muestra u oculta la barra (preferencia persistente)."""
-    from .tui.status import render_status_plain, save_status_preference, save_status_fields
+    from .tui.status import render_status_plain, save_status_fields, save_status_preference
 
     if len(args) == 2 and args[0] == 'fields':
         fields = args[1].split(',')
@@ -1415,9 +1537,9 @@ def cmd_skills(session: "OmniSession", args: list[str]) -> None:
         if not found:
             render.write("  (sin skills en .agents/skills/)")
             return
-        active = set(getattr(session, "active_skills", None) or [])
+        active_names = set(getattr(session, "active_skills", None) or [])
         for name, skill in sorted(found.items()):
-            marker = "*" if name in active else " "
+            marker = "*" if name in active_names else " "
             label = "firmada" if skill.trust == TRUST_SIGNED else skill.trust
             render.write(f" {marker} {name:<18} {label:<9} {skill.sha256[:12]}…")
         render.write("  /skills show NOMBRE para previsualizar · /skills use NOMBRE para activar")
@@ -1508,6 +1630,8 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/findings": cmd_findings,
     "/facts": cmd_facts,
     "/plan": cmd_plan,
+    "/interview": cmd_interview,
+    "/review": cmd_review,
     "/mode": cmd_mode,
     "/panel": cmd_panel,
     "/expand": cmd_expand,
@@ -1579,9 +1703,11 @@ __all__ = [
     "cmd_history",
     "cmd_expand",
     "cmd_implants",
+    "cmd_interview",
     "cmd_loot",
     "cmd_panel",
     "cmd_plan",
+    "cmd_review",
     "cmd_playbook",
     "cmd_report",
     "cmd_sliver",

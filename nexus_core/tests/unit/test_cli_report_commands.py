@@ -174,7 +174,9 @@ def test_cmd_report_export_creates_dir(seeded, tmp_path, capsys):
     assert manifest["report_sha256"] == "a" * 64
     assert manifest["findings"] == 8
     assert manifest["artifacts"]["report.md"] == "a" * 64
-    assert (target / "report.sha256").read_text().startswith("a" * 64)
+    import hashlib
+    checksum = hashlib.sha256((target / "report.html").read_bytes()).hexdigest()
+    assert (target / "report.sha256").read_text().startswith(checksum)
     _tool_id, arguments = invoke.call_args.args
     assert arguments["output_dir"] == str(target)
     assert session.last_report_directory == str(target)

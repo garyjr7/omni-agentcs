@@ -25,6 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PROGRAM,
         description="CLI interactivo de OmniAgentCS-CLI: bucle ReAct con scope y aprobación humana.",
     )
+    parser.add_argument("--continue", dest="continue_engagement", metavar="ID",
+                        help="retoma un engagement y su conversación persistente")
     parser.add_argument("--engagement", metavar="ID", help="engagement activo (scope firmado)")
     parser.add_argument(
         "--tenant", default=DEFAULT_TENANT, help=f"tenant de trabajo (default: {DEFAULT_TENANT})"
@@ -174,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _render_about(scopes: list[Any], args) -> None:
+def _render_about(scopes: list[Any], args: argparse.Namespace) -> None:
     """Print the full ASCII banner with live stats (``omni --about``)."""
     from .banner import build_banner, render_banner
     from .llm_env import provider_summary
@@ -333,7 +335,7 @@ def _list_engagements(scopes: list[Any]) -> None:
         )
 
 
-def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
+def main(argv: Sequence[str] | None = None, *, config: Any = None, paths: Any = None) -> int:
     """Run the ``omni`` CLI; returns the process exit code."""
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     render.configure_color(no_color=args.no_color)
@@ -370,20 +372,20 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     if subcommand == "tool" and args.list:
         from .tool import list_tools
 
-        return list_tools(args.tenant)
+        return int(list_tools(args.tenant))
 
     # ``omni hooks ...`` is an operator-governed write to the private trust file;
     # it needs no engagement and never executes a hook itself.
     if subcommand == "hooks":
         from .hooks_cli import run_hooks_command
 
-        return run_hooks_command(list(args.command[1:]), args.tenant)
+        return int(run_hooks_command(list(args.command[1:]), args.tenant))
 
     # ``omni resume ...`` decides what to do with invocations left ``unknown``.
     if subcommand == "resume":
         from .resume_cli import run_resume_command
 
-        return run_resume_command(list(args.command[1:]), store, args.tenant)
+        return int(run_resume_command(list(args.command[1:]), store, args.tenant))
 
     if args.list_engagements:
         _list_engagements(engagements)
@@ -421,9 +423,18 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     from .tui.session import should_use_tui
 
     tui_expected = not (args.no_tui or objective or subcommand) and should_use_tui()
-    engagement, exit_code = select_engagement(
-        engagements, args.engagement, announce=not tui_expected
-    )
+    if args.continue_engagement and args.engagement and args.continue_engagement != args.engagement:
+        render.render_error("--continue y --engagement deben identificar el mismo engagement")
+        return 2
+    requested = args.continue_engagement or args.engagement
+    if not requested and not objective and not subcommand and not args.roe and not args.resume:
+        from pathlib import Path
+        from .workspace import bind_workspace
+        engagement, exit_code = bind_workspace(store, args.tenant, Path.cwd()), 0
+    else:
+        engagement, exit_code = select_engagement(
+            engagements, requested, announce=not tui_expected
+        )
     if exit_code:
         return exit_code
 
@@ -436,7 +447,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         code, lines = run_roe_action(args.roe, engagement.engagement_id)
         for line in lines:
             print(line)
-        return code
+        return int(code)
 
     # ``omni report`` / ``omni cve update``: subcommands that do not need a
     # model client. Both go through the durable gateway like everything else.
@@ -456,14 +467,14 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
         if not rest:
             render.render_error("uso: omni tool <tool_id> '<json>' | omni tool --list")
             return 2
-        return run_tool_command(
+        return int(run_tool_command(
             store,
             args.tenant,
             engagement,
             rest[0],
             rest[1:],
             trust_mode=args.trust_mode,
-        )
+        ))
 
     try:
         llm_client = build_llm_client()
@@ -513,7 +524,7 @@ def main(argv: Sequence[str] | None = None, *, config=None, paths=None) -> int:
     if objective and headless_mode:
         from .headless import run_headless
 
-        return run_headless(session, objective, mode=headless_mode, max_iterations=args.max_iterations)
+        return int(run_headless(session, objective, mode=headless_mode, max_iterations=args.max_iterations))
     if objective:
         result = session.run_objective(objective)
         if result is None:

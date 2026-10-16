@@ -135,7 +135,7 @@ def run_wizard(paths, *, root=None) -> OmniConfig:
             config.tools_detected[name] = {
                 k: (v if v is not None else "")
                 for k, v in asdict(status).items()
-                if k != "recipes_available"
+                if k not in {"recipes_available", "verify_argv"}
             }
             if not status.present:
                 missing.append(name)
@@ -157,10 +157,10 @@ def run_wizard(paths, *, root=None) -> OmniConfig:
                 )
                 if outcome.success and plan.installs_to:
                     update_shell_path(plan.installs_to)
-        print("Proveedor: 1 Groq / 2 OpenAI / 3 Anthropic / 4 Gemini / 5 Ollama / 6 Fake")
+        print("Proveedor: 1 Groq / 2 OpenAI / 3 Anthropic / 4 Gemini / 5 Ollama / 6 Fake / 7 DeepSeek")
         answer = input("Proveedor [1]: ").strip().lower() or "1"
         provider = (
-            PROVIDERS[int(answer) - 1] if answer in {"1", "2", "3", "4", "5", "6"} else answer
+            PROVIDERS[int(answer) - 1] if answer in {"1", "2", "3", "4", "5", "6", "7"} else answer
         )
         if provider not in PROVIDERS:
             raise ValueError("proveedor desconocido")

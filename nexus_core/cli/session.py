@@ -17,7 +17,7 @@ import threading
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from nexus_core.agent import memory
 from nexus_core.agent.react import ReActConfig, _operator_approval_gate, run_react_loop
@@ -29,10 +29,10 @@ from nexus_core.scope import ScopeViolation
 from . import commands as commands_module
 from . import render
 from .approval import default_operator_id, make_approval_callback
-from .tui.session import TuiSession, should_use_tui
-from .tui.history import history_path as tui_history_path
 from .tool_result import tool_method, tool_payload, tool_success
+from .tui.history import history_path as tui_history_path
 from .tui.output import PlainOutput, TuiOutput, routed
+from .tui.session import PROMPT_PREFIX, TuiSession, should_use_tui
 from .tui.status import load_status_preference
 
 DEFAULT_TENANT = "system"
@@ -62,7 +62,7 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def fetch_sessions() -> dict | None:
+def fetch_sessions() -> dict[str, Any] | None:
     """Read ``session.list`` directly; ``None`` when the daemon cannot answer.
 
     Listing sessions is a read of the daemon's own state, not a command sent to
@@ -80,16 +80,16 @@ def fetch_sessions() -> dict | None:
         if not config.password:
             return None
 
-        async def _list() -> dict:
+        async def _list() -> dict[str, Any]:
             async with MetasploitClient(config) as client:
-                return await client.list_sessions()
+                return dict(await client.list_sessions())
 
         return asyncio.run(_list())
     except Exception:  # noqa: BLE001 - the REPL must survive an absent daemon
         return None
 
 
-def find_session(sessions: dict | None, session_uuid: str) -> dict | None:
+def find_session(sessions: dict[str, Any] | None, session_uuid: str) -> dict[str, Any] | None:
     """Return the session record matching ``session_uuid``, if any."""
     for record in (sessions or {}).values():
         if isinstance(record, dict) and str(record.get("uuid") or "") == session_uuid:
@@ -97,7 +97,7 @@ def find_session(sessions: dict | None, session_uuid: str) -> dict | None:
     return None
 
 
-def _normalize_sliver_session(record: dict) -> dict:
+def _normalize_sliver_session(record: dict[str, Any]) -> dict[str, Any]:
     """Present a Sliver session in the shape the REPL already renders."""
     session_id = str(record.get("session_id") or "")
     return {
@@ -170,7 +170,7 @@ def _install_readline() -> Path | None:
         for entry in reversed(list(file_history(history_path).load_history_strings())):
             readline.add_history(entry)
         readline.set_history_length(1000)
-        return history_path
+        return Path(history_path)
     except OSError:  # pragma: no cover - unwritable home directory
         return None
 
@@ -213,7 +213,7 @@ class OmniSession:
         no_color: bool = False,
         use_tui: bool | None = None,
         status_bar_enabled: bool = True,
-        output=None,
+        output: Any=None,
         engagement_names: list[str] | None = None,
         fullscreen: bool = True,
         show_art_banner: bool = False,
@@ -221,7 +221,11 @@ class OmniSession:
     ) -> None:
         self.store = store
         self.tenant_id = tenant_id
+        self.autospawn: bool = False
+        self.supervisor_budget: int = 0
         self.engagement = engagement
+        from .workspace import workspace_root
+        self.workspace_root = workspace_root(engagement)
         self.llm_client = llm_client
         try:
             self.max_iterations = max(1, int(max_iterations))
@@ -243,6 +247,10 @@ class OmniSession:
         self.history: list[str] = []
         #: Skills the operator explicitly activated for this session (opt-in).
         self.active_skills: list[str] = []
+        #: ``/interview`` engagement brief (objectives, targets, restrictions).
+        #: It is also persisted as a durable blackboard ``hint`` fact; this copy
+        #: is what the running session renders without re-reading the store.
+        self.engagement_brief: dict[str, Any] = {}
         #: ``--subagent``/``/subagent``: an operator pin for the profile of the
         #: next run (P2, Fase 3.7). ``None`` means "the planner decides"; an
         #: unknown id is rejected by ``subagents.select_subagent``, fail-closed.
@@ -257,7 +265,7 @@ class OmniSession:
         self.last_question: str | None = None
         #: Session-mode state (attach does not touch the engagement scope).
         self.active_session_uuid: str | None = None
-        self.active_session_info: dict | None = None
+        self.active_session_info: dict[str, Any] | None = None
         #: Which C2 backend the attached session belongs to (msf | sliver).
         self.active_session_backend: str = SESSION_BACKEND_MSF
         self.session_commands_sent: int = 0
@@ -273,6 +281,17 @@ class OmniSession:
             tools=commands_module._tool_catalog(self) if tui_enabled else {},
             engagements=engagement_names or ([self.engagement.name] if self.engagement else []),
             full_screen=fullscreen,
+        )
+        # The badge pulls the engagement from this session on every frame: it is
+        # right on the first frame and after any ``set_engagement``, not only
+        # after a status-bar push.
+        self._tui.bind_engagement_source(
+            lambda: getattr(self.engagement, "name", None) or self.engagement_id
+        )
+        self._tui.set_status(
+            workspace_path=str(self.workspace_root),
+            engagement_name=getattr(self.engagement, "name", None),
+            provider_model=self._llm_summary(),
         )
         self._output = output or (TuiOutput(self._tui) if self._tui.use_tui else PlainOutput())
         self._usage_by_run: dict[str, tuple[int, int, float]] = {}
@@ -347,7 +366,7 @@ class OmniSession:
         self.last_result = None
         self.last_question = None
 
-    def set_engagement(self, scope) -> None:
+    def set_engagement(self, scope: Any) -> None:
         """Switch the active engagement in place (no REPL restart).
 
         The durable work session is per engagement, so the local run/thread is
@@ -355,6 +374,8 @@ class OmniSession:
         of mixing scopes. The prompt, the status bar and the ``@`` completion
         follow immediately.
         """
+        from .workspace import workspace_root
+        self.workspace_root = workspace_root(scope)
         self.engagement = scope
         self._work_session_id = None
         self.reset_context()
@@ -408,11 +429,12 @@ class OmniSession:
         """Minimal prompt with contextual chips only when they apply.
 
         The engagement (and the model) live in the compact header, shown once,
-        so the prompt stays a bare ``└─$ ``. Transient state that changes during
-        the session (trust, attached session, last report) appears as chips on a
-        line above it, and only when present. Colour is applied *around* each
-        token, never inside it, so the plain substrings (``[TRUST MODE]``,
-        ``[session <uuid>/<type>]``) stay intact and remain greppable.
+        so the prompt stays a bare ``> `` chevron. Transient state that changes
+        during the session (trust, attached session, last report) appears as
+        chips on a line above it, and only when present. Colour is applied
+        *around* each token, never inside it, so the plain substrings
+        (``[TRUST MODE]``, ``[session <uuid>/<type>]``) stay intact and remain
+        greppable.
         """
         trust = "─" + render.paint("[TRUST MODE]", render.RED, render.BOLD) if self.trust_mode else ""
         session = ""
@@ -431,7 +453,7 @@ class OmniSession:
                 f"[report {Path(self.last_report_directory).name}]", render.BLUE
             )
         chips = f"{trust}{session}{report}".lstrip("─")
-        return f"{chips}\n└─$ " if chips else "└─$ "
+        return f"{chips}\n{PROMPT_PREFIX}" if chips else PROMPT_PREFIX
 
     # ------------------------------------------------------------ presentation
     def _verify_audit_chain(self) -> bool:
@@ -451,7 +473,8 @@ class OmniSession:
         """
         from .llm_env import provider_summary
 
-        return provider_summary()
+        provider, limit = provider_summary()
+        return str(provider), int(limit)
 
     def _llm_summary(self) -> str:
         """Human label of the resolved provider, e.g. ``groq/openai/gpt-oss-20b``."""
@@ -471,6 +494,23 @@ class OmniSession:
         if os.getenv("NEXUS_NO_BANNER"):
             return
         if not _stdout_is_tty():
+            return
+        if self._tui.use_tui:
+            from .main import PROGRAM_VERSION
+            from .tui.presentation import startup_banner
+
+            try:
+                width = int(self._tui._session.output.get_size().columns)
+            except (AttributeError, TypeError, ValueError):
+                width = 80
+            banner = startup_banner(
+                str(getattr(self.engagement, "name", None) or self.engagement_id or "workspace"),
+                PROGRAM_VERSION,
+                width=width,
+                no_color=self.no_color,
+            )
+            self._output.write(banner, end="")
+            self._tui.mark_startup_banner()
             return
         from .banner import build_banner, render_banner
         from .main import PROGRAM_VERSION
@@ -529,17 +569,18 @@ class OmniSession:
         """Spinner gate: interactive terminal, colour allowed, not opted out."""
         from .spinner import spinner_enabled
 
-        return not self._tui.use_tui and spinner_enabled() and not os.getenv("NEXUS_NO_SPINNER")
+        return (not self._tui.use_tui and spinner_enabled() and not os.getenv("NEXUS_NO_SPINNER")
+                and os.getenv("CI", "").strip().lower() not in {"1", "true", "yes"})
 
     @contextmanager
-    def _busy(self, message):
+    def _busy(self, message: Any) -> Iterator[Any]:
         self._tui.set_busy(message)
         try:
             yield
         finally:
             self._tui.clear_busy()
 
-    def _metered_client(self, client, *, durable=True):
+    def _metered_client(self, client: Any, *, durable: Any=True) -> Any:
         if not self._tui.use_tui:
             return client
         from .tui.usage import MeteredClient
@@ -547,7 +588,7 @@ class OmniSession:
         return MeteredClient(client, lambda response: self._record_usage(response, durable=durable),
                              context_callback=lambda state: self._tui.set_status(**state))
 
-    async def _with_cancel(self, operation, run_id, *, cooperative=True, cancel_event=None):
+    async def _with_cancel(self, operation: Any, run_id: Any, *, cooperative: Any=True, cancel_event: Any=None) -> Any:
         """Consume UI cancellation on the work loop, never writing DB on the UI thread."""
         if not self._tui.use_tui:
             return await operation
@@ -575,7 +616,7 @@ class OmniSession:
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    def _record_usage(self, response, *, durable=True):
+    def _record_usage(self, response: Any, *, durable: Any=True) -> None:
         from .tui.usage import response_usage
 
         incoming, outgoing, cost = response_usage(response)
@@ -597,7 +638,7 @@ class OmniSession:
             self._usage_local = [a + b for a, b in zip(self._usage_local, amounts)]
         self._update_status_bar()
 
-    def _blackboard_status(self):
+    def _blackboard_status(self) -> Any:
         """``(facts_count, plan)`` for the active engagement (best effort)."""
         if self.engagement is None:
             return None, None
@@ -613,9 +654,10 @@ class OmniSession:
 
     def _facts_count(self) -> int | None:
         """Distinct blackboard facts for the active engagement (best effort)."""
-        return self._blackboard_status()[0]
+        count = self._blackboard_status()[0]
+        return int(count) if count is not None else None
 
-    def _update_status_bar(self, *, force=False) -> None:
+    def _update_status_bar(self, *, force: Any=False) -> None:
         if not self._tui.use_tui and not force:
             return
         totals = list(self._usage_local)
@@ -629,6 +671,7 @@ class OmniSession:
                 amounts = cached
             totals = [a + b for a, b in zip(totals, amounts)]
         fields = dict(
+            workspace_path=str(self.workspace_root),
             engagement_name=getattr(self.engagement, "name", None),
             session_uuid=self.active_session_uuid,
             session_type=(self.active_session_info or {}).get("type"),
@@ -636,6 +679,9 @@ class OmniSession:
             tokens_input=int(totals[0]), tokens_output=int(totals[1]),
             cost_usd=totals[2], cost_known=self._cost_known,
             audit_chain_valid=self._verify_audit_chain(),
+            scope_targets=len({str(item) for field in ("cidrs", "domains", "urls")
+                               for item in (getattr(self.engagement, field, ()) or ())}) if self.engagement else None,
+            budget_usd=getattr(self, "budget_usd", None),
         )
         facts_count, plan = self._blackboard_status()
         fields["facts_count"] = facts_count
@@ -652,7 +698,7 @@ class OmniSession:
                 setattr(self._tui._status, key, value)
 
     # --------------------------------------------------------------- sessions
-    def fetch_sessions(self) -> dict | None:
+    def fetch_sessions(self) -> dict[str, Any] | None:
         """Read the daemon's session list; ``None`` when it cannot answer."""
         from nexus_core.kernel.models import Identity, RunContext
         from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope
@@ -664,11 +710,11 @@ class OmniSession:
             raw = fetch_sessions()
             if raw is None:
                 return None
-            return SessionRegistry(self.store).filter_owned(context, raw)
+            return dict(SessionRegistry(self.store).filter_owned(context, raw))
         except PermissionError:
             return {}
 
-    def fetch_sliver_sessions(self) -> dict | None:
+    def fetch_sliver_sessions(self) -> dict[str, Any] | None:
         """Read Sliver sessions/beacons through the governed tool.
 
         Returns ``None`` when the tool cannot answer so callers never mistake an
@@ -678,13 +724,13 @@ class OmniSession:
         if not tool_success(result):
             return None
         payload = tool_payload(result)
-        records: dict[str, dict] = {}
+        records: dict[str, dict[str, Any]] = {}
         for item in list(payload.get("sessions") or []) + list(payload.get("beacons") or []):
             if isinstance(item, dict) and item.get("session_id"):
                 records[str(item["session_id"])] = _normalize_sliver_session(item)
         return records
 
-    def refresh_active_session(self) -> dict | None:
+    def refresh_active_session(self) -> dict[str, Any] | None:
         """Look the active session up; ``None`` when it is gone or unknown."""
         if not self.active_session_uuid:
             return None
@@ -763,7 +809,8 @@ class OmniSession:
         if self.run_id:
             return self.run_id
         run = self.store.create_run(
-            self.tenant_id, {"source": "omni-cli", "objective": objective}
+            self.tenant_id,
+            {"source": "omni-cli", "objective": objective, "engagement_id": self.engagement_id, "project_root": str(self.workspace_root)},
         )
         self.run_id = str(run["id"])
         return self.run_id
@@ -788,6 +835,7 @@ class OmniSession:
             "tool_id": tool_id,
             "arguments": dict(arguments or {}),
             "identity": self.agent_identity_payload,
+            "project_root": str(self.workspace_root),
             "engagement_id": self.engagement_id,
             "permissions": list(self.permissions),
             "trace_id": run_id,
@@ -843,14 +891,17 @@ class OmniSession:
             )
             return None
         except (PermissionError, ValueError, RuntimeError, KeyError, TypeError) as exc:
-            render.render_error(f"{tool_id} falló: {type(exc).__name__}: {exc}")
+            from .tui.stream import render_tool_result
+            self._output.write(render_tool_result(
+                {"success": False, "tool_id": tool_id, "error": f"{type(exc).__name__}: {exc}"},
+                no_color=self.no_color or not self._tui.use_tui))
             return None
         self.record_tool_result(run_id, tool_id, dict(arguments or {}), result)
         if self._tui.use_tui:
             # Per-block accordion: the card remembers its own state and can be
             # expanded by clicking its footer.
             self._tui.append_card(result.get("output") or {})
-        return result
+        return dict(result) if result is not None else None
 
     def record_tool_result(
         self,
@@ -1002,7 +1053,8 @@ class OmniSession:
         else:
             run_id = str(
                 self.store.create_run(
-                    self.tenant_id, {"source": "omni-cli", "objective": objective}
+                    self.tenant_id,
+                    {"source": "omni-cli", "objective": objective, "engagement_id": self.engagement_id, "project_root": str(self.workspace_root)},
                 )["id"]
             )
         self.run_id = run_id
@@ -1023,7 +1075,7 @@ class OmniSession:
             "subagent": self.subagent_override,
             # P2-A2: pass the engagement workspace explicitly so lifecycle hooks
             # resolve the same directory in REPL, headless and worker.
-            "project_root": os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd()),
+            "project_root": str(self.workspace_root),
             # P2-C3: opt-in automatic delegation on a family transition.
             "autospawn": bool(getattr(self, "autospawn", False)),
             "supervisor_budget": int(getattr(self, "supervisor_budget", 0) or 0),
@@ -1061,7 +1113,13 @@ class OmniSession:
             from .spinner import Spinner
 
             if self._tui.use_tui:
-                self._output.write("\n" + render.paint(f"❯ {objective}", render.WHITE))
+                from .tui.presentation import input_quote, input_chip, render_rich
+                visible_objective = render_rich(input_chip(objective), no_color=self.no_color)
+                width = int(self._tui._session.output.get_size().columns)
+                self._tui.append_scrollback(input_quote(
+                    "❯ " + visible_objective, width=max(1, width - 2),
+                    no_color=self.no_color,
+                ) + "\n\n")
             with self._busy("Working"), Spinner(
                 f"Ejecutando objetivo: {objective[:80]}",
                 enabled=self._spinner_enabled(),
@@ -1155,7 +1213,8 @@ class OmniSession:
         ordered = [str(target) for target in (targets or [])]
         run_id = str(
             self.store.create_run(
-                self.tenant_id, {"source": "omni-fanout", "tool_id": tool_id}
+                self.tenant_id,
+                {"source": "omni-fanout", "tool_id": tool_id, "engagement_id": self.engagement_id},
             )["id"]
         )
         AuditWriter(self.store).append(
@@ -1182,16 +1241,17 @@ class OmniSession:
         }
         context = ExecutionContext(self.store, task, self.worker_id)
 
-        def emit(kind, task_id, target, status='running'):
+        def emit(kind: Any, task_id: Any, target: Any, status: Any='running') -> None:
             data = {'task_id': task_id, 'subagent_id': profile.id, 'target': target, 'status': status}
             self.store.append_run_event(self.tenant_id, run_id, kind, data)
             self._tui.task_event({'event_type':kind,'run_id':run_id,'payload':data})
 
-        def make_call(index, target: str):
+        def make_call(index: Any, target: str) -> Any:
             async def call() -> Any:
                 task_id = str(index)
                 emit('fanout.task.started',task_id,target)
                 loop, current = asyncio.get_running_loop(), asyncio.current_task()
+                assert current is not None  # we are inside the task being cancelled
                 self._tui.bind_task_cancel(run_id+':'+task_id,lambda: loop.call_soon_threadsafe(current.cancel))
                 status = 'ok'
                 try:
@@ -1224,7 +1284,7 @@ class OmniSession:
     def run_repl(self) -> None:
         """Main loop: prompt → input → meta command or objective."""
         history_path = None if self._tui.use_tui else _install_readline()
-        stdout_patch = nullcontext()
+        stdout_patch: Any = nullcontext()
         if self._tui.use_tui:
             from .tui.output import capture_output
 
@@ -1255,7 +1315,7 @@ class OmniSession:
                     text = str(line or "").strip()
                     if not text:
                         continue
-                    self.history.append(f"└─$ {text}")
+                    self.history.append(f"{PROMPT_PREFIX}{text}")
                     if text.startswith("/"):
                         commands_module.run_command(self, text)
                     elif self.active_session_uuid:
@@ -1329,6 +1389,10 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
             if (message.get("metadata") or {}).get("kind") == "react.observation":
                 session._tui.append_card(observation(message))
             else:
+                meta = message.get("metadata") or {}
+                if meta.get("kind") == "react.action" and meta.get("thought"):
+                    session._tui.append_card({}, thought=str(meta["thought"]))
+                    message = {**message, "metadata": {**meta, "thought": ""}}
                 text = render_message(message, expanded=session._tui.expand_cards)
                 if text:
                     session._output.write(text)
@@ -1342,6 +1406,10 @@ def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
     payload = event.get("payload") or {}
     session._tui.task_event({**event, 'run_id': event.get('run_id') or session.run_id})
     if session._tui.use_tui:
+        if event_type in {"tool.invoke", "react.tool_started"} or (event_type == "react.action" and payload.get("tool_id")):
+            session._tui.set_status(busy_message=f"Executing {payload.get('tool_id', 'tool')}")
+        elif event_type in {"tool.complete", "tool.failed", "react.turn_telemetry"}:
+            session._tui.set_status(busy_message="Working")
         from .tui.stream import format_tool_invocation
 
         if event_type == "react.action" and "arguments" in payload:
@@ -1351,7 +1419,7 @@ def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
             if event_type == "tool.failed":
                 result = {**result, "success": False}
             # Same per-block card the observation path uses (click to expand).
-            session._tui.append_card(result)
+            session._tui.append_card({**result, "tool_id": result.get("tool_id") or payload.get("tool_id", "tool")})
     if event_type == "react.parse_error":
         render.render_error(f"respuesta no parseable del LLM: {payload.get('error')}")
     elif event_type == "react.scope_violation":
@@ -1386,7 +1454,8 @@ def _render_message(message: dict[str, Any]) -> None:
     if kind == "react.action":
         action = str(metadata.get("action") or "")
         if action == "tool_call":
-            render.render_thought(str(metadata.get("thought") or ""))
+            from .tui.presentation import render_rich, thinking
+            render.write(render_rich(thinking(str(metadata.get("thought") or "")), no_color=True))
             render.render_tool_call(
                 str(metadata.get("tool_id") or "?"),
                 metadata.get("arguments") or {},
@@ -1411,7 +1480,11 @@ def _render_observation(message: dict[str, Any]) -> None:
         observation = {**parsed, **(observation or {})}
     if not isinstance(observation, dict):
         observation = {"success": bool(metadata.get("success"))}
-    render.render_tool_result(tool_id, observation)
+    if observation.get("stdout") or observation.get("stderr") or not observation.get("success"):
+        from .tui.stream import render_tool_result
+        render.write(render_tool_result({**observation, "tool_id": tool_id}, no_color=True))
+    else:
+        render.render_tool_result(tool_id, observation)
 
 
 __all__ = ["OmniSession", "build_llm_client"]

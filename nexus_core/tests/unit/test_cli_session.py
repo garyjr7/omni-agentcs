@@ -80,7 +80,7 @@ def test_prompt_is_minimal_and_engagement_stays_durable(tmp_path):
     store.initialize()
     plain = OmniSession(store=store, tenant_id="system")
     # The engagement lives in the compact header, not the prompt.
-    assert plain.prompt == "└─$ "
+    assert plain.prompt == "> "
 
     scope = EngagementStore(store).create(
         EngagementScope(
@@ -98,5 +98,5 @@ def test_prompt_is_minimal_and_engagement_stays_durable(tmp_path):
         )
     )
     named = OmniSession(store=store, tenant_id="system", engagement=scope)
-    assert named.prompt == "└─$ "
+    assert named.prompt == "> "
     assert named.engagement_id == "eng-prompt"

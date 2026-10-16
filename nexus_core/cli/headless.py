@@ -242,7 +242,9 @@ def run_headless(
 
     run_id = str(
         session.store.create_run(
-            session.tenant_id, {"source": "omni-headless", "objective": objective}
+            session.tenant_id,
+            {"source": "omni-headless", "objective": objective,
+             "engagement_id": session.engagement_id},
         )["id"]
     )
     session.run_id = run_id
@@ -286,6 +288,7 @@ def run_headless(
         emitter = _EventEmitter(session, stop, out)
         emitter.start()
     started = time.monotonic()
+    result: Any = None
     try:
         result = asyncio.run(
             run_react_loop(
