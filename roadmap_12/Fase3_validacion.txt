@@ -1,0 +1,124 @@
+BAJIOWARE — Evidencia Fase 3 — 2026-10-13
+
+Suite completa:
+NEXUS_TEST_PG_DSN='postgresql://kali@127.0.0.1:55438/postgres?client_encoding=utf8' DATABASE_URL='' NEXUS_E2E=0 timeout 600 .venv/bin/python -m pytest nexus_core/tests -q --tb=short
+
+Se usó PostgreSQL temporal con esquemas aislados por las pruebas. No se contactaron proveedores LLM ni objetivos externos.
+
+nexus_core/tests/unit/test_xdg.py::test_invalid_xdg_ignored[] PASSED     [ 99%]
+nexus_core/tests/unit/test_xdg.py::test_invalid_xdg_ignored[relative] PASSED [100%]
+
+=============================== warnings summary ===============================
+.venv/lib/python3.14/site-packages/google/genai/types.py:42
+  /home/operator/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+    VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========== 2918 passed, 35 skipped, 1 warning in 112.02s (0:01:52) ============
+
+Integración PostgreSQL/concurrencia:
+nexus_core/tests/integration/test_journal_pg.py::test_journal_works_on_postgresql PASSED [  0%]
+nexus_core/tests/integration/test_journal_pg.py::test_fencing_and_migration_on_postgresql PASSED [  0%]
+nexus_core/tests/integration/test_journal_pg.py::test_concurrent_workers_on_postgresql PASSED [  0%]
+nexus_core/tests/integration/test_journal_pg.py::test_versioned_and_legacy_results_with_shared_artifacts PASSED [  1%]
+nexus_core/tests/integration/test_journal_pg.py::test_artifact_concurrent_publication_on_postgresql PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_budget_reservations_never_overdraw[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_budget_reservations_never_overdraw[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_settlement_is_single_use[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_settlement_is_single_use[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_audit_has_one_linear_global_chain[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_audit_has_one_linear_global_chain[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_expired_lease_cannot_write_or_revive[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_expired_lease_cannot_write_or_revive[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_generation_fences_reused_worker_name[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_generation_fences_reused_worker_name[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_completion_and_failure_have_one_winner[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_completion_and_failure_have_one_winner[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_parallel_reconcile_enqueues_once[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_parallel_reconcile_enqueues_once[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_workflow_claim_rolls_back_if_task_transaction_fails[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_workflow_claim_rolls_back_if_task_transaction_fails[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_compensation_enqueues_once[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_compensation_enqueues_once[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_legacy_lease_migration_is_idempotent[sqlite] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_legacy_lease_migration_is_idempotent[postgres] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_expiration_is_checked_after_waiting_for_row_lock[sqlite-renew] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_expiration_is_checked_after_waiting_for_row_lock[sqlite-complete] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_expiration_is_checked_after_waiting_for_row_lock[sqlite-retry] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_expiration_is_checked_after_waiting_for_row_lock[postgres-renew] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_expiration_is_checked_after_waiting_for_row_lock[postgres-complete] PASSED [  1%]
+nexus_core/tests/integration/test_kernel_concurrency.py::test_expiration_is_checked_after_waiting_for_row_lock[postgres-retry] PASSED [  1%]
+
+Pruebas dirigidas finales:
+ timeout 180 .venv/bin/python -m pytest nexus_core/tests/unit/test_phase3_domain_services.py nexus_core/tests/unit/test_react_frame.py nexus_core/tests/unit/test_system_install_handler.py -q --tb=short
+
+
+nexus_core/tests/unit/test_phase3_domain_services.py::test_decoder_rejects_invalid_domain_actions[payload0] PASSED [  2%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_decoder_rejects_invalid_domain_actions[payload1] PASSED [  4%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_decoder_rejects_invalid_domain_actions[payload2] PASSED [  6%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_decoder_rejects_invalid_domain_actions[payload3] PASSED [  8%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_decoder_rejects_invalid_domain_actions[payload4] PASSED [ 10%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_decoder_rejects_invalid_domain_actions[payload5] PASSED [ 13%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_decoder_rejects_invalid_domain_actions[payload6] PASSED [ 15%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_decoder_rejects_invalid_domain_actions[payload7] PASSED [ 17%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_decoder_never_echoes_sensitive_invalid_values PASSED [ 19%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_duplicate_json_fields_are_rejected PASSED [ 21%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_domain_models_forbid_extras_and_are_frozen[dto0] PASSED [ 23%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_domain_models_forbid_extras_and_are_frozen[dto1] PASSED [ 26%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_domain_models_forbid_extras_and_are_frozen[dto2] PASSED [ 28%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_domain_models_forbid_extras_and_are_frozen[dto3] PASSED [ 30%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_domain_models_forbid_extras_and_are_frozen[dto4] PASSED [ 32%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_domain_models_forbid_extras_and_are_frozen[dto5] PASSED [ 34%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_discriminated_schema_and_legacy_action_serialization PASSED [ 36%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_tool_result_preserves_legacy_wire_keys_and_rejects_coercion PASSED [ 39%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_event_boundary_preserves_persistence_shape PASSED [ 41%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_execution_service_timeout_and_external_cancel_drain_child PASSED [ 43%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_completion_service_preserves_hook_objections PASSED [ 45%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_registry_extension_is_independent_of_storage PASSED [ 47%]
+nexus_core/tests/unit/test_phase3_domain_services.py::test_legacy_tuple_containers_are_arrays_without_scalar_coercion PASSED [ 50%]
+nexus_core/tests/unit/test_react_frame.py::test_final_phase_id_matches_the_planner PASSED [ 52%]
+nexus_core/tests/unit/test_react_frame.py::test_premature_task_complete_is_refused_and_the_loop_keeps_working PASSED [ 54%]
+nexus_core/tests/unit/test_react_frame.py::test_task_complete_is_accepted_on_the_reporting_phase PASSED [ 56%]
+nexus_core/tests/unit/test_react_frame.py::test_a_run_without_an_engagement_may_complete PASSED [ 58%]
+nexus_core/tests/unit/test_react_frame.py::test_findings_citing_another_runs_evidence_are_marked_stale PASSED [ 60%]
+nexus_core/tests/unit/test_react_frame.py::test_findings_grounded_in_this_runs_observation_survive PASSED [ 63%]
+nexus_core/tests/unit/test_react_frame.py::test_a_run_does_not_inherit_another_runs_transcript PASSED [ 65%]
+nexus_core/tests/unit/test_react_frame.py::test_stale_evidence_from_a_previous_run_never_closes_the_new_run PASSED [ 67%]
+nexus_core/tests/unit/test_react_frame.py::test_a_tool_whose_binary_is_missing_starts_retired PASSED [ 69%]
+nexus_core/tests/unit/test_react_frame.py::test_annotate_findings_marks_unsupported_and_stale PASSED [ 71%]
+nexus_core/tests/unit/test_react_frame.py::test_fabricated_evidence_without_observations_still_blocks PASSED [ 73%]
+nexus_core/tests/unit/test_system_install_handler.py::test_install_tool_requires_approval PASSED [ 76%]
+nexus_core/tests/unit/test_system_install_handler.py::test_install_tool_dry_run_returns_plan PASSED [ 78%]
+nexus_core/tests/unit/test_system_install_handler.py::test_install_tool_builds_command_from_recipe PASSED [ 80%]
+nexus_core/tests/unit/test_system_install_handler.py::test_install_tool_rejects_unknown_tool PASSED [ 82%]
+nexus_core/tests/unit/test_system_install_handler.py::test_install_tool_rejects_manager_not_available PASSED [ 84%]
+nexus_core/tests/unit/test_system_install_handler.py::test_install_tool_verifies_after_install PASSED [ 86%]
+nexus_core/tests/unit/test_system_install_handler.py::test_install_tool_updates_shell_path_if_needed PASSED [ 89%]
+nexus_core/tests/unit/test_system_install_handler.py::test_install_tool_never_accepts_command_from_llm PASSED [ 91%]
+nexus_core/tests/unit/test_system_install_handler.py::test_approval_cannot_authorize_different_plan PASSED [ 93%]
+nexus_core/tests/unit/test_system_install_handler.py::test_direct_handler_cannot_install_without_gateway PASSED [ 95%]
+nexus_core/tests/unit/test_system_install_handler.py::test_dry_run_approval_cannot_install PASSED [ 97%]
+nexus_core/tests/unit/test_system_install_handler.py::test_cli_displays_exact_plan_before_approval PASSED [100%]
+
+=============================== warnings summary ===============================
+.venv/lib/python3.14/site-packages/google/genai/types.py:42
+  /home/operator/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+    VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 46 passed, 1 warning in 4.12s =========================
+
+Checks estáticos:
+.venv/bin/ruff check nexus_core omni.py nexus_worker.py --select F,E9
+All checks passed!
+typecheck: nexus_core/agent/observations.py nexus_core/agent/parser.py nexus_core/agent/react.py nexus_core/agent/react_coordinator.py nexus_core/agent/react_services.py nexus_core/agent/react_support.py nexus_core/agent/react_types.py nexus_core/kernel/artifacts.py nexus_core/kernel/audit.py nexus_core/kernel/blackboard.py nexus_core/kernel/budget_ledger.py nexus_core/kernel/control_store.py nexus_core/kernel/database.py nexus_core/kernel/domain_dto.py nexus_core/kernel/errors.py nexus_core/kernel/invocation_journal.py nexus_core/kernel/models.py nexus_core/kernel/output_capture.py nexus_core/kernel/postgres_store.py nexus_core/kernel/redaction.py nexus_core/kernel/result_references.py nexus_core/kernel/runtime.py nexus_core/kernel/sandbox.py nexus_core/kernel/serialization.py nexus_core/kernel/tool_gateway.py nexus_core/kernel/workflows.py nexus_core/report/extract_access.py nexus_core/report/extract_facts.py nexus_core/report/extract_recon.py nexus_core/report/extract_web.py nexus_core/report/extraction_support.py nexus_core/report/extractor.py nexus_core/report/extractor_registry.py nexus_core/report/repository.py nexus_core/tests/integration/postgres_smoke.py nexus_core/tests/integration/test_e2e_long_task_lease.py nexus_core/tests/integration/test_journal_pg.py nexus_core/tests/integration/test_kernel_concurrency.py nexus_core/tests/unit/test_kernel_offline.py nexus_core/tests/unit/test_observations.py nexus_core/tests/unit/test_phase3_domain_services.py nexus_core/tests/unit/test_pipeline_storage.py nexus_core/tests/unit/test_react_invalid_json_sanitization.py nexus_core/tests/unit/test_report_handler.py nexus_core/tests/unit/test_result_artifact.py nexus_core/tests/unit/test_sovereign_runtime.py nexus_core/tests/unit/test_worker_fencing.py nexus_core/tests/unit/test_worker_lease_renewal.py nexus_core/tools/handlers/report_generate.py nexus_worker.py 
+Success: no issues found in 50 source files
+.venv/bin/python -m compileall -q nexus_core omni.py nexus_worker.py
+bash -n scripts/install_msfrpcd_service.sh scripts/list_models.sh
+
+Strict adicional:
+.venv/bin/python -m mypy --strict nexus_core/agent/react_coordinator.py nexus_core/kernel/domain_dto.py nexus_core/agent/parser.py nexus_core/agent/react_services.py nexus_core/report/extractor_registry.py nexus_core/report/repository.py
+Success: no issues found in 6 source files
+
+Los conteos de las ejecuciones no se suman: comparten pruebas.
+La ejecución dirigida inicial bajo sandbox se interrumpió al quedar detenida en el cierre de trabajo asíncrono. La ejecución final dirigida fuera de ese aislamiento terminó correctamente con límite de 180 segundos.

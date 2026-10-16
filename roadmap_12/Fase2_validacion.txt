@@ -1,0 +1,125 @@
+BAJIOWARE — Evidencia Fase 2 — 2026-10-12
+
+La suite completa se lanzó con NEXUS_TEST_PG_DSN apuntando a PostgreSQL temporal en 127.0.0.1:55438, NEXUS_E2E=0 y DATABASE_URL vacío.
+El caso final InvalidShape fue añadido después de lanzar la suite completa y se verificó en la ejecución dirigida final.
+No sumar las ejecuciones: comparten pruebas.
+
+Suite completa SQLite/PostgreSQL, posterior a adaptación de contratos
+=====================================================================
+nexus_core/tests/unit/test_xdg.py::test_respects_xdg_home[cache] PASSED  [ 99%]
+nexus_core/tests/unit/test_xdg.py::test_ensure_dirs_creates_with_mode_700 PASSED [ 99%]
+nexus_core/tests/unit/test_xdg.py::test_invalid_xdg_ignored[] PASSED     [ 99%]
+nexus_core/tests/unit/test_xdg.py::test_invalid_xdg_ignored[relative] PASSED [100%]
+
+=============================== warnings summary ===============================
+.venv/lib/python3.14/site-packages/google/genai/types.py:42
+  /home/operator/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+    VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========== 2894 passed, 35 skipped, 1 warning in 109.86s (0:01:49) ============
+
+Casos dirigidos de Phase 2 y PostgreSQL
+=======================================
+
+nexus_core/tests/unit/test_pipeline_storage.py::test_bounded_dual_channel_capture[0] PASSED [  2%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_bounded_dual_channel_capture[127] PASSED [  5%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_bounded_dual_channel_capture[65536] PASSED [  7%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_oci_uses_bounded_capture PASSED [ 10%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_shared_repository_concurrent_workers PASSED [ 12%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_artifact_traversal_symlinks_and_limits PASSED [ 15%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_legacy_address_maps_to_current_mount PASSED [ 17%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_shared_configuration_fails_closed PASSED [ 20%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_inline_pipe_legacy_and_integrity PASSED [ 23%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_strict_result_payload[payload0] PASSED [ 25%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_strict_result_payload[payload1] PASSED [ 28%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_strict_result_payload[payload2] PASSED [ 30%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_strict_result_payload[payload3] PASSED [ 33%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_observation_failure_is_bounded_and_redacted PASSED [ 35%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_blackboard_sanitizes_before_persistence PASSED [ 38%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_capture_memory_does_not_scale_with_output PASSED [ 41%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_oversized_observation_has_explicit_error PASSED [ 43%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_reference_rejects_cross_tenant_and_invalid_schema PASSED [ 46%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_blob_symlink_and_corruption_are_rejected PASSED [ 48%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_oci_cancellation_removes_daemon_container PASSED [ 51%]
+nexus_core/tests/unit/test_observations.py::test_small_observation_is_not_touched PASSED [ 53%]
+nexus_core/tests/unit/test_observations.py::test_large_nmap_observation_is_summarized_and_archived PASSED [ 56%]
+nexus_core/tests/unit/test_observations.py::test_compact_nmap_shrinks_the_payload_substantially PASSED [ 58%]
+nexus_core/tests/unit/test_observations.py::test_bounded_context_keeps_the_newest_within_budget PASSED [ 61%]
+nexus_core/tests/unit/test_observations.py::test_bounded_context_never_drops_the_only_message PASSED [ 64%]
+nexus_core/tests/unit/test_observations.py::test_compaction_never_raises_on_unknown_shapes PASSED [ 66%]
+nexus_core/tests/unit/test_observations.py::test_budgets_are_sized_for_real_engagements PASSED [ 69%]
+nexus_core/tests/unit/test_observations.py::test_budget_can_be_overridden_per_engagement PASSED [ 71%]
+nexus_core/tests/unit/test_observations.py::test_select_subagent_honours_the_env_override PASSED [ 74%]
+nexus_core/tests/unit/test_result_artifact.py::test_result_ref_points_to_artifact_store PASSED [ 76%]
+nexus_core/tests/unit/test_result_artifact.py::test_artifact_sha256_matches_journal PASSED [ 79%]
+nexus_core/tests/unit/test_result_artifact.py::test_artifact_integrity_mismatch_is_detected PASSED [ 82%]
+nexus_core/tests/unit/test_result_artifact.py::test_artifact_survives_run_restart PASSED [ 84%]
+nexus_core/tests/unit/test_result_artifact.py::test_gateway_result_ref_uses_artifact_store PASSED [ 87%]
+nexus_core/tests/integration/test_journal_pg.py::test_journal_works_on_postgresql PASSED [ 89%]
+nexus_core/tests/integration/test_journal_pg.py::test_fencing_and_migration_on_postgresql PASSED [ 92%]
+nexus_core/tests/integration/test_journal_pg.py::test_concurrent_workers_on_postgresql PASSED [ 94%]
+nexus_core/tests/integration/test_journal_pg.py::test_versioned_and_legacy_results_with_shared_artifacts PASSED [ 97%]
+nexus_core/tests/integration/test_journal_pg.py::test_artifact_concurrent_publication_on_postgresql PASSED [100%]
+
+=============================== warnings summary ===============================
+.venv/lib/python3.14/site-packages/google/genai/types.py:42
+  /home/operator/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+    VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 39 passed, 1 warning in 4.68s =========================
+
+
+Verificación final de fronteras, incluye nuevo caso InvalidShape
+================================================================
+
+nexus_core/tests/unit/test_pipeline_storage.py::test_bounded_dual_channel_capture[0] PASSED [  3%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_bounded_dual_channel_capture[127] PASSED [  6%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_bounded_dual_channel_capture[65536] PASSED [ 10%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_oci_uses_bounded_capture PASSED [ 13%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_shared_repository_concurrent_workers PASSED [ 16%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_artifact_traversal_symlinks_and_limits PASSED [ 20%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_legacy_address_maps_to_current_mount PASSED [ 23%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_shared_configuration_fails_closed PASSED [ 26%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_inline_pipe_legacy_and_integrity PASSED [ 30%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_strict_result_payload[payload0] PASSED [ 33%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_strict_result_payload[payload1] PASSED [ 36%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_strict_result_payload[payload2] PASSED [ 40%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_strict_result_payload[payload3] PASSED [ 43%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_observation_failure_is_bounded_and_redacted PASSED [ 46%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_blackboard_sanitizes_before_persistence PASSED [ 50%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_capture_memory_does_not_scale_with_output PASSED [ 53%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_oversized_observation_has_explicit_error PASSED [ 56%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_reference_rejects_cross_tenant_and_invalid_schema PASSED [ 60%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_blob_symlink_and_corruption_are_rejected PASSED [ 63%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_oci_cancellation_removes_daemon_container PASSED [ 66%]
+nexus_core/tests/unit/test_pipeline_storage.py::test_malformed_large_observation_still_returns_valid_json PASSED [ 70%]
+nexus_core/tests/unit/test_observations.py::test_small_observation_is_not_touched PASSED [ 73%]
+nexus_core/tests/unit/test_observations.py::test_large_nmap_observation_is_summarized_and_archived PASSED [ 76%]
+nexus_core/tests/unit/test_observations.py::test_compact_nmap_shrinks_the_payload_substantially PASSED [ 80%]
+nexus_core/tests/unit/test_observations.py::test_bounded_context_keeps_the_newest_within_budget PASSED [ 83%]
+nexus_core/tests/unit/test_observations.py::test_bounded_context_never_drops_the_only_message PASSED [ 86%]
+nexus_core/tests/unit/test_observations.py::test_compaction_never_raises_on_unknown_shapes PASSED [ 90%]
+nexus_core/tests/unit/test_observations.py::test_budgets_are_sized_for_real_engagements PASSED [ 93%]
+nexus_core/tests/unit/test_observations.py::test_budget_can_be_overridden_per_engagement PASSED [ 96%]
+nexus_core/tests/unit/test_observations.py::test_select_subagent_honours_the_env_override PASSED [100%]
+
+=============================== warnings summary ===============================
+.venv/lib/python3.14/site-packages/google/genai/types.py:42
+  /home/operator/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+    VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 30 passed, 1 warning in 3.45s =========================
+
+
+Lint, tipado y sintaxis
+=======================
+.venv/bin/ruff check nexus_core omni.py nexus_worker.py --select F,E9
+All checks passed!
+typecheck: nexus_core/agent/observations.py nexus_core/kernel/artifacts.py nexus_core/kernel/audit.py nexus_core/kernel/blackboard.py nexus_core/kernel/budget_ledger.py nexus_core/kernel/control_store.py nexus_core/kernel/database.py nexus_core/kernel/errors.py nexus_core/kernel/invocation_journal.py nexus_core/kernel/output_capture.py nexus_core/kernel/postgres_store.py nexus_core/kernel/redaction.py nexus_core/kernel/result_references.py nexus_core/kernel/runtime.py nexus_core/kernel/sandbox.py nexus_core/kernel/serialization.py nexus_core/kernel/tool_gateway.py nexus_core/kernel/workflows.py nexus_core/tests/integration/postgres_smoke.py nexus_core/tests/integration/test_e2e_long_task_lease.py nexus_core/tests/integration/test_journal_pg.py nexus_core/tests/integration/test_kernel_concurrency.py nexus_core/tests/unit/test_kernel_offline.py nexus_core/tests/unit/test_observations.py nexus_core/tests/unit/test_pipeline_storage.py nexus_core/tests/unit/test_react_invalid_json_sanitization.py nexus_core/tests/unit/test_report_handler.py nexus_core/tests/unit/test_result_artifact.py nexus_core/tests/unit/test_sovereign_runtime.py nexus_core/tests/unit/test_worker_fencing.py nexus_core/tests/unit/test_worker_lease_renewal.py nexus_core/tools/handlers/report_generate.py nexus_worker.py 
+Success: no issues found in 33 source files
+.venv/bin/python -m compileall -q nexus_core omni.py nexus_worker.py
+bash -n scripts/install_msfrpcd_service.sh scripts/list_models.sh
+

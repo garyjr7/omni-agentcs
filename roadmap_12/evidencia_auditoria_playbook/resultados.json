@@ -1,0 +1,49 @@
+{
+  "unknown_tool_loads": "nexus.nonexistent",
+  "separate_catalog_check": [
+    "red_team_base.stealth_recon: unknown tool 'nexus.nonexistent'"
+  ],
+  "phase_without_produces_loads": 4,
+  "duplicate_yaml_key_loads": "red_team_base",
+  "mixed_gate_passes_empty_facts": true,
+  "one_bad_disables_all_packages": 0,
+  "command_phase_complete_from_existing_session": true,
+  "synchronous_finish_ms": 80,
+  "first_turn_delta_without_new_facts": 8,
+  "invalid_count_raises_and_loses_draft": [
+    "ValueError",
+    false
+  ],
+  "normal_turn_outcome": "max_iterations",
+  "cancelled_classification": "timeout",
+  "mapping": {
+    "web": [
+      "nexus.web.git_dump"
+    ],
+    "services": [
+      "nexus.web.request",
+      "nexus.web.upload",
+      "nexus.web.git_dump"
+    ],
+    "exploit": [
+      "nexus.web.request",
+      "nexus.web.upload",
+      "nexus.web.git_dump"
+    ],
+    "postexploit": [
+      "nexus.post.shell_exec",
+      "nexus.post.job"
+    ],
+    "privesc": [
+      "nexus.post.shell_exec",
+      "nexus.post.job"
+    ]
+  },
+  "delegation_profile_gap": {
+    "profile": "privesc",
+    "wrapper_allowed": true,
+    "inner": "nexus.web.upload",
+    "inner_allowed_directly": false,
+    "mock_job_queued": true
+  }
+}

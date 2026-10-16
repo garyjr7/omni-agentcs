@@ -1,0 +1,681 @@
+{
+  "date": "2026-10-13",
+  "method": "registry + recipes + shutil.which; no binary executions or RPC probes",
+  "tool_count": 64,
+  "recipes": 21,
+  "states": {
+    "unverified": 50,
+    "detected": 14
+  },
+  "tools": [
+    {
+      "tool_id": "nexus.attack.impacket_changepasswd",
+      "handler": "impacket_changepasswd",
+      "transport": "cli",
+      "recipe": "impacket",
+      "binaries": [
+        "impacket-smbclient",
+        "smbclient.py"
+      ],
+      "state": "unverified",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.attack.impacket_getuserspns",
+      "handler": "impacket_getuserspns",
+      "transport": "cli",
+      "recipe": "impacket",
+      "binaries": [
+        "impacket-smbclient",
+        "smbclient.py"
+      ],
+      "state": "unverified",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.attack.impacket_psexec",
+      "handler": "impacket_psexec",
+      "transport": "cli",
+      "recipe": "impacket",
+      "binaries": [
+        "impacket-smbclient",
+        "smbclient.py"
+      ],
+      "state": "unverified",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.attack.impacket_secretsdump",
+      "handler": "impacket_secretsdump",
+      "transport": "cli",
+      "recipe": "impacket",
+      "binaries": [
+        "impacket-smbclient",
+        "smbclient.py"
+      ],
+      "state": "unverified",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.attack.nopac",
+      "handler": "nopac",
+      "transport": "cli",
+      "recipe": "impacket",
+      "binaries": [
+        "impacket-smbclient",
+        "smbclient.py"
+      ],
+      "state": "unverified",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.c2.sliver_deploy",
+      "handler": "sliver_deploy",
+      "transport": "grpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires Sliver operator config, SDK and mTLS server"
+    },
+    {
+      "tool_id": "nexus.c2.sliver_exec",
+      "handler": "sliver_exec",
+      "transport": "grpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires Sliver operator config, SDK and mTLS server"
+    },
+    {
+      "tool_id": "nexus.c2.sliver_generate",
+      "handler": "sliver_generate",
+      "transport": "grpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires Sliver operator config, SDK and mTLS server"
+    },
+    {
+      "tool_id": "nexus.c2.sliver_implants",
+      "handler": "sliver_implants",
+      "transport": "grpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires Sliver operator config, SDK and mTLS server"
+    },
+    {
+      "tool_id": "nexus.c2.sliver_loot",
+      "handler": "sliver_loot",
+      "transport": "grpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires Sliver operator config, SDK and mTLS server"
+    },
+    {
+      "tool_id": "nexus.c2.sliver_pivot",
+      "handler": "sliver_pivot",
+      "transport": "grpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires Sliver operator config, SDK and mTLS server"
+    },
+    {
+      "tool_id": "nexus.c2.sliver_server",
+      "handler": "sliver_server",
+      "transport": "grpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires Sliver operator config, SDK and mTLS server"
+    },
+    {
+      "tool_id": "nexus.c2.sliver_sessions",
+      "handler": "sliver_sessions",
+      "transport": "grpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires Sliver operator config, SDK and mTLS server"
+    },
+    {
+      "tool_id": "nexus.cred.bruteforce",
+      "handler": "cred_bruteforce",
+      "transport": "cli",
+      "recipe": "hydra",
+      "binaries": [
+        "hydra"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.exploit.msf_auxiliary",
+      "handler": "msf_auxiliary",
+      "transport": "rpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured Metasploit RPC authentication"
+    },
+    {
+      "tool_id": "nexus.exploit.msf_exploit",
+      "handler": "msf_exploit",
+      "transport": "rpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured Metasploit RPC authentication"
+    },
+    {
+      "tool_id": "nexus.exploit.msf_search",
+      "handler": "msf_search",
+      "transport": "rpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured Metasploit RPC authentication"
+    },
+    {
+      "tool_id": "nexus.exploit.searchsploit",
+      "handler": "searchsploit",
+      "transport": "cli",
+      "recipe": "searchsploit",
+      "binaries": [
+        "searchsploit"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.knowledge.query_facts",
+      "handler": "knowledge_facts",
+      "transport": "internal",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured kernel services"
+    },
+    {
+      "tool_id": "nexus.knowledge.record_fact",
+      "handler": "knowledge_facts",
+      "transport": "internal",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured kernel services"
+    },
+    {
+      "tool_id": "nexus.orchestrator.playbook",
+      "handler": "playbook",
+      "transport": "internal",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured kernel services"
+    },
+    {
+      "tool_id": "nexus.post.dns_update",
+      "handler": "dns_update",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.post.dpapi",
+      "handler": "dpapi",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.post.enum_system",
+      "handler": "ssh_post",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.post.listener",
+      "handler": "listener",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.post.ntlm_capture",
+      "handler": "ntlm_capture",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.post.pivot_bruteforce",
+      "handler": "pivot",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.post.pivot_http",
+      "handler": "pivot",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.post.privesc_hints",
+      "handler": "privesc_hints",
+      "transport": "internal",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured kernel services"
+    },
+    {
+      "tool_id": "nexus.post.smb_upload",
+      "handler": "smb",
+      "transport": "cli",
+      "recipe": "impacket",
+      "binaries": [
+        "impacket-smbclient",
+        "smbclient.py"
+      ],
+      "state": "unverified",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.post.ssh_exec",
+      "handler": "ssh_post",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.post.ssh_upload",
+      "handler": "ssh_post",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.post.tftp",
+      "handler": "tftp",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.pwn.analyze",
+      "handler": "pwn",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.pwn.ret2libc",
+      "handler": "pwn",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.recon.bloodhound_python",
+      "handler": "bloodhound",
+      "transport": "cli",
+      "recipe": "bloodhound",
+      "binaries": [
+        "bloodhound-python"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.recon.dns",
+      "handler": "dns",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.recon.ftp",
+      "handler": "ftp",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.recon.gobuster",
+      "handler": "gobuster",
+      "transport": "cli",
+      "recipe": "gobuster",
+      "binaries": [
+        "gobuster"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.recon.httpx",
+      "handler": "httpx",
+      "transport": "cli",
+      "recipe": "httpx",
+      "binaries": [
+        "httpx"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.recon.netexec",
+      "handler": "netexec",
+      "transport": "cli",
+      "recipe": "netexec",
+      "binaries": [
+        "nxc"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.recon.nikto",
+      "handler": "nikto",
+      "transport": "cli",
+      "recipe": "nikto",
+      "binaries": [
+        "nikto"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.recon.nmap",
+      "handler": "nmap",
+      "transport": "cli",
+      "recipe": "nmap",
+      "binaries": [
+        "nmap"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.recon.smb",
+      "handler": "smb",
+      "transport": "cli",
+      "recipe": "impacket",
+      "binaries": [
+        "impacket-smbclient",
+        "smbclient.py"
+      ],
+      "state": "unverified",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.recon.subfinder",
+      "handler": "subfinder",
+      "transport": "cli",
+      "recipe": "subfinder",
+      "binaries": [
+        "subfinder"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.recon.whatweb",
+      "handler": "whatweb",
+      "transport": "cli",
+      "recipe": "whatweb",
+      "binaries": [
+        "whatweb"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.report.generate",
+      "handler": "report_generate",
+      "transport": "internal",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured kernel services"
+    },
+    {
+      "tool_id": "nexus.session.interact",
+      "handler": "msf_session_interact",
+      "transport": "rpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured Metasploit RPC authentication"
+    },
+    {
+      "tool_id": "nexus.session.kill",
+      "handler": "msf_session_kill",
+      "transport": "rpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured Metasploit RPC authentication"
+    },
+    {
+      "tool_id": "nexus.session.list",
+      "handler": "msf_session_list",
+      "transport": "rpc",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured Metasploit RPC authentication"
+    },
+    {
+      "tool_id": "nexus.system.check_env",
+      "handler": "system_env",
+      "transport": "internal",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured kernel services"
+    },
+    {
+      "tool_id": "nexus.system.install_tool",
+      "handler": "system_install",
+      "transport": "internal",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured kernel services"
+    },
+    {
+      "tool_id": "nexus.system.status",
+      "handler": "system",
+      "transport": "internal",
+      "recipe": null,
+      "binaries": [],
+      "state": "unverified",
+      "detail": "requires configured kernel services"
+    },
+    {
+      "tool_id": "nexus.web.dalfox",
+      "handler": "dalfox",
+      "transport": "cli",
+      "recipe": "dalfox",
+      "binaries": [
+        "dalfox"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.web.ffuf",
+      "handler": "ffuf",
+      "transport": "cli",
+      "recipe": "ffuf",
+      "binaries": [
+        "ffuf"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.web.nuclei",
+      "handler": "nuclei",
+      "transport": "cli",
+      "recipe": "nuclei",
+      "binaries": [
+        "nuclei"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.web.request",
+      "handler": "http_request",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.web.sqlmap",
+      "handler": "sqlmap",
+      "transport": "cli",
+      "recipe": "sqlmap",
+      "binaries": [
+        "sqlmap"
+      ],
+      "state": "detected",
+      "detail": "recipe mapped; per-tool binary and sandbox require verification"
+    },
+    {
+      "tool_id": "nexus.web.wp_bruteforce",
+      "handler": "wp",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.web.wp_enum",
+      "handler": "wp",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.web.wp_exec",
+      "handler": "wp",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.win.winrm_exec",
+      "handler": "winrm",
+      "transport": "python-sandbox",
+      "recipe": null,
+      "binaries": [
+        "python3"
+      ],
+      "state": "unverified",
+      "detail": "requires python3 and handler-specific modules in sandbox"
+    },
+    {
+      "tool_id": "nexus.workspace.read",
+      "handler": "workspace",
+      "transport": "local",
+      "recipe": null,
+      "binaries": [
+        "rg",
+        "grep"
+      ],
+      "state": "unverified",
+      "detail": "read: filesystem; search: rg or grep in sandbox"
+    },
+    {
+      "tool_id": "nexus.workspace.search",
+      "handler": "workspace",
+      "transport": "local",
+      "recipe": null,
+      "binaries": [
+        "rg",
+        "grep"
+      ],
+      "state": "unverified",
+      "detail": "read: filesystem; search: rg or grep in sandbox"
+    }
+  ]
+}

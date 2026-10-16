@@ -1,0 +1,2217 @@
+[
+  {
+    "path": "nexus_core/tools/__init__.py",
+    "lines": 1,
+    "classes": [],
+    "functions": [],
+    "imports": []
+  },
+  {
+    "path": "nexus_core/tools/dpapi_client.py",
+    "lines": 1008,
+    "classes": [
+      "LootError",
+      "Salsa20"
+    ],
+    "functions": [
+      "_permute",
+      "_des_subkeys",
+      "_des_feistel",
+      "_des_block",
+      "_des3_block",
+      "_build_sbox",
+      "_gmul",
+      "_rotate_word",
+      "_build_t_tables",
+      "aes_round_words",
+      "aes_encrypt_block_fast",
+      "_aes_expand",
+      "_aes_add_round_key",
+      "_aes_shift_rows",
+      "_aes_inv_shift_rows",
+      "_aes_mix_columns",
+      "_aes_inv_mix_columns",
+      "aes_encrypt_block",
+      "aes_decrypt_block",
+      "_rotl32",
+      "_salsa20_rounds",
+      "parse_dpapi_blob",
+      "_session_key_variant",
+      "_fix_des_parity",
+      "_derive_cipher_key",
+      "_decrypt_blocks",
+      "_strip_pkcs7",
+      "dpapi_unwrap",
+      "_kdbx_header",
+      "_aes_cbc_decrypt",
+      "_kdbx_transformed_key",
+      "_kdbx_blocks",
+      "_kdbx_values",
+      "_kdbx_entries",
+      "open_kdbx",
+      "_flag_tokens",
+      "_parse_hex",
+      "_read_file",
+      "main"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import base64",
+      "import gzip",
+      "import hashlib",
+      "import hmac",
+      "import json",
+      "import struct",
+      "import sys",
+      "from xml.etree import ElementTree as ET"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/execution_contract.py",
+    "lines": 104,
+    "classes": [],
+    "functions": [
+      "record_capture",
+      "validate_target",
+      "with_execution_contract"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from contextvars import ContextVar",
+      "from dataclasses import asdict, replace",
+      "from functools import wraps",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import SandboxResult",
+      "from nexus_core.tools.registration import Handler"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/__init__.py",
+    "lines": 1,
+    "classes": [],
+    "functions": [],
+    "imports": []
+  },
+  {
+    "path": "nexus_core/tools/handlers/_ad.py",
+    "lines": 142,
+    "classes": [],
+    "functions": [
+      "resolve_ad_binary",
+      "ad_allowed_programs",
+      "ad_sandbox",
+      "validate_host",
+      "validate_domain",
+      "validate_username",
+      "canonicalize_flags",
+      "require_credentials",
+      "validate_hash"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "import shutil",
+      "from functools import lru_cache",
+      "from pathlib import Path",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from ._exec import RECON_ALLOWED_PROGRAMS"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/_exec.py",
+    "lines": 125,
+    "classes": [],
+    "functions": [
+      "run_in_sandbox",
+      "normalize_targets",
+      "append_repeated",
+      "probe_identity_in_sandbox",
+      "safe_run_id"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from collections.abc import Iterable, Sequence",
+      "from typing import Any",
+      "from nexus_core.kernel.sandbox import OCISandbox, SandboxResult",
+      "from nexus_core.tools.execution_contract import record_capture, validate_target",
+      "from nexus_core.provisioner.binaries import BinaryIdentity, IdentityCheck, classify_identity"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/_impacket_resolver.py",
+    "lines": 38,
+    "classes": [],
+    "functions": [
+      "resolve_impacket_binary"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import shutil",
+      "from functools import lru_cache"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/_pivot.py",
+    "lines": 615,
+    "classes": [],
+    "functions": [],
+    "imports": [
+      "from __future__ import annotations"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/_pwn.py",
+    "lines": 329,
+    "classes": [],
+    "functions": [
+      "parse_binary",
+      "parse_libc"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import inspect"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/_wp.py",
+    "lines": 695,
+    "classes": [],
+    "functions": [],
+    "imports": [
+      "from __future__ import annotations"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/bloodhound.py",
+    "lines": 330,
+    "classes": [],
+    "functions": [
+      "bloodhound_definition",
+      "bloodhound_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.tools.output_files import read_output_text",
+      "import os",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.tools.parsers.bloodhound import parse_bloodhound_outputs",
+      "from ._ad import ad_sandbox, canonicalize_flags, resolve_ad_binary, validate_domain, validate_host, validate_username",
+      "from ._exec import run_in_sandbox, safe_run_id"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/cred_bruteforce.py",
+    "lines": 248,
+    "classes": [],
+    "functions": [
+      "cred_bruteforce_definition",
+      "_validate_text",
+      "_resolve_in_workspace",
+      "_truncate_wordlist",
+      "parse_hydra_credentials",
+      "cred_bruteforce_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/dalfox.py",
+    "lines": 361,
+    "classes": [],
+    "functions": [
+      "validate_and_canonicalize_dalfox_flags",
+      "validate_dalfox_headers",
+      "dalfox_definition",
+      "dalfox_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.tools.output_files import read_output_text",
+      "import os",
+      "import re",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools.parsers.dalfox import parse_dalfox_json",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/dns.py",
+    "lines": 209,
+    "classes": [],
+    "functions": [
+      "validate_dns_name",
+      "validate_record_type",
+      "dns_query_definition",
+      "dns_query_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.tools.parsers.dns import empty_dns_result, parse_dig_output",
+      "from ._ad import ad_sandbox, resolve_ad_binary, validate_host",
+      "from ._exec import run_in_sandbox",
+      "from .workspace import workspace_root"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/dns_update.py",
+    "lines": 361,
+    "classes": [],
+    "functions": [
+      "validate_update_value",
+      "validate_update_name",
+      "dns_update_definition",
+      "_validate_action",
+      "_validate_record_type",
+      "dns_update_handler",
+      "_update_sandbox",
+      "_parse_payload"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import ipaddress",
+      "import json",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from ._ad import validate_host",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox",
+      "from .dns import DNS_DEFAULT_TIMEOUT_SECONDS, DNS_MAX_TIMEOUT_SECONDS, validate_dns_name",
+      "from .workspace import workspace_root"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/dpapi.py",
+    "lines": 401,
+    "classes": [],
+    "functions": [
+      "client_source",
+      "_validate_action",
+      "_normalize_hex",
+      "_validate_entropy",
+      "_validate_max_entries",
+      "_material_hex",
+      "dpapi_definition",
+      "_parse_payload",
+      "dpapi_handler",
+      "_negative_method",
+      "_unwrap_result",
+      "_kdbx_result"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import base64",
+      "import hashlib",
+      "import json",
+      "import re",
+      "from functools import lru_cache",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools import dpapi_client",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id",
+      "from .workspace import resolve_workspace_path, workspace_root"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/ffuf.py",
+    "lines": 517,
+    "classes": [],
+    "functions": [
+      "system_wordlist_dirs",
+      "_inside",
+      "ffuf_noise_level",
+      "validate_and_canonicalize_ffuf_flags",
+      "resolve_wordlist",
+      "ffuf_definition",
+      "_validate_vhost_template",
+      "_require_vhost_base_in_scope",
+      "ffuf_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from pathlib import Path",
+      "from urllib.parse import urlsplit",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import SANDBOX_HOME_DIRNAME, sandbox_for_environment",
+      "from nexus_core.tools.parsers.ffuf import parse_ffuf_output",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/ftp.py",
+    "lines": 356,
+    "classes": [],
+    "functions": [
+      "ftp_definition",
+      "_validate_text",
+      "_parse_last_json",
+      "ftp_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import json",
+      "import os",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/gobuster.py",
+    "lines": 303,
+    "classes": [],
+    "functions": [
+      "gobuster_noise_level",
+      "validate_and_canonicalize_gobuster_flags",
+      "gobuster_definition",
+      "gobuster_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools.parsers.gobuster import parse_gobuster_output",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id",
+      "from .ffuf import resolve_wordlist"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/http_request.py",
+    "lines": 584,
+    "classes": [],
+    "functions": [
+      "http_request_definition",
+      "_validate_url",
+      "_validate_headers",
+      "_sanitize_token",
+      "_build_upload_spec",
+      "_resolve_save_path",
+      "_parse_last_json",
+      "http_request_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import base64",
+      "import json",
+      "import os",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from urllib.parse import urlsplit",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox",
+      "from .workspace import resolve_workspace_path, workspace_root"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/httpx.py",
+    "lines": 253,
+    "classes": [],
+    "functions": [
+      "httpx_noise_level",
+      "httpx_definition",
+      "_diagnose_wrong_binary",
+      "httpx_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.provisioner.binaries import BINARY_IDENTITIES_BY_NAME",
+      "from nexus_core.tools.parsers.httpx import empty_httpx_result, parse_httpx_jsonl",
+      "from ._exec import MAX_BATCH_TARGETS, RECON_ALLOWED_PROGRAMS, append_repeated, normalize_targets, probe_identity_in_sandbox, run_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/impacket_changepasswd.py",
+    "lines": 313,
+    "classes": [],
+    "functions": [
+      "impacket_changepasswd_definition",
+      "validate_new_password",
+      "_build_positional",
+      "_reset_accepted",
+      "_verify_new_credential",
+      "impacket_changepasswd_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.tools.parsers.netexec import parse_netexec_output",
+      "from ._ad import ad_sandbox, resolve_ad_binary, validate_domain, validate_host, validate_username",
+      "from ._exec import run_in_sandbox",
+      "from ._impacket_resolver import resolve_impacket_binary"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/impacket_getuserspns.py",
+    "lines": 213,
+    "classes": [],
+    "functions": [
+      "getuserspns_definition",
+      "impacket_getuserspns_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.tools.output_files import read_output_text",
+      "import os",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.tools.parsers.impacket_getuserspns import parse_getuserspns_output",
+      "from ._ad import ad_sandbox, canonicalize_flags, validate_domain, validate_host, validate_username",
+      "from ._exec import run_in_sandbox, safe_run_id",
+      "from ._impacket_resolver import resolve_impacket_binary"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/impacket_psexec.py",
+    "lines": 220,
+    "classes": [],
+    "functions": [
+      "psexec_definition",
+      "validate_psexec_command",
+      "impacket_psexec_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.tools.parsers.impacket_psexec import parse_psexec_output",
+      "from ._ad import ad_sandbox, canonicalize_flags, validate_domain, validate_host, validate_username",
+      "from ._exec import run_in_sandbox",
+      "from ._impacket_resolver import resolve_impacket_binary"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/impacket_secretsdump.py",
+    "lines": 305,
+    "classes": [],
+    "functions": [
+      "impacket_secretsdump_definition",
+      "build_impacket_target",
+      "secretsdump_method_flags",
+      "impacket_secretsdump_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.tools.output_files import read_output_text",
+      "import os",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.tools.parsers.impacket_secretsdump import parse_secretsdump_files",
+      "from ._ad import ad_sandbox, canonicalize_flags, validate_domain, validate_host, validate_username",
+      "from ._exec import run_in_sandbox, safe_run_id",
+      "from ._impacket_resolver import resolve_impacket_binary"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/knowledge_facts.py",
+    "lines": 141,
+    "classes": [],
+    "functions": [
+      "record_fact_definition",
+      "query_facts_definition",
+      "_engagement_id",
+      "record_fact_handler",
+      "query_facts_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from typing import Any",
+      "from nexus_core.kernel.blackboard import FACT_TYPES, Blackboard",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/listener.py",
+    "lines": 418,
+    "classes": [],
+    "functions": [
+      "listener_definition",
+      "_validate_commands",
+      "_parse_last_json",
+      "_peer_in_scope",
+      "listener_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import json",
+      "import os",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.kernel.sessions import validate_session_scope",
+      "from nexus_core.scope import ScopeValidator, ScopeViolation",
+      "from nexus_core.kernel.scope_loader import scope_signing_secret",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/msf_auxiliary.py",
+    "lines": 190,
+    "classes": [],
+    "functions": [
+      "msf_auxiliary_definition",
+      "validated_options",
+      "_poll",
+      "msf_auxiliary_handler"
+    ],
+    "imports": [
+      "import asyncio",
+      "import ipaddress",
+      "import math",
+      "import re",
+      "from nexus_core.integrations.metasploit.client import MetasploitClient, MetasploitConfig, MetasploitError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.kernel.scope_loader import scope_signing_secret",
+      "from nexus_core.scope import ScopeValidator",
+      "from nexus_core.tools.parsers.metasploit import parse_msf_auxiliary"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/msf_exploit.py",
+    "lines": 338,
+    "classes": [],
+    "functions": [
+      "msf_exploit_definition",
+      "_callback_address",
+      "_is_reverse_payload",
+      "validated_options",
+      "with_default_port",
+      "_bounded_port",
+      "_validate_target",
+      "_secrets",
+      "_stop_job",
+      "msf_exploit_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import asyncio",
+      "import ipaddress",
+      "import os",
+      "import re",
+      "from nexus_core.integrations.metasploit.client import MetasploitClient, MetasploitConfig, MetasploitError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.kernel.scope_loader import scope_signing_secret",
+      "from nexus_core.scope import ScopeValidator",
+      "from nexus_core.tools.parsers.metasploit import parse_msf_exploit"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/msf_search.py",
+    "lines": 95,
+    "classes": [],
+    "functions": [
+      "_drop_placeholder_filters",
+      "msf_search_definition",
+      "msf_search_handler"
+    ],
+    "imports": [
+      "import re",
+      "from nexus_core.integrations.metasploit.client import MetasploitClient, MetasploitConfig, MetasploitError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.tools.parsers.metasploit import parse_msf_search"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/msf_session_interact.py",
+    "lines": 153,
+    "classes": [],
+    "functions": [
+      "msf_session_interact_definition",
+      "command_allowlist",
+      "validated_command",
+      "msf_session_interact_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from nexus_core.integrations.metasploit.client import MetasploitClient, MetasploitConfig, MetasploitError, SESSION_UUID_PATTERN",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope",
+      "from nexus_core.tools.parsers.metasploit import parse_msf_interaction"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/msf_session_kill.py",
+    "lines": 88,
+    "classes": [],
+    "functions": [
+      "msf_session_kill_definition",
+      "msf_session_kill_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from nexus_core.integrations.metasploit.client import MetasploitClient, MetasploitConfig, MetasploitError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/msf_session_list.py",
+    "lines": 89,
+    "classes": [],
+    "functions": [
+      "msf_session_list_definition",
+      "msf_session_list_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.integrations.metasploit.client import MetasploitClient, MetasploitConfig, MetasploitError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope",
+      "from nexus_core.tools.parsers.metasploit import parse_msf_sessions"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/netexec.py",
+    "lines": 313,
+    "classes": [],
+    "functions": [
+      "netexec_noise_level",
+      "netexec_definition",
+      "netexec_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.tools.parsers.netexec import parse_netexec_output",
+      "from ._ad import ad_sandbox, canonicalize_flags, resolve_ad_binary, validate_domain, validate_host, validate_username",
+      "from ._exec import run_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/nikto.py",
+    "lines": 381,
+    "classes": [],
+    "functions": [
+      "_validate_target",
+      "_validate_ports",
+      "_validate_chars",
+      "_validate_user_agent",
+      "nikto_definition",
+      "nikto_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools.parsers.nikto import parse_nikto_report",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/nmap.py",
+    "lines": 313,
+    "classes": [],
+    "functions": [
+      "validate_and_canonicalize_flags",
+      "truncate_stdout",
+      "nmap_definition",
+      "_run_nmap",
+      "nmap_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import SandboxResult, sandbox_for_environment",
+      "from nexus_core.tools.parsers.nmap import parse_nmap_xml"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/nopac.py",
+    "lines": 654,
+    "classes": [],
+    "functions": [
+      "nopac_definition",
+      "generate_machine_name",
+      "generate_machine_password",
+      "validate_machine_name",
+      "validate_machine_password",
+      "resolve_dc_names",
+      "build_rename_ldif",
+      "_validate_dn",
+      "_validate_ldif_value",
+      "_workspace_root",
+      "_accepted",
+      "_parse_dn",
+      "_auth_positional",
+      "_steps_failed",
+      "nopac_handler",
+      "_failed_ldap",
+      "_sha256_file"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import hashlib",
+      "import os",
+      "import re",
+      "import secrets",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from ._ad import ad_sandbox, resolve_ad_binary, validate_domain, validate_host, validate_username",
+      "from ._exec import run_in_sandbox, safe_run_id",
+      "from ._impacket_resolver import resolve_impacket_binary"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/ntlm_capture.py",
+    "lines": 719,
+    "classes": [],
+    "functions": [
+      "ntlm_capture_definition",
+      "_bounded",
+      "_resolve_workspace_file",
+      "_load_tls_pair",
+      "_parse_last_json",
+      "_peer_in_scope",
+      "ntlm_capture_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import hashlib",
+      "import json",
+      "import os",
+      "import secrets",
+      "import ssl",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.kernel.sessions import validate_session_scope",
+      "from nexus_core.kernel.scope_loader import scope_signing_secret",
+      "from nexus_core.scope import ScopeValidator, ScopeViolation",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/nuclei.py",
+    "lines": 504,
+    "classes": [],
+    "functions": [
+      "_nuclei_templates_dir",
+      "validate_template_paths",
+      "validate_tags",
+      "nuclei_noise_level",
+      "validate_and_canonicalize_nuclei_flags",
+      "nuclei_definition",
+      "nuclei_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from pathlib import Path",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools.parsers.nuclei import parse_nuclei_jsonl",
+      "from ._exec import MAX_BATCH_TARGETS, RECON_ALLOWED_PROGRAMS, append_repeated, normalize_targets, run_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/pivot.py",
+    "lines": 632,
+    "classes": [],
+    "functions": [
+      "pivot_bruteforce_definition",
+      "_slice_wordlist",
+      "_text",
+      "pivot_bruteforce_handler",
+      "_last_json_object",
+      "pivot_http_definition",
+      "_http_config",
+      "pivot_http_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.tools.output_files import read_output_text",
+      "import json",
+      "import os",
+      "import re",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id",
+      "from ._pivot import PIVOT_CLIENT_SCRIPT, PIVOT_HTTP_REMOTE_SCRIPT, PIVOT_REMOTE_SCRIPT",
+      "from .ffuf import resolve_wordlist",
+      "from .workspace import workspace_root"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/playbook.py",
+    "lines": 93,
+    "classes": [],
+    "functions": [
+      "playbook_definition",
+      "_facts",
+      "playbook_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.agent.playbooks import PLAYBOOKS, PRECONDITIONS, match_playbook, select_playbooks",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/privesc_hints.py",
+    "lines": 289,
+    "classes": [],
+    "functions": [
+      "privesc_hints_definition",
+      "_basename",
+      "_lookup",
+      "_sudo_candidates",
+      "_suid_candidates",
+      "_capability_candidates",
+      "analyze_privilege_escalation",
+      "privesc_hints_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/pwn.py",
+    "lines": 677,
+    "classes": [],
+    "functions": [
+      "_validate_text",
+      "_validate_command",
+      "_as_int",
+      "_run_client",
+      "_parse_client_json",
+      "_extract_marker",
+      "_connection_args",
+      "_clamp_timeout",
+      "_trim_analysis",
+      "pwn_analyze_definition",
+      "ret2libc_definition",
+      "pwn_analyze_handler",
+      "_resolve_constants",
+      "ret2libc_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import json",
+      "import os",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from ._exec import run_in_sandbox",
+      "from ._pwn import ANALYZER_SOURCE"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/report_generate.py",
+    "lines": 309,
+    "classes": [],
+    "functions": [
+      "report_generate_definition",
+      "default_report_root",
+      "default_artifact_root",
+      "report_directory",
+      "_threaded_llm",
+      "_select_llm",
+      "report_generate_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import asyncio",
+      "import re",
+      "from concurrent.futures import ThreadPoolExecutor",
+      "from datetime import datetime, timezone",
+      "from pathlib import Path",
+      "from typing import Any, Callable",
+      "from nexus_core.kernel.artifacts import configured_artifact_store",
+      "from nexus_core.kernel.audit import AuditWriter",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.report.extractor import attach_cvss, build_report",
+      "from nexus_core.report.html import render_html",
+      "from nexus_core.report.markdown import render_markdown, render_markdown_json",
+      "from nexus_core.report.sarif import render_sarif"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/searchsploit.py",
+    "lines": 204,
+    "classes": [],
+    "functions": [
+      "searchsploit_definition",
+      "_validate_token",
+      "_build_argv",
+      "searchsploit_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools.parsers.searchsploit import parse_searchsploit_json",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sliver_common.py",
+    "lines": 58,
+    "classes": [],
+    "functions": [
+      "build_client",
+      "error_result",
+      "target_host"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.integrations.sliver.client import SliverAuthError, SliverClient, SliverConfig",
+      "from nexus_core.kernel.models import ToolResult"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sliver_deploy.py",
+    "lines": 190,
+    "classes": [],
+    "functions": [
+      "sliver_deploy_definition",
+      "_validated_path",
+      "_validated_args",
+      "sliver_deploy_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from nexus_core.integrations.sliver.client import SliverError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope",
+      "from nexus_core.tools.handlers.sliver_common import build_client, error_result",
+      "from nexus_core.tools.handlers.sliver_exec import SHELL_METACHARACTERS",
+      "from nexus_core.tools.handlers.sliver_generate import ARCHS, FORMATS, OSES, _generation_arguments"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sliver_exec.py",
+    "lines": 168,
+    "classes": [],
+    "functions": [
+      "sliver_exec_definition",
+      "_command_token",
+      "validated_command",
+      "sliver_exec_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from nexus_core.integrations.sliver.client import SliverError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope",
+      "from nexus_core.tools.handlers.sliver_common import build_client, error_result",
+      "from nexus_core.tools.parsers.sliver import parse_sliver_exec"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sliver_generate.py",
+    "lines": 138,
+    "classes": [],
+    "functions": [
+      "sliver_generate_definition",
+      "_generation_arguments",
+      "sliver_generate_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.integrations.sliver.client import SliverError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.tools.handlers.sliver_common import build_client, error_result"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sliver_implants.py",
+    "lines": 86,
+    "classes": [],
+    "functions": [
+      "sliver_implants_definition",
+      "sliver_implants_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.integrations.sliver.client import SliverError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.tools.handlers.sliver_common import build_client, error_result"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sliver_loot.py",
+    "lines": 140,
+    "classes": [],
+    "functions": [
+      "sliver_loot_definition",
+      "_select",
+      "sliver_loot_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.integrations.sliver.client import SliverError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.tools.handlers.sliver_common import build_client, error_result",
+      "from nexus_core.tools.parsers.sliver import parse_sliver_loot"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sliver_pivot.py",
+    "lines": 169,
+    "classes": [],
+    "functions": [
+      "sliver_pivot_definition",
+      "_validated_port",
+      "_validated_host",
+      "sliver_pivot_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from nexus_core.integrations.sliver.client import SliverError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope",
+      "from nexus_core.tools.handlers.sliver_common import build_client, error_result",
+      "from nexus_core.tools.parsers.sliver import parse_sliver_pivots"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sliver_server.py",
+    "lines": 67,
+    "classes": [],
+    "functions": [
+      "sliver_server_definition",
+      "sliver_server_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.integrations.sliver.client import SliverError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.tools.handlers.sliver_common import build_client, error_result",
+      "from nexus_core.tools.parsers.sliver import parse_sliver_version"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sliver_sessions.py",
+    "lines": 130,
+    "classes": [],
+    "functions": [
+      "sliver_sessions_definition",
+      "_register_new",
+      "sliver_sessions_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.integrations.sliver.client import SliverError",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope",
+      "from nexus_core.tools.handlers.sliver_common import build_client, error_result, target_host",
+      "from nexus_core.tools.parsers.sliver import parse_sliver_sessions"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/smb.py",
+    "lines": 535,
+    "classes": [],
+    "functions": [
+      "_validate_share",
+      "_validate_remote_path",
+      "_validate_ntlm_hash",
+      "_smbclients_argv",
+      "_connection_failed",
+      "_nt_status_outcome",
+      "_parse_shares",
+      "_parse_directory",
+      "smb_definition",
+      "smb_upload_definition",
+      "_bounded_timeout",
+      "_workspace_root",
+      "_resolve_local",
+      "smb_handler",
+      "smb_upload_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import hashlib",
+      "import os",
+      "import re",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from ._ad import ad_sandbox, resolve_ad_binary, validate_host, validate_username",
+      "from ._exec import run_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/sqlmap.py",
+    "lines": 386,
+    "classes": [],
+    "functions": [
+      "_validate_text",
+      "validate_and_canonicalize_sqlmap_flags",
+      "sqlmap_definition",
+      "_build_sqlmap_flags",
+      "sqlmap_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools.parsers.sqlmap import parse_sqlmap_output",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/ssh_post.py",
+    "lines": 831,
+    "classes": [],
+    "functions": [
+      "_validate_text",
+      "_forbidden_command",
+      "parse_sudo_rules",
+      "ssh_exec_definition",
+      "enum_system_definition",
+      "ssh_upload_definition",
+      "_validate_remote_path",
+      "_validate_file_mode",
+      "_run_ssh_client",
+      "_parse_client_json",
+      "ssh_exec_handler",
+      "enum_system_handler",
+      "ssh_upload_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import hashlib",
+      "import json",
+      "import os",
+      "import re",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox",
+      "from .workspace import resolve_workspace_path"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/subfinder.py",
+    "lines": 150,
+    "classes": [],
+    "functions": [
+      "subfinder_definition",
+      "subfinder_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools.parsers.subfinder import parse_subfinder_jsonl",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/system.py",
+    "lines": 35,
+    "classes": [],
+    "functions": [
+      "system_status_definition",
+      "system_status_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/system_env.py",
+    "lines": 85,
+    "classes": [],
+    "functions": [
+      "check_env_definition",
+      "check_env_handler"
+    ],
+    "imports": [
+      "import asyncio",
+      "from dataclasses import asdict",
+      "from nexus_core.kernel.models import RiskLevel, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.provisioner.detector import check_all_tools, check_tool, detect_managers, detect_os, verify_tool_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/system_install.py",
+    "lines": 96,
+    "classes": [],
+    "functions": [
+      "install_tool_definition",
+      "install_tool_handler"
+    ],
+    "imports": [
+      "import asyncio",
+      "from dataclasses import asdict",
+      "from nexus_core.kernel.models import RiskLevel, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.schema_validation import validate",
+      "from nexus_core.provisioner.installer import execute_install, plan_install, update_shell_path"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/tftp.py",
+    "lines": 453,
+    "classes": [],
+    "functions": [
+      "validate_remote_name",
+      "_validate_action",
+      "_validate_mode",
+      "tftp_definition",
+      "tftp_handler",
+      "_parse_payload"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import base64",
+      "import json",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from ._ad import validate_host",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id",
+      "from .workspace import resolve_workspace_path, workspace_root"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/whatweb.py",
+    "lines": 283,
+    "classes": [],
+    "functions": [
+      "whatweb_noise_level",
+      "whatweb_definition",
+      "whatweb_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.tools.output_files import read_output_text",
+      "import os",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools.parsers.whatweb import parse_whatweb_json",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, normalize_targets, run_in_sandbox, safe_run_id"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/winrm.py",
+    "lines": 292,
+    "classes": [],
+    "functions": [
+      "winrm_exec_definition",
+      "_forbidden_command",
+      "parse_winrm_output",
+      "winrm_exec_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import re",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from ._ad import ad_sandbox, resolve_ad_binary, validate_domain, validate_host, validate_username",
+      "from ._exec import run_in_sandbox"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/workspace.py",
+    "lines": 244,
+    "classes": [],
+    "functions": [
+      "workspace_root",
+      "workspace_search_definition",
+      "search_argv",
+      "workspace_search_handler",
+      "workspace_read_definition",
+      "resolve_workspace_path",
+      "_sha256_file",
+      "_decode",
+      "workspace_read_handler"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import hashlib",
+      "import os",
+      "import shutil",
+      "from pathlib import Path",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/handlers/wp.py",
+    "lines": 936,
+    "classes": [],
+    "functions": [
+      "wp_enum_definition",
+      "_analyze_wp_enum",
+      "wp_enum_handler",
+      "wp_bruteforce_definition",
+      "_slice_wordlist",
+      "_read_progress",
+      "wp_bruteforce_handler",
+      "wp_exec_definition",
+      "wp_exec_handler",
+      "_last_json_object"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from nexus_core.tools.output_files import read_output_text",
+      "import base64",
+      "import json",
+      "import os",
+      "import re",
+      "from pathlib import Path",
+      "from typing import Any",
+      "from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.sandbox import sandbox_for_environment",
+      "from nexus_core.tools.parsers.wordpress import WordPressFindings, extract_assets, extract_rest_users, extract_site_title, extract_version, normalize_site_url",
+      "from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id",
+      "from ._wp import WP_BRUTEFORCE_CLIENT_SCRIPT, WP_EXEC_CLIENT_SCRIPT, WP_EXEC_MARKER, WP_EXEC_PARAMETER, XMLRPC_SOURCE",
+      "from .ffuf import resolve_wordlist",
+      "from .workspace import resolve_workspace_path, workspace_root"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/output_files.py",
+    "lines": 56,
+    "classes": [],
+    "functions": [
+      "read_output_text"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import hashlib",
+      "import os",
+      "import stat",
+      "from pathlib import Path",
+      "from nexus_core.kernel.output_capture import StreamManifest",
+      "from nexus_core.kernel.sandbox import SandboxResult",
+      "from .execution_contract import record_capture"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/__init__.py",
+    "lines": 11,
+    "classes": [],
+    "functions": [],
+    "imports": []
+  },
+  {
+    "path": "nexus_core/tools/parsers/_jsonl.py",
+    "lines": 108,
+    "classes": [],
+    "functions": [
+      "sha256_text",
+      "_reject_constant",
+      "_unique_object",
+      "loads_object",
+      "iter_json_lines",
+      "_to_int",
+      "to_int",
+      "first_str",
+      "string_tuple",
+      "count_by"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import hashlib",
+      "import json",
+      "from typing import Any"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/bloodhound.py",
+    "lines": 105,
+    "classes": [
+      "BloodHoundFile",
+      "BloodHoundResult"
+    ],
+    "functions": [
+      "_collection_from_name",
+      "_record_count",
+      "parse_bloodhound_outputs"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import json",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/dalfox.py",
+    "lines": 133,
+    "classes": [
+      "DalfoxFinding",
+      "DalfoxResult"
+    ],
+    "functions": [
+      "empty_dalfox_result",
+      "_is_finding",
+      "_finding_from",
+      "parse_dalfox_json"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import json",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import first_str, iter_json_lines, sha256_text"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/dns.py",
+    "lines": 130,
+    "classes": [],
+    "functions": [
+      "_answer_section",
+      "empty_dns_result",
+      "parse_dig_output"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from typing import Any",
+      "from ._jsonl import sha256_text"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/ffuf.py",
+    "lines": 153,
+    "classes": [
+      "FfufMatch",
+      "FfufResult"
+    ],
+    "functions": [
+      "empty_ffuf_result",
+      "_match_from",
+      "_envelope_records",
+      "parse_ffuf_output"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import json",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import _reject_constant, _unique_object, count_by, first_str, iter_json_lines, sha256_text, to_int"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/gobuster.py",
+    "lines": 128,
+    "classes": [
+      "GobusterHit",
+      "GobusterResult"
+    ],
+    "functions": [
+      "empty_gobuster_result",
+      "_hit_from",
+      "parse_gobuster_output"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text, to_int"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/httpx.py",
+    "lines": 128,
+    "classes": [
+      "HttpxProbe",
+      "HttpxResult"
+    ],
+    "functions": [
+      "empty_httpx_result",
+      "parse_httpx_jsonl"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import count_by, first_str, iter_json_lines, sha256_text, string_tuple, to_int"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/impacket_getuserspns.py",
+    "lines": 135,
+    "classes": [
+      "ServicePrincipal",
+      "KerberoastHash",
+      "GetUserSPNsResult"
+    ],
+    "functions": [
+      "_spn_from_line",
+      "parse_getuserspns_output"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/impacket_psexec.py",
+    "lines": 51,
+    "classes": [
+      "PsExecResult"
+    ],
+    "functions": [
+      "parse_psexec_output"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/impacket_secretsdump.py",
+    "lines": 161,
+    "classes": [
+      "SecretsDumpEntry",
+      "SecretsDumpSecret",
+      "SecretsDumpResult"
+    ],
+    "functions": [
+      "_hash_entry",
+      "_cached_entry",
+      "_secret_entry",
+      "parse_secretsdump_file",
+      "parse_secretsdump_files"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/metasploit.py",
+    "lines": 278,
+    "classes": [
+      "MetasploitModule",
+      "MetasploitSearchResult",
+      "MetasploitSession",
+      "MetasploitSessionList",
+      "MetasploitExploitResult",
+      "MetasploitSessionInteraction",
+      "MetasploitAuxiliaryResult"
+    ],
+    "functions": [
+      "_sha",
+      "_pick",
+      "_port",
+      "parse_msf_session",
+      "parse_msf_sessions",
+      "parse_msf_exploit",
+      "parse_msf_interaction",
+      "parse_msf_search",
+      "parse_msf_auxiliary"
+    ],
+    "imports": [
+      "from dataclasses import asdict, dataclass",
+      "import hashlib",
+      "import math",
+      "import json",
+      "from typing import Any"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/netexec.py",
+    "lines": 140,
+    "classes": [
+      "NetExecEntry",
+      "NetExecResult"
+    ],
+    "functions": [
+      "empty_netexec_result",
+      "parse_netexec_output"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/nikto.py",
+    "lines": 189,
+    "classes": [
+      "NiktoFinding",
+      "NiktoReport"
+    ],
+    "functions": [
+      "_split_finding",
+      "parse_nikto_report"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text, to_int"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/nmap.py",
+    "lines": 221,
+    "classes": [
+      "NmapHost",
+      "NmapScan"
+    ],
+    "functions": [
+      "_local_name",
+      "_children",
+      "_child",
+      "_to_int",
+      "_to_float",
+      "_parse_host",
+      "parse_nmap_xml",
+      "empty_scan"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import hashlib",
+      "import math",
+      "import xml.etree.ElementTree as ET",
+      "from dataclasses import dataclass",
+      "from typing import Any"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/nuclei.py",
+    "lines": 124,
+    "classes": [
+      "NucleiFinding",
+      "NucleiResult"
+    ],
+    "functions": [
+      "empty_nuclei_result",
+      "_finding_from",
+      "parse_nuclei_jsonl"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import count_by, first_str, iter_json_lines, sha256_text, string_tuple"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/searchsploit.py",
+    "lines": 129,
+    "classes": [
+      "ExploitEntry",
+      "SearchsploitResult"
+    ],
+    "functions": [
+      "_optional_str",
+      "_entry",
+      "empty_searchsploit_result",
+      "parse_searchsploit_json"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import json",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/sliver.py",
+    "lines": 372,
+    "classes": [
+      "SliverServerInfo",
+      "SliverSession",
+      "SliverExecResult",
+      "SliverLootInfo",
+      "SliverPivotInfo"
+    ],
+    "functions": [
+      "_sha",
+      "_pick",
+      "_text",
+      "_int",
+      "_last_checkin",
+      "_version_string",
+      "parse_sliver_version",
+      "_session_kind",
+      "parse_sliver_session",
+      "parse_sliver_sessions",
+      "parse_sliver_exec",
+      "_file_bytes",
+      "parse_sliver_loot",
+      "_split_host_port",
+      "parse_sliver_pivots"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import base64",
+      "import binascii",
+      "import hashlib",
+      "import math",
+      "import json",
+      "from dataclasses import asdict, dataclass",
+      "from typing import Any"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/sqlmap.py",
+    "lines": 223,
+    "classes": [
+      "SqlmapFinding",
+      "SqlmapResult"
+    ],
+    "functions": [
+      "empty_sqlmap_result",
+      "_clean",
+      "parse_sqlmap_output"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/subfinder.py",
+    "lines": 99,
+    "classes": [
+      "SubfinderResult"
+    ],
+    "functions": [
+      "empty_subfinder_result",
+      "parse_subfinder_jsonl"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import re",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import first_str, iter_json_lines, sha256_text, string_tuple"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/whatweb.py",
+    "lines": 144,
+    "classes": [
+      "WhatwebFingerprint",
+      "WhatwebTarget",
+      "WhatwebResult"
+    ],
+    "functions": [
+      "empty_whatweb_result",
+      "_first_str",
+      "_fingerprint",
+      "_target_from",
+      "parse_whatweb_json"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import json",
+      "from dataclasses import dataclass",
+      "from typing import Any",
+      "from ._jsonl import sha256_text, to_int"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/parsers/wordpress.py",
+    "lines": 196,
+    "classes": [
+      "WordPressFindings"
+    ],
+    "functions": [
+      "normalize_site_url",
+      "extract_version",
+      "extract_assets",
+      "extract_site_title",
+      "extract_rest_users",
+      "extract_nonce",
+      "extract_textarea"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import html as _html",
+      "import json",
+      "import re",
+      "from dataclasses import dataclass, field",
+      "from typing import Any"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/registration.py",
+    "lines": 228,
+    "classes": [
+      "ToolRegistration",
+      "DiscoveryReport"
+    ],
+    "functions": [
+      "register",
+      "register_tool",
+      "registered_tools",
+      "unregister",
+      "clear_registrations",
+      "reset_discovery",
+      "_scan_package",
+      "_load_entry_points",
+      "discover",
+      "discovered_registrations"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import importlib",
+      "import pkgutil",
+      "from dataclasses import dataclass",
+      "from importlib.metadata import entry_points",
+      "from typing import Any, Awaitable, Callable",
+      "from nexus_core.kernel.models import RunContext, ToolDefinition, ToolResult"
+    ]
+  },
+  {
+    "path": "nexus_core/tools/registry.py",
+    "lines": 369,
+    "classes": [],
+    "functions": [
+      "durable_tool_definitions",
+      "register_durable_tools",
+      "tool_catalog"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "from typing import Any, Awaitable, Callable",
+      "from nexus_core.kernel.models import RunContext, ToolDefinition, ToolResult",
+      "from nexus_core.kernel.tool_gateway import ToolGateway"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/__init__.py",
+    "lines": 1,
+    "classes": [],
+    "functions": [],
+    "imports": []
+  },
+  {
+    "path": "nexus_core/provisioner/binaries.py",
+    "lines": 304,
+    "classes": [
+      "BinaryIdentity",
+      "IdentityCheck"
+    ],
+    "functions": [
+      "default_version_runner",
+      "classify_identity",
+      "check_binary_identity",
+      "check_binary_identities",
+      "identity_problems",
+      "missing_tool_binaries"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import shutil",
+      "from dataclasses import dataclass",
+      "from typing import Callable, Iterable"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/bootstrap.py",
+    "lines": 247,
+    "classes": [
+      "BootstrapAction"
+    ],
+    "functions": [
+      "plan_binary_installs",
+      "run_bootstrap",
+      "_bootstrap_msfrpcd"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "from dataclasses import dataclass",
+      "from pathlib import Path",
+      "import shutil",
+      "import tempfile",
+      "from .readiness import SLIVER_DEFAULT_CONFIG, EnvironmentReport, sliver_operator_plan"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/catalog.py",
+    "lines": 163,
+    "classes": [
+      "CatalogCapability"
+    ],
+    "functions": [
+      "assess_tool_catalog"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import shutil",
+      "from collections.abc import Callable",
+      "from dataclasses import asdict, dataclass",
+      "from typing import Any",
+      "from .recipes import load_recipes"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/detector.py",
+    "lines": 235,
+    "classes": [
+      "OsInfo",
+      "ToolStatus",
+      "SandboxToolState",
+      "SandboxVerification"
+    ],
+    "functions": [
+      "detect_os",
+      "detect_managers",
+      "check_tool",
+      "check_all_tools",
+      "verify_tool_in_sandbox"
+    ],
+    "imports": [
+      "from concurrent.futures import ThreadPoolExecutor",
+      "from dataclasses import dataclass",
+      "from enum import Enum",
+      "import asyncio",
+      "import platform",
+      "import re",
+      "import shutil",
+      "import tempfile",
+      "import os",
+      "from pathlib import Path"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/installer.py",
+    "lines": 174,
+    "classes": [
+      "InstallPlan",
+      "InstallResult"
+    ],
+    "functions": [
+      "probe_command",
+      "plan_install",
+      "approval_action",
+      "format_plan",
+      "execute_install",
+      "update_shell_path",
+      "open_editor"
+    ],
+    "imports": [
+      "from dataclasses import asdict, dataclass",
+      "import hashlib",
+      "import json",
+      "import os",
+      "from pathlib import Path",
+      "import shlex",
+      "import shutil",
+      "import subprocess",
+      "import time"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/probe.py",
+    "lines": 67,
+    "classes": [],
+    "functions": [
+      "bounded_probe"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import math",
+      "import os",
+      "import selectors",
+      "import signal",
+      "import subprocess",
+      "import time",
+      "from collections.abc import Sequence"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/readiness.py",
+    "lines": 369,
+    "classes": [
+      "ComponentStatus",
+      "EnvironmentReport"
+    ],
+    "functions": [
+      "_default_port_open",
+      "sliver_operator_plan",
+      "assess_environment",
+      "render_report"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import os",
+      "import shutil",
+      "import socket",
+      "from dataclasses import dataclass, field",
+      "from pathlib import Path",
+      "from typing import Callable",
+      "from urllib.parse import urlsplit",
+      "from .binaries import BINARY_IDENTITIES_BY_NAME, BinaryIdentity, IdentityCheck",
+      "from .recipes import load_recipes"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/recipes.py",
+    "lines": 98,
+    "classes": [],
+    "functions": [
+      "validate_recipes",
+      "load_recipes",
+      "find_tool_recipe",
+      "available_recipes",
+      "preferred_manager"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import json",
+      "from typing import Any",
+      "from pathlib import Path"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/runtime_deps.py",
+    "lines": 97,
+    "classes": [
+      "PythonRequirement"
+    ],
+    "functions": [
+      "_module_available",
+      "missing_python_modules"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import importlib.util",
+      "from dataclasses import dataclass",
+      "from typing import Callable, Iterable"
+    ]
+  },
+  {
+    "path": "nexus_core/provisioner/sliver.py",
+    "lines": 376,
+    "classes": [
+      "SliverInstall"
+    ],
+    "functions": [
+      "platform_tag",
+      "sliver_urls",
+      "install_plan_text",
+      "_download",
+      "_sha256",
+      "_default_spawn",
+      "_default_port_open",
+      "install_sliver_verified",
+      "team_server_running",
+      "user_unit_path",
+      "user_unit_text",
+      "user_service_available",
+      "install_user_service",
+      "start_team_server",
+      "ensure_operator_config"
+    ],
+    "imports": [
+      "from __future__ import annotations",
+      "import hashlib",
+      "import os",
+      "from dataclasses import dataclass",
+      "from pathlib import Path",
+      "import platform as _platform",
+      "import shutil",
+      "import socket",
+      "import subprocess",
+      "import tempfile",
+      "import time",
+      "import urllib.request"
+    ]
+  }
+]

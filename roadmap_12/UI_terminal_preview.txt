@@ -1,0 +1,29 @@
+Muestra ilustrativa; no ejecuta herramientas ni representa un engagement real.
+
+[ 📋 Pasted Input · 10,778 characters ]
+
+• Thinking... Preparando una operación con salida verificada.
+
+⠙ • Executing nexus.workspace.read...
+
+   -> línea 1
+   -> línea 2
+   -> línea 3
+   ...
+   -> línea 8
+   -> línea 9
+   -> línea 10
+   ✓ ejemplo
+   [ Show 4 more lines ]
+
+× failed · nexus.example
+   × Tiempo de espera agotado
+
+--- a/settings.txt
++++ b/settings.txt
+@@ -1 +1 @@
+-timeout=5
++timeout=10
+   ✓ completado
+
+BAJIOWARE · OMNI-AGENTCS | Scope: 2 targets | Model: provider/model | Tokens: 1,200 | Budget: $— | Status: RUNNING
