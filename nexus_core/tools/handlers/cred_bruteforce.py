@@ -18,6 +18,7 @@ Safety rails:
 from __future__ import annotations
 
 import os
+import tempfile
 import re
 from typing import Any
 
@@ -28,8 +29,8 @@ from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id
 
 CRED_ALLOWED_PROGRAMS = (*RECON_ALLOWED_PROGRAMS, "hydra")
 
-CRED_SERVICES = ("ssh", "ftp")
-CRED_DEFAULT_PORTS = {"ssh": 22, "ftp": 21}
+CRED_SERVICES = ("ssh", "ftp", "telnet", "tcp")
+CRED_DEFAULT_PORTS = {"ssh": 22, "ftp": 21, "telnet": 23}
 CRED_DEFAULT_TIMEOUT_SECONDS = 300
 CRED_MAX_TIMEOUT_SECONDS = 900
 CRED_DEFAULT_MAX_ATTEMPTS = 200
@@ -63,6 +64,9 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                 "target": {"type": "string", "minLength": 1, "maxLength": 255},
                 "service": {"type": "string", "enum": list(CRED_SERVICES)},
                 "username": {"type": "string", "minLength": 1, "maxLength": 128},
+                "password_prompt": {"type": "string", "minLength": 1, "maxLength": 128},
+                "login_prompt": {"type": "string", "minLength": 1, "maxLength": 128},
+                "success_marker": {"type": "string", "minLength": 1, "maxLength": 128},
                 "password_file": {"type": "string", "minLength": 1, "maxLength": 1024},
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                 "max_attempts": {
@@ -72,7 +76,7 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                 },
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 900},
             },
-            "required": ["target", "service", "username", "password_file"],
+            "required": ["target", "service", "password_file"],
             "additionalProperties": False,
         },
         risk=RiskLevel.MEDIUM,
@@ -109,11 +113,15 @@ def _resolve_in_workspace(workspace_root: str, relative: str) -> str:
 def _truncate_wordlist(source: str, dest: str, max_attempts: int) -> int:
     """Copy at most ``max_attempts`` non-empty lines into ``dest``; return count."""
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if os.path.getsize(source) > 16_000_000:
+        raise ValueError("wordlist exceeds 16 MB")
     count = 0
     with open(source, encoding="utf-8", errors="replace") as reader, open(
         dest, "w", encoding="utf-8"
     ) as writer:
-        for line in reader:
+        while line := reader.readline(4097):
+            if len(line) > 4096:
+                raise ValueError("wordlist entry exceeds 4096 characters")
             token = line.rstrip("\r\n")
             if not token:
                 continue
@@ -138,18 +146,22 @@ def parse_hydra_credentials(text: str) -> list[dict[str, str]]:
     return found
 
 
-async def cred_bruteforce_handler(arguments: dict, context: RunContext) -> ToolResult:
+async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     """Test a username/wordlist against a service through the sandbox."""
+    from nexus_core.kernel.schema_validation import validate
+
+    validate(arguments, cred_bruteforce_definition().input_schema)
     target = _validate_text(arguments.get("target"), "target", max_length=255)
     service = str(arguments.get("service") or "").strip().lower()
     if service not in CRED_SERVICES:
         raise ValueError(f"unsupported service: {service!r}")
-    username = _validate_text(arguments.get("username"), "username", max_length=128)
+    username = (_validate_text(arguments.get("username"), "username", max_length=128)
+                if service in {"ssh", "ftp"} or arguments.get("username") else "")
     password_file = _validate_text(
         arguments.get("password_file"), "password_file", max_length=1024
     )
 
-    port = int(arguments.get("port") or CRED_DEFAULT_PORTS[service])
+    port = int(arguments.get("port") or CRED_DEFAULT_PORTS.get(service, 0))
     if not 1 <= port <= 65535:
         raise ValueError("port out of range")
     max_attempts = min(
@@ -163,12 +175,39 @@ async def cred_bruteforce_handler(arguments: dict, context: RunContext) -> ToolR
 
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
     source_path = _resolve_in_workspace(workspace_root, password_file)
-    run_dir = os.path.join(workspace_root, f"cred_{safe_run_id(context)}")
+    run_dir = tempfile.mkdtemp(prefix=f"cred_{safe_run_id(context)}_", dir=workspace_root)
     wordlist_path = os.path.join(run_dir, "wordlist.txt")
     outfile_path = os.path.join(run_dir, "hydra.txt")
     attempts = _truncate_wordlist(source_path, wordlist_path, max_attempts)
     if attempts == 0:
         raise ValueError("password_file has no usable entries")
+
+    if service in {"tcp", "telnet"}:
+        from ._tcp_credentials import TCP_CREDENTIAL_SCRIPT
+        from .http_request import _parse_last_json
+        if not 1 <= port <= 65535:
+            raise ValueError("TCP requires an explicit valid port")
+        success = _validate_text(arguments.get("success_marker"), "success_marker", max_length=128)
+        password_prompt = _validate_text(arguments.get("password_prompt", "Password:"), "password_prompt", max_length=128)
+        login_prompt = str(arguments.get("login_prompt") or "")
+        if login_prompt and not username:
+            raise ValueError("login_prompt requires username")
+        sandbox = sandbox_for_environment(workspace_root, allowed_programs=CRED_ALLOWED_PROGRAMS)
+        result = await run_in_sandbox(
+            sandbox, ["python3", "-c", TCP_CREDENTIAL_SCRIPT, target, str(port), username,
+                      wordlist_path, password_prompt, success, login_prompt,
+                      "1" if service == "telnet" else "0"],
+            timeout_seconds=timeout_seconds, image_env="NEXUS_HTTP_IMAGE",
+            default_image="python:3.12-alpine",
+        )
+        payload = _parse_last_json(result.stdout) if result.stdout else {}
+        return ToolResult(
+            output={"target": target, "service": service, "port": port, **payload},
+            verified=(result.exit_code == 0 and not result.timed_out and bool(payload)
+                      and (bool(payload.get("valid_credentials")) or payload.get("errors") == 0)),
+            exit_code=result.exit_code, timed_out=result.timed_out,
+            verification_method="tcp_positive_marker", evidence={"max_attempts": max_attempts},
+        )
 
     argv = [
         "hydra",
@@ -200,7 +239,7 @@ async def cred_bruteforce_handler(arguments: dict, context: RunContext) -> ToolR
     if not credentials and os.path.isfile(outfile_path):
         try:
             with open(outfile_path, encoding="utf-8", errors="replace") as handle:
-                credentials = parse_hydra_credentials(handle.read())
+                credentials = parse_hydra_credentials(handle.read(1_000_000))
         except OSError:
             credentials = []
 

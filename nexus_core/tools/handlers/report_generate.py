@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from nexus_core.kernel.artifacts import LocalArtifactStore
+from nexus_core.kernel.artifacts import configured_artifact_store
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.schema_validation import validate
@@ -211,7 +211,7 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             payloads.append(("report.html", html_text, "text/html"))
         if output_format == "sarif":
             payloads.append(("report.sarif", sarif_text, "application/sarif+json"))
-        artifact_store = LocalArtifactStore(store, default_artifact_root())
+        artifact_store = configured_artifact_store(store, default_artifact_root())
         for name, text, media_type in payloads:
             target = directory / name
             target.write_text(text, encoding="utf-8")
@@ -224,6 +224,9 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
                 metadata={"engagement_id": engagement_id, "kind": "engagement_report"},
             )
             artifacts.append({"name": name, "path": str(target), **recorded})
+        from nexus_core.report.checksums import write_checksums
+
+        write_checksums(directory, files)
     except OSError as exc:
         return ToolResult(
             output={"status": "write_failed", "error": type(exc).__name__},
@@ -261,6 +264,8 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             "report_path_md": str(files.get("report.md", "")),
             "report_path_html": str(files.get("report.html", "")),
             "report_path_json": str(files.get("report.json", "")),
+            "report_path_sha256": str(directory / "report.sha256"),
+            "canonical_report_sha256": report.report_sha256,
             "report_path_sarif": str(files.get("report.sarif", "")),
             "directory": str(directory),
             "findings_count": len(report.findings),

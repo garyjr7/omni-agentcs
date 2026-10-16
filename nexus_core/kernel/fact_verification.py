@@ -171,6 +171,13 @@ def derive_assertions(tool_id, arguments, result, context):
             or (command == 'whoami' and stdout == 'root')
         ):
             add('privilege', target, {'uid': 0, 'user': 'root'})
+        # A flag-shaped token in the output of a verified authenticated command is
+        # loot: the channel is proven, so the flag came from a command that really
+        # ran on the host. Same contract as ``nexus.web.wp_exec`` (the Windows
+        # channel stays stricter and only attributes a single literal file read).
+        if output.get('exit_status') == 0:
+            for flag in FLAG_RE.findall(stdout):
+                add('loot', flag, {'flag': flag, 'command': command, 'service': 'ssh'}, flag)
     elif tool_id == 'nexus.pwn.ret2libc' and result.verification_method == 'ret2libc_root_command':
         target = output.get('target')
         add('privilege', target, {'uid': 0, 'user': 'root'})
@@ -212,6 +219,22 @@ def derive_assertions(tool_id, arguments, result, context):
             add('access', host, {'transport': 'http-pivot', 'username': username,
                                  'endpoint': output.get('form_url')},
                 f"http-pivot:{host}")
+    elif tool_id == 'nexus.cred.bruteforce' and result.verification_method in {
+        'cred_bruteforce_completed', 'tcp_positive_marker'
+    }:
+        # hydra only prints a hit it actually authenticated, so every row is a
+        # credential the service accepted - and therefore initial access as
+        # well. A completed sweep with no hit promotes nothing (the negative is a
+        # valid result, not evidence).
+        target = output.get('target')
+        service = output.get('service')
+        for credential in output.get('valid_credentials') or ():
+            username = credential.get('username') or output.get('username')
+            add('credential', target, {'username': username,
+                                       'password': credential.get('password'),
+                                       'service': service},
+                f"cred:{service}:{username}@{target}")
+            add('access', target, {'transport': service, 'username': username})
     elif tool_id == 'nexus.web.wp_bruteforce' and result.verification_method == 'wp_credential_validated':
         username = output.get('username')
         for credential in output.get('valid_credentials') or ():

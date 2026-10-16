@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -68,13 +69,18 @@ HTTP_MAX_DATA_B64_CHARS = 524_288
 #: ``insecure`` (``1``/``0``) disables TLS certificate verification for exactly
 #: one request; it is an explicit operator opt-in, never a default.
 HTTP_CLIENT_SCRIPT = r"""
-import base64, hashlib, json, os, ssl, sys, time, urllib.error, urllib.request, uuid
+import base64, hashlib, json, os, ssl, sys, time, tempfile, urllib.error, urllib.parse, urllib.request, uuid
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    allow_same_origin = False
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Returning None tells urllib to hand back the original 3xx response
         # instead of chasing the redirect (keeps the forensic status code).
+        if self.allow_same_origin:
+            old, new = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+            if (old.scheme, old.hostname, old.port) == (new.scheme, new.hostname, new.port):
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
         return None
 
 
@@ -96,8 +102,9 @@ def _build_upload(upload):
     field = upload["field"]
     filename = upload.get("filename") or "upload.bin"
     content_type = upload.get("content_type") or "application/octet-stream"
-    with open(upload["path"], "rb") as handle:
-        blob = handle.read()
+    size = os.path.getsize(upload["path"])
+    if size > 268435456:
+        raise ValueError("upload exceeds 256 MiB")
     crlf = "\r\n"
     parts = []
     # Plain form fields first (a panel often validates $_POST["submit"] before
@@ -114,9 +121,24 @@ def _build_upload(upload):
          + filename + '"' + crlf
          + "Content-Type: " + content_type + crlf + crlf).encode("utf-8")
     )
-    parts.append(blob)
-    parts.append((crlf + "--" + boundary + "--" + crlf).encode("utf-8"))
-    return "multipart/form-data; boundary=" + boundary, b"".join(parts), len(blob)
+    prefix = b"".join(parts)
+    suffix = (crlf + "--" + boundary + "--" + crlf).encode("utf-8")
+    raw_mode = upload.get("mode") == "raw"
+    if raw_mode:
+        prefix, suffix = b"", b""
+    def chunks():
+        yield prefix
+        with open(upload["path"], "rb") as handle:
+            remaining = size
+            while remaining:
+                chunk = handle.read(min(65536, remaining))
+                if not chunk:
+                    raise OSError("upload source changed")
+                remaining -= len(chunk)
+                yield chunk
+        yield suffix
+    return (content_type if raw_mode else "multipart/form-data; boundary=" + boundary,
+            chunks(), size, len(prefix) + size + len(suffix))
 
 
 def main():
@@ -132,7 +154,9 @@ def main():
     uploaded = None
     upload = json.loads(upload_json) if upload_json and upload_json != "null" else None
     if upload:
-        content_type, body, size = _build_upload(upload)
+        content_type, body, size, wire_size = _build_upload(upload)
+        headers = {k: v for k, v in headers.items() if k.lower() not in {"content-length", "transfer-encoding"}}
+        headers["Content-Length"] = str(wire_size)
         headers["Content-Type"] = content_type
         uploaded = {
             "field": upload["field"],
@@ -147,7 +171,9 @@ def main():
     # The default context verifies certificates (fail-closed). ``insecure`` only
     # swaps in an unverified context when the operator asked for it on this call,
     # which is what a lab target with a self-signed cert requires.
-    handlers = [] if follow else [_NoRedirect()]
+    redirect = _NoRedirect()
+    redirect.allow_same_origin = follow
+    handlers = [redirect]
     if insecure:
         handlers.append(
             urllib.request.HTTPSHandler(context=ssl._create_unverified_context())
@@ -163,13 +189,62 @@ def main():
     # both. Preserve every value in ``set_cookie`` so multi-step flows work.
     set_cookie = []
     raw = b""
+    saved = None
+    body_bytes = 0
+    digest = hashlib.sha256()
+    download_limit = int(sys.argv[11]) if len(sys.argv) > 11 else 268435456
+    complete = False
+    def drain(response):
+        nonlocal raw, saved, body_bytes, complete
+        temporary = None
+        handle = None
+        try:
+            if save_path:
+                parent = os.path.dirname(save_path)
+                os.makedirs(parent, exist_ok=True)
+                staging = sys.argv[12] if len(sys.argv) > 12 else parent
+                fd, temporary = tempfile.mkstemp(prefix=".http-", dir=staging)
+                handle = os.fdopen(fd, "wb")
+            limit = download_limit if save_path else max_bytes
+            while body_bytes <= limit:
+                chunk = response.read(min(65536, limit + 1 - body_bytes))
+                if not chunk:
+                    complete = True
+                    break
+                body_bytes += len(chunk)
+                digest.update(chunk)
+                raw += chunk[:max(0, max_bytes - len(raw))]
+                if body_bytes > limit:
+                    break
+                if handle:
+                    handle.write(chunk)
+            expected = response.headers.get("Content-Length") or response.headers.get("content-length")
+            if complete and method != "HEAD" and expected is not None:
+                complete = expected.isdigit() and body_bytes == int(expected)
+            if handle:
+                handle.flush()
+                os.fsync(handle.fileno())
+                handle.close()
+                handle = None
+                if complete:
+                    os.replace(temporary, save_path)
+                    temporary = None
+                    saved = {"path": save_path, "bytes": body_bytes,
+                             "sha256": digest.hexdigest(), "complete": True}
+                else:
+                    saved = {"error": "download_limit_exceeded" if body_bytes > limit else "incomplete_response", "complete": False}
+        finally:
+            if handle:
+                handle.close()
+            if temporary:
+                os.unlink(temporary)
     try:
         with opener.open(request, timeout=timeout) as response:
             status = response.status
             reason = response.reason or ""
             response_headers = {k.lower(): v for k, v in response.headers.items()}
             set_cookie = _get_all(response.headers, "Set-Cookie")
-            raw = response.read(max_bytes + 1)
+            drain(response)
     except urllib.error.HTTPError as exc:
         status = exc.code
         reason = getattr(exc, "reason", "") or ""
@@ -179,9 +254,9 @@ def main():
         except Exception:
             response_headers = {}
         try:
-            raw = exc.read(max_bytes + 1)
-        except Exception:
-            raw = b""
+            drain(exc)
+        finally:
+            exc.close()
     except Exception as exc:
         print(json.dumps({
             "ok": False,
@@ -192,21 +267,12 @@ def main():
         return
 
     elapsed_ms = int((time.time() - started) * 1000)
-    truncated = len(raw) > max_bytes
-    preview_bytes = raw[:max_bytes]
-    saved = None
-    if save_path:
-        try:
-            parent = os.path.dirname(save_path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(save_path, "wb") as handle:
-                handle.write(raw)
-            saved = {"path": save_path, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
-        except OSError as exc:
-            saved = {"error": "%s: %s" % (type(exc).__name__, exc)}
+    truncated = body_bytes > max_bytes
+    preview_bytes = raw
     print(json.dumps({
-        "ok": True,
+        "ok": not save_path or complete,
+        "body_complete": complete,
+        "error": (saved or {}).get("error"),
         "url": url,
         "method": method,
         "status": status,
@@ -215,8 +281,8 @@ def main():
         "set_cookie": set_cookie,
         "content_type": response_headers.get("content-type"),
         "content_length_header": response_headers.get("content-length"),
-        "body_bytes": len(raw),
-        "body_sha256": hashlib.sha256(raw).hexdigest(),
+        "body_bytes": body_bytes,
+        "body_sha256": digest.hexdigest(),
         "body_preview": preview_bytes.decode("utf-8", "replace"),
         "preview_truncated": truncated,
         "elapsed_ms": elapsed_ms,
@@ -258,6 +324,7 @@ def http_request_definition(tenant_id: str = "system") -> ToolDefinition:
                 "upload": {
                     "type": "object",
                     "properties": {
+                        "mode": {"type": "string", "enum": ["multipart", "raw"]},
                         "field": {"type": "string", "minLength": 1, "maxLength": 128},
                         "filename": {"type": "string", "maxLength": 255},
                         "content_type": {"type": "string", "maxLength": 128},
@@ -290,6 +357,7 @@ def http_request_definition(tenant_id: str = "system") -> ToolDefinition:
                         "jarfiles). Evita exponer bytes no imprimibles en el contexto."
                     ),
                 },
+                "max_download_bytes": {"type": "integer", "minimum": 1, "maximum": 268435456},
                 "max_response_bytes": {
                     "type": "integer",
                     "minimum": 1,
@@ -380,6 +448,7 @@ def _build_upload_spec(value: Any, root: str) -> dict[str, Any]:
             raise ValueError(f"upload field {name!r} contains control characters")
         fields[name] = text
     return {
+        "mode": str(value.get("mode", "multipart")),
         "field": field,
         "filename": filename,
         "content_type": content_type,
@@ -404,8 +473,8 @@ def _resolve_save_path(value: Any, root: str) -> str:
         raise ValueError("save_path must be relative to the workspace")
     root_path = Path(root).resolve()
     candidate = (root_path / text).resolve()
-    if candidate != root_path and root_path not in candidate.parents:
-        raise ValueError("save_path escapes the engagement workspace")
+    if candidate == root_path or root_path not in candidate.parents:
+        raise ValueError("save_path must name a file inside the engagement workspace")
     return str(candidate)
 
 
@@ -420,12 +489,15 @@ def _parse_last_json(stdout: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict):
-            return payload
+            return dict(payload)
     raise ValueError("http client did not return a JSON result")
 
 
-async def http_request_handler(arguments: dict, context: RunContext) -> ToolResult:
+async def http_request_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     """Send one scoped HTTP(S) request through the sandbox and parse the result."""
+    from nexus_core.kernel.schema_validation import validate
+
+    validate(arguments, http_request_definition().input_schema)
     url = _validate_url(arguments.get("url"))
     method = str(arguments.get("method") or "GET").strip().upper()
     if method not in HTTP_ALLOWED_METHODS:
@@ -461,6 +533,9 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
         max(5, int(requested_timeout) if requested_timeout else HTTP_DEFAULT_TIMEOUT_SECONDS),
     )
     follow = bool(arguments.get("follow_redirects", False))
+    download_limit = int(arguments.get("max_download_bytes", 268435456))
+    if not 1 <= download_limit <= 268435456:
+        raise ValueError("max_download_bytes must be between 1 and 268435456")
     insecure = bool(arguments.get("insecure", False))
 
     argv = [
@@ -477,15 +552,29 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
         str(timeout_seconds),
         save_path,
         "1" if insecure else "0",
+        str(download_limit),
     ]
     sandbox = sandbox_for_environment(root, allowed_programs=HTTP_ALLOWED_PROGRAMS)
-    result = await run_in_sandbox(
-        sandbox,
-        argv,
-        timeout_seconds=timeout_seconds,
-        image_env="NEXUS_HTTP_IMAGE",
-        default_image="python:3.12-alpine",
-    )
+    staging: tempfile.TemporaryDirectory[str] | None = None
+    if save_path:
+        parent = Path(save_path).parent
+        parent.mkdir(parents=True, exist_ok=True)
+        staging = tempfile.TemporaryDirectory(prefix=".http-download-", dir=parent)
+        argv.append(staging.name)
+    try:
+        result = await run_in_sandbox(
+            sandbox,
+            argv,
+            timeout_seconds=timeout_seconds,
+            image_env="NEXUS_HTTP_IMAGE",
+            default_image="python:3.12-alpine",
+        )
+    finally:
+        # The sandbox has reaped the process before returning/cancelling. Clean
+        # partial files even when SIGTERM/SIGKILL skipped the client's finally.
+        if staging is not None:
+            staging.cleanup()
+
 
     noise_level = "medium" if (upload or method not in {"GET", "HEAD"}) else "low"
     evidence: dict[str, Any] = {
@@ -533,7 +622,8 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
             {
                 "status": payload.get("status"),
                 "content_type": payload.get("content_type"),
-                "body_bytes": payload.get("body_bytes"),
+                "body_complete": payload.get("body_complete"),
+            "body_bytes": payload.get("body_bytes"),
                 "body_sha256": payload.get("body_sha256"),
                 "preview_truncated": payload.get("preview_truncated"),
                 "elapsed_ms": payload.get("elapsed_ms"),
@@ -557,6 +647,7 @@ async def http_request_handler(arguments: dict, context: RunContext) -> ToolResu
             "headers": payload.get("headers") or {},
             "set_cookie": payload.get("set_cookie") or [],
             "content_type": payload.get("content_type"),
+            "body_complete": payload.get("body_complete"),
             "body_bytes": payload.get("body_bytes"),
             "body_sha256": payload.get("body_sha256"),
             "body_preview": payload.get("body_preview"),
