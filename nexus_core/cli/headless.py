@@ -18,12 +18,13 @@ so a CI consumer can attribute each step to the phase that proposed it.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import sys
 import threading
 import time
-from typing import Any, TextIO
+from typing import Any, Iterator, TextIO
 
 import os
 from types import SimpleNamespace
@@ -190,6 +191,52 @@ def _run_preflight() -> PreflightVerdict | None:
     return preflight_binaries()
 
 
+#: Machine stream owned by the outermost guard (empty when it is not active).
+#: The run record must keep writing to the stdout that existed *before* human
+#: output was re-routed; that is why it is remembered here instead of being
+#: looked up at each write.
+_MACHINE_STREAM: dict[str, TextIO] = {}
+
+
+@contextmanager
+def human_output_on_stderr() -> Iterator[None]:
+    """Keep stdout machine-readable: every human line goes to stderr (P14/P17).
+
+    Two leaks were measured in rerun 8's NDJSON stream: the trust-mode banner
+    (21 non-JSON lines in three blocks, plus three blank lines) and its ANSI
+    escapes. Under ``--json``/``--stream-json`` the run record owns stdout, so
+    renderers are re-routed to stderr and colour is switched off for the
+    duration; the previous colour setting is restored afterwards.
+
+    Reentrant: the CLI enters it once for the whole dispatch (so an error raised
+    before the run starts also lands on stderr) and :func:`run_headless` enters
+    it again. Only the outermost guard redirects, and it publishes the machine
+    stream :func:`machine_stream` hands back.
+    """
+    from contextlib import redirect_stdout
+
+    from .render import color_enabled, set_color_enabled
+    from .tui.output import StderrOutput, route_output
+
+    if _MACHINE_STREAM:
+        yield
+        return
+    previous_color = color_enabled()
+    set_color_enabled(False)
+    _MACHINE_STREAM["stream"] = sys.stdout
+    try:
+        with route_output(StderrOutput()), redirect_stdout(sys.stderr):
+            yield
+    finally:
+        _MACHINE_STREAM.clear()
+        set_color_enabled(previous_color)
+
+
+def machine_stream(default: TextIO | None = None) -> TextIO | None:
+    """The stream that carries the run record: the pre-guard stdout when active."""
+    return _MACHINE_STREAM.get("stream", default)
+
+
 def run_headless(
     session: Any,
     objective: str,
@@ -204,7 +251,45 @@ def run_headless(
     ``mode`` is ``"json"`` (one object at the end) or ``"stream"`` (NDJSON plus a
     final ``run.complete`` line). Only verified completion exits 0;
     ``max_iterations`` and ``clarification`` exit 1 under contract v1.
+
+    In both headless modes stdout carries the run record and nothing else (P17);
+    the body runs with human output re-routed to stderr.
+
+    The machine stream is resolved **before** the human output is re-routed: the
+    CLI calls this function without an explicit stream, so looking ``sys.stdout``
+    up inside the guard would hand the run record the stderr that the guard just
+    installed -NDJSON on fd 2 and an empty stdout for the consumer.
     """
+    if mode in {"json", "stream"}:
+        with human_output_on_stderr():
+            return _run_headless(
+                session,
+                objective,
+                mode=mode,
+                stream=stream if stream is not None else machine_stream(),
+                max_iterations=max_iterations,
+                preflight=preflight,
+            )
+    return _run_headless(
+        session,
+        objective,
+        mode=mode,
+        stream=stream,
+        max_iterations=max_iterations,
+        preflight=preflight,
+    )
+
+
+def _run_headless(
+    session: Any,
+    objective: str,
+    *,
+    mode: str = "json",
+    stream: TextIO | None = None,
+    max_iterations: int | None = None,
+    preflight: PreflightVerdict | None = None,
+) -> int:
+    """Body of :func:`run_headless` (already inside the stdout guard)."""
     out = stream if stream is not None else sys.stdout
     objective = str(objective or "").strip()
     if not objective:
@@ -352,7 +437,9 @@ def _trust_approval(session: Any):
 __all__ = [
     "STREAMED_AUDIT_ACTIONS",
     "STREAM_INTERVAL",
+    "human_output_on_stderr",
     "llm_identity",
+    "machine_stream",
     "result_payload",
     "run_headless",
     "write_line",

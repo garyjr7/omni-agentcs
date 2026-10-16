@@ -369,6 +369,19 @@ class ToolGateway:
             )
             context = replace(context, authorized_permissions=tuple(permissions))
             handler = self._handlers[tool_id]
+            # V1-29: a credential the agent carries as a *handle* is resolved here,
+            # in this process, and only into the handler's own copy of the
+            # arguments. The audit row, the journal and the hooks keep seeing the
+            # reference, so the plaintext never enters a durable record, a result
+            # or the model's context; a manual ``password`` is passed through
+            # untouched (same dict, no resolution).
+            call_arguments = arguments
+            if arguments.get("credential_ref"):
+                from .secret_store import resolve_secret_reference
+
+                call_arguments = resolve_secret_reference(
+                    arguments, field="password", tenant_id=context.tenant_id
+                )
             started = time.monotonic()
             try:
                 # Only the timeout the gateway itself has to impose is a V1-27
@@ -379,7 +392,7 @@ class ToolGateway:
                 if inspect.iscoroutinefunction(handler):
                     try:
                         result = await asyncio.wait_for(
-                            handler(arguments, context), timeout=definition.timeout_seconds
+                            handler(call_arguments, context), timeout=definition.timeout_seconds
                         )
                     except (TimeoutError, asyncio.TimeoutError):
                         # V1-27: the handler outlived the budget of its own contract.
@@ -390,7 +403,7 @@ class ToolGateway:
                         result = tool_timeout_result(tool_id, definition.timeout_seconds)
                         handler_timed_out = True
                 else:
-                    result = handler(arguments, context)
+                    result = handler(call_arguments, context)
                 if not isinstance(result, ToolResult):
                     raise TypeError("tool handlers must return ToolResult with deterministic evidence")
                 result.to_dto()  # Validate before domain decisions or assertions.

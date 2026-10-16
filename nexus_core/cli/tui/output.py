@@ -26,6 +26,31 @@ class PlainOutput:
         sys.stdout.flush()
 
 
+class StderrOutput:
+    """Human-facing output that must never share stdout with machine output.
+
+    ``--json``/``--stream-json`` reserve stdout for the run record (one NDJSON
+    object per line), so the banner, the status lines and every warning move to
+    stderr. Measured in rerun 8: the trust-mode banner landed in the NDJSON
+    stream as 21 non-JSON lines (three blocks) plus three blank lines, which
+    breaks any consumer that reads stdout line by line - and it printed the
+    credential arguments verbatim.
+
+    The stream is looked up on every write, so this router composes with
+    ``redirect_stderr`` instead of binding the stream it replaced.
+    """
+
+    def write(self, text: str, *, end: str = "\n") -> None:
+        import sys
+
+        sys.stderr.write(text + end)
+
+    def flush(self) -> None:
+        import sys
+
+        sys.stderr.flush()
+
+
 class TuiOutput:
     def __init__(self, session: Any) -> None:
         self._session = session

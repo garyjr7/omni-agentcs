@@ -13,6 +13,10 @@ Safety rails:
 * hydra runs ``-f`` (stop at the first hit) and ``-I`` (ignore restore files),
   with a fixed low task count to be gentle on services;
 * ``MEDIUM`` risk, scope-gated on ``target`` and executed through the sandbox.
+* A validated password is **never returned**: it goes into the secret vault and
+  the result carries ``secret_ref`` (V1-29). hydra prints the plaintext on stdout,
+  so the returned capture is scrubbed too; the durable copy is the handler's own
+  ``hydra.txt``, and the reusable one is the ``vault:<uuid>`` handle.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import sandbox_for_environment
+from nexus_core.kernel.secret_store import DEFAULT_SECRET_KIND, default_secret_store
 
 from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id
 
@@ -132,6 +137,41 @@ def _truncate_wordlist(source: str, dest: str, max_attempts: int) -> int:
     return count
 
 
+def store_discovered_credentials(
+    credentials: list[dict[str, Any]],
+    *,
+    tenant_id: str = "system",
+    kind: str = DEFAULT_SECRET_KIND,
+) -> list[dict[str, str]]:
+    """Replace every plaintext password with its ``secret_ref`` (V1-29).
+
+    The plaintext is written once into the vault; what travels onward (result,
+    evidence, blackboard, prompt) is the reference. A credential without a
+    password (an access-token flow) keeps its fields untouched.
+    """
+    stored: list[dict[str, str]] = []
+    vault = default_secret_store()
+    for credential in credentials or ():
+        entry = {str(key): str(value) for key, value in credential.items()}
+        password = entry.pop("password", "")
+        if password:
+            entry["secret_ref"] = vault.put(
+                password.encode("utf-8"), kind=kind, tenant_id=tenant_id
+            )
+        stored.append(entry)
+    return stored
+
+
+def _scrub_plaintext(text: str, credentials: list[dict[str, Any]]) -> str:
+    """Remove the validated passwords from a raw capture before returning it."""
+    cleaned = text or ""
+    for credential in credentials or ():
+        password = str((credential or {}).get("password") or "")
+        if password:
+            cleaned = cleaned.replace(password, "[REDACTED]")
+    return cleaned
+
+
 def parse_hydra_credentials(text: str) -> list[dict[str, str]]:
     """Extract validated credentials from hydra's output (stdout/stderr/file)."""
     found: list[dict[str, str]] = []
@@ -201,12 +241,23 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
             default_image="python:3.12-alpine",
         )
         payload = _parse_last_json(result.stdout) if result.stdout else {}
+        stored = store_discovered_credentials(
+            payload.get("valid_credentials") or [], tenant_id=context.tenant_id
+        )
+        output = {key: value for key, value in payload.items() if key != "valid_credentials"}
+        output.update({"target": target, "service": service, "port": port,
+                       "valid_credentials": stored})
         return ToolResult(
-            output={"target": target, "service": service, "port": port, **payload},
+            output=output,
             verified=(result.exit_code == 0 and not result.timed_out and bool(payload)
                       and (bool(payload.get("valid_credentials")) or payload.get("errors") == 0)),
             exit_code=result.exit_code, timed_out=result.timed_out,
-            verification_method="tcp_positive_marker", evidence={"max_attempts": max_attempts},
+            verification_method="tcp_positive_marker",
+            evidence={"max_attempts": max_attempts,
+                      "secret_refs": [entry["secret_ref"] for entry in stored
+                                      if entry.get("secret_ref")]},
+            stdout=_scrub_plaintext(result.stdout or "", payload.get("valid_credentials") or []),
+            stderr=_scrub_plaintext(result.stderr or "", payload.get("valid_credentials") or []),
         )
 
     argv = [
@@ -254,6 +305,13 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         "timeout_seconds": timeout_seconds,
     }
 
+    # V1-29: the plaintext is stored, never forwarded. What the loop, the
+    # blackboard and the prompt see is the handle.
+    stored = store_discovered_credentials(credentials, tenant_id=context.tenant_id)
+    evidence["secret_refs"] = [entry["secret_ref"] for entry in stored if entry.get("secret_ref")]
+    stdout = _scrub_plaintext(result.stdout or "", credentials)
+    stderr = _scrub_plaintext(result.stderr or "", credentials)
+
     if result.timed_out:
         return ToolResult(
             output={"error": "credential testing timed out", "target": target, "service": service},
@@ -262,8 +320,8 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
             evidence=evidence,
             exit_code=result.exit_code,
             accepted_exit_codes=(0,),
-            stdout=result.stdout,
-            stderr=result.stderr,
+            stdout=stdout,
+            stderr=stderr,
             timed_out=True,
         )
 
@@ -275,13 +333,13 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
             "port": port,
             "username": username,
             "attempts": attempts,
-            "valid_credentials": credentials,
+            "valid_credentials": stored,
         },
         verified=verified,
         verification_method="cred_bruteforce_completed",
         evidence=evidence,
         exit_code=result.exit_code,
         accepted_exit_codes=(0,),
-        stdout=result.stdout,
-        stderr=result.stderr,
+        stdout=stdout,
+        stderr=stderr,
     )

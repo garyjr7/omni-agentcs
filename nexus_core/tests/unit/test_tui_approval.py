@@ -78,7 +78,7 @@ def test_render_approval_prompt_uses_modal_and_hides_it_afterwards():
     owner = _FakeTui(answer="y")
     answer = render.render_approval_prompt(
         "nexus.c2.sliver_exec",
-        {"session_id": "abc", "command": "id"},
+        {"session_id": "abc", "command": "id", "password": "hunter2"},
         decision(),
         reader=owner.prompt,
         risk="high",
@@ -86,7 +86,12 @@ def test_render_approval_prompt_uses_modal_and_hides_it_afterwards():
     assert answer == "y"
     assert owner.seen["tool_id"] == "nexus.c2.sliver_exec"
     assert owner.seen["risk"] == "high"
-    assert owner.seen["arguments"] == {"session_id": "abc", "command": "id"}
+    # The invocation reaches the modal, but no value under a secret term does
+    # (V1-30): the operator who needs the raw value uses the `[e]` editor, which
+    # prints each current value. The modal is a glance, not a leak.
+    assert owner.seen["arguments"]["command"] == "id"
+    assert owner.seen["arguments"]["password"] == "[REDACTED]"
+    assert owner.seen["arguments"]["session_id"] == "[REDACTED]"
     assert owner.set_calls == 1
     # The modal is transient: gone once the operator answered.
     assert owner.approval is None

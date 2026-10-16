@@ -335,11 +335,41 @@ def _list_engagements(scopes: list[Any]) -> None:
         )
 
 
+def headless_requested(args: Any) -> bool:
+    """Whether this invocation will write a machine record to stdout (P17).
+
+    Mirrors the dispatch rules: ``run`` is always headless, and ``--json`` /
+    ``--stream-json`` make a one-shot objective headless. Subcommands other than
+    ``run`` print for a human.
+    """
+    subcommand = str(args.command[0]) if args.command else ""
+    if subcommand == "run":
+        return True
+    if subcommand:
+        return False
+    return bool(args.objective and (args.stream_json or args.json))
+
+
 def main(argv: Sequence[str] | None = None, *, config: Any = None, paths: Any = None) -> int:
-    """Run the ``omni`` CLI; returns the process exit code."""
+    """Run the ``omni`` CLI; returns the process exit code.
+
+    Under ``--json``/``--stream-json`` stdout carries the run record and nothing
+    else, so the **whole** dispatch runs with human output on stderr: a banner or
+    an error raised before the run starts is as polluting as one emitted during
+    it (P17).
+    """
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     render.configure_color(no_color=args.no_color)
+    if headless_requested(args):
+        from .headless import human_output_on_stderr
 
+        with human_output_on_stderr():
+            return _dispatch(args, config=config, paths=paths)
+    return _dispatch(args, config=config, paths=paths)
+
+
+def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
+    """Body of :func:`main` (already inside the P17 stdout guard when headless)."""
     # ``omni run "<objetivo>" [--json|--stream-json]``: a light subcommand shim.
     # The CLI is argparse-by-flags, so ``run`` is a positional we interpret
     # rather than a real subparser (see docs/missions/FASE3B_ECOSYSTEM.md §7).

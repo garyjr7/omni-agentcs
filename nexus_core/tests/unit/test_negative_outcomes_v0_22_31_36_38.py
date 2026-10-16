@@ -435,9 +435,11 @@ def test_wp_bruteforce_validated_credential_is_verified(wordlist):
     assert result.verification_method == "wp_credential_validated"
     assert result.evidence["credentials_found"] == 1
     returned = _assert_positive_completes(wordlist, result, tool_id=WP_TOOL)
-    # The positive path keeps promoting the credential it proved.
+    # The positive path keeps promoting the credential it proved -and only the
+    # credential: a validated wp-admin password is not a session (V1-31).
     kinds = {row["fact_type"] for row in returned["assertions"]}
-    assert {"credential", "access"} <= kinds
+    assert "credential" in kinds
+    assert "access" not in kinds
 
 
 def test_wp_bruteforce_exhausted_sweep_completes_as_negative(wordlist):

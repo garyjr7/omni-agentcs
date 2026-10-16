@@ -288,20 +288,21 @@ def ssh_exec_definition(tenant_id: str = "system") -> ToolDefinition:
         name="SSH command execution",
         tenant_id=tenant_id,
         description=(
-            "Ejecuta UN comando en un host vía SSH con una credencial ya "
-            "validada. HIGH: requiere aprobación; rechaza comandos destructivos."
+            "SSH: un comando con credential_ref (preferido) o password (manual). "
+            "HIGH: requiere aprobación; rechaza comandos destructivos."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "target": {"type": "string", "minLength": 1, "maxLength": 255},
                 "username": {"type": "string", "minLength": 1, "maxLength": 128},
-                "password": {"type": "string", "minLength": 1, "maxLength": 256},
+                **_credential_schema(),
                 "command": {"type": "string", "minLength": 1, "maxLength": 4096},
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 600},
             },
-            "required": ["target", "username", "password", "command"],
+            "required": ["target", "username", "command"],
+            "anyOf": [{"required": ["password"]}, {"required": ["credential_ref"]}],
             "additionalProperties": False,
         },
         risk=RiskLevel.HIGH,
@@ -321,19 +322,20 @@ def enum_system_definition(tenant_id: str = "system") -> ToolDefinition:
         name="Linux post-exploitation enumeration",
         tenant_id=tenant_id,
         description=(
-            "Con una credencial SSH válida, recolecta la superficie de "
-            "escalada: identidad, usuarios, sudo -l, SUID, capabilities, cron."
+            "Enumera la escalada Linux con credential_ref (preferido) o password "
+            "(manual): identidad, sudo -l, SUID, capabilities, cron."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "target": {"type": "string", "minLength": 1, "maxLength": 255},
                 "username": {"type": "string", "minLength": 1, "maxLength": 128},
-                "password": {"type": "string", "minLength": 1, "maxLength": 256},
+                **_credential_schema(),
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 900},
             },
-            "required": ["target", "username", "password"],
+            "required": ["target", "username"],
+            "anyOf": [{"required": ["password"]}, {"required": ["credential_ref"]}],
             "additionalProperties": False,
         },
         risk=RiskLevel.MEDIUM,
@@ -352,18 +354,16 @@ def ssh_upload_definition(tenant_id: str = "system") -> ToolDefinition:
         name="SSH file upload (SFTP)",
         tenant_id=tenant_id,
         description=(
-            "Sube UN archivo del workspace al host por SFTP con una credencial "
-            "SSH ya validada (p. ej. un script de enumeración de escalada como "
-            "linPEAS cuando el objetivo no tiene salida a Internet, o el "
-            "manifiesto de persistencia). Verifica el sha256 remoto tras subirlo. "
-            "Escribe en el objetivo."
+            "Sube UN archivo del workspace al host por SFTP con credential_ref "
+            "(preferido) o password (manual): p. ej. linPEAS cuando el objetivo "
+            "no tiene salida a Internet. Verifica el sha256 remoto tras subirlo."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "target": {"type": "string", "minLength": 1, "maxLength": 255},
                 "username": {"type": "string", "minLength": 1, "maxLength": 128},
-                "password": {"type": "string", "minLength": 1, "maxLength": 256},
+                **_credential_schema(),
                 "local_path": {
                     "type": "string",
                     "minLength": 1,
@@ -388,7 +388,8 @@ def ssh_upload_definition(tenant_id: str = "system") -> ToolDefinition:
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": SSH_MAX_TIMEOUT_SECONDS},
             },
-            "required": ["target", "username", "password", "local_path", "remote_path"],
+            "required": ["target", "username", "local_path", "remote_path"],
+            "anyOf": [{"required": ["password"]}, {"required": ["credential_ref"]}],
             "additionalProperties": False,
         },
         risk=RiskLevel.MEDIUM,
@@ -448,6 +449,46 @@ async def _run_ssh_client(
         image_env="NEXUS_SSH_IMAGE",
         default_image="python:3.12-alpine",
     )
+
+
+#: Bound on the backend diagnostic echoed back to the model (V1-32). The client
+#: reports ``"<ExceptionType>: <message>"``; it used to be dropped here, so a
+#: failed SSH call answered ``exit_status: null`` with empty stdout/stderr and
+#: neither the agent nor the operator could tell a wrong password from a dead
+#: network. Measured in rerun 8, iterations 10/11/14.
+SSH_ERROR_DETAIL_MAX = 300
+
+#: Accepted credential arguments. ``credential_ref`` is the handle the agent
+#: carries (resolved by the gateway, V1-29); ``password`` stays for manual use.
+SSH_CREDENTIAL_REF = {
+    "type": "string",
+    "pattern": "^vault:[a-f0-9]{32}$",
+    "description": (
+        "Handle of a stored credential (secret vault). Preferido sobre "
+        "`password`; el plaintext se resuelve dentro del proceso de la tool."
+    ),
+}
+
+
+def _credential_schema(*, include_password: bool = True) -> dict[str, Any]:
+    """Properties plus the ``password``-or-``credential_ref`` constraint."""
+    properties: dict[str, Any] = {"credential_ref": dict(SSH_CREDENTIAL_REF)}
+    if include_password:
+        properties["password"] = {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Contraseña en claro (uso manual).",
+        }
+    return properties
+
+
+def _credential_detail(payload: dict[str, Any]) -> str:
+    """Bounded backend diagnostic of an SSH client payload (V1-32)."""
+    detail = str(payload.get("error") or "").strip()
+    if not detail:
+        return ""
+    return detail[:SSH_ERROR_DETAIL_MAX]
 
 
 def _parse_client_json(stdout: str) -> dict[str, Any]:
@@ -547,14 +588,21 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         )
     ok = bool(payload.get("ok")) and bool(payload.get("connected"))
     evidence["exit_status"] = payload.get("exit_status")
+    detail = "" if ok else _credential_detail(payload)
+    if detail:
+        # V1-32: the reason the channel failed belongs in the observation.
+        evidence["error_detail"] = detail
+    output: dict[str, Any] = {
+        "target": target,
+        "command": command,
+        "stdout": payload.get("stdout", ""),
+        "stderr": payload.get("stderr", ""),
+        "exit_status": payload.get("exit_status"),
+    }
+    if detail:
+        output["error"] = detail
     return ToolResult(
-        output={
-            "target": target,
-            "command": command,
-            "stdout": payload.get("stdout", ""),
-            "stderr": payload.get("stderr", ""),
-            "exit_status": payload.get("exit_status"),
-        },
+        output=output,
         verified=ok,
         verification_method="ssh_exec_completed" if ok else "ssh_exec_failed",
         evidence=evidence,
@@ -637,13 +685,21 @@ async def enum_system_handler(arguments: dict, context: RunContext) -> ToolResul
         }
     )
     ok = bool(payload.get("ok")) and bool(payload.get("connected"))
+    detail = "" if ok else _credential_detail(payload)
+    if detail:
+        # V1-32: without this the failure was unreadable (empty results, no
+        # stdout): the agent could not tell a bad password from a dead link.
+        evidence["error_detail"] = detail
+    output: dict[str, Any] = {
+        "target": target,
+        "username": username,
+        "results": results,
+        "sudo_rules": sudo_rules,
+    }
+    if detail:
+        output["error"] = detail
     return ToolResult(
-        output={
-            "target": target,
-            "username": username,
-            "results": results,
-            "sudo_rules": sudo_rules,
-        },
+        output=output,
         verified=ok,
         verification_method="enum_system_completed" if ok else "enum_system_failed",
         evidence=evidence,

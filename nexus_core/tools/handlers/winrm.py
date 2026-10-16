@@ -81,9 +81,8 @@ def winrm_exec_definition(tenant_id: str = "system") -> ToolDefinition:
         name="WinRM command execution",
         tenant_id=tenant_id,
         description=(
-            "Ejecuta UN comando en un host Windows vía WinRM (NetExec) con una "
-            "credencial ya validada. Devuelve la salida decodificada. HIGH: "
-            "requiere aprobación; rechaza comandos destructivos."
+            "WinRM: un comando con credential_ref (preferido) o password/hash "
+            "(manual). HIGH: requiere aprobación; rechaza comandos destructivos."
         ),
         input_schema={
             "type": "object",
@@ -92,6 +91,14 @@ def winrm_exec_definition(tenant_id: str = "system") -> ToolDefinition:
                 "domain": {"type": "string", "maxLength": 255},
                 "username": {"type": "string", "minLength": 1, "maxLength": 128},
                 "password": {"type": "string", "maxLength": 512},
+                "credential_ref": {
+                    "type": "string",
+                    "pattern": "^vault:[a-f0-9]{32}$",
+                    "description": (
+                        "Handle de una credencial del vault (V1-29). Preferido "
+                        "sobre `password`; se resuelve dentro de la tool."
+                    ),
+                },
                 "hash": {"type": "string", "maxLength": 65},
                 "command": {
                     "type": "string",

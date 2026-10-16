@@ -2,6 +2,18 @@
 
 New parsers must establish the claimed post-condition, not merely successful
 execution. Unsupported outputs remain inventory; they cannot advance phases.
+
+Two invariants this module enforces on the facts it asserts (V1-29, V1-31):
+
+* a ``credential`` fact never carries a plaintext secret. The value holds
+  ``secret_ref`` -the handle of :mod:`nexus_core.kernel.secret_store`- and never a
+  ``password``; when a handler still returns the plaintext (a tool not yet
+  converted), the verifier stores it and asserts the reference, so the blackboard
+  is uniformly reusable instead of uniformly unreadable.
+* an ``access`` fact means a **proven channel**, not a validated password. A sweep
+  that authenticated ``lin`` against ssh proves the password, not that anyone ran
+  a command; measured in rerun 8, ``cred_bruteforce_completed`` asserted ``access``
+  and the plan marked *Acceso inicial ✓* while no shell had ever existed.
 """
 import re
 from .blackboard import Blackboard
@@ -97,6 +109,34 @@ def _net_group_members(text):
         if _WIN_ACCOUNT_RE.match(account):
             members.append(account)
     return members
+
+
+def _secret_handle(value, *, kind="credential", tenant_id="system"):
+    """Store a discovered plaintext and return its ``vault:<uuid>`` handle.
+
+    Returns ``""`` when there is nothing to store or the vault is unwritable: a
+    verification step must never abort a run, and a credential fact without a
+    handle is still truthful (it just cannot be reused).
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        from .secret_store import default_secret_store
+
+        return default_secret_store().put(text.encode("utf-8"), kind=kind, tenant_id=tenant_id)
+    except Exception:  # noqa: BLE001 - the fact survives, the handle is dropped
+        return ""
+
+
+def _credential_handle(credential, *, kind="credential", tenant_id="system"):
+    """Handle of one discovered credential: the handler's own ref, or a new one."""
+    from .secret_store import is_secret_ref
+
+    existing = str((credential or {}).get("secret_ref") or "")
+    if is_secret_ref(existing):
+        return existing
+    return _secret_handle((credential or {}).get("password"), kind=kind, tenant_id=tenant_id)
 
 
 def _session_owner(record):
@@ -207,43 +247,42 @@ def derive_assertions(tool_id, arguments, result, context):
     elif tool_id == 'nexus.post.pivot_bruteforce' and result.verification_method == 'pivot_credential_validated':
         # The credential was validated from the authorized host, against a form
         # that provably rejects a wrong password (both re-checked twice by the
-        # remote harness). The pivoted endpoint itself is never in scope, so the
-        # access fact is keyed on the SSH host that the scope really covers.
+        # remote harness). That proves the *password*, not a session: the fact
+        # carries the handle and the pivoted endpoint is never in scope, so it is
+        # keyed on the SSH host the engagement really covers (V1-29/V1-31).
         host = output.get('target')
+        tenant = str(getattr(context, 'tenant_id', 'system'))
         for credential in output.get('valid_credentials') or ():
             username = credential.get('username')
             add('credential', host, {'username': username,
-                                     'password': credential.get('password'),
+                                     'secret_ref': _credential_handle(credential, tenant_id=tenant),
                                      'service': 'http-pivot'},
                 f"pivot:{username}@{output.get('form_url')}")
-            add('access', host, {'transport': 'http-pivot', 'username': username,
-                                 'endpoint': output.get('form_url')},
-                f"http-pivot:{host}")
     elif tool_id == 'nexus.cred.bruteforce' and result.verification_method in {
         'cred_bruteforce_completed', 'tcp_positive_marker'
     }:
         # hydra only prints a hit it actually authenticated, so every row is a
-        # credential the service accepted - and therefore initial access as
-        # well. A completed sweep with no hit promotes nothing (the negative is a
-        # valid result, not evidence).
+        # credential the service accepted. A completed sweep with no hit promotes
+        # nothing (the negative is a valid result, not evidence). The plaintext
+        # stays in the vault: the fact carries the handle (V1-29), and no
+        # ``access`` is derived - a validated password is not a session (V1-31).
         target = output.get('target')
         service = output.get('service')
+        tenant = str(getattr(context, 'tenant_id', 'system'))
         for credential in output.get('valid_credentials') or ():
             username = credential.get('username') or output.get('username')
             add('credential', target, {'username': username,
-                                       'password': credential.get('password'),
+                                       'secret_ref': _credential_handle(credential, tenant_id=tenant),
                                        'service': service},
                 f"cred:{service}:{username}@{target}")
-            add('access', target, {'transport': service, 'username': username})
     elif tool_id == 'nexus.web.wp_bruteforce' and result.verification_method == 'wp_credential_validated':
         username = output.get('username')
+        tenant = str(getattr(context, 'tenant_id', 'system'))
         for credential in output.get('valid_credentials') or ():
             add('credential', username, {'username': credential.get('username'),
-                                         'password': credential.get('password'),
+                                         'secret_ref': _credential_handle(credential, tenant_id=tenant),
                                          'service': 'wordpress'},
                 f"wordpress:{username}")
-            add('access', output.get('url'), {'transport': 'wp-admin', 'username': username},
-                f"wp-admin:{username}")
     elif tool_id == 'nexus.web.wp_exec' and result.verification_method == 'wp_command_executed':
         target = output.get('url')
         add('access', target, {'transport': 'http', 'service': 'wordpress',
@@ -307,14 +346,18 @@ def derive_assertions(tool_id, arguments, result, context):
     elif tool_id == 'nexus.post.dpapi' and result.verification_method == 'kdbx_opened':
         # ``kdbx_opened`` is only reported after the DPAPI-recovered material derived
         # the database key and every payload block hash was checked, so an entry's
-        # secret is a verified credential and a flag-shaped one is loot.
+        # secret is a verified credential and a flag-shaped one is loot. The secret
+        # itself reaches the blackboard as a handle (V1-29): the entry is stored in
+        # the vault and the fact carries ``secret_ref``, never the plaintext.
+        tenant = str(getattr(context, 'tenant_id', 'system'))
         for entry in output.get('entries') or ():
             title = entry.get('title') or entry.get('group') or 'entry'
             password = entry.get('password') or ''
             if entry.get('username') or password:
                 add('credential', title,
                     {'username': entry.get('username') or None,
-                     'password': password or None, 'group': entry.get('group'),
+                     'secret_ref': _credential_handle(entry, tenant_id=tenant) or None,
+                     'group': entry.get('group'),
                      'service': 'keepass'},
                     f"keepass:{entry.get('group')}/{title}")
             for flag in FLAG_RE.findall(password):

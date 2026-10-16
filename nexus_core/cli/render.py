@@ -136,6 +136,22 @@ def render_tool_result(tool_id: str, result: dict[str, Any]) -> None:
             write("   " + paint(f"[{severity}]", YELLOW) + f" {title}")
 
 
+def display_arguments(arguments: Any) -> dict[str, Any]:
+    """Arguments as they may be shown to the operator (V1-30).
+
+    Any value under a name in :data:`nexus_core.kernel.redaction.SECRET_TERMS`
+    becomes ``[REDACTED]`` -including a stored-credential handle, which is only
+    ever reachable through its own ``credential_ref`` key- so a banner, a prompt
+    or an error can never echo a plaintext. Measured in rerun 8, iteration 10:
+    the trust-mode banner printed ``"password": "R3dDRaG0Nsynd1c@T3"`` in clear.
+    """
+    if not isinstance(arguments, dict):
+        return {}
+    from nexus_core.kernel.redaction import sanitize
+
+    return sanitize(arguments)
+
+
 def render_approval_prompt(
     tool_id: str,
     arguments: dict[str, Any],
@@ -153,6 +169,7 @@ def render_approval_prompt(
     requires = getattr(decision, "requires_approval", False)
     declared_risk = risk or ("alto (requiere aprobación)" if requires else "normal")
     question = "   Opción [y/n/e/?]: "
+    safe = display_arguments(arguments)
     tui = getattr(getattr(reader, "__self__", None), "use_tui", False)
     if tui:
         tui_session = reader.__self__
@@ -161,7 +178,7 @@ def render_approval_prompt(
             "tool_id": tool_id,
             "risk": declared_risk,
             "reason": reason,
-            "arguments": dict(arguments or {}),
+            "arguments": safe,
         })
         try:
             return reader(question)
@@ -172,7 +189,7 @@ def render_approval_prompt(
     write(f"   tool:   {tool_id}")
     write(f"   riesgo: {declared_risk}")
     write(f"   motivo: {reason}")
-    write(f"   args:   {json.dumps(arguments or {}, ensure_ascii=False, default=str)}")
+    write(f"   args:   {json.dumps(safe, ensure_ascii=False, default=str)}")
     write("   opciones: [y] aprobar  [n] rechazar  [e] editar argumentos  [?] ver definición")
     if reader is None:
         return input(question)
@@ -181,15 +198,20 @@ def render_approval_prompt(
 
 
 def render_trust_mode(tool_id: str, arguments: dict[str, Any], operator: str) -> None:
-    """Announce an automatic high-risk authorization made under ``--trust-mode``."""
+    """Announce an automatic high-risk authorization made under ``--trust-mode``.
+
+    The arguments are shown **redacted** (V1-30): announcing a call must never
+    echo the secret it will use.
+    """
+    safe = display_arguments(arguments)
     write()
     write(paint("⚠️  TRUST MODE · AUTO-APROBACIÓN DE ALTO RIESGO", YELLOW, BOLD))
     write(f"   tool:     {tool_id}")
     write(f"   operador: {operator}")
     for key in ("target", "targets", "module", "payload", "url", "domain"):
-        if isinstance(arguments, dict) and key in arguments:
-            write(f"   {key + ':':<9}{arguments[key]}")
-    write(paint("   args:     " + json.dumps(arguments or {}, ensure_ascii=False, default=str), DIM))
+        if key in safe:
+            write(f"   {key + ':':<9}{safe[key]}")
+    write(paint("   args:     " + json.dumps(safe, ensure_ascii=False, default=str), DIM))
     write(paint("   se ejecuta sin pausa; la aprobación durable queda auditada", RED))
 
 
