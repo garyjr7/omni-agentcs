@@ -22,7 +22,7 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # + nexus.post.tftp (the synthetic run/the synthetic lab: only UDP/69 was reachable).
     # + nexus.post.dpapi (the synthetic run/the synthetic lab: the KeePass flag behind user DPAPI).
     # + nexus.post.ssh_upload, nexus.recon.nikto (RUN_sala12/Intrusion Detection).
-    assert len(catalog) == 64
+    assert len(catalog) == 68
 
 
 def test_read_only_profiles_list_no_active_tool():
@@ -126,6 +126,32 @@ def test_enumeration_with_only_a_service_fact_can_still_enumerate_it():
     assert subagents.WEB_ENUM_TOOLS <= profile.tools
     # The refinement still tightens once web-specific evidence exists.
     assert "nexus.recon.ftp" not in subagents.SUBAGENTS_BY_ID["web"].tools
+
+
+def test_agent_leads_refine_the_profile_without_advancing_the_phase():
+    """P0 regression (Bounty Hacker E2E): an agent-recorded ``user`` must reach
+    the credential profile.
+
+    The loop used to stay in ``services`` - which has no tool that can test the
+    credentials it just found - because only *verified* facts were visible to the
+    profile selector, so the chain dead-ended in enumeration until the subagent
+    budget blew up. The lead must steer the profile without ever counting as
+    evidence (the phase stays where the verified facts put it).
+    """
+    from nexus_core.agent.planner import build_plan
+
+    facts = [
+        dict(fact_type='service', verified=True, asserted_by='verifier',
+             verification_method='nmap_xml_parsed', invocation_id='i1'),
+        dict(fact_type='user', verified=False, asserted_by='agent'),
+    ]
+    plan = build_plan(facts=facts)
+    assert plan.current == 'enumeration'  # the lead is not evidence
+    assert plan.counts == {'service': 1}
+    assert plan.leads == {'user': 1}
+    selected = subagents.select_for_plan(plan)
+    assert selected.id == 'cred'
+    assert 'nexus.cred.bruteforce' in selected.tools
 
 
 def test_phase_grace_inherits_only_read_only_tools_for_two_iterations():

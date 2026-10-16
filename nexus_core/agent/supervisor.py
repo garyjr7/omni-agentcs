@@ -212,7 +212,7 @@ class AgentSupervisor:
             existing = {f.get('invocation_id') for f in facts}
             child_run = store.create_run(tenant, {
                 'parent_run_id': ctx.run_id, 'root_id': self.root_id,
-                'subagent_id': subagent_id,
+                'subagent_id': subagent_id, 'engagement_id': self.engagement_id or None,
                 'scope_snapshot': scope.to_dict() if scope and hasattr(scope, 'to_dict') else None})
             child_id = child_run['id']
             tree.register(tenant, child_id, parent_run_id=ctx.run_id)

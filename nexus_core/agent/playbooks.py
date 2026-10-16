@@ -6,6 +6,12 @@ the agent (or the human) what the *next* gated step is, and the gateway still
 scopes, approves and audits every call. This encodes "how a senior pentester
 would chain it" without letting a model invent a step.
 
+The three chains below are hand-written Python. Since the declarative packages
+landed (``nexus_core/playbooks/*.yaml``), this module is also the *registry*:
+:func:`registered_playbooks` merges them with every phase of every package, and
+:func:`gate_for` resolves the applicability of either kind. A packaged phase and
+a hand-written chain are indistinguishable to the loop and the prompt.
+
 Nothing here calls the LLM, so the guidance is reproducible and testable.
 """
 
@@ -13,7 +19,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Callable
+from .playbook_proofs import ExecutionProof, target_key
+from nexus_core.kernel.blackboard import is_verified_fact
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, avoids an import cycle
+    from nexus_core.playbooks.loader import LoadedPackage
 
 
 @dataclass(frozen=True)
@@ -26,7 +37,7 @@ class PlaybookStep:
     produces: str | None = None
     rationale: str = ""
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "step_id": self.step_id,
             "title": self.title,
@@ -44,7 +55,7 @@ class Playbook:
     requires: str
     steps: tuple[PlaybookStep, ...]
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "playbook_id": self.playbook_id,
             "title": self.title,
@@ -61,7 +72,7 @@ class PlaybookMatch:
     next_step: PlaybookStep | None
     facts_used: tuple[str, ...] = field(default=())
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "playbook_id": self.playbook.playbook_id,
             "title": self.playbook.title,
@@ -162,14 +173,17 @@ LATERAL_MOVEMENT = Playbook(
     ),
 )
 
+#: Applicability gate of one playbook, evaluated against the blackboard facts.
+GateFn = Callable[[list[dict[str, Any]]], bool]
+
 PLAYBOOKS: tuple[Playbook, ...] = (FTP_ANON_TO_CRED, LINUX_PRIVESC, LATERAL_MOVEMENT)
 
 
-def _has_type(facts: list[dict], fact_type: str) -> bool:
+def _has_type(facts: list[dict[str, Any]], fact_type: str) -> bool:
     return any(fact.get("fact_type") == fact_type for fact in facts)
 
 
-def _service_blob(facts: list[dict]) -> str:
+def _service_blob(facts: list[dict[str, Any]]) -> str:
     return " ".join(
         json.dumps(fact, sort_keys=True, default=str).lower()
         for fact in facts
@@ -177,44 +191,113 @@ def _service_blob(facts: list[dict]) -> str:
     )
 
 
-def precondition_ftp(facts: list[dict]) -> bool:
+def precondition_ftp(facts: list[dict[str, Any]]) -> bool:
     blob = _service_blob(facts)
     return any(needle in blob for needle in ("ftp", "21/tcp", "\"port\": 21"))
 
 
-def precondition_privesc(facts: list[dict]) -> bool:
+def precondition_privesc(facts: list[dict[str, Any]]) -> bool:
     return _has_type(facts, "access")
 
 
-def precondition_lateral(facts: list[dict]) -> bool:
+def precondition_lateral(facts: list[dict[str, Any]]) -> bool:
     return _has_type(facts, "access") and _has_type(facts, "service")
 
 
-#: Applicability gate per playbook (deterministic, no LLM).
-PRECONDITIONS: dict[str, Callable[[list[dict]], bool]] = {
+#: Applicability gate per hand-written playbook (deterministic, no LLM).
+PRECONDITIONS: dict[str, GateFn] = {
     FTP_ANON_TO_CRED.playbook_id: precondition_ftp,
     LINUX_PRIVESC.playbook_id: precondition_privesc,
     LATERAL_MOVEMENT.playbook_id: precondition_lateral,
 }
 
 
-def _completion(playbook: Playbook, facts: list[dict]) -> list[bool]:
-    """Sequential completion: a step is done if it produced its fact, or a
-    later step is done and it only primes it (``produces is None``)."""
-    types = {fact.get("fact_type") for fact in facts}
+def packaged_packages() -> tuple[LoadedPackage, ...]:
+    """Validated declarative packages, or ``()`` when none can be loaded.
+
+    Fail-soft on purpose: the loader raises on a malformed document, and a run
+    must degrade to "no packaged guidance" instead of dying because a YAML file
+    was edited in a hurry. Tests and ``doctor`` call the loader directly for the
+    strict answer (``strict=True``).
+    """
+    try:
+        from nexus_core.playbooks.loader import load_packages
+
+        return tuple(load_packages())
+    except Exception:  # noqa: BLE001 - guidance must never abort a run
+        return ()
+
+
+def packaged_playbooks() -> tuple[Playbook, ...]:
+    """Every phase of every declarative package, in package/declared order."""
+    return tuple(
+        playbook for package in packaged_packages() for playbook in package.playbooks
+    )
+
+
+def registered_playbooks() -> tuple[Playbook, ...]:
+    """Every playbook the engine knows: hand-written first, then packaged."""
+    return PLAYBOOKS + packaged_playbooks()
+
+
+def playbook_by_id(playbook_id: str) -> Playbook | None:
+    """Look one playbook up across both sources (``None`` when unknown)."""
+    return next(
+        (item for item in registered_playbooks() if item.playbook_id == str(playbook_id)),
+        None,
+    )
+
+
+def gate_for(playbook_id: str) -> GateFn | None:
+    """Resolve the applicability gate of a playbook, hand-written or packaged."""
+    key = str(playbook_id)
+    gate = PRECONDITIONS.get(key)
+    if gate is not None:
+        return gate
+    for package in packaged_packages():
+        packaged: GateFn | None = package.gates().get(key)
+        if packaged is not None:
+            return packaged
+    return None
+
+
+def is_applicable(playbook_id: str, facts: list[dict[str, Any]]) -> bool:
+    """Whether a playbook's gate holds for these facts (unknown ids: never)."""
+    gate = gate_for(playbook_id)
+    return bool(gate and gate([fact for fact in facts or [] if is_verified_fact(fact)]))
+
+
+def _completion(playbook: Playbook, proofs: tuple[ExecutionProof, ...],
+                target: str | None = None) -> list[bool]:
+    """Consume distinct, ordered executions; global facts never complete steps."""
     done = [False] * len(playbook.steps)
-    for index in range(len(playbook.steps) - 1, -1, -1):
-        produces = playbook.steps[index].produces
-        if produces is None:
-            done[index] = any(done[index + 1:])
-        else:
-            done[index] = produces in types
+    cursor = 0
+    seen: set[str] = set()
+    bound_target = target_key(target or "")
+    for index, step in enumerate(playbook.steps):
+        for position in range(cursor, len(proofs)):
+            proof = proofs[position]
+            if proof.invocation_id in seen or proof.tool_id != step.tool_id:
+                continue
+            if bound_target and proof.target and proof.target != bound_target:
+                continue
+            if step.produces is not None and step.produces not in proof.fact_types:
+                continue
+            seen.add(proof.invocation_id)
+            if proof.target and not bound_target:
+                bound_target = proof.target
+            done[index] = True
+            cursor = position + 1
+            break
+        if not done[index]:
+            break
     return done
 
 
-def match_playbook(playbook: Playbook, facts: list[dict]) -> PlaybookMatch:
+def match_playbook(playbook: Playbook, facts: list[dict[str, Any]], *,
+                   proofs: tuple[ExecutionProof, ...] = (), target: str | None = None) -> PlaybookMatch:
     """Evaluate one playbook against the facts (no execution)."""
-    done = _completion(playbook, facts)
+    done = _completion(playbook, proofs, target)
     completed = tuple(
         step.step_id for step, is_done in zip(playbook.steps, done) if is_done
     )
@@ -229,19 +312,21 @@ def match_playbook(playbook: Playbook, facts: list[dict]) -> PlaybookMatch:
 
 
 def select_playbooks(
-    facts: list[dict], *, only_ready: bool = True
+    facts: list[dict[str, Any]], *, only_ready: bool = True,
+    proofs: tuple[ExecutionProof, ...] = (), target: str | None = None,
 ) -> tuple[PlaybookMatch, ...]:
     """Return matches for every playbook whose precondition holds.
 
     With ``only_ready=False`` the not-yet-applicable playbooks are included too
     (useful for ``list``), each with no next step.
     """
-    facts = list(facts or [])
+    facts = [fact for fact in facts or [] if is_verified_fact(fact)]
     matches: list[PlaybookMatch] = []
-    for playbook in PLAYBOOKS:
-        applicable = PRECONDITIONS[playbook.playbook_id](facts)
+    for playbook in registered_playbooks():
+        gate = gate_for(playbook.playbook_id)
+        applicable = bool(gate and gate(facts))
         if applicable:
-            matches.append(match_playbook(playbook, facts))
+            matches.append(match_playbook(playbook, facts, proofs=proofs, target=target))
         elif not only_ready:
             matches.append(PlaybookMatch(playbook, (), None))
     return tuple(matches)
@@ -260,30 +345,41 @@ def render_playbook_matches(matches: tuple[PlaybookMatch, ...]) -> str:
         return "(ningún playbook aplica todavía)"
     lines: list[str] = []
     for match in matches:
+        head = (
+            f"- [{match.playbook.playbook_id}] {match.playbook.title} "
+            f"(fase {match.playbook.phase})"
+        )
         step = match.next_step
         if step is None:
-            lines.append(f"- {match.playbook.title} (fase {match.playbook.phase}): COMPLETADO")
+            lines.append(f"{head}: COMPLETADO")
             continue
         detail = f" → SIGUIENTE PASO: {step.title} [{step.tool_id}]"
         if step.rationale:
             detail += f" ({step.rationale})"
-        lines.append(f"- {match.playbook.title} (fase {match.playbook.phase}){detail}")
+        lines.append(f"{head}{detail}")
     return "\n".join(lines)
 
 
 __all__ = [
     "PLAYBOOKS",
-    "render_playbook_matches",
     "PRECONDITIONS",
+    "FTP_ANON_TO_CRED",
+    "GateFn",
+    "LATERAL_MOVEMENT",
+    "LINUX_PRIVESC",
     "Playbook",
     "PlaybookMatch",
     "PlaybookStep",
-    "FTP_ANON_TO_CRED",
-    "LINUX_PRIVESC",
-    "LATERAL_MOVEMENT",
+    "gate_for",
+    "is_applicable",
     "match_playbook",
+    "packaged_packages",
+    "packaged_playbooks",
+    "playbook_by_id",
     "precondition_ftp",
     "precondition_lateral",
     "precondition_privesc",
+    "registered_playbooks",
+    "render_playbook_matches",
     "select_playbooks",
 ]

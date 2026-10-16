@@ -1,0 +1,266 @@
+# BAJIOWARE — Red Team Base playbook (foundational security assessment chain).
+#
+# Declarative and LLM-free: every phase/step is data. The loader
+# (nexus_core/playbooks/loader.py) validates this document against a strict
+# JSON Schema, turns each phase into a nexus_core.agent.playbooks.Playbook and
+# registers it, so the ReAct loop sees the next gated step in its system prompt
+# and `nexus.orchestrator.playbook` can list it. Nothing here executes: the
+# gateway still scopes, approves, audits and post-conditions every call.
+#
+# Vocabulary used below
+#   planner_phase  one of nexus_core.agent.planner.PHASE_IDS (kill-chain frame)
+#   subagent       the capability profile that must be able to call the steps
+#   gate           blackboard evidence that makes the phase applicable
+#   produces       blackboard fact type that marks a step complete (null primes
+#                  the next step without completing anything on its own)
+#   telemetry      per-turn signals the phase requires from the ReAct loop
+schema_version: 1
+playbook_id: red_team_base
+version: "1.0.0"
+title: Red Team Base — evaluación adversarial multi-fase
+description: >-
+  Cadena fundacional de evaluación de seguridad: reconocimiento de bajo ruido,
+  preparación e interacción con la superficie de aplicación, ejecución de
+  comandos sobre una sesión propia y heurísticas locales de elevación de
+  privilegios (metadatos de OS/kernel y vectores de elevación locales).
+
+phases:
+  # ---------------------------------------------------------------- Phase 1
+  - phase_id: stealth_recon
+    title: Reconocimiento de bajo ruido
+    planner_phase: recon
+    subagent: recon
+    noise: low
+    objective: >-
+      Construir el inventario mínimo verificable (hosts, puertos y servicios)
+      tocando el objetivo lo menos posible: primero huella pasiva, después
+      verificación dirigida de los puertos que la evidencia justifica.
+    gate:
+      always: true
+    steps:
+      - step_id: passive_footprint
+        title: Huella pasiva de la superficie externa
+        tool_id: nexus.recon.subfinder
+        produces: null
+        rationale: >-
+          La resolución pasiva (DNS/subdominios) no genera tráfico contra el
+          objetivo y acota el espacio de direcciones antes de cualquier escaneo.
+        verification: >-
+          Cada subdominio devuelto se resuelve y se registra como hecho antes de
+          decidir el siguiente puerto a verificar.
+        notes: >-
+          Sin resolución no se escanea; un nombre inventado no es evidencia.
+      - step_id: passive_dns_records
+        title: Registros DNS observados (sin queries al objetivo)
+        tool_id: nexus.recon.dns
+        produces: null
+        rationale: >-
+          Los registros ya publicados (A/AAAA/TXT/MX) revelan servicios,
+          proveedores y a veces artefactos dejados por el propio reto.
+        verification: >-
+          Se registra el servidor que respondió y el conjunto de registros
+          observado; un TXT con forma de flag se promueve a loot verificado.
+        notes: >-
+          Consulta al resolver, nunca a un registro no observado.
+      - step_id: targeted_port_verification
+        title: Verificación dirigida de puertos (perfil de servicios)
+        tool_id: nexus.recon.nmap
+        produces: service
+        rationale: >-
+          Escaneo dirigido a los hosts ya justificados por la huella pasiva,
+          con el perfil de servicios para obtener banner/versión en un solo
+          paso en lugar de re-escanear.
+        verification: >-
+          Solo se registra un puerto con estado open y su producto/versión
+          detectada; un puerto "filtered" no es un hallazgo.
+        notes: >-
+          Full-TCP solo cuando la evidencia lo exige; el perfil service primero.
+      - step_id: http_fingerprint
+        title: Huella de los servicios HTTP descubiertos
+        tool_id: nexus.recon.httpx
+        produces: endpoint
+        rationale: >-
+          Confirmar título, tecnología y status code evita enumerar (fase 2)
+          un servicio que no habla HTTP.
+        verification: >-
+          Cada endpoint registrado procede de una respuesta real con status
+          code observado.
+    telemetry:
+      - tokens
+      - reasoning_duration
+      - friction_flags
+      - blackboard_delta
+
+  # ---------------------------------------------------------------- Phase 2
+  - phase_id: staging_and_interaction
+    title: Preparación e interacción con la superficie de aplicación
+    planner_phase: enumeration
+    subagent: services
+    noise: medium
+    objective: >-
+      Delimitar la frontera de la aplicación (endpoints, artefactos expuestos,
+      paneles de subida), preparar el componente de interacción en el
+      workspace del engagement y transferirlo con un transporte gobernado.
+    gate:
+      any_fact_types: [service, endpoint, web_app]
+    steps:
+      - step_id: enumerate_app_boundaries
+        title: Enumerar la frontera de la aplicación
+        tool_id: nexus.recon.gobuster
+        produces: endpoint
+        rationale: >-
+          Los paneles de subida y los directorios respaldados (backups, .git)
+          son la frontera real de la aplicación, no el índice.
+        verification: >-
+          Cada endpoint se registra con su status code y longitud observados.
+      - step_id: recover_exposed_sources
+        title: Recuperar fuentes expuestas (p. ej. .git)
+        tool_id: nexus.web.git_dump
+        produces: artifact
+        rationale: >-
+          Un repositorio expuesto entrega el código y, con él, credenciales y
+          rutas: convierte la enumeración ciega en lectura del contrato real.
+        verification: >-
+          El dump queda en el workspace con su ruta; el contenido se registra
+          como artefacto, nunca como hallazgo no verificado.
+        notes: >-
+          Pasivo — solo lectura de ficheros ya servidos por el objetivo.
+      - step_id: stage_component
+        title: Transferir el componente preparado al objetivo
+        tool_id: nexus.web.upload
+        produces: null
+        rationale: >-
+          La subida multipart/PUT es el transporte gobernado para entregar el
+          componente de interacción desde el workspace del engagement.
+        verification: >-
+          Se exige un status code de éxito del servidor antes de intentar
+          dispararlo; una subida no confirmada no habilita el siguiente paso.
+        notes: >-
+          El fichero debe estar en el workspace (upload.path) y el host de la URL
+          debe pertenecer al scope firmado del engagement.
+      - step_id: trigger_staged_component
+        title: Disparar el componente preparado
+        tool_id: nexus.web.request
+        produces: access
+        rationale: >-
+          Es el paso que convierte "hay un panel" en acceso comprobado: una
+          petición acotada al endpoint que ejecuta el componente preparado.
+        verification: >-
+          El acceso solo se registra si la respuesta prueba ejecución (marca
+          conocida en el cuerpo) y el canal queda ligado al host del scope.
+    telemetry:
+      - tokens
+      - reasoning_duration
+      - friction_flags
+      - blackboard_delta
+      - tool_outcome
+
+  # ---------------------------------------------------------------- Phase 3
+  - phase_id: command_execution
+    title: Ejecución de comandos sobre una sesión propia
+    planner_phase: privilege_escalation
+    subagent: privesc
+    noise: medium
+    objective: >-
+      Convertir el acceso en manejo de comandos estable y auditable mediante
+      sesiones registradas en el engagement (metasploit, sliver o webshell),
+      con handoff a jobs durables cuando el comando es largo.
+    gate:
+      any_fact_types: [access, session]
+    steps:
+      - step_id: inventory_sessions
+        title: Inventariar las sesiones registradas
+        tool_id: nexus.session.list
+        produces: null
+        rationale: >-
+          Nunca se escribe sobre una sesión inventada: primero se listan las
+          sesiones del engagement y su tipo de transporte.
+        verification: >-
+          El session_id usado después debe existir en el registro y su
+          session_type debe coincidir con el transporte declarado.
+      - step_id: interactive_command
+        title: Ejecución interactiva de un comando verificado
+        tool_id: nexus.post.shell_exec
+        produces: null
+        rationale: >-
+          nexus.post.shell_exec normaliza la ejecución sobre cualquier
+          transporte y conserva la validación de cada transporte (scope del
+          host, sesión registrada, comando permitido).
+        verification: >-
+          Se registra el comando exacto, su salida y su exit status; un comando
+          sin salida no completa el paso.
+        notes: >-
+          Comandos cortos y de reconocimiento primero; el objetivo no es
+          machacar el host sino producir evidencia reproducible.
+      - step_id: durable_job_handoff
+        title: Delegar la ejecución larga a un job durable
+        tool_id: nexus.post.job
+        produces: null
+        rationale: >-
+          Un job durable sobrevive a la iteración del bucle (los escaneos y
+          bruteforce largos no deben cortar la sesión interactiva).
+        verification: >-
+          Encolar no completa el paso: el job debe terminar y su invocación
+          hija debe tener un resultado exitoso y verificado en el journal.
+    telemetry:
+      - tokens
+      - reasoning_duration
+      - friction_flags
+      - blackboard_delta
+      - tool_outcome
+
+  # ---------------------------------------------------------------- Phase 4
+  - phase_id: local_elevation_heuristics
+    title: Postura local y heurísticas de elevación de privilegios
+    planner_phase: privilege_escalation
+    subagent: privesc
+    noise: medium
+    objective: >-
+      Inventariar la postura local (OS, kernel, usuarios, sudo/SUID/
+      capabilities), correlacionar los metadatos de release con vectores de
+      elevación conocidos (incluidas condiciones de carrera del kernel) y
+      verificar el vector exacto antes de darlo por bueno.
+    gate:
+      any_fact_types: [access, session]
+    steps:
+      - step_id: os_kernel_inventory
+        title: Inventario de OS y kernel del host comprometido
+        tool_id: nexus.post.enum_system
+        produces: null
+        rationale: >-
+          La versión de OS/kernel y la lista de usuarios/SUID/capabilities
+          acotan todos los vectores posibles; sin ese inventario cualquier
+          exploit es una apuesta.
+        verification: >-
+          Los metadatos (uname -r, release, distro) quedan registrados con su
+          procedencia para poder correlacionarlos.
+      - step_id: correlate_elevation_vectors
+        title: Correlacionar vectores locales (GTFOBins y condiciones de carrera)
+        tool_id: nexus.post.privesc_hints
+        produces: null
+        rationale: >-
+          Un binario SUID/capability concreto sugiere el vector exacto; un
+          kernel antiguo sugiere además condiciones de carrera conocidas.
+        verification: >-
+          El hint es una hipótesis, no una vulnerabilidad demostrada. Solo
+          se marca privilegio cuando la verificación dirigida lo demuestra.
+        notes: >-
+          La sugerencia es una hipótesis; el paso siguiente existe para probarla.
+      - step_id: targeted_vector_verification
+        title: Verificación dirigida del vector propuesto
+        tool_id: nexus.post.shell_exec
+        produces: privilege
+        rationale: >-
+          Un único comando aprobado sobre la sesión convierte la hipótesis en
+          uid=0 demostrado (o la descarta, que también es un resultado).
+        verification: >-
+          El privilegio solo se registra cuando la salida prueba el cambio de
+          identidad (p. ej. id -u devuelve 0); un exploit que "debería" haber
+          funcionado no cuenta.
+    telemetry:
+      - tokens
+      - reasoning_duration
+      - friction_flags
+      - blackboard_delta
+      - tool_outcome
+      - plan_phase
