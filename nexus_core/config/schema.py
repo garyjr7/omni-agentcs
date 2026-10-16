@@ -7,8 +7,9 @@ import tomllib
 from typing import Any
 
 CURRENT_SCHEMA_VERSION = 1
-PROVIDERS = ("groq", "openai", "anthropic", "gemini", "ollama", "fake")
+PROVIDERS = ("groq", "openai", "anthropic", "gemini", "ollama", "fake", "deepseek")
 DEFAULT_MODELS = {
+    "deepseek": "deepseek-flash",
     # Fase 3.8: the free Groq model with the best instruction-following of the
     # options the operator's key actually exposes (see docs/missions/
     # FASE38_MODEL_CHANGE.md). gpt-oss-120b was the default and failed the E2E

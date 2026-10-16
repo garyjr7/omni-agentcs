@@ -222,11 +222,14 @@ def test_deepseek_client_is_built_only_when_the_key_is_exported(monkeypatch, tmp
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
     clients = LLMFactory.create_from_env()
     assert clients["deepseek"].config.provider == LLMProvider.DEEPSEEK
-    assert clients["deepseek"].config.base_url == "https://api.deepseek.com/v1"
+    assert clients["deepseek"].config.base_url == "https://api.deepseek.com"
 
 
 def test_deepseek_pricing_and_tpm_are_documented():
     from nexus_core.cli.tui import pricing
 
     assert pricing.default_rates("deepseek-v4.1-flash", "deepseek") == (0.15, 0.60)
+    # The identifier the client actually sends and reports (V4.1-Flash is
+    # normalized to it), so the meter knows what DeepSeek costs.
+    assert pricing.default_rates("deepseek-flash", "deepseek") == (0.15, 0.60)
     assert pricing.PROVIDER_TPM["deepseek"] == 1_000_000

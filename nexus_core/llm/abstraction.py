@@ -17,12 +17,14 @@ import abc
 import asyncio
 import json
 import logging
+import math
 import os
+import random
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, cast
 
 try:
     import httpx
@@ -48,10 +50,13 @@ except ImportError:
     GEMINI_AVAILABLE = False
 
 from .limits import (
+    MAX_RETRY_SLEEP_SECONDS,
     MIN_COMPLETION_TOKENS,
     backoff_base_seconds,
+    deepseek_max_attempts,
     estimate_request_tokens,
     is_rate_limit_status,
+    is_transient_status,
     mentions_input_token_limit,
     mentions_output_token_limit,
     pace_request,
@@ -80,6 +85,33 @@ except ImportError:
 class NexusLLMError(Exception):
     """Custom exception for errors within the NexusLLM layer."""
     pass
+
+def _is_transport_stall(error: Exception) -> bool:
+    """True when an exception is a network stall, not a rejected request.
+
+    Connect/read timeouts and dropped sockets reach us as ``httpx`` transport
+    errors, which the OpenAI SDK re-wraps as ``APITimeoutError`` /
+    ``APIConnectionError``; both mean "the provider never answered", so a retry
+    is safe. A status error is classified by its code instead.
+    """
+    if HTTPX_AVAILABLE and isinstance(error, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    if OPENAI_AVAILABLE and isinstance(error, (openai.APITimeoutError, openai.APIConnectionError)):
+        return True
+    return False
+
+
+def _retry_after_seconds(error: Exception) -> float:
+    """Numeric ``Retry-After`` of a provider response (``0.0`` when absent)."""
+    headers = getattr(getattr(error, "response", None), "headers", None)
+    if not headers:
+        return 0.0
+    try:
+        value = float(headers.get("retry-after", 0))
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) and value > 0 else 0.0
+
 
 # --- Data Classes and Enums ---
 
@@ -157,6 +189,7 @@ class BaseLLMClient(abc.ABC):
     supports_streaming = False
 
     def __init__(self, config: LLMConfig):
+        self._last_stream_response: Optional[LLMResponse] = None
         self.config = config
         self._logger = get_logger(f"LLMClient.{self.config.provider.value}")
 
@@ -176,7 +209,7 @@ class BaseLLMClient(abc.ABC):
         """
         raise NotImplementedError
 
-    async def stream(self, messages: List[LLMMessage], **kwargs: Any):
+    async def stream(self, messages: List[LLMMessage], **kwargs: Any) -> AsyncIterator[str]:
         """Yield the response content in chunks.
 
         The default implementation delegates to :meth:`complete` and yields the
@@ -361,7 +394,7 @@ class OpenAIClient(BaseLLMClient):
         # This line should not be reachable
         raise NexusLLMError("OpenAI request failed after all retries.")
 
-    async def stream(self, messages: List[LLMMessage], **kwargs: Any):
+    async def stream(self, messages: List[LLMMessage], **kwargs: Any) -> AsyncIterator[str]:
         """Yield token deltas as they arrive (SSE streaming).
 
         Usage is captured from the final chunk when the endpoint supports
@@ -422,6 +455,211 @@ class OpenAIClient(BaseLLMClient):
             tokens_output=tokens_output,
             duration_ms=(time.perf_counter() - start_time) * 1000,
         )
+
+
+class DeepSeekClient(OpenAIClient):
+    """DeepSeek Chat Completions with explicit JSON and reservation boundaries."""
+
+    supports_action_json = True
+
+    def __init__(self, config: LLMConfig) -> None:
+        from dataclasses import replace
+        from .limits import (
+            DEEPSEEK_CONNECT_TIMEOUT_SECONDS,
+            DEEPSEEK_PACER,
+            DEEPSEEK_WRITE_TIMEOUT_SECONDS,
+            deepseek_limits,
+            deepseek_timeout_seconds,
+        )
+
+        model = config.model or "deepseek-flash"
+        if model == "deepseek-v4.1-flash":
+            model = "deepseek-flash"  # Product name -> documented API identifier.
+        # Override the provider-agnostic 60 s default: DeepSeek can take minutes to
+        # close one completion under load, and cutting it short aborted the ReAct
+        # turn instead of waiting it out. The value is env-overridable and floored.
+        timeout = deepseek_timeout_seconds()
+        super().__init__(replace(config, model=model,
+            api_key=config.api_key or os.getenv("DEEPSEEK_API_KEY"),
+            base_url=config.base_url or "https://api.deepseek.com",
+            timeout=int(timeout)))
+        # One retry owner: SDK retries would bypass our per-attempt reservation.
+        # ``httpx.Timeout`` splits the budget: a short connect/pool so a dead
+        # endpoint fails fast, and a generous *read* budget that re-arms on every
+        # streamed chunk, so a slow-but-alive provider is never dropped mid-turn.
+        if HTTPX_AVAILABLE:
+            self.client = self.client.with_options(
+                max_retries=0,
+                timeout=httpx.Timeout(
+                    connect=DEEPSEEK_CONNECT_TIMEOUT_SECONDS,
+                    read=timeout,
+                    write=DEEPSEEK_WRITE_TIMEOUT_SECONDS,
+                    pool=DEEPSEEK_CONNECT_TIMEOUT_SECONDS,
+                ),
+            )
+        else:
+            self.client = self.client.with_options(max_retries=0)
+        self.pacer = DEEPSEEK_PACER
+        tpm, rpm = deepseek_limits()
+        self.pacer.tpm["deepseek"] = tpm
+        self.pacer.rpm["deepseek"] = rpm
+
+    def _payload(self, messages: List[LLMMessage], options: Dict[str, Any]) -> Dict[str, Any]:
+        api_messages = [{"role": m.role, "content": m.content} for m in messages]
+        if self.config.system_prompt:
+            if not api_messages or api_messages[0]["role"] != "system" or api_messages[0]["content"] != self.config.system_prompt:
+                api_messages.insert(0, {"role": "system", "content": self.config.system_prompt})
+        if not api_messages:
+            raise NexusLLMError("DeepSeek requires at least one message")
+        maximum = options.get("max_tokens", self.config.max_tokens)
+        if type(maximum) is not int or maximum <= 0:
+            raise ValueError("max_tokens must be a positive integer")
+        params: Dict[str, Any] = {
+            "model": self.config.model, "messages": api_messages, "max_tokens": maximum,
+            "temperature": options.get("temperature", self.config.temperature),
+        }
+        response_format = options.get("response_format", {"type": "text"})
+        if response_format not in ({"type": "text"}, {"type": "json_object"}):
+            raise ValueError("DeepSeek supports text or json_object response_format")
+        params["response_format"] = response_format
+        if response_format["type"] == "json_object":
+            api_messages.insert(0, {"role": "system", "content":
+                "Return exactly one JSON object matching the requested schema. "
+                "Do not add Markdown fences or fields outside that schema."})
+        for key in ("stop", "top_p"):
+            if key in options:
+                params[key] = options[key]
+        # Non-thinking defaults keep the existing text-only session history
+        # compatible; reasoning_content is never fed to the action parser.
+        if self.config.model != "deepseek-chat":
+            thinking = options.get("thinking", "disabled")
+            if thinking not in ("enabled", "disabled"):
+                raise ValueError("thinking must be enabled or disabled")
+            params["extra_body"] = {"thinking": {"type": thinking}}
+        return params
+
+    @staticmethod
+    def _check_content(text: str, params: Dict[str, Any], finish: str | None) -> None:
+        if finish not in (None, "stop") or not text.strip():
+            raise NexusLLMError("DeepSeek returned empty, interrupted or unsupported completion")
+        if params["response_format"]["type"] == "json_object":
+            from nexus_core.kernel.serialization import decode_json
+            try:
+                value = decode_json(text)
+            except (ValueError, RecursionError):
+                raise NexusLLMError("DeepSeek returned invalid JSON") from None
+            if not isinstance(value, dict):
+                raise NexusLLMError("DeepSeek JSON response must be an object")
+
+    async def _retry(self, error: Exception, attempt: int) -> bool:
+        """Replay a transient DeepSeek failure with exponential backoff.
+
+        ``attempt`` is zero-based; at most :func:`deepseek_max_attempts` total
+        tries are made, so the number of replays is that count minus one. A
+        transport stall (connect/read timeout, dropped socket) or a transient
+        gateway/rate-limit status is retried; authentication, a malformed request
+        or an unsupported payload is terminal, so a broken key never loops.
+
+        Each replay is a brand-new HTTP request and therefore takes a fresh pacer
+        reservation, so the retry is accounted (and billed) once per attempt.
+        """
+        status = getattr(error, "status_code", None)
+        if not (is_transient_status(status) or _is_transport_stall(error)):
+            return False
+        attempts = deepseek_max_attempts()
+        if attempt + 1 >= attempts:
+            return False
+        delay = backoff_base_seconds() * (2 ** attempt)
+        delay = max(delay, _retry_after_seconds(error))
+        if delay > 0:
+            # Jitter de-synchronises concurrent retries; the deterministic base-0
+            # test path (NEXUS_LLM_BACKOFF_SECONDS=0) is left untouched.
+            delay += random.uniform(0.0, delay / 10.0)
+        delay = min(MAX_RETRY_SLEEP_SECONDS, delay)
+        self._logger.warning(
+            f"DeepSeek transient failure ({type(error).__name__}, attempt "
+            f"{attempt + 1}/{attempts}); retrying in {delay:.2f}s"
+        )
+        await asyncio.sleep(delay)
+        return True
+
+    async def complete(self, messages: List[LLMMessage], **kwargs: Any) -> LLMResponse:
+        start = time.perf_counter()
+        params = self._payload(messages, kwargs)
+        estimate = sum(len(m["content"].encode("utf-8")) + 16 for m in params["messages"]) + params["max_tokens"]
+        for attempt in range(deepseek_max_attempts()):
+            # A fresh reservation per attempt: a replayed request is a new HTTP
+            # request, so it must be paced and accounted independently.
+            reservation = await self.pacer.reserve("deepseek", estimated_tokens=estimate)
+            actual: int | None = None
+            try:
+                response = await self.client.chat.completions.create(**params)
+                usage = response.usage
+                if usage is not None:
+                    actual = usage.prompt_tokens + usage.completion_tokens
+                if not response.choices:
+                    raise NexusLLMError("DeepSeek returned no choices")
+                choice = response.choices[0]
+                content = choice.message.content or ""
+                self._check_content(content, params, choice.finish_reason)
+                return LLMResponse(content, response.model or self.config.model, self.config.provider,
+                    usage.prompt_tokens if usage else 0, usage.completion_tokens if usage else 0,
+                    (time.perf_counter() - start) * 1000, response.model_dump())
+            except (openai.APIError, httpx.HTTPError) as exc:
+                if not await self._retry(exc, attempt):
+                    raise NexusLLMError(f"DeepSeek request failed ({type(exc).__name__})") from None
+            finally:
+                self.pacer.settle(reservation, actual)
+        raise NexusLLMError("DeepSeek retry budget exhausted")
+
+    async def stream(self, messages: List[LLMMessage], **kwargs: Any) -> AsyncIterator[str]:
+        self._last_stream_response = None
+        start = time.perf_counter()
+        params = self._payload(messages, kwargs)
+        params.update(stream=True, stream_options={"include_usage": True})
+        estimate = sum(len(m["content"].encode("utf-8")) + 16 for m in params["messages"]) + params["max_tokens"]
+        for attempt in range(deepseek_max_attempts()):
+            reservation = await self.pacer.reserve("deepseek", estimated_tokens=estimate)
+            response = None
+            actual: int | None = None
+            collected: List[str] = []
+            usage_input = usage_output = 0
+            finish: str | None = None
+            model = self.config.model
+            try:
+                response = await self.client.chat.completions.create(**params)
+                async for chunk in response:
+                    model = chunk.model or model
+                    if chunk.usage is not None:
+                        usage_input = chunk.usage.prompt_tokens
+                        usage_output = chunk.usage.completion_tokens
+                        actual = usage_input + usage_output
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    finish = choice.finish_reason or finish
+                    content = choice.delta.content
+                    if content:
+                        collected.append(content)
+                        yield content
+                text = "".join(collected)
+                if finish is None:
+                    raise NexusLLMError("DeepSeek stream ended without a finish marker")
+                self._check_content(text, params, finish)
+                self._last_stream_response = LLMResponse(text, model, self.config.provider,
+                    usage_input, usage_output, (time.perf_counter() - start) * 1000,
+                    {"finish_reason": finish, "usage_available": actual is not None})
+                return
+            except (openai.APIError, httpx.HTTPError) as exc:
+                # Never replay deltas after any content reached the consumer.
+                if collected or not await self._retry(exc, attempt):
+                    raise NexusLLMError(f"DeepSeek stream failed ({type(exc).__name__})") from None
+            finally:
+                try:
+                    if response is not None:
+                        await response.close()
+                finally:
+                    self.pacer.settle(reservation, actual)
 
 
 class GeminiClient(BaseLLMClient):
@@ -506,7 +744,7 @@ class OllamaClient(BaseLLMClient):
         """Async reachability probe against ``/api/tags`` (never raises)."""
         try:
             response = await self.client.get("/api/tags", timeout=5)
-            return response.status_code == 200
+            return bool(response.status_code == 200)
         except httpx.RequestError:
             return False
 
@@ -561,7 +799,7 @@ class FakeLLMClient(BaseLLMClient):
             "NEXUS_LLM_FIXTURES",
             str(Path(__file__).with_name("fixtures") / "responses.json"),
         )
-        self.fixture_path = Path(fixture_path)
+        self.fixture_path = Path(str(fixture_path))
         self._fixtures = self._load_fixtures()
 
     def _load_fixtures(self) -> Dict[str, Any]:
@@ -637,12 +875,12 @@ class LLMFactory:
             LLMProvider.FAKE: FakeLLMClient,
             LLMProvider.GROQ: OpenAIClient,
             LLMProvider.OPENAI_COMPATIBLE: OpenAIClient,
-            LLMProvider.DEEPSEEK: OpenAIClient,
+            LLMProvider.DEEPSEEK: DeepSeekClient,
         }
         client_class = provider_map.get(config.provider)
         if not client_class:
             raise ValueError(f"Unsupported LLM provider: {config.provider}")
-        return client_class(config)
+        return cast(BaseLLMClient, client_class(config))
 
     @staticmethod
     def create_from_env() -> Dict[str, BaseLLMClient]:
@@ -710,11 +948,11 @@ class LLMFactory:
             try:
                 config = LLMConfig(
                     provider=LLMProvider.DEEPSEEK,
-                    model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4.1-flash"),
+                    model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
                     api_key=os.getenv("DEEPSEEK_API_KEY"),
-                    base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+                    base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                 )
-                clients["deepseek"] = OpenAIClient(config)
+                clients["deepseek"] = DeepSeekClient(config)
                 logger.info("DeepSeek client created from environment variables.")
             except Exception as e:
                 logger.warning(f"Failed to create DeepSeek client from env: {e}")
@@ -821,7 +1059,7 @@ class NexusLLM:
         """True when the primary provider can emit real token deltas."""
         return bool(getattr(self.primary, "supports_streaming", False))
 
-    async def stream(self, messages: List[LLMMessage], **kwargs: Any):
+    async def stream(self, messages: List[LLMMessage], **kwargs: Any) -> AsyncIterator[str]:
         """Stream from the primary provider.
 
         No mid-stream fallback: once bytes reach the operator, restarting on

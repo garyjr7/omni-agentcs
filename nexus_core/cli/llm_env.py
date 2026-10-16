@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, Mapping
 
 #: Env var that the kernel's ``select_llm_client`` reads as the operator choice.
 DEFAULT_PROVIDER_ENV = "NEXUS_LLM_DEFAULT_PROVIDER"
@@ -31,6 +31,7 @@ NOISY_LOGGERS = (
     "NexusLLM",
     "LLMClient.fake",
     "LLMClient.groq",
+    "LLMClient.deepseek",
     "LLMClient.openai",
     "LLMClient.gemini",
     "LLMClient.anthropic",
@@ -38,9 +39,10 @@ NOISY_LOGGERS = (
 )
 
 #: Providers accepted from the environment, in the factory's resolution order.
-PROVIDER_ORDER = ("openai", "gemini", "groq", "anthropic", "ollama")
+PROVIDER_ORDER = ("openai", "gemini", "groq", "anthropic", "ollama", "deepseek")
 #: Provider name -> env var holding its API key/base URL.
 PROVIDER_KEY_ENVS = {
+    "deepseek": "DEEPSEEK_API_KEY",
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",
@@ -49,6 +51,7 @@ PROVIDER_KEY_ENVS = {
 }
 #: Provider name -> (model env var, factory default model).
 PROVIDER_MODEL_ENVS = {
+    "deepseek": ("DEEPSEEK_MODEL", "deepseek-flash"),
     "fake": ("FAKE_LLM_MODEL", "nexus-fake-v1"),
     "openai": ("OPENAI_MODEL", "gpt-4o-mini"),
     "gemini": ("GEMINI_MODEL", "gemini-1.5-flash"),
@@ -93,7 +96,7 @@ def configure_logging() -> int:
     return level
 
 
-def available_providers(env: dict[str, str] | None = None) -> list[str]:
+def available_providers(env: Mapping[str, str] | None = None) -> list[str]:
     """Providers that can actually be built, ``fake`` always included and first.
 
     Mirrors ``LLMFactory.create_from_env`` without constructing any client (which
@@ -108,7 +111,7 @@ def available_providers(env: dict[str, str] | None = None) -> list[str]:
     return [FAKE_PROVIDER, *found]
 
 
-def resolve_provider(env: dict[str, str] | None = None) -> str:
+def resolve_provider(env: Mapping[str, str] | None = None) -> str:
     """The provider the kernel will use, resolved exactly like ``select_llm_client``.
 
     Precedence: an explicit ``NEXUS_LLM_DEFAULT_PROVIDER`` wins, but only when
@@ -125,7 +128,7 @@ def resolve_provider(env: dict[str, str] | None = None) -> str:
     return real[0] if real else FAKE_PROVIDER
 
 
-def provider_summary(env: dict[str, str] | None = None) -> tuple[str, int]:
+def provider_summary(env: Mapping[str, str] | None = None) -> tuple[str, int]:
     """``("<provider>/<model>", real_provider_count)`` for the banner."""
     source = os.environ if env is None else env
     chosen = resolve_provider(source)

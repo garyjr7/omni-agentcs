@@ -27,6 +27,7 @@ dependencies = [
     "sliver-py>=0.0.19",
     "psycopg[binary]==3.3.4",
     "prompt_toolkit>=3.0,<4",
+    "rich>=13,<15",
     # Phase 3B: MCP client (official SDK; stdio + streamable HTTP transports).
     "mcp>=2.3,<3",
     # Phase 3B: OS-keyring backend for the secret store (config/secrets.py).
@@ -34,6 +35,10 @@ dependencies = [
     # Tool input contract enforcement (kernel/schema_validation.py, V1-10):
     # every keyword a catalog schema declares is enforced before the handler.
     "jsonschema>=4.23,<5",
+    # Declarative playbooks (nexus_core/playbooks/*.yaml): the loader validates
+    # each package with jsonschema and parses it with PyYAML. Without PyYAML the
+    # engine degrades to its hand-written chains instead of failing a run.
+    "pyyaml>=6.0,<7",
 ]
 
 [project.optional-dependencies]
@@ -71,3 +76,27 @@ py-modules = ["omni", "nexus_worker"]
 
 [tool.setuptools.packages.find]
 include = ["nexus_core*"]
+
+[tool.setuptools.package-data]
+# Non-Python files read at runtime through ``Path(__file__)``. Source-tree runs
+# (the documented install: requirements + a symlink to omni.py) already have them;
+# this keeps a wheel install from silently losing them.
+#   * declarative playbook packages (nexus_core/playbooks/loader.py)
+#   * binary install recipes (nexus_core/provisioner/recipes.py)
+"nexus_core.playbooks" = ["*.yaml"]
+"nexus_core.provisioner" = ["data/*.json"]
+
+# Boundary DTOs must be checked against Pydantic's real types, even when the
+# incremental gate skips unrelated repository imports.
+[[tool.mypy.overrides]]
+module = ["pydantic", "pydantic.*"]
+follow_imports = "normal"
+
+# Use pytest's published annotations for the strict regression-test gate.
+[[tool.mypy.overrides]]
+module = ["pytest", "pytest.*", "_pytest", "_pytest.*"]
+follow_imports = "normal"
+
+[[tool.mypy.overrides]]
+module = ["rich", "rich.*", "prompt_toolkit", "prompt_toolkit.*"]
+follow_imports = "normal"

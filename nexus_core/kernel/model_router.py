@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List
 
 from nexus_core.llm.abstraction import (
     BaseLLMClient,
@@ -13,6 +13,7 @@ from nexus_core.llm.abstraction import (
     LLMResponse,
     NexusLLMError,
 )
+from nexus_core.llm.limits import llm_request_timeout_seconds
 
 from .control_store import ControlStore
 from .models import RunContext
@@ -25,7 +26,10 @@ class RoutePolicy:
     providers: tuple[str, ...]
     classifications: tuple[str, ...] = ("public", "internal")
     allow_cloud: bool = True
-    timeout_seconds: float = 60
+    #: Outer guard around one ``client.complete`` call. Must exceed the provider
+    #: client's own read budget (``NEXUS_LLM_REQUEST_TIMEOUT``), otherwise the
+    #: router cancels a request the client would still have completed.
+    timeout_seconds: float = field(default_factory=llm_request_timeout_seconds)
     retries_per_provider: int = 1
     circuit_failures: int = 3
     circuit_cooldown_seconds: float = 30
@@ -33,7 +37,7 @@ class RoutePolicy:
 
 class ModelRouter:
     def __init__(self, clients: Dict[str, BaseLLMClient], policies: Iterable[RoutePolicy],
-                 store: ControlStore | None = None):
+                 store: ControlStore | None = None) -> None:
         self.clients = clients
         self.policies = {policy.name: policy for policy in policies}
         self._usage: Dict[str, int] = {}
@@ -47,7 +51,7 @@ class ModelRouter:
         context: RunContext,
         *,
         classification: str = "internal",
-        **kwargs,
+        **kwargs: Any,
     ) -> LLMResponse:
         policy = self.policies.get(route)
         if not policy:
