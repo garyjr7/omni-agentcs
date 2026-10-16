@@ -79,16 +79,21 @@ from .react_support import (
 )
 from enum import Enum
 from .planner import (
+    CREDENTIAL_FOUND_REASON,
     ENUMERATION_EXHAUSTED_REASON,
     SESSION_ESTABLISHED_REASON,
+    CredentialHandover,
     EnumerationEscalation,
     Plan,
     SessionHandover,
+    credential_handover,
     enumeration_escalation,
+    escalate_credential,
     escalate_enumeration,
     escalate_session,
     established_msf_session,
     session_handover,
+    verified_credential,
 )
 from .subagents import SubAgentDefinition
 from .project_context import ProjectInstruction
@@ -171,6 +176,11 @@ class ReActCoordinator:
     #: reason: ``session`` evidence is what closes ``exploitation`` for the plan
     #: table, so a non-sticky rule would be undone by the next rebuild.
     session_handed_over: bool
+    #: The credential→initial-access hand-over (V1-34) is one-way while the plan
+    #: still computes ``enumeration`` (the profile that owns credential-testing
+    #: cannot close its own phase); it is dropped as soon as the evidence moves
+    #: the phase forward, so it never drags the plan backwards.
+    credential_handed_over: bool
     #: Per-turn operational telemetry (tokens, reasoning duration, friction,
     #: blackboard delta). Built in ``_initialize`` and published one record per
     #: iteration; it is the only place those four signals are joined.
@@ -358,6 +368,7 @@ class ReActCoordinator:
         self.plan_reason = None
         self.enumeration_escalated = False
         self.session_handed_over = False
+        self.credential_handed_over = False
         self.telemetry = TurnTelemetryRecorder(
             store=self.store, tenant_id=self.tenant_id, run_id=self.run_id
         )
@@ -432,6 +443,7 @@ class ReActCoordinator:
         # turn must never ride along on a later, organic phase change.
         self.plan_reason = None
         self._apply_enumeration_exhaustion()
+        self._apply_credential_handover()
         self._apply_session_handover()
         self.last_plan = self.plan
         return Transition.READY
@@ -472,6 +484,56 @@ class ReActCoordinator:
         self.plan = escalate_enumeration(self.plan, escalation)
         self.plan_reason = escalation.reason
         self.enumeration_escalated = True
+
+    def _apply_credential_handover(self) -> None:
+        """Hand a validated credential over to initial access (V1-34).
+
+        The rule lives in the planner (deterministic, unit-tested); here it is
+        only *applied* to the plan of this iteration, exactly like the enumeration
+        and session hand-overs. Measured in rerun 9: ``cred`` held the validated
+        credential but carries no access tool, so without this it re-enumerated FTP
+        and re-ran hydra until its 6-iteration budget killed the run.
+        """
+        if self.credential_handed_over:
+            # Already handed over: keep it handed over only while the plan still
+            # computes ``enumeration``. Evidence that closes the phase (a session,
+            # an access) moves ``current`` forward and the rule stops applying,
+            # so it can never drag a later phase backwards.
+            if str(getattr(self.plan, "current", "")) == "enumeration":
+                self.plan = escalate_credential(
+                    self.plan,
+                    CredentialHandover(
+                        phase="exploitation",
+                        subagent="exploit",
+                        reason=CREDENTIAL_FOUND_REASON,
+                    ),
+                )
+                self.plan_reason = CREDENTIAL_FOUND_REASON
+            return
+        handover = credential_handover(
+            self.plan,
+            subagent_id=self.last_subagent_id,
+            credential_found=self._verified_credential(),
+        )
+        if handover is None:
+            return
+        self.plan = escalate_credential(self.plan, handover)
+        self.plan_reason = handover.reason
+        self.credential_handed_over = True
+
+    def _verified_credential(self) -> bool:
+        """Whether the board holds a verified credential fact (never raises)."""
+        if not self.engagement_id or not getattr(self, "store", None):
+            return False
+        try:
+            from nexus_core.kernel.blackboard import Blackboard
+
+            facts = Blackboard(self.store).list_facts(
+                self.tenant_id, self.engagement_id, fact_type="credential"
+            )
+            return verified_credential(facts)
+        except Exception:  # noqa: BLE001 - a missing board must not abort a run
+            return False
 
     def _apply_session_handover(self) -> None:
         """Hand an established session over to post-exploitation (V1-25).

@@ -655,6 +655,87 @@ def escalate_session(plan: Plan, handover: SessionHandover) -> Plan:
     return hand_over_phase(plan, phase=handover.phase)
 
 
+#: Reason recorded when a validated credential hands enumeration over to initial
+#: access (V1-34). Measured in rerun 9 (``run_8f23f9…``): ``cred.bruteforce``
+#: validated ``lin``'s SSH password, the verifier recorded the ``credential``
+#: fact, and the selector routed enumeration to the ``cred`` profile -whose
+#: toolset has no access tool (no ``ssh_exec``, no ``winrm_exec``, no
+#: ``session.*``)- with 6 iterations and a completion gate that demands the next
+#: phase. The profile re-listed and re-downloaded the FTP, re-ran hydra, had two
+#: ``task_complete`` refused and died on ``subagent_budget_exceeded``. The rule
+#: below is the deterministic exit: ``cred`` finds, ``exploit`` uses.
+CREDENTIAL_FOUND_REASON = "credential_found_to_exploit"
+#: Profiles whose turn may trigger the hand-over: the one that owns
+#: credential-testing. Anything else that holds a credential is not this rule's
+#: case.
+CREDENTIAL_HANDOVER_SUBAGENTS: frozenset[str] = frozenset({"cred"})
+
+
+@dataclass(frozen=True)
+class CredentialHandover:
+    """Deterministic proposal: leave enumeration for initial access."""
+
+    phase: str
+    subagent: str
+    reason: str
+
+
+def verified_credential(facts: Iterable[Any] | None = None) -> bool:
+    """True when the board carries a *verified* credential fact (never raises).
+
+    Read from the facts, not from counts, exactly like
+    :func:`established_msf_session`: a credential the model recorded by hand is a
+    lead (``source=agent``, ``verified=False``) and must never move a phase.
+    """
+    from nexus_core.kernel.blackboard import is_verified_fact
+
+    for fact in facts or ():
+        if not isinstance(fact, Mapping) or not is_verified_fact(fact):
+            continue
+        if str(fact.get("fact_type") or "") == "credential":
+            return True
+    return False
+
+
+def credential_handover(
+    plan: Plan,
+    *,
+    subagent_id: str | None,
+    credential_found: bool,
+) -> CredentialHandover | None:
+    """Rule ``si X entonces Y`` (no inference): an engagement whose board holds a
+    credential the verifier proved is past enumeration, so the profile that owns
+    credential-testing hands the turn to the profile that can *use* one instead
+    of looping with no tool that reaches access.
+
+    Anything outside that shape returns ``None``: this is not a general
+    "enumeration→exploitation" rule (web, AD and lead-only credentials keep their
+    own phases).
+    """
+    if not credential_found:
+        return None
+    if str(getattr(plan, "current", "")) != "enumeration":
+        return None
+    if str(subagent_id or "") not in CREDENTIAL_HANDOVER_SUBAGENTS:
+        return None
+    return CredentialHandover(
+        phase="exploitation",
+        subagent="exploit",
+        reason=CREDENTIAL_FOUND_REASON,
+    )
+
+
+def escalate_credential(plan: Plan, handover: CredentialHandover) -> Plan:
+    """Return *plan* with the credential hand-over applied (pure).
+
+    Same contract as :func:`escalate_enumeration` and :func:`escalate_session`:
+    the phase the plan leaves is closed by the hand-off itself, so the completion
+    gate can reach ``reporting`` instead of waiting for a phase nobody is going to
+    work on again.
+    """
+    return hand_over_phase(plan, phase=handover.phase)
+
+
 def plan_from_summary(
     summary: Mapping[str, Any] | None,
     *,
@@ -674,6 +755,8 @@ def plan_from_summary(
 
 __all__ = [
     "ACCESS_TYPES",
+    "CREDENTIAL_FOUND_REASON",
+    "CREDENTIAL_HANDOVER_SUBAGENTS",
     "ENUMERATION_EXHAUSTED_NO_PROGRESS",
     "ENUMERATION_EXHAUSTED_REASON",
     "ENUMERATION_EXHAUSTED_SUBAGENTS",
@@ -683,13 +766,17 @@ __all__ = [
     "SESSION_HANDOVER_PHASES",
     "SESSION_HANDOVER_SUBAGENTS",
     "SMB_SERVICE_MARKERS",
+    "CredentialHandover",
     "EnumerationEscalation",
     "SessionHandover",
+    "credential_handover",
     "enumeration_escalation",
+    "escalate_credential",
     "escalate_enumeration",
     "escalate_session",
     "established_msf_session",
     "session_handover",
+    "verified_credential",
     "smb_surface",
     "PHASE_IDS",
     "STATUS_CURRENT",

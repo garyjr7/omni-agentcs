@@ -304,6 +304,16 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.web.request",
                 "nexus.web.upload",
                 "nexus.web.git_dump",
+                # V1-34 part B: the profile that owns initial access must be able
+                # to *consume* the credential the board already validated, not
+                # just find one. Measured in rerun 9: the verified credential
+                # reached the plan but no ``exploit`` tool could open a session
+                # with it (``ssh_exec``/``winrm_exec`` were absent and
+                # ``session.*`` could only be reached from ``postexploit``).
+                "nexus.post.ssh_exec",
+                "nexus.win.winrm_exec",
+                "nexus.session.list",
+                "nexus.session.interact",
             }
         ),
         token_budget=60_000,

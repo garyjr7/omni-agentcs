@@ -43,6 +43,12 @@ FACT_TYPES = (
 
 SOURCE_URI_PREFIX = "blackboard"
 
+#: Safety ceiling on the rows one engagement's fact merge will scan. Each fact
+#: maps to one row per distinct content (a re-record adds a row, an identical
+#: re-record is deduplicated by ``KnowledgeStore.ingest``), so an engagement
+#: reaches this only after thousands of distinct re-writes.
+FACT_ROWS_CEILING = 10_000
+
 
 def _source_uri(engagement_id: str, fact_type: str, key: str) -> str:
     return f"{SOURCE_URI_PREFIX}/{engagement_id}/{fact_type}/{key}"
@@ -137,7 +143,23 @@ class Blackboard:
         fact_type: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Return the latest version of each fact for an engagement."""
+        """Return one version of each fact for an engagement.
+
+        A re-recorded fact creates a new row, so several rows share one
+        ``source_uri`` and this is the *single* merge point of the blackboard.
+        The rule is **verified wins over unverified, regardless of recency; only
+        between facts of the same provenance does the latest row win**: a fact
+        the engine proved (verifier + method + invocation) can never be shadowed
+        by a later re-registration of the same key by the agent.
+
+        Measured in rerun 9 (``run_8f23f9…``): the verifier wrote the validated
+        credential ``cred:ssh:lin@10.0.0.1`` (``verified=true``) and the
+        agent re-registered the same key one iteration later (``verified=false``,
+        ``asserted_by=agent``); the old "latest wins per source_uri" rule let the
+        agent's row shadow the verified one, ``is_verified_fact`` stopped
+        recognising the credential, ``active_phase`` reopened ``enumeration`` and
+        the plan regressed ``[2,6] → [1,6]``. See V1-33.
+        """
         if fact_type is not None and fact_type not in FACT_TYPES:
             raise ValueError(f"unsupported fact type: {fact_type!r}")
         prefix = f"{SOURCE_URI_PREFIX}/{engagement_id}/"
@@ -149,19 +171,49 @@ class Blackboard:
                 FROM kernel_knowledge_documents
                 WHERE tenant_id=? AND source_uri LIKE ?
                 ORDER BY created_at DESC LIMIT ?""",
-                (tenant_id, prefix + "%", min(limit, 500)),
+                (tenant_id, prefix + "%", FACT_ROWS_CEILING),
             ).fetchall()
-        # Latest wins per source_uri (a re-recorded fact creates a new row).
+        # Newest row per source_uri, then overridden by the newest *verified* row
+        # when one exists (rows arrive newest-first, so the first hit per bucket
+        # is the latest of that provenance).
         latest: dict[str, dict[str, Any]] = {}
+        verified: dict[str, dict[str, Any]] = {}
         for row in rows:
             uri = row["source_uri"]
-            if uri in latest:
+            if uri in verified:
                 continue
             try:
-                latest[uri] = sanitized_object(json.loads(row["content"]))
+                fact = sanitized_object(json.loads(row["content"]))
             except (TypeError, ValueError, RecursionError):
                 continue
-        return list(latest.values())
+            latest.setdefault(uri, fact)
+            if is_verified_fact(fact):
+                verified[uri] = fact
+        merged = {**latest, **verified}
+        return list(merged.values())[: max(1, min(int(limit), 500))]
+
+    def verified_fact(
+        self,
+        tenant_id: str,
+        engagement_id: str,
+        *,
+        fact_type: str,
+        key: str,
+    ) -> dict[str, Any] | None:
+        """Return the verified fact for ``(fact_type, key)``, else ``None``.
+
+        Used by ``nexus.knowledge.record_fact`` to tell the model that the key it
+        is about to register already carries an engine-proven fact (V1-33): the
+        registration is still accepted -the agent is never blocked- but it can
+        never override what the verifier attested.
+        """
+        wanted = sanitize_text(str(key).strip())
+        if not wanted:
+            return None
+        for fact in self.list_facts(tenant_id, engagement_id, fact_type=fact_type):
+            if is_verified_fact(fact) and str(fact.get("key") or "") == wanted:
+                return fact
+        return None
 
     def count(self, tenant_id: str, engagement_id: str) -> int:
         """Number of distinct facts recorded for an engagement (cheap)."""

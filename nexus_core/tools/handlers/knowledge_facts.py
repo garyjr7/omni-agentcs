@@ -80,7 +80,13 @@ def _engagement_id(context: RunContext) -> str | None:
 
 
 async def record_fact_handler(arguments: dict, context: RunContext) -> ToolResult:
-    """Persist one typed fact for the active engagement."""
+    """Persist one typed fact for the active engagement.
+
+    A registration over a key the verifier already attested is still accepted
+    (the agent is never blocked), but it cannot override the verified fact: the
+    blackboard's merge keeps the verified value and this result tells the model
+    so explicitly (V1-33, measured in rerun 9).
+    """
     store = getattr(context, "store", None)
     if store is None:
         return ToolResult(verification_method="blackboard_store_missing")
@@ -96,7 +102,11 @@ async def record_fact_handler(arguments: dict, context: RunContext) -> ToolResul
     verified = False
     created_by = getattr(getattr(context, "identity", None), "subject_id", "agent")
 
-    record = Blackboard(store).record(
+    board = Blackboard(store)
+    existing_verified = board.verified_fact(
+        context.tenant_id, engagement_id, fact_type=fact_type, key=key
+    )
+    record = board.record(
         tenant_id=context.tenant_id,
         engagement_id=engagement_id,
         fact_type=fact_type,
@@ -106,8 +116,17 @@ async def record_fact_handler(arguments: dict, context: RunContext) -> ToolResul
         created_by=created_by,
         verified=verified,
     )
+    output: dict[str, Any] = {"recorded": record}
+    if existing_verified is not None:
+        # The registration is persisted but the verified fact stays intact; say
+        # so instead of letting the model believe it just replaced it.
+        output["existing_verified"] = existing_verified
+        output["warning"] = (
+            f"el hecho {fact_type}:{key} ya está verificado por el verifier; "
+            "tu registro no modifica el hecho verificado"
+        )
     return ToolResult(
-        output={"recorded": record},
+        output=output,
         verified=True,
         verification_method="blackboard_fact_recorded",
         evidence={"fact_type": fact_type, "key": key, "source": source},
