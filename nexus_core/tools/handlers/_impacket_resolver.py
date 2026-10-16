@@ -19,7 +19,8 @@ import shutil
 from functools import lru_cache
 
 
-@lru_cache(maxsize=None)
+# Keep cache_clear compatibility, but never cache absence or a stale PATH.
+@lru_cache(maxsize=0)
 def resolve_impacket_binary(name: str) -> str | None:
     """Return the path to the impacket script ``name`` on the current PATH.
 
@@ -28,7 +29,10 @@ def resolve_impacket_binary(name: str) -> str | None:
     the candidates is executable.
     """
     for candidate in (f"impacket-{name}", f"{name}.py", name):
-        path = shutil.which(candidate)
+        try:
+            path = shutil.which(candidate)
+        except OSError:
+            continue
         if path:
             return path
     return None

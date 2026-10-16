@@ -62,16 +62,14 @@ async def check_env_handler(arguments, context):
     rendered: dict[str, dict] = {}
     for name, status in tools.items():
         item = dict(asdict(status))
-        if not status.present:
-            # No binary: nothing to execute, so it never reached the sandbox.
-            item["sandbox_state"] = "absent"
-        elif verify_sandbox:
+        if verify_sandbox:
+            # Host absence says nothing about the configured OCI image.
             verification = await verify_tool_in_sandbox(name)
             item["sandbox_state"] = verification.state
             item["sandbox_exit_code"] = verification.exit_code
+            item["sandbox_mode"] = verification.sandbox_mode
         else:
-            # Present but unverified: the cheap default, never surprising.
-            item["sandbox_state"] = "detected"
+            item["sandbox_state"] = "detected" if status.present else status.state
         rendered[name] = item
 
     return ToolResult(

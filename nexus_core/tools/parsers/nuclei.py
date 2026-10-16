@@ -75,7 +75,8 @@ def empty_nuclei_result(reason: str = "") -> NucleiResult:
 
 
 def _finding_from(record: dict[str, Any]) -> NucleiFinding:
-    info = record.get("info") if isinstance(record.get("info"), dict) else {}
+    raw_info = record.get("info")
+    info: dict[str, Any] = raw_info if isinstance(raw_info, dict) else {}
     return NucleiFinding(
         template_id=first_str(record, "template-id", "template_id", "templateID"),
         name=first_str(info, "name") or first_str(record, "name"),
@@ -100,7 +101,9 @@ def parse_nuclei_jsonl(text: str) -> NucleiResult:
         return empty_nuclei_result()
 
     records, malformed = iter_json_lines(text)
-    findings = tuple(_finding_from(record) for record in records)
+    parsed = tuple(_finding_from(record) for record in records)
+    findings = tuple(item for item in parsed if item.template_id)
+    malformed += len(parsed) - len(findings)
     if not findings:
         raise ValueError("invalid nuclei output: no finding could be parsed")
 

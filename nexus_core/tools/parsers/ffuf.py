@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from ._jsonl import count_by, first_str, iter_json_lines, sha256_text, to_int
+from ._jsonl import _reject_constant, _unique_object, count_by, first_str, iter_json_lines, sha256_text, to_int
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ def _match_from(record: dict[str, Any]) -> FfufMatch:
     duration = record.get("duration")
     try:
         duration_ms = int(float(duration)) // 1_000_000 if duration is not None else 0
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         duration_ms = 0
     return FfufMatch(
         url=first_str(record, "url", "host"),
@@ -105,16 +105,20 @@ def _match_from(record: dict[str, Any]) -> FfufMatch:
 def _envelope_records(text: str) -> list[dict[str, Any]] | None:
     """Return the records of a single-document ffuf payload, if it is one."""
     try:
-        document = json.loads(text)
-    except (ValueError, TypeError):
+        document = json.loads(text, parse_constant=_reject_constant, object_pairs_hook=_unique_object)
+    except (ValueError, TypeError, RecursionError):
         return None
     if isinstance(document, list):
-        return [item for item in document if isinstance(item, dict)]
+        if not all(isinstance(item, dict) for item in document):
+            raise ValueError("ffuf records must be objects")
+        return document
     if isinstance(document, dict):
         for key in ("results", "matches", "entries"):
             value = document.get(key)
             if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
+                if not all(isinstance(item, dict) for item in value):
+                    raise ValueError("ffuf records must be objects")
+                return value
         return [document]
     return None
 
@@ -133,6 +137,8 @@ def parse_ffuf_output(text: str) -> FfufResult:
     if records is None:
         records, malformed = iter_json_lines(text)
 
+    if records == [] and not malformed:
+        return FfufResult((), {}, 0, sha256_text(text))
     matches = tuple(_match_from(record) for record in records)
     matches = tuple(match for match in matches if match.url or match.status)
     if not matches:

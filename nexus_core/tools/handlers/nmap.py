@@ -6,7 +6,7 @@ import os
 from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
-from nexus_core.kernel.sandbox import OCISandbox, sandbox_for_environment
+from nexus_core.kernel.sandbox import SandboxResult, sandbox_for_environment
 from nexus_core.tools.parsers.nmap import parse_nmap_xml
 
 # Cada entrada: flag -> (nivel_ruido, requiere_valor)
@@ -97,6 +97,8 @@ def validate_and_canonicalize_flags(raw_flags: list[str]) -> tuple[list[str], st
     Returns ``(canonical_flags, noise_level, warnings)``. Raises ``ValueError``
     for empty, malformed, unknown or forbidden flags.
     """
+    if not isinstance(raw_flags, list) or not all(isinstance(flag, str) for flag in raw_flags):
+        raise ValueError("flags must be strings")
     canonical: list[str] = []
     warnings: set[str] = set()
     noise_rank = 0
@@ -127,7 +129,7 @@ def validate_and_canonicalize_flags(raw_flags: list[str]) -> tuple[list[str], st
                     raise ValueError(f"nmap flag requires a value: {token!r}")
                 value = str(raw_flags[index]).strip()
                 index += 1
-            if not value or value.startswith("-"):
+            if not value or value.startswith("-") or any(char.isspace() or ord(char) < 32 for char in value):
                 raise ValueError(f"invalid value for nmap flag {token!r}: {value!r}")
             canonical.extend([name, value])
         else:
@@ -199,17 +201,19 @@ def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
     )
 
 
-async def _run_nmap(sandbox: Any, argv: list[str], timeout_seconds: int):
+async def _run_nmap(sandbox: Any, argv: list[str], timeout_seconds: int) -> SandboxResult:
     """Run nmap through the given sandbox, normalizing the OCI signature."""
-    if isinstance(sandbox, OCISandbox):
-        image = os.getenv("NEXUS_NMAP_IMAGE", "instrumentisto/nmap")
-        return await sandbox.run(image, argv, timeout_seconds=timeout_seconds)
-    return await sandbox.run(argv, timeout_seconds=timeout_seconds)
+    from ._exec import run_in_sandbox
+
+    return await run_in_sandbox(sandbox, argv, timeout_seconds=timeout_seconds,
+                                image_env="NEXUS_NMAP_IMAGE", default_image="instrumentisto/nmap")
 
 
 async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
     """Execute an allowlisted nmap scan inside a sandbox and parse its XML."""
-    target = str(arguments["target"]).strip()
+    from nexus_core.tools.execution_contract import validate_target
+
+    target = validate_target(arguments["target"])
     raw_flags = list(arguments.get("flags") or [])
 
     profile = arguments.get("profile")

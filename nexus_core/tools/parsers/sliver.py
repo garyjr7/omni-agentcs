@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import math
 import json
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -42,7 +43,7 @@ def _text(value: Any) -> str:
 def _int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -144,7 +145,7 @@ def parse_sliver_version(raw: dict) -> SliverServerInfo:
     if not isinstance(raw, dict):
         raise ValueError("sliver server info must be an object")
     version_raw = raw.get("version")
-    if version_raw is not None and not isinstance(version_raw, dict):
+    if not isinstance(version_raw, dict) or not version_raw:
         raise ValueError("sliver version must be an object")
     operators_raw = raw.get("operators") or ()
     if not isinstance(operators_raw, (list, tuple)):
@@ -229,6 +230,10 @@ def parse_sliver_exec(raw: dict, session_id: str, command: str) -> SliverExecRes
     if not isinstance(raw, dict):
         raise ValueError("exec result must be an object")
     explicit = _text(raw.get("status")).lower()
+    if explicit and explicit not in EXEC_STATUSES:
+        raise ValueError("unknown exec status")
+    if not explicit and "status_code" not in raw:
+        raise ValueError("exec result has no status")
     if explicit in EXEC_STATUSES:
         status = explicit
     else:
@@ -241,8 +246,10 @@ def parse_sliver_exec(raw: dict, session_id: str, command: str) -> SliverExecRes
         raise ValueError("stderr must be a string")
     try:
         duration = round(float(raw.get("duration_seconds") or 0.0), 3)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError("invalid duration_seconds") from None
+    if not math.isfinite(duration) or duration < 0:
+        raise ValueError("invalid duration_seconds")
     return SliverExecResult(
         session_id=str(session_id),
         command=str(command),

@@ -6,6 +6,6 @@ recorded run can be replayed against the parser revision that produced it
 instead of whatever happens to be installed.
 """
 
-PARSERS_VERSION = "1.0.0"
+PARSERS_VERSION = "1.1.0"
 
 __all__ = ["PARSERS_VERSION"]

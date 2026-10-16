@@ -26,11 +26,17 @@ def _script(tmp_path, name: str, body: str) -> str:
 
 
 def _status(path: str, present: bool = True) -> ToolStatus:
-    return ToolStatus("demo", present, path, "1.0", ("apt",))
+    return ToolStatus("demo", present, path, "1.0", ("apt",),
+                      state="detected" if present else "absent", verify_argv=(path,))
 
 
 def _verify(tmp_path, status, **kwargs):
-    with mock.patch.object(detector_module, "check_tool", return_value=status):
+    with (
+        mock.patch.object(detector_module, "check_tool", return_value=status),
+        mock.patch("nexus_core.provisioner.recipes.find_tool_recipe", return_value={
+            "verify": [status.path], "recipes": {},
+        }),
+    ):
         return asyncio.run(
             verify_tool_in_sandbox("demo", workspace_root=tmp_path, **kwargs)
         )
@@ -42,7 +48,7 @@ def test_verify_tool_runnable_in_sandbox(tmp_path):
     assert result.state == SandboxToolState.RUNNABLE.value
     assert result.exit_code == 0
     assert result.runnable is True
-    assert "demo-1.0" in result.output
+    assert result.output == "verified"
 
 
 def test_verify_tool_fails_when_deps_missing(tmp_path):
@@ -50,7 +56,7 @@ def test_verify_tool_fails_when_deps_missing(tmp_path):
     result = _verify(tmp_path, _status(script))
     assert result.state == SandboxToolState.FAILED.value
     assert result.exit_code == 2
-    assert "missing lib" in result.output
+    assert result.output == "probe failed"
 
 
 def test_verify_tool_absent(tmp_path):
@@ -80,7 +86,7 @@ def test_check_env_reports_both_states(tmp_path):
     from nexus_core.tests.msf_support import context
 
     status = ToolStatus("nmap", True, "/bin/nmap", "7.94", ("apt",))
-    verification = mock.Mock(state="runnable", exit_code=0)
+    verification = mock.Mock(state="runnable", exit_code=0, sandbox_mode="local_strict")
     with (
         mock.patch.object(module, "check_tool", return_value=status),
         mock.patch.object(module, "verify_tool_in_sandbox", return_value=verification),

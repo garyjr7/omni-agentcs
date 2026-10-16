@@ -8,6 +8,8 @@ flags (``--found-action``, ``--waf-evasion``, ``--custom-payload``, custom
 
 from __future__ import annotations
 
+from nexus_core.tools.output_files import read_output_text
+
 import os
 import re
 from pathlib import Path
@@ -317,7 +319,7 @@ async def dalfox_handler(arguments: dict, context: RunContext) -> ToolResult:
     raw_json = result.stdout
     if not raw_json.strip():
         try:
-            raw_json = output_path.read_text(encoding="utf-8", errors="replace")
+            raw_json = read_output_text(output_path)
         except OSError:
             raw_json = ""
 

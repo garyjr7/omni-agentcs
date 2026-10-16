@@ -9,6 +9,8 @@ controller and ``-ns NAMESERVER`` for DNS, and never sends the unsupported
 
 from __future__ import annotations
 
+from nexus_core.tools.output_files import read_output_text
+
 import os
 from pathlib import Path
 from typing import Any
@@ -285,7 +287,7 @@ async def bloodhound_handler(arguments: dict, context: RunContext) -> ToolResult
     files: dict[str, str] = {}
     for path in output_files:
         try:
-            files[path.name] = path.read_text(encoding="utf-8", errors="replace")
+            files[path.name] = read_output_text(path)
         except OSError:
             continue
     if not files:

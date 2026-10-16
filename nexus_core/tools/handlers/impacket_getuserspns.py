@@ -9,6 +9,8 @@ forced-approval threshold, so the gateway applies the operator's policy).
 
 from __future__ import annotations
 
+from nexus_core.tools.output_files import read_output_text
+
 import os
 from pathlib import Path
 from typing import Any
@@ -187,7 +189,7 @@ async def impacket_getuserspns_handler(arguments: dict, context: RunContext) -> 
     text = result.stdout
     try:
         if output_path.exists():
-            text = text + "\n" + output_path.read_text(encoding="utf-8", errors="replace")
+            text = text + "\n" + read_output_text(output_path)
     except OSError:
         pass
 

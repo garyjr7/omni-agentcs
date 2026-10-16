@@ -10,6 +10,8 @@ resolver locates either the Kali ``impacket-secretsdump`` name or the pipx
 
 from __future__ import annotations
 
+from nexus_core.tools.output_files import read_output_text
+
 import os
 from pathlib import Path
 from typing import Any
@@ -264,7 +266,7 @@ async def impacket_secretsdump_handler(
         if not path.exists():
             continue
         try:
-            files[source] = path.read_text(encoding="utf-8", errors="replace")
+            files[source] = read_output_text(path)
         except OSError:
             continue
     if not files:

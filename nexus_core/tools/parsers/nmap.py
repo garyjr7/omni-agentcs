@@ -7,6 +7,7 @@ dict serializable y estable, sin regex sobre stdout.
 from __future__ import annotations
 
 import hashlib
+import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any
@@ -85,14 +86,15 @@ class NmapScan:
 def _to_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        number = float(value)
+        return number if math.isfinite(number) else default
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -161,6 +163,8 @@ def parse_nmap_xml(xml_text: str) -> NmapScan:
     """
     if not isinstance(xml_text, str) or not xml_text.strip():
         raise ValueError("nmap xml is empty")
+    if "<!ENTITY" in xml_text.upper():
+        raise ValueError("XML entity declarations are not supported")
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:

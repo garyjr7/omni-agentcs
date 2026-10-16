@@ -307,6 +307,20 @@ def durable_tool_definitions(
         ),
         "nexus.web.wp_exec": (wp_exec_definition(tenant_id), wp_exec_handler),
     }
+    from .handlers.web_upload import web_upload_definition, web_upload_handler
+    from .handlers.shell_exec import shell_exec_definition, shell_exec_handler
+    from .handlers.jobs import jobs_definition, jobs_handler
+    from .handlers.git_dump import git_dump_definition, git_dump_handler
+    catalog.update({
+        "nexus.web.upload": (web_upload_definition(tenant_id), web_upload_handler),
+        "nexus.post.shell_exec": (shell_exec_definition(tenant_id), shell_exec_handler),
+        "nexus.post.job": (jobs_definition(tenant_id), jobs_handler),
+        "nexus.web.git_dump": (git_dump_definition(tenant_id), git_dump_handler),
+    })
+    from .execution_contract import with_execution_contract
+
+    catalog = {key: (definition, with_execution_contract(definition, handler))
+               for key, (definition, handler) in catalog.items()}
     # Additive overlay: decorator/entry-point registrations never shadow a
     # builtin unless they explicitly opt in. Discovery is cached and non-fatal.
     from .registration import discovered_registrations

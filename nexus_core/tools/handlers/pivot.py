@@ -28,6 +28,8 @@ against a stateful endpoint produces silent false negatives).
 
 from __future__ import annotations
 
+from nexus_core.tools.output_files import read_output_text
+
 import json
 import os
 import re
@@ -278,7 +280,7 @@ async def pivot_bruteforce_handler(arguments: dict, context: RunContext) -> Tool
     outcome = _last_json_object(result.stdout)
     if outcome is None and result_path.exists():
         try:
-            outcome = json.loads(result_path.read_text(encoding="utf-8"))
+            outcome = json.loads(read_output_text(result_path))
         except (OSError, ValueError):
             outcome = None
 

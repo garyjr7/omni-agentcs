@@ -2,6 +2,7 @@
 
 from dataclasses import asdict, dataclass
 import hashlib
+import math
 import json
 from typing import Any
 
@@ -53,7 +54,7 @@ def _pick(record: dict, *names: str, default: Any = "") -> Any:
 def _port(value: Any) -> int:
     try:
         port = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
     return port if 0 <= port <= 65535 else 0
 
@@ -152,7 +153,7 @@ def parse_msf_exploit(raw_dict: dict, module: str, target: str) -> MetasploitExp
     if not isinstance(raw_dict, dict):
         raise ValueError("exploit result must be an object")
     status = raw_dict.get("status")
-    if status not in {"session_opened", "timeout", "failed", "no_session"}:
+    if not isinstance(status, str) or status not in {"session_opened", "timeout", "failed", "no_session"}:
         raise ValueError("unknown exploit status")
     record = raw_dict.get("session")
     session = None
@@ -162,8 +163,10 @@ def parse_msf_exploit(raw_dict: dict, module: str, target: str) -> MetasploitExp
         raise ValueError("session_opened without a session record")
     try:
         duration = round(float(raw_dict.get("duration_seconds") or 0.0), 3)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError("invalid duration_seconds") from None
+    if not math.isfinite(duration) or duration < 0:
+        raise ValueError("invalid duration_seconds")
     return MetasploitExploitResult(
         module=str(module),
         target=str(target),
@@ -208,8 +211,10 @@ def parse_msf_interaction(
         raise ValueError("interaction output must be a string")
     try:
         duration = round(float(raw_dict.get("duration_seconds") or 0.0), 3)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError("invalid duration_seconds") from None
+    if not math.isfinite(duration) or duration < 0:
+        raise ValueError("invalid duration_seconds")
     return MetasploitSessionInteraction(
         session_uuid=str(session_uuid),
         command=str(command),
@@ -261,7 +266,7 @@ def parse_msf_auxiliary(raw_dict: dict, module: str, target: str) -> MetasploitA
     if not isinstance(raw_dict, dict):
         raise ValueError("module.results must return an object")
     status = raw_dict.get("status", "unknown")
-    if status not in {"ready", "running", "completed", "errored", "unknown", "timeout"}:
+    if not isinstance(status, str) or status not in {"ready", "running", "completed", "errored", "unknown", "timeout"}:
         raise ValueError("unknown module status")
     return MetasploitAuxiliaryResult(
         module,

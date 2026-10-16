@@ -88,6 +88,9 @@ async def workspace_search_handler(arguments: dict, context: RunContext) -> Tool
         # The chosen binary vanished from PATH between the check and the exec.
         program = "grep" if program == "rg" else "rg"
         result = await sandbox.run(search_argv(query, program=program), timeout_seconds=20)
+    from nexus_core.tools.execution_contract import record_capture
+
+    record_capture(result)
     return ToolResult(
         output={"matches": result.stdout, "program": program},
         verified=result.exit_code in {0, 1} and not result.timed_out,

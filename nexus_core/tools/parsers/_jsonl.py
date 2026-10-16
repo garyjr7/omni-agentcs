@@ -19,14 +19,27 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
+def _reject_constant(value: str) -> None:
+    raise ValueError("nonfinite JSON number")
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
 def loads_object(line: str) -> dict[str, Any] | None:
     """Parse one line into a JSON object, or ``None`` if it is not one."""
     stripped = line.strip()
     if not stripped:
         return None
     try:
-        value = json.loads(stripped)
-    except (ValueError, TypeError):
+        value = json.loads(stripped, parse_constant=_reject_constant, object_pairs_hook=_unique_object)
+    except (ValueError, TypeError, RecursionError):
         return None
     return value if isinstance(value, dict) else None
 
@@ -53,7 +66,7 @@ def iter_json_lines(text: str) -> tuple[list[dict[str, Any]], int]:
 def _to_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

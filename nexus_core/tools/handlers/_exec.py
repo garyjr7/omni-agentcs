@@ -15,6 +15,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from nexus_core.kernel.sandbox import OCISandbox, SandboxResult
+from nexus_core.tools.execution_contract import record_capture, validate_target
 from nexus_core.provisioner.binaries import BinaryIdentity, IdentityCheck, classify_identity
 
 #: Programs the durable recon/web handlers are allowed to execute.
@@ -48,18 +49,15 @@ async def run_in_sandbox(
     ``KRB5CCNAME`` for the Kerberos tooling). The sandbox still refuses to let a
     handler override its own controls (PATH/HOME/XDG).
     """
+    args: tuple[Any, ...] = (argv,)
     if isinstance(sandbox, OCISandbox):
-        image = os.getenv(image_env, default_image)
-        if extra_env:
-            return await sandbox.run(
-                image, argv, timeout_seconds=timeout_seconds, extra_env=extra_env
-            )
-        return await sandbox.run(image, argv, timeout_seconds=timeout_seconds)
+        args = (os.getenv(image_env, default_image), argv)
+    options: dict[str, Any] = {"timeout_seconds": timeout_seconds}
     if extra_env:
-        return await sandbox.run(
-            argv, timeout_seconds=timeout_seconds, extra_env=extra_env
-        )
-    return await sandbox.run(argv, timeout_seconds=timeout_seconds)
+        options["extra_env"] = extra_env
+    result: SandboxResult = await sandbox.run(*args, **options)
+    record_capture(result)
+    return result
 
 
 def normalize_targets(values: Iterable[Any] | None, limit: int = MAX_BATCH_TARGETS) -> list[str]:
@@ -68,9 +66,11 @@ def normalize_targets(values: Iterable[Any] | None, limit: int = MAX_BATCH_TARGE
     Raises ``ValueError`` when nothing usable is left or the batch exceeds the
     hard cap (rather than silently truncating an authorized scope).
     """
+    if isinstance(values, (str, bytes, dict)):
+        raise ValueError("targets must be a collection of strings")
     targets: list[str] = []
     for value in values or ():
-        text = str(value).strip()
+        text = validate_target(value)
         if text and text not in targets:
             targets.append(text)
     if not targets:
@@ -103,13 +103,19 @@ async def probe_identity_in_sandbox(
     the sandbox starts processes.
     """
     argv = [identity.name, *identity.version_argv]
-    result = await run_in_sandbox(
-        sandbox, argv, timeout_seconds=timeout_seconds,
-        image_env=image_env, default_image=default_image,
-    )
+    try:
+        result = await run_in_sandbox(
+            sandbox, argv, timeout_seconds=timeout_seconds,
+            image_env=image_env, default_image=default_image,
+        )
+    except (OSError, RuntimeError, ValueError):
+        return classify_identity(identity, path=identity.name, present=False, output="")
     present = result.exit_code is not None and result.exit_code != 127
     output = f"{result.stdout}\n{result.stderr}"
-    return classify_identity(identity, path=identity.name, present=present, output=output)
+    return classify_identity(identity, path=identity.name, present=present, output=output, exit_code=result.exit_code,
+                             complete=not (result.timed_out or result.cancelled) and all(
+                                 m is None or (m.complete and not m.truncated and not m.error)
+                                 for m in (result.stdout_manifest, result.stderr_manifest)))
 
 
 def safe_run_id(context: Any, fallback: str = "run") -> str:

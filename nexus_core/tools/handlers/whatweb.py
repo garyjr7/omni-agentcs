@@ -8,6 +8,8 @@ output.
 
 from __future__ import annotations
 
+from nexus_core.tools.output_files import read_output_text
+
 import os
 from pathlib import Path
 from typing import Any
@@ -202,7 +204,7 @@ async def whatweb_handler(arguments: dict, context: RunContext) -> ToolResult:
         )
 
     try:
-        raw_json = output_path.read_text(encoding="utf-8", errors="replace")
+        raw_json = read_output_text(output_path)
     except OSError:
         return ToolResult(
             output={

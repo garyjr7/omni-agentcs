@@ -22,6 +22,8 @@ command execution.
 
 from __future__ import annotations
 
+from nexus_core.tools.output_files import read_output_text
+
 import base64
 import json
 import os
@@ -607,7 +609,7 @@ async def wp_bruteforce_handler(arguments: dict, context: RunContext) -> ToolRes
     resumed_from = None
     if payload is None and result_path.exists():
         try:
-            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            payload = json.loads(read_output_text(result_path))
             resumed_from = "result_file"
         except (OSError, ValueError):
             payload = None
