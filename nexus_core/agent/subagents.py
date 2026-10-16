@@ -167,6 +167,9 @@ class SubAgentDefinition:
     max_iterations: int
     #: True only when every listed tool reads the target without altering it.
     read_only: bool
+    #: Optional, profile-specific line for the prompt (V1-44): the correction a
+    #: measured run needed, stated where the model reads the active profile.
+    hint: str | None = None
 
     @property
     def parallel_safe(self) -> bool:
@@ -189,19 +192,25 @@ class SubAgentDefinition:
             "max_iterations": self.max_iterations,
             "read_only": self.read_only,
             "parallel_safe": self.parallel_safe,
+            "hint": self.hint,
         }
 
     def describe(self) -> str:
         """Compact, prompt-ready frame for the system message."""
         mode = "solo lectura (paralelizable)" if self.parallel_safe else "activo (secuencial)"
-        return (
-            f"SUBAGENTE ACTIVO: {self.id} ({self.label})\n"
-            f"foco: {self.focus}\n"
-            f"modo: {mode}\n"
-            f"presupuesto: {self.token_budget} tokens · {self.max_iterations} iteraciones\n"
+        lines = [
+            f"SUBAGENTE ACTIVO: {self.id} ({self.label})",
+            f"foco: {self.focus}",
+            f"modo: {mode}",
+            f"presupuesto: {self.token_budget} tokens · {self.max_iterations} iteraciones",
+        ]
+        if self.hint:
+            lines.append(f"pista: {self.hint}")
+        lines.append(
             "solo puedes invocar tools de tu subconjunto; cualquier otra será denegada "
             "y auditada."
         )
+        return "\n".join(lines)
 
 
 #: The nine profiles, in kill-chain order. Tool subsets are exact catalog ids
@@ -390,6 +399,17 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         token_budget=60_000,
         max_iterations=10,
         read_only=False,
+        # V1-44 (rerun 12): the model saw `sudo -n -l` answer "a password is
+        # required", read it as "sudo is unusable", and spent its 8 iterations on
+        # the SUID template of the same binary -which does not elevate- and on a
+        # hand-built PwnKit, dying at 63465/60000 tokens without root. The tool
+        # that resolves exactly that dead end was in its own subset: this profile
+        # has `nexus.post.enum_system`, and it is the only tool that answers
+        # `sudo -l` by feeding the vault credential to `sudo -S`.
+        hint=(
+            "Cuando ssh_exec devuelva 'sudo: a password is required', invoca "
+            "nexus.post.enum_system — no reintentes sudo -l por ssh_exec."
+        ),
     ),
     SubAgentDefinition(
         id="lateral",

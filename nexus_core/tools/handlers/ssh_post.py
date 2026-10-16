@@ -321,9 +321,17 @@ def enum_system_definition(tenant_id: str = "system") -> ToolDefinition:
         effect="post_exploitation",
         name="Linux post-exploitation enumeration",
         tenant_id=tenant_id,
+        # V1-44 (rerun 12): the model saw `sudo -n -l` answer "a password is
+        # required", read it as "sudo is unusable" and never called this tool,
+        # which is the one that resolves exactly that. The first sentence is the
+        # one that counts: ``render_tool_catalog`` shows the model only the first
+        # ``CATALOG_DESCRIPTION_CHARS`` (64) characters of a description, so the
+        # trigger and the resolution are stated up front and the rest is detail.
         description=(
-            "Enumera la escalada Linux con credential_ref (preferido) o password "
-            "(manual): identidad, sudo -l, SUID, capabilities, cron."
+            "Tras 'sudo: a password is required' resuelve sudo -l (vault). "
+            "Inyecta la contraseña guardada con `sudo -S`; id, SUID, "
+            "capabilities y cron en UNA llamada. No invoques sudo -l por "
+            "nexus.post.ssh_exec: esta tool lo resuelve."
         ),
         input_schema={
             "type": "object",

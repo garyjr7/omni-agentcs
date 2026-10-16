@@ -111,6 +111,22 @@ GTFOBINS: dict[str, dict[str, str]] = {
 
 VECTOR_RANK = {"sudo": 0, "capabilities": 1, "suid": 2}
 
+#: Every candidate declares exactly one kind, in this vocabulary (V1-45).
+VECTOR_KINDS: tuple[str, ...] = ("sudo", "capabilities", "suid", "kernel")
+
+#: Observable conditions the agent must have seen for the vector to apply.
+#: ``sudo`` and ``suid`` are **different** vectors over the same binary, and the
+#: rerun 12 measured the difference on Bounty Hacker: ``/bin/tar`` carried the
+#: SUID bit and did **not** elevate (``uid=1001(lin)``, iterations 11 and 13),
+#: while ``sudo /bin/tar`` -the same binary, a rule in sudoers and the vault
+#: credential on stdin- reached ``uid=0(root)`` in the rerun 10.
+VECTOR_PRECONDITIONS: dict[str, tuple[str, ...]] = {
+    "sudo": ("user in sudoers", "NOPASSWD or credential in vault"),
+    "suid": ("file has SUID bit", "running as the SUID owner"),
+    "capabilities": ("binary carries cap_setuid", "capability not dropped by the mount"),
+    "kernel": ("kernel version inside an exploitable range", "staging space on the target"),
+}
+
 
 def privesc_hints_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.post.privesc_hints``."""
@@ -119,9 +135,19 @@ def privesc_hints_definition(tenant_id: str = "system") -> ToolDefinition:
         effect="read_only",
         name="Privilege-escalation hints",
         tenant_id=tenant_id,
+        # V1-45 (rerun 12): the model received the SUID template of ``/bin/tar``
+        # and ran it (``uid=1001(lin)``, twice) while the handler also held the
+        # ``sudo`` template of the same binary -the one that elevates-. The first
+        # sentence is the one the model reads: ``render_tool_catalog`` cuts every
+        # description at ``CATALOG_DESCRIPTION_CHARS`` (64), so the distinction
+        # and the field names are stated before the explanation.
         description=(
-            "Correlaciona derechos sudo/SUID/capabilities con vectores GTFOBins "
-            "y propone el comando de prueba (uid=0). No ejecuta nada."
+            "Un vector por hint: vector_kind + preconditions; SUID ≠ sudo. "
+            "Correlaciona derechos sudo/SUID/capabilities con vectores GTFOBins y "
+            "propone el comando de prueba (uid=0). No ejecuta nada. SUID y sudo "
+            "son vectores DISTINTOS sobre el mismo binario: puede tener SUID y NO "
+            "elevar por SUID, y SÍ elevar por sudo si el usuario está en sudoers. "
+            "Verifica las preconditions antes de invocar el comando."
         ),
         input_schema={
             "type": "object",
@@ -186,6 +212,8 @@ def _sudo_candidates(sudo_rules: list[str]) -> list[dict[str, Any]]:
             {
                 "binary": name,
                 "vector": "sudo",
+                "vector_kind": "sudo",
+                "preconditions": list(VECTOR_PRECONDITIONS["sudo"]),
                 "rule": text,
                 "command": template.replace("{path}", first),
                 "proof_expected": PROOF_EXPECTED,
@@ -208,6 +236,8 @@ def _suid_candidates(suid: list[str]) -> list[dict[str, Any]]:
             {
                 "binary": name,
                 "vector": "suid",
+                "vector_kind": "suid",
+                "preconditions": list(VECTOR_PRECONDITIONS["suid"]),
                 "path": text,
                 "command": template.replace("{path}", text),
                 "proof_expected": PROOF_EXPECTED,
@@ -236,6 +266,8 @@ def _capability_candidates(capabilities: list[str]) -> list[dict[str, Any]]:
             {
                 "binary": name,
                 "vector": "capabilities",
+                "vector_kind": "capabilities",
+                "preconditions": list(VECTOR_PRECONDITIONS["capabilities"]),
                 "path": path,
                 "capabilities": caps,
                 "command": template.replace("{path}", path),
