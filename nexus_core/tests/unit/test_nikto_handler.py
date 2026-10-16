@@ -208,5 +208,7 @@ def test_definition_is_registered_in_the_catalog():
     catalog = durable_tool_definitions("system")
     definition, handler = catalog["nexus.recon.nikto"]
     assert definition.tool_id == "nexus.recon.nikto"
-    assert handler is nikto_handler
+    from inspect import unwrap
+
+    assert unwrap(handler) is nikto_handler
     assert json.dumps(definition.input_schema)[:1] == "{"

@@ -1,4 +1,9 @@
 {
+  "nikto": {
+    "description": "Nikto web scanner", "purpose": "Diagnóstico web",
+    "verify": ["nikto", "-Version"],
+    "recipes": {"apt": {"command": ["apt", "install", "-y", "nikto"], "sudo": true}}
+  },
   "nmap": {
     "description": "Port scanner", "purpose": "Puertos y servicios",
     "verify": ["nmap", "--version"],

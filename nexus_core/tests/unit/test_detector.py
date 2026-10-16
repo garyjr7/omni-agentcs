@@ -69,13 +69,13 @@ def test_httpx_python_collision_is_not_present(onboarding_env):
     onboarding_env.run.return_value = SimpleNamespace(
         returncode=2, stdout="", stderr="unknown option"
     )
-    assert not d.check_tool("httpx").present
+    assert d.check_tool("httpx").state == "failed"
 
 
 def test_version_ignores_banner_and_reads_stderr(onboarding_env):
     onboarding_env.which.return_value = "/bin/httpx"
     onboarding_env.run.return_value = SimpleNamespace(
-        returncode=0, stdout="ASCII banner\n", stderr="[INF] Current Version: v1.2.3\n"
+        returncode=0, stdout="ProjectDiscovery ASCII banner\n", stderr="[INF] Current Version: v1.2.3\n"
     )
     assert d.check_tool("httpx").version == "[INF] Current Version: v1.2.3"
 

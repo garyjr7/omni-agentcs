@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import tempfile
+import os
 from pathlib import Path
 
 
@@ -26,15 +27,18 @@ class ToolStatus:
     path: str | None
     version: str | None
     recipes_available: tuple[str, ...]
+    state: str = "detected"
+    detail: str = ""
+    verify_argv: tuple[str, ...] = ()
 
 
 class SandboxToolState(str, Enum):
     """How far a tool got: filesystem detection vs. real sandbox execution."""
 
-    ABSENT = "absent"        # not on the user's PATH
-    DETECTED = "detected"    # on PATH, not yet verified in the sandbox
-    RUNNABLE = "runnable"    # exits 0 inside the sandbox
-    FAILED = "failed"        # on PATH but fails inside the sandbox
+    ABSENT = "absent"  # not on the user's PATH
+    DETECTED = "detected"  # on PATH, not yet verified in the sandbox
+    RUNNABLE = "runnable"  # exits 0 inside the sandbox
+    FAILED = "failed"  # on PATH but fails inside the sandbox
 
 
 @dataclass(frozen=True)
@@ -80,34 +84,52 @@ def detect_managers() -> tuple[str, ...]:
 
 def check_tool(name: str) -> ToolStatus:
     from .recipes import find_tool_recipe
-    from .installer import probe_command
+    from .binaries import BINARY_IDENTITIES_BY_NAME, classify_identity, default_version_runner
 
-    recipe = find_tool_recipe(name)
-    if recipe is None:
-        raise ValueError("unknown tool")
-    candidates = [
-        recipe["verify"],
-        *[r["verify"] for r in recipe["recipes"].values() if "verify" in r],
-    ]
-    for verify in candidates:
-        path = shutil.which(verify[0])
-        if path:
-            outcome = probe_command([path, *verify[1:]], timeout=3)
-            text = re.sub(
-                r"\x1b\[[0-?]*[ -/]*[@-~]",
-                "",
-                (outcome.stdout or "") + "\n" + (outcome.stderr or ""),
-            ).strip()
+    try:
+        recipe = find_tool_recipe(name)
+        if recipe is None:
+            return ToolStatus(name, False, None, None, (), "unsupported", "unknown tool")
+        managers = tuple(recipe["recipes"])
+        candidates = [
+            recipe["verify"],
+            *[r["verify"] for r in recipe["recipes"].values() if "verify" in r],
+        ]
+        failed: ToolStatus | None = None
+        for verify in candidates:
+            path = shutil.which(verify[0])
+            if not path:
+                continue
+            code, text = default_version_runner([path, *verify[1:]], timeout=3)
+            text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text).strip()
+            identity = BINARY_IDENTITIES_BY_NAME.get(verify[0])
+            ok = code == 0 and (
+                identity is None
+                or classify_identity(
+                    identity, path=path, present=True, output=text, exit_code=code
+                ).ok
+            )
             lines = text.splitlines()
             line = next(
                 (line for line in lines if re.search(r"version.*\d|^v?\d+\.\d+", line, re.I)),
                 lines[0] if lines else "",
             )
-            version = line[:300] if line and outcome.returncode == 0 else None
-            # The unrelated Python httpx CLI must not satisfy the PD binary check.
-            present = not (name == "httpx" and outcome.returncode != 0)
-            return ToolStatus(name, present, path, version, tuple(recipe["recipes"]))
-    return ToolStatus(name, False, None, None, tuple(recipe["recipes"]))
+            status = ToolStatus(
+                name,
+                True,
+                path,
+                line[:300] if ok and line else None,
+                managers,
+                "runnable" if ok else "failed",
+                "" if ok else "version/identity probe failed",
+                tuple([path, *verify[1:]]),
+            )
+            if ok:
+                return status
+            failed = status
+        return failed or ToolStatus(name, False, None, None, managers, "absent")
+    except Exception as exc:
+        return ToolStatus(name, False, None, None, (), "failed", type(exc).__name__)
 
 
 def check_all_tools() -> dict[str, ToolStatus]:
@@ -132,43 +154,82 @@ async def verify_tool_in_sandbox(
     ``RUNNABLE`` means its verify command exits 0 under those exact conditions;
     ``FAILED`` covers a present binary whose dependencies are broken.
     """
-    from nexus_core.kernel.sandbox import LocalSandbox
-    from nexus_core.kernel.sandbox_modes import active_mode
+    from nexus_core.kernel.sandbox_modes import SandboxPolicy
+    from nexus_core.kernel.sandbox import OCISandbox
     from .recipes import find_tool_recipe
+    from .binaries import BINARY_IDENTITIES_BY_NAME, classify_identity
 
-    resolved_mode = sandbox_mode or active_mode().value
-    status = await asyncio.to_thread(check_tool, tool_name)
-    if not status.present or not status.path:
-        return SandboxVerification(
-            tool_name, SandboxToolState.ABSENT.value, status.path, None, "", resolved_mode
-        )
-    recipe = find_tool_recipe(tool_name)
-    verify = list(recipe["verify"]) if recipe and recipe.get("verify") else [status.path]
-    argv = [status.path, *verify[1:]]
-    root = (
-        Path(workspace_root)
-        if workspace_root is not None
-        else Path(tempfile.mkdtemp(prefix="nexus-verify-"))
-    )
-    root.mkdir(parents=True, exist_ok=True)
-    sandbox = LocalSandbox(root, allowed_programs=(status.path,))
+    mode: str = str(sandbox_mode or os.getenv("NEXUS_SANDBOX_MODE", ""))
     try:
-        result = await sandbox.run(
-            argv, timeout_seconds=timeout_seconds, grace_seconds=2.0
-        )
-    except Exception as exc:  # noqa: BLE001 - a broken binary must not crash diagnostics
-        return SandboxVerification(
-            tool_name,
-            SandboxToolState.FAILED.value,
-            status.path,
-            None,
-            f"{type(exc).__name__}: {exc}"[:300],
-            resolved_mode,
-        )
-    state = (
-        SandboxToolState.RUNNABLE if result.exit_code == 0 else SandboxToolState.FAILED
-    )
-    output = (result.stdout + "\n" + result.stderr).strip()[:300]
-    return SandboxVerification(
-        tool_name, state.value, status.path, result.exit_code, output, resolved_mode
-    )
+        recipe = find_tool_recipe(tool_name)
+        if not recipe:
+            return SandboxVerification(tool_name, "failed", None, None, "unknown tool", mode)
+        # OCI verification requires an explicit image: host PATH is not evidence
+        # about the contents of an image. Never fall back to a local executor.
+        env = dict(os.environ)
+        if sandbox_mode:
+            env["NEXUS_SANDBOX_MODE"] = sandbox_mode
+        with tempfile.TemporaryDirectory(prefix="nexus-verify-") as temporary:
+            root = Path(workspace_root) if workspace_root is not None else Path(temporary)
+            root.mkdir(parents=True, exist_ok=True)
+            verify = list(recipe["verify"])
+            resolved, sandbox, _ = SandboxPolicy.resolve(
+                env, workspace_root=root, allowed_programs=(verify[0],)
+            )
+            mode = str(resolved.value)
+            if isinstance(sandbox, OCISandbox):
+                image_keys = {
+                    "nmap": "NEXUS_NMAP_IMAGE", "ffuf": "NEXUS_FFUF_IMAGE",
+                    "nuclei": "NEXUS_NUCLEI_IMAGE", "httpx": "NEXUS_HTTPX_IMAGE",
+                    "subfinder": "NEXUS_SUBFINDER_IMAGE", "sqlmap": "NEXUS_SQLMAP_IMAGE",
+                    "gobuster": "NEXUS_GOBUSTER_IMAGE", "nikto": "NEXUS_NIKTO_IMAGE",
+                    "whatweb": "NEXUS_WHATWEB_IMAGE", "dalfox": "NEXUS_DALFOX_IMAGE",
+                    "searchsploit": "NEXUS_SEARCHSPLOIT_IMAGE", "nxc": "NEXUS_NETEXEC_IMAGE",
+                    "bloodhound-python": "NEXUS_BLOODHOUND_IMAGE",
+                }
+                image_key = image_keys.get(verify[0], "")
+                image = env.get(image_key, "")
+                if not image:
+                    return SandboxVerification(
+                        tool_name,
+                        "detected",
+                        None,
+                        None,
+                        "configure the handler image variable and allowlist; container not verified",
+                        mode,
+                    )
+                result = await sandbox.run(image, verify, timeout_seconds=timeout_seconds)
+                path = verify[0]
+            else:
+                status = await asyncio.to_thread(check_tool, tool_name)
+                if not status.present or not status.path:
+                    return SandboxVerification(
+                        tool_name, status.state, status.path, None, status.detail, mode
+                    )
+                from nexus_core.kernel.sandbox import LocalSandbox
+
+                path = status.path
+                sandbox = LocalSandbox(root, allowed_programs=(path,))
+                result = await sandbox.run(
+                    list(status.verify_argv), timeout_seconds=timeout_seconds
+                )
+            complete = not (result.timed_out or result.cancelled) and all(
+                m is None or (m.complete and not m.truncated and not m.error)
+                for m in (result.stdout_manifest, result.stderr_manifest)
+            )
+            output = (result.stdout + "\n" + result.stderr).strip()
+            identity = BINARY_IDENTITIES_BY_NAME.get(verify[0])
+            ok = result.exit_code == 0 and complete
+            if identity:
+                ok = ok and classify_identity(identity, path=path, present=True, output=output).ok
+            # Version output may contain environment secrets; return a verdict only.
+            return SandboxVerification(
+                tool_name,
+                "runnable" if ok else "failed",
+                path,
+                result.exit_code,
+                "verified" if ok else "probe failed",
+                mode,
+            )
+    except Exception as exc:
+        return SandboxVerification(tool_name, "failed", None, None, type(exc).__name__, mode)

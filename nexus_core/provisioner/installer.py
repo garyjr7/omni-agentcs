@@ -122,7 +122,12 @@ def execute_install(plan: InstallPlan, *, dry_run: bool = False) -> InstallResul
     outcome = probe_command(plan.command, timeout=600)
     verified = False
     if outcome.returncode == 0:
-        verified = probe_command(plan.verify_command, timeout=10).returncode == 0
+        from .binaries import BINARY_IDENTITIES_BY_NAME, classify_identity, default_version_runner
+        code, output = default_version_runner(list(plan.verify_command), timeout=10)
+        identity = BINARY_IDENTITIES_BY_NAME.get(Path(plan.verify_command[0]).name)
+        verified = code == 0 and (identity is None or classify_identity(
+            identity, path=plan.verify_command[0], present=True, output=output, exit_code=code
+        ).ok)
     return InstallResult(
         plan.tool_name,
         outcome.returncode == 0 and verified,

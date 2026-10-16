@@ -15,7 +15,6 @@ just "not verified", never a crash.
 from __future__ import annotations
 
 import shutil
-import subprocess
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
@@ -146,18 +145,9 @@ def default_version_runner(
     A missing binary, a permission error or a timeout all collapse to
     ``(returncode, text)`` so callers only ever inspect data.
     """
-    try:
-        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return 127, f"{type(exc).__name__}: {exc}"
-    merged = f"{completed.stdout}\n{completed.stderr}".strip()
-    return int(completed.returncode), merged
+    from .probe import bounded_probe
+
+    return bounded_probe(argv, timeout=timeout)
 
 
 def classify_identity(
@@ -166,6 +156,8 @@ def classify_identity(
     path: str,
     present: bool,
     output: str,
+    exit_code: int | None = 0,
+    complete: bool = True,
 ) -> IdentityCheck:
     """Pure verdict from a version probe's output (no process spawn).
 
@@ -181,6 +173,16 @@ def classify_identity(
             detail="no encontrado en PATH",
             install=identity.install,
             required=identity.required,
+        )
+    if exit_code != 0 or not complete:
+        return IdentityCheck(
+            identity.name,
+            True,
+            False,
+            path,
+            "sondeo fallido o incompleto; identidad no verificada",
+            identity.install,
+            identity.required,
         )
     lowered = str(output or "").lower()
     if any(bad in lowered for bad in identity.wrong_markers):
@@ -224,11 +226,25 @@ def check_binary_identity(
     run: VersionRunner = default_version_runner,
 ) -> IdentityCheck:
     """Probe one binary and decide whether it is the expected one."""
-    path = which(identity.name)
+    try:
+        path = which(identity.name)
+    except Exception:
+        return IdentityCheck(
+            identity.name,
+            False,
+            False,
+            "",
+            "falló la búsqueda del binario",
+            identity.install,
+            identity.required,
+        )
     if not path:
         return classify_identity(identity, path="", present=False, output="")
-    _, output = run([path, *identity.version_argv])
-    return classify_identity(identity, path=path, present=True, output=output)
+    try:
+        code, output = run([path, *identity.version_argv])
+    except Exception:
+        code, output = 127, ""
+    return classify_identity(identity, path=path, present=True, output=output, exit_code=code)
 
 
 def check_binary_identities(
@@ -264,7 +280,11 @@ def missing_tool_binaries(
     for identity in identities:
         if not identity.tool_id or identity.tool_id in missing:
             continue
-        if which(identity.name) is None:
+        try:
+            path = which(identity.name)
+        except Exception:
+            path = None
+        if path is None:
             missing.append(identity.tool_id)
     return tuple(sorted(missing))
 

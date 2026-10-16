@@ -21,6 +21,7 @@ import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 from .binaries import (
     BINARY_IDENTITIES_BY_NAME,
@@ -37,6 +38,7 @@ BINARY_COMPONENTS: tuple[tuple[str, str, str, bool], ...] = (
     ("gobuster", "gobuster", "Descubrimiento de contenido web", False),
     ("whatweb", "whatweb", "Fingerprinting web", False),
     ("nikto", "nikto", "Escaneo web con tuning/evasión", False),
+    ("sqlmap", "sqlmap", "Verificación de inyección SQL", False),
     ("ffuf", "ffuf", "Fuzzing web", False),
     ("nuclei", "nuclei", "Escaneo por plantillas", False),
     ("httpx", "httpx", "Sondeo HTTP (ProjectDiscovery)", False),
@@ -68,7 +70,13 @@ class ComponentStatus:
     #: binary exists but is the *wrong* one (e.g. Python ``httpx``).
     identity_ok: bool | None = None
 
-    def to_dict(self) -> dict:
+    @property
+    def capability_state(self) -> str:
+        if not self.ready:
+            return "failed" if self.identity_ok is False else "unavailable"
+        return "detected" if self.kind == "binary" and self.identity_ok is None else "verified"
+
+    def to_dict(self) -> dict[str, object]:
         return {
             "id": self.component_id,
             "kind": self.kind,
@@ -78,6 +86,7 @@ class ComponentStatus:
             "detail": self.detail,
             "setup": self.setup,
             "identity_ok": self.identity_ok,
+            "capability_state": self.capability_state,
         }
 
 
@@ -97,7 +106,7 @@ class EnvironmentReport:
     def missing_required(self) -> list[ComponentStatus]:
         return [c for c in self.missing if c.required]
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         return {
             "components": [c.to_dict() for c in self.components],
             "ready": len(self.ready),
@@ -119,8 +128,7 @@ def sliver_operator_plan(
 ) -> str:
     """Return the command that generates a Sliver operator config."""
     return (
-        f"sliver-server operator --name {name} --lhost {lhost} "
-        f"--permissions all --save {save_path}"
+        f"sliver-server operator --name {name} --lhost {lhost} --permissions all --save {save_path}"
     )
 
 
@@ -128,7 +136,7 @@ def assess_environment(
     *,
     which: Callable[[str], str | None] = shutil.which,
     port_open: Callable[[str, int], bool] | None = None,
-    env: dict | None = None,
+    env: dict[str, str] | None = None,
     path_exists: Callable[[str], bool] | None = None,
     lhost: str = "127.0.0.1",
     probe_binary: Callable[[BinaryIdentity], IdentityCheck] | None = None,
@@ -143,7 +151,15 @@ def assess_environment(
     """
     env = dict(os.environ if env is None else env)
     port_open = port_open or _default_port_open
-    path_exists = path_exists or (lambda p: Path(p).expanduser().exists())
+    path_probe = path_exists or (lambda p: Path(p).expanduser().exists())
+
+    def safe_path_exists(path: str) -> bool:
+        try:
+            return path_probe(path)
+        except (OSError, ValueError):
+            return False
+
+    path_exists = safe_path_exists
     identities = BINARY_IDENTITIES_BY_NAME if probe_binary is not None else {}
 
     components: list[ComponentStatus] = []
@@ -151,20 +167,33 @@ def assess_environment(
 
     # ---- binaries ---------------------------------------------------------
     for component_id, binary, purpose, required in BINARY_COMPONENTS:
-        path = which(binary)
+        try:
+            path = which(binary)
+        except Exception:
+            path = None
         present = path is not None
         identity: IdentityCheck | None = None
         identity_spec = identities.get(binary)
         if present and identity_spec is not None and probe_binary is not None:
-            identity = probe_binary(identity_spec)
+            try:
+                identity = probe_binary(identity_spec)
+            except Exception:
+                identity = IdentityCheck(
+                    binary, True, False, path or "", "probe failed", identity_spec.install, required
+                )
         if identity is not None and not identity.ok:
             # A wrong binary is worse than a missing one: it silently feeds
             # garbage to the handler. Fail it closed with actionable guidance.
             components.append(
                 ComponentStatus(
-                    component_id, "binary", purpose, required, False,
+                    component_id,
+                    "binary",
+                    purpose,
+                    required,
+                    False,
                     f"binario equivocado en {identity.binary_path or path}",
-                    identity.install, False,
+                    identity.install,
+                    False,
                 )
             )
             continue
@@ -177,27 +206,44 @@ def assess_environment(
             )
         elif component_id in recipe_names:
             setup = (
-                "Instala con la tool durable nexus.system.install_tool "
-                f"(receta: {component_id})."
+                f"Instala con la tool durable nexus.system.install_tool (receta: {component_id})."
             )
         else:
             setup = f"Instala {binary} con el gestor de paquetes de tu distro."
         components.append(
             ComponentStatus(
-                component_id, "binary", purpose, required, present,
-                path or "no encontrado en PATH", "" if present else setup,
+                component_id,
+                "binary",
+                purpose,
+                required,
+                present,
+                path or "no encontrado en PATH",
+                "" if present else setup,
                 True if (identity is not None and identity.ok) else None,
             )
         )
 
     # ---- services / configs ----------------------------------------------
     msf_pass = bool(env.get("MSF_RPC_PASSWORD") or env.get("MSFRPC_PASSWORD"))
-    msf_up = port_open("127.0.0.1", 55552)
+    try:
+        rpc_url = urlsplit(env.get("MSF_RPC_URL", "http://127.0.0.1:55552"))
+        msf_up = bool(rpc_url.scheme in {"http", "https"} and rpc_url.hostname) and port_open(
+            rpc_url.hostname or "127.0.0.1",
+            rpc_url.port or (443 if rpc_url.scheme == "https" else 80),
+        )
+    except (OSError, ValueError, OverflowError):
+        msf_up = False
     components.append(
         ComponentStatus(
-            "msfrpcd", "service", "Daemon RPC de Metasploit", False, msf_up and msf_pass,
+            "msfrpcd",
+            "service",
+            "Daemon RPC de Metasploit",
+            False,
+            msf_up and msf_pass,
             f"listening={msf_up} credencial={'sí' if msf_pass else 'no'}",
-            "" if (msf_up and msf_pass) else (
+            ""
+            if (msf_up and msf_pass)
+            else (
                 "Configura MSF_RPC_PASSWORD y ejecuta "
                 "`sudo bash scripts/install_msfrpcd_service.sh`."
             ),
@@ -208,10 +254,15 @@ def assess_environment(
     sliver_cfg_ready = bool(sliver_cfg) and path_exists(sliver_cfg)
     components.append(
         ComponentStatus(
-            "sliver_operator_config", "config", "Config de operador Sliver (gRPC/mTLS)",
-            False, sliver_cfg_ready,
+            "sliver_operator_config",
+            "config",
+            "Config de operador Sliver (gRPC/mTLS)",
+            False,
+            sliver_cfg_ready,
             sliver_cfg or "SLIVER_OPERATOR_CONFIG sin definir",
-            "" if sliver_cfg_ready else (
+            ""
+            if sliver_cfg_ready
+            else (
                 f"Genera el config y exporta SLIVER_OPERATOR_CONFIG: "
                 f"`{sliver_operator_plan(lhost=lhost)}`."
             ),
@@ -222,9 +273,15 @@ def assess_environment(
     nuclei_ready = bool(nuclei_templates) and path_exists(nuclei_templates)
     components.append(
         ComponentStatus(
-            "nuclei_templates", "config", "Plantillas de nuclei", False, nuclei_ready,
+            "nuclei_templates",
+            "config",
+            "Plantillas de nuclei",
+            False,
+            nuclei_ready,
             nuclei_templates or "NEXUS_NUCLEI_TEMPLATES sin definir",
-            "" if nuclei_ready else (
+            ""
+            if nuclei_ready
+            else (
                 "Instala las plantillas (`nuclei -update-templates`) y exporta "
                 "NEXUS_NUCLEI_TEMPLATES al directorio."
             ),
@@ -232,17 +289,28 @@ def assess_environment(
     )
 
     wordlists = next(
-        (p for p in (
-            env.get("NEXUS_WORDLISTS", ""),
-            "/usr/share/wordlists",
-        ) if p and path_exists(p)),
+        (
+            p
+            for p in (
+                *env.get("NEXUS_WORDLIST_DIRS", "").split(os.pathsep),
+                env.get("NEXUS_WORDLISTS", ""),
+                "/usr/share/wordlists",
+            )
+            if p and path_exists(p)
+        ),
         None,
     )
     components.append(
         ComponentStatus(
-            "wordlists", "config", "Diccionarios (gobuster/ftp/credenciales)", False,
-            wordlists is not None, wordlists or "sin diccionarios detectados",
-            "" if wordlists else (
+            "wordlists",
+            "config",
+            "Diccionarios (gobuster/ftp/credenciales)",
+            False,
+            wordlists is not None,
+            wordlists or "sin diccionarios detectados",
+            ""
+            if wordlists
+            else (
                 "Instala wordlists (p. ej. SecLists: `sudo apt install seclists`) "
                 "o define NEXUS_WORDLISTS."
             ),
@@ -251,10 +319,15 @@ def assess_environment(
 
     components.append(
         ComponentStatus(
-            "scope_signing_secret", "config", "Secreto de firma del alcance",
-            True, bool(env.get("NEXUS_SCOPE_SIGNING_SECRET")),
+            "scope_signing_secret",
+            "config",
+            "Secreto de firma del alcance",
+            True,
+            bool(env.get("NEXUS_SCOPE_SIGNING_SECRET")),
             "definido" if env.get("NEXUS_SCOPE_SIGNING_SECRET") else "sin definir",
-            "" if env.get("NEXUS_SCOPE_SIGNING_SECRET") else (
+            ""
+            if env.get("NEXUS_SCOPE_SIGNING_SECRET")
+            else (
                 "Crea un engagement con el wizard (define el secreto) o exporta "
                 "NEXUS_SCOPE_SIGNING_SECRET."
             ),
@@ -285,7 +358,9 @@ def render_report(report: EnvironmentReport) -> str:
                 lines.append(f"      → {component.setup}")
         lines.append("")
     if not report.missing_required:
-        lines.append("Requeridos: OK. Puedes operar.")
+        lines.append(
+            "Requeridos: OK en esta evaluación; detección no acredita ejecución en sandbox."
+        )
     else:
         lines.append(
             "Faltan componentes requeridos: "

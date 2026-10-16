@@ -34,9 +34,16 @@ def onboarding_env(tmp_path, monkeypatch):
         "PYTEST_CURRENT_TEST",
     ):
         monkeypatch.delenv(key, raising=False)
-    run = MagicMock(return_value=SimpleNamespace(returncode=0, stdout="tool 1.2.3\n", stderr=""))
+    run = MagicMock(return_value=SimpleNamespace(returncode=0, stdout="Nmap version 1.2.3\n", stderr=""))
     which = MagicMock(return_value=None)
     monkeypatch.setattr("subprocess.run", run)
+    def version_probe(argv, *, timeout=10):
+        try:
+            result = run(argv, shell=False, timeout=timeout)
+            return result.returncode, (result.stdout or "") + "\n" + (result.stderr or "")
+        except OSError:
+            return 127, "unavailable"
+    monkeypatch.setattr("nexus_core.provisioner.binaries.default_version_runner", version_probe)
     monkeypatch.setattr("shutil.which", which)
     try:
         yield SimpleNamespace(paths=resolve_xdg_paths(), home=home, run=run, which=which)
