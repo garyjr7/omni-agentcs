@@ -61,7 +61,8 @@ def panel_lines(plan: dict[str, Any] | None, *, width: int = 44) -> list[tuple[s
     for item in plan.get("phases") or []:
         if not isinstance(item, dict):
             continue
-        status = item.get("status")
+        raw_status = item.get("status")
+        status = raw_status if isinstance(raw_status, str) else "pending"
         mark = {"done": "✓", "current": "▶", "pending": "·"}.get(status, "·")
         style = {
             "done": "class:panel-done",
@@ -102,21 +103,21 @@ def panel_style() -> dict[str, str]:
     }
 
 
-def approval_lines(payload: dict[str, Any] | None, *, width: int = 62) -> list[tuple[str, str]]:
+def approval_lines(payload: dict[str, Any] | None, *, width: int = 62,
+                   selected: int = 0) -> list[tuple[str, str]]:
     """Render a HIGH/DESTRUCTIVE approval request as (style, text) fragments.
 
     Shows the exact tool, its declared risk, the reason and every argument —
     the durable-approval contract requires the operator to see what they sign.
     """
     inner = max(1, width - 2)
-    fragments: list[tuple[str, str]] = [
-        ("class:approval-title", " ⚠ APROBACIÓN HUMANA REQUERIDA")
-    ]
+    fragments: list[tuple[str, str]] = [("class:approval-title", " [+] AUTORIZACIÓN REQUERIDA")]
     if not isinstance(payload, dict):
         fragments.append(("class:approval", " (solicitud no disponible)"))
         return fragments
     tool_id = _safe(payload.get("tool_id") or "?")
     risk = _safe(payload.get("risk") or "normal")
+    fragments.append(("class:approval-question", f" [+] ¿Autorizar {tool_id}?") )
     fragments.append(("class:approval", f" tool:   {tool_id}"))
     fragments.append(("class:approval-risk", f" riesgo: {risk}"))
     reason = payload.get("reason")
@@ -130,9 +131,17 @@ def approval_lines(payload: dict[str, Any] | None, *, width: int = 62) -> list[t
                 ("class:approval", line)
                 for line in _wrap(f"  {key}: {arguments[key]}", inner)
             )
-    fragments.append(
-        ("class:approval-options", " [y] aprobar  [n] rechazar  [e] editar  [?] definición")
-    )
+    options = (("Sí / aprobar", "y"), ("No / rechazar", "n"), ("Custom / editar", "e"))
+    for index, (label, _value) in enumerate(options):
+        marker = "›" if index == selected else "•"
+        style = "class:approval-selected" if index == selected else "class:approval-options"
+        fragments.append((style, f" {marker} {label}"))
+    fragments.extend((
+        ("class:approval-submit", " ┌─────────┐"),
+        ("class:approval-submit", " │ Submit  │"),
+        ("class:approval-submit", " └─────────┘"),
+        ("class:approval-hint", " ↑↓ navigate · Enter select · [?] definición"),
+    ))
     return fragments
 
 
@@ -143,6 +152,10 @@ def approval_style() -> dict[str, str]:
         "approval-title": "bg:#1a0d11 #ffc950 bold",
         "approval-risk": "bg:#1a0d11 #ff4054 bold",
         "approval-options": "bg:#1a0d11 #00e5ff",
+        "approval-question": "bg:#1a0d11 #ffffff bold",
+        "approval-selected": "bg:#ff0055 #ffffff bold",
+        "approval-submit": "bg:#1a0d11 #ff0055 bold",
+        "approval-hint": "bg:#1a0d11 #9aa0a6",
     }
 
 

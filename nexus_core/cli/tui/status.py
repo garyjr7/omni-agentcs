@@ -1,6 +1,6 @@
 """Status state, terminal-cell-aware formatting and XDG display preferences.
 
-The status bar is *priority-aware*: when the terminal is narrow it drops the
+The fixed operational status bar is *priority-aware*: when the terminal is narrow it drops the
 least important segment first instead of blindly truncating from the right. The
 active alert (trust/session) and the engagement phase are never dropped; the
 engagement name is dropped first because the compact header already shows it.
@@ -8,17 +8,25 @@ engagement name is dropped first because the compact header already shows it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
 import os
-from pathlib import Path
 import tempfile
 import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from prompt_toolkit.formatted_text import FormattedText
 
 #: Drop priority per segment key (higher = more important, dropped last).
 #: Ordering encodes the product rule: alerts and phase survive; engagement dies
 #: first (it already lives in the compact header).
 PRIORITY = {
+    "brand": -1,
+    "scope": 5.2,
+    "budget": 3.2,
+    "status": 6.5,
     "alert": 7,
     "phase": 6,
     "provider": 5,
@@ -39,6 +47,7 @@ PROTECTED_PRIORITIES = frozenset({PRIORITY["alert"], PRIORITY["phase"]})
 
 @dataclass
 class StatusState:
+    workspace_path: str = ""
     engagement_name: str | None = None
     session_uuid: str | None = None
     session_type: str | None = None
@@ -61,6 +70,8 @@ class StatusState:
     #: Current kill-chain phase label and "done/total" progress (planner).
     plan_phase: str | None = None
     plan_progress: str | None = None
+    scope_targets: int | None = None
+    budget_usd: float | None = None
     busy: bool = False
     busy_message: str = ""
     busy_started_at: float = field(default_factory=time.monotonic)
@@ -81,7 +92,7 @@ class StatusState:
         return f"{hours}h{minutes:02d}m"
 
 
-def _safe(value) -> str:
+def _safe(value: Any) -> str:
     return "".join(c if c.isprintable() else " " for c in str(value))
 
 
@@ -106,7 +117,16 @@ def _parts(state: StatusState) -> list[tuple[float, str, str]]:
     if state.plan_phase:
         progress = f" {state.plan_progress}" if state.plan_progress else ""
         parts.append((PRIORITY["phase"], "ansicyan bold", f"▸ {state.plan_phase}{progress}"))
-    parts.append((PRIORITY["provider"], "ansicyan", state.provider_model or "(sin modelo)"))
+    parts.append((PRIORITY["brand"], "dim", "BAJIOWARE · OMNI-AGENTCS"))
+    scope = f"{state.scope_targets} targets" if state.scope_targets is not None else "—"
+    parts.append((PRIORITY["scope"], "ansicyan", "Scope: " + scope))
+    parts.append((PRIORITY["provider"], "ansicyan", "Model: " + (state.provider_model or "—")))
+    tokens = state.tokens_input + state.tokens_output
+    parts.append((PRIORITY["tokens"], "ansigreen", f"Tokens: {tokens:,}"))
+    budget = f"${state.budget_usd:.2f}" if state.budget_usd is not None else "$—"
+    parts.append((PRIORITY["budget"], "ansigreen", "Budget: " + budget))
+    parts.append((PRIORITY["status"], "ansiyellow" if state.busy else "dim",
+                  "Status: RUNNING" if state.busy else "Status: IDLE"))
     if state.context_window and state.context_window > 0 and state.context_tokens is not None:
         percent = max(0, int(100 * state.context_tokens / state.context_window))
         style = 'ansigreen' if percent < 50 else 'ansiyellow' if percent <= 80 else 'ansired'
@@ -149,13 +169,13 @@ def _parts(state: StatusState) -> list[tuple[float, str, str]]:
         frame = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[elapsed % 10]
         parts.append((8, "ansiyellow", f"{frame} {state.busy_message} [{elapsed}s]"))
     if state.fields is not None:
-        allowed = {PRIORITY[name] for name in state.fields if name in PRIORITY} | set(PROTECTED_PRIORITIES) | {8}
+        allowed = {PRIORITY[name] for name in state.fields if name in PRIORITY} | set(PROTECTED_PRIORITIES) | {8, PRIORITY["status"]}
         parts = [part for part in parts if part[0] in allowed]
     return [(priority, style, _safe(text)) for priority, style, text in parts]
 
 
 def _join(items: list[tuple[float, str, str]]) -> str:
-    return " · ".join(text for _, _, text in items)
+    return " | ".join(text for _, _, text in items)
 
 
 def render_status_plain(state: StatusState) -> str:
@@ -163,12 +183,43 @@ def render_status_plain(state: StatusState) -> str:
     return _join(_parts(state))
 
 
-def render_status_bar(state: StatusState, *, width: int):
-    """Cell-aware status bar that drops the least important segments first."""
+def workspace_line(state: StatusState) -> str:
+    """``model · ~/cwd`` for the bottom-left corner of the input panel.
+
+    The agent's model and the working directory are the prompt's own context,
+    so they live in the textarea container instead of the operational bar. The
+    word ``Build`` was retired with the old fixed workspace line: this footer is
+    the single place that names the agent.
+    """
+    model = state.provider_model or "unconfigured"
+    if not state.workspace_path:
+        return model
+    from .presentation import clean_text
+
+    root = Path(state.workspace_path)
+    try:
+        display = '~/' + str(root.relative_to(Path.home()))
+    except ValueError:
+        display = str(root)
+    return clean_text(f'{model} · {display}').replace('\n', ' ')
+
+
+def render_status_bar(state: StatusState, *, width: int) -> FormattedText:
+    """Cell-aware status bar that drops the least important segments first.
+
+    Inside a workspace the model and working directory live in the input
+    footer, and plan progress lives in the engagement panel. This row therefore
+    carries only trust/session alerts. Without a workspace it retains the
+    compact operational fields, excluding the redundant phase chip.
+    """
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.utils import get_cwidth
 
-    items = list(_parts(state))
+    if state.workspace_path:
+        items = [part for part in _parts(state) if part[0] == PRIORITY["alert"]]
+    else:
+        core = {PRIORITY[key] for key in ("brand", "scope", "provider", "tokens", "budget", "status", "alert", "ctx")}
+        items = [part for part in _parts(state) if part[0] in core and not part[2].startswith("run ")]
     # Drop the lowest-priority segments until the line fits or only protected
     # segments remain. alert (trust/session) and phase are drop-protected: they
     # are cell-truncated below rather than removed.
@@ -186,7 +237,7 @@ def render_status_bar(state: StatusState, *, width: int):
     remaining = max(0, width)
     for index, (_, style, text) in enumerate(items):
         if index:
-            text = " · " + text
+            text = " | " + text
         kept = ""
         for char in text:
             size = max(0, get_cwidth(char))
@@ -201,7 +252,7 @@ def render_status_bar(state: StatusState, *, width: int):
 def preferences_path() -> Path:
     from nexus_core.config.xdg import resolve_xdg_paths
 
-    return resolve_xdg_paths().config_dir / "tui.json"
+    return Path(resolve_xdg_paths().config_dir) / "tui.json"
 
 
 def load_status_preference(default: bool = True) -> bool:
@@ -228,20 +279,20 @@ def save_status_preference(enabled: bool) -> None:
             os.unlink(temporary)
 
 
-def _preferences():
+def _preferences() -> dict[str, Any]:
     try:
         data = json.loads(preferences_path().read_text())
-        return data if isinstance(data, dict) else {}
+        return dict(data) if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def load_status_fields():
+def load_status_fields() -> tuple[str, ...] | None:
     fields = _preferences().get('status_fields')
     return tuple(fields) if isinstance(fields, list) and all(v in PRIORITY for v in fields) else None
 
 
-def save_status_fields(fields):
+def save_status_fields(fields: list[str]) -> None:
     from .history import atomic_private
     if any(name not in PRIORITY for name in fields):
         raise ValueError('unknown HUD field')

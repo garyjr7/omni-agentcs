@@ -1,10 +1,14 @@
 """One output boundary shared by renderers and background event streams."""
+from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
-import threading
-from typing import Protocol
+from typing import Any, Callable, Iterator, ParamSpec, Protocol, TypeVar, cast
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class OutputRouter(Protocol):
@@ -23,7 +27,7 @@ class PlainOutput:
 
 
 class TuiOutput:
-    def __init__(self, session):
+    def __init__(self, session: Any) -> None:
         self._session = session
 
     def write(self, text: str, *, end: str = "\n") -> None:
@@ -37,7 +41,7 @@ _OUTPUT: ContextVar[OutputRouter | None] = ContextVar("omni_output", default=Non
 
 
 @contextmanager
-def route_output(output):
+def route_output(output: Any) -> Iterator[Any]:
     token = _OUTPUT.set(output)
     try:
         yield
@@ -45,19 +49,24 @@ def route_output(output):
         _OUTPUT.reset(token)
 
 
-def write(*values, sep=" ", end="\n", flush=False):
+def write(*values: Any, sep: Any=" ", end: Any="\n", flush: Any=False) -> None:
     output = _OUTPUT.get() or PlainOutput()
     output.write(sep.join(str(value) for value in values), end=end)
     if flush:
         output.flush()
 
 
-def routed(method):
+class RoutedSession(Protocol):
+    _output: OutputRouter
+
+
+def routed(method: Callable[P, R]) -> Callable[P, R]:
     """Bind a session's router for this call, including its asyncio children."""
     @wraps(method)
-    def wrapper(session, *args, **kwargs):
-        with route_output(session._output):
-            return method(session, *args, **kwargs)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        owner = args[0] if args else kwargs.get("session", kwargs.get("self"))
+        with route_output(cast(RoutedSession, owner)._output):
+            return method(*args, **kwargs)
     return wrapper
 
 
@@ -72,7 +81,7 @@ class TuiStreamProxy:
     manager, even when the REPL exits through an exception.
     """
 
-    def __init__(self, session, stream_name: str, original):
+    def __init__(self, session: Any, stream_name: str, original: Any) -> None:
         self._tui = session
         self._name = stream_name
         self._original = original
@@ -89,24 +98,24 @@ class TuiStreamProxy:
         self._tui.flush()
 
     def isatty(self) -> bool:
-        return self._original.isatty()
+        return bool(self._original.isatty())
 
-    def fileno(self):
+    def fileno(self) -> Any:
         return self._original.fileno()
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: Any) -> Any:
         return getattr(self._original, name)
 
 
 @contextmanager
-def capture_exceptions():
+def capture_exceptions() -> Iterator[Any]:
     """Route uncaught tracebacks through the current stderr, not the raw one."""
     import sys
     import traceback
 
     original = sys.excepthook
 
-    def hook(exc_type, exc_value, exc_tb):
+    def hook(exc_type: Any, exc_value: Any, exc_tb: Any) -> Any:
         if issubclass(exc_type, KeyboardInterrupt):
             return original(exc_type, exc_value, exc_tb)
         text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
@@ -123,14 +132,14 @@ def capture_exceptions():
 
 
 @contextmanager
-def capture_output(session):
+def capture_output(session: Any) -> Iterator[Any]:
     """Route incidental stdout/stderr and tracebacks into the region buffer.
 
     Only installed for the TUI: the fallback path keeps writing to the real
     terminal exactly as before.
     """
     import sys
-    from contextlib import redirect_stdout, redirect_stderr
+    from contextlib import redirect_stderr, redirect_stdout
 
     stdout = TuiStreamProxy(session, "stdout", sys.stdout)
     stderr = TuiStreamProxy(session, "stderr", sys.stderr)

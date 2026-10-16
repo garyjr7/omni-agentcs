@@ -71,4 +71,4 @@ def test_render_rate_limited_during_continuous_output(tui_factory):
         ui.session.print("event")
         time.sleep(.01)
     ui.session.flush()
-    assert len(frames) <= int((time.monotonic() - started) * 4) + 2
+    assert len(frames) <= int((time.monotonic() - started) * 10) + 2

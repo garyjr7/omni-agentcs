@@ -12,11 +12,18 @@ def _plain(text):
     return ANSI.sub("", text)
 
 
-def test_tool_invocation_shown_as_single_line():
+def test_tool_invocation_shows_tactical_phase_then_command():
     text = format_tool_invocation("nexus.recon.nmap", {"target": "lab", "flags": ["-sV", "-p", "80"]})
-    plain = _plain(text)
-    assert "[Recon-NMAP] nmap -sV -p 80 -oX - lab" in plain
-    assert "\n" not in text and len(plain) <= 100
+    lines = _plain(text).splitlines()
+    # The semantic phase leads; the exact tool id stays as secondary metadata.
+    assert lines[0] == "· Enumeration · [nexus.recon.nmap]"
+    assert "[Recon-NMAP] nmap -sV -p 80 -oX - lab" in lines[1]
+
+
+def test_file_operations_use_read_create_edit_labels():
+    assert format_tool_invocation("nexus.workspace.read", {"path": "a.txt"}) == "• Read a.txt"
+    assert format_tool_invocation("nexus.workspace.create", {"path": "b.txt"}) == "• Create b.txt"
+    assert format_tool_invocation("nexus.file.edit", {"path": "c.txt"}) == "• Edit c.txt"
 
 
 def test_tool_complete_shows_five_lines_max():
@@ -25,7 +32,7 @@ def test_tool_complete_shows_five_lines_max():
 
 
 def test_tool_complete_shows_ellipsis_when_truncated():
-    assert render_tool_result({"stdout": "\n".join(f"l{n}" for n in range(9))}).count("...") == 1
+    assert render_tool_result({"stdout": "\n".join(f"l{n}" for n in range(9))}).count("   ...") == 1
 
 
 def test_tool_complete_summary_line():
@@ -35,13 +42,13 @@ def test_tool_complete_summary_line():
 
 def test_tool_failed_shows_error():
     text = render_tool_result({"success": False, "output": {"error": "timeout 120s"}, "verification_method": "nmap_timeout"})
-    assert "✗ timeout 120s · verification_method=nmap_timeout" in text
+    assert "× timeout 120s · verification_method=nmap_timeout" in text
 
 
 def test_collapsed_card_reports_hidden_lines():
     text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
-    assert "línea(s) más" in text
-    assert "mostrar" in text
+    assert "Show more..." in text and "5 lines" in text
+    assert "[ Show " in text
     assert "F3" not in text
 
 
@@ -84,13 +91,13 @@ def test_scrollback_not_invalidated_per_write(tui_factory):
 def test_thought_is_rendered_before_the_tool_call():
     message = {"metadata": {"kind": "react.action", "action": "tool_call", "thought": "escaneo los web", "tool_id": "nexus.recon.nmap", "arguments": {"target": "lab"}}}
     text = render_message(message)
-    assert _plain(text).splitlines()[0].startswith("💭 escaneo los web")
+    assert _plain(text).splitlines()[0].startswith("• Thinking... escaneo los web")
     assert "[Recon-NMAP]" in _plain(text)
 
 
 def test_thought_is_rendered_for_task_complete():
     message = {"metadata": {"kind": "react.action", "action": "task_complete", "thought": "ya tengo la evidencia"}}
-    assert _plain(render_message(message)) == "💭 ya tengo la evidencia"
+    assert _plain(render_message(message)) == "• Thinking... ya tengo la evidencia"
 
 
 def test_missing_thought_produces_no_line():

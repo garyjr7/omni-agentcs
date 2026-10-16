@@ -153,4 +153,8 @@ def test_completion_menu_can_use_space_above_prompt(tui_factory):
     menus = [f for f in root.floats if isinstance(f.content, MultiColumnCompletionsMenu)]
     assert len(menus) == 1
     assert ui.session._panel_float in root.floats
-    assert len(root.content.children) == 4
+    # Only the transcript and prompt editor are regions; the badge, chips and
+    # external hint line are fixed presentation rows.
+    assert root.content.children == ui.session._rows
+    assert len(root.content.children) == 4 + 3
+    assert ui.session._regions == [ui.session._scrollback_window, ui.session._input_window]

@@ -18,9 +18,14 @@ def test_context_thresholds_and_accessible_labels():
 
 
 def test_context_never_displaces_protected_segments():
+    # Contract change (TUI status bar rewrite): the phase chip is droppable and
+    # is not rendered in the operational bar; the drop-protected segment is the
+    # active alert. Below 30 columns the context meter must never displace
+    # 'TRUST', and the phase label moves to the plan panel instead of the bar.
     state=StatusState(context_tokens=90,context_window=100,trust_mode=True,plan_phase='recon')
     text=''.join(t for _,t in render_status_bar(state,width=25))
-    assert 'TRUST' in text and 'recon' in text
+    assert 'TRUST' in text
+    assert 'recon' not in text
 
 
 def test_request_meter_reflects_compaction_not_run_spend(monkeypatch):

@@ -3,18 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-from contextvars import copy_context
 import importlib
 import os
-from pathlib import Path
-from queue import Queue
 import sys
 import threading
 import time
-from typing import Any, Callable
+from contextvars import copy_context
+from pathlib import Path
+from queue import Queue
+from typing import TYPE_CHECKING, Any, Callable
 
 from .fallback import fallback_prompt
 from .status import StatusState, render_status_bar
+
+if TYPE_CHECKING:
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.formatted_text import StyleAndTextTuples
+    from prompt_toolkit.layout import Window
+
+#: Prefix that marks a user turn, both in the live editor and in the echoed
+#: transcript line: Codex-style single chevron, so the transcript reads as
+#: ``> objective`` / result instead of hiding the operator's words.
+PROMPT_PREFIX = "> "
 
 
 def alt_screen_enabled() -> bool:
@@ -23,6 +33,8 @@ def alt_screen_enabled() -> bool:
 
 
 def should_use_tui() -> bool:
+    if os.getenv("CI", "").strip().lower() in {"1", "true", "yes"}:
+        return False
     if os.getenv("NEXUS_NO_TUI", "").strip().lower() in {"1", "true", "yes"}:
         return False
     try:
@@ -41,15 +53,20 @@ class TuiSession:
     belongs to should_use_tui; fallback never imports prompt_toolkit.
     """
 
+    _input: Buffer
+    _scrollback: Buffer
+    _scrollback_window: Window
+    _app: Any
+
     def __init__(
         self, *, use_tui: bool, history_path: Path | None = None,
         status_bar_enabled: bool = True, no_color: bool = False,
         prompt_style: dict[str, Any] | None = None,
         enable_completion: bool = True,
-        commands: dict | None = None, tools: dict | None = None,
+        commands: dict[str, Any] | None = None, tools: dict[str, Any] | None = None,
         engagements: list[str] | None = None,
-        input=None, output=None, full_screen: bool = True,
-    ):
+        input: Any=None, output: Any=None, full_screen: bool = True,
+    ) -> None:
         self.use_tui = bool(use_tui)
         #: Own the terminal's alternate screen by default, like the top coding
         #: CLIs: ``omni`` opens on a clean dedicated screen and the shell prompt
@@ -59,39 +76,47 @@ class TuiSession:
         self.full_screen = bool(full_screen) and alt_screen_enabled()
         self.status_bar_enabled = status_bar_enabled
         self.no_color = no_color or "NO_COLOR" in os.environ
-        self.prompt_text = "└─$ "
+        self.prompt_text = PROMPT_PREFIX
+        #: Live source of the active engagement's display name. The compact
+        #: header badge reads it on every frame, so it follows the session
+        #: instead of a push that may not have happened yet.
+        self._engagement_source: Callable[[], str | None] | None = None
         from .status import load_status_fields
         self._status = StatusState(cost_known=False, fields=load_status_fields())
         self._completion_context = (commands, tools or {}, engagements or [])
         self._enable_completion = enable_completion
-        self._completer = None
+        self._completer: Any = None
         self._lock = threading.RLock()
         self._closed = False
-        self._session = None
-        self._thread = None
-        self._loop = None
-        self._context = None
+        self._session: Any = None
+        self._thread: threading.Thread | None = None
+        self._loop: Any = None
+        self._context: Any = None
         self._ready = threading.Event()
-        self._answers: Queue = Queue()
+        self._answers: Queue[str | BaseException] = Queue()
         self._accepting = False
         #: While True the input buffer is masked and its content is never echoed
         #: to the transcript (secure secret entry).
         self._secret_mode = False
         self._lines: list[str] = []
-        self._styled_lines = [[]]
+        self._styled_lines: list[list[Any]] = [[]]
         #: Ordered transcript segments (text or tool card) for in-place redraw.
         self._segments: list[dict[str, Any]] = []
         self._write_queue: list[dict[str, Any]] = []
         self._flush_scheduled = False
+        self._busy_segment: dict[str, Any] | None = None
+        self._busy_line: int | None = None
         #: Per-block accordion: card state, toggle-line index and id counter.
         self._cards: dict[int, dict[str, Any]] = {}
         self._toggle_rows: dict[int, int] = {}
         self._next_card_id = 1
         #: Live ReAct "thinking" text shown while the model streams a turn.
         self._thought_text: str | None = None
+        from .presentation import WorkingIndicator
+        self._working_indicator = WorkingIndicator()
         self._auto_scroll = True
         self._cancel_event = threading.Event()
-        self._error = None
+        self._error: BaseException | None = None
         from .tasks import TaskPanel
         self.task_panel = TaskPanel()
         self._task_cancellers: dict[str, Callable[[], None]] = {}
@@ -101,11 +126,15 @@ class TuiSession:
         #: ``/expand``) shows the full output.
         self.expand_cards = False
         self._approval: dict[str, Any] | None = None
+        self._approval_selected = 0
+        self._banner_end_line: int | None = None
+        self._completion_status: str | None = None
         #: Accumulated text of an answer streaming into the live overlay.
         self._answer_text: str | None = None
         self._answer_cache: tuple[Any, list[str]] | None = None
-        from .paste import InputDocument, prune_drafts
         from uuid import uuid4
+
+        from .paste import InputDocument, prune_drafts
         draft = None
         if history_path and self.use_tui:
             directory = history_path.parent / 'drafts'
@@ -117,10 +146,11 @@ class TuiSession:
         if self.use_tui:
             self._build(history_path, prompt_style, input, output)
 
-    def _build(self, history_path, prompt_style, input, output):
-        from prompt_toolkit.key_binding import KeyBindings
+    def _build(self, history_path: Any, prompt_style: Any, input: Any, output: Any) -> None:
         from prompt_toolkit.filters import Condition
+        from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.keys import Keys
+
         from ..commands import COMMANDS
         from .completion import OmniCompleter
         from .history import file_history
@@ -134,28 +164,38 @@ class TuiSession:
             )
         keys = KeyBindings()
 
+        @keys.add("left", filter=Condition(lambda: self._can_edit and not self._input.text and not self._secret_mode))
+        def previous_input(event: Any) -> None:
+            self._input.history_backward()
+
+        @keys.add("?", filter=Condition(lambda: self._can_edit and not self._input.text
+                                        and not self._secret_mode and not self.approval_active))
+        def help_input(event: Any) -> None:
+            self._input.insert_text('/help')
+            self._input.validate_and_handle()
+
         @keys.add(Keys.BracketedPaste, eager=True)
-        def paste(event):
+        def paste(event: Any) -> None:
             if self._can_edit:
                 self.paste_text(event.data)
 
         @keys.add('f5', eager=True)
-        def restore_paste(event):
+        def restore_paste(event: Any) -> None:
             if self._can_edit and not self._secret_mode:
                 self.restore_paste_draft()
 
         @keys.add('f3', eager=True)
-        def expand_paste(event):
+        def expand_paste(event: Any) -> None:
             if self._can_edit:
                 self.expand_paste()
 
         @keys.add('f4', eager=True)
-        def delete_paste(event):
+        def delete_paste(event: Any) -> None:
             if self._can_edit:
                 self.delete_paste()
 
         @keys.add("tab", eager=True)
-        def complete(event):
+        def complete(event: Any) -> None:
             if not self._can_edit or self._completer is None:
                 return
             from prompt_toolkit.completion import CompleteEvent
@@ -175,24 +215,36 @@ class TuiSession:
                 buffer.start_completion(insert_common_part=True)
 
         @keys.add("escape", "enter", eager=True)
-        def newline(event):
+        def newline(event: Any) -> None:
             if self._can_edit:
                 event.current_buffer.insert_text("\n")
 
         @keys.add("enter", eager=True)
-        def submit(event):
+        def submit(event: Any) -> None:
             if self._can_edit:
+                if self.approval_active and not event.current_buffer.text:
+                    event.current_buffer.insert_text(("y", "n", "e")[self._approval_selected])
                 event.current_buffer.validate_and_handle()
 
+        @keys.add("up", filter=Condition(lambda: self.approval_active))
+        def approval_previous(event: Any) -> None:
+            self._approval_selected = (self._approval_selected - 1) % 3
+            self.invalidate()
+
+        @keys.add("down", filter=Condition(lambda: self.approval_active))
+        def approval_next(event: Any) -> None:
+            self._approval_selected = (self._approval_selected + 1) % 3
+            self.invalidate()
+
         @keys.add("c-d", eager=True)
-        def eof(event):
+        def eof(event: Any) -> None:
             if self._can_edit and not event.current_buffer.text:
                 self._answer(EOFError())
             elif self._can_edit:
                 event.current_buffer.delete()
 
         @keys.add("c-c", eager=True)
-        def interrupt(event):
+        def interrupt(event: Any) -> None:
             if self._can_edit:
                 event.current_buffer.reset()
                 self._answer(KeyboardInterrupt())
@@ -203,55 +255,57 @@ class TuiSession:
                 _thread.interrupt_main()
 
         @keys.add("escape", filter=Condition(lambda: self._status.busy and not self._accepting))
-        def cancel(event):
+        def cancel(event: Any) -> None:
             self._cancel_event.set()
 
         @keys.add("pageup", eager=True)
-        def page_up(event):
+        def page_up(event: Any) -> None:
             self.scroll_transcript(-self._page_lines())
 
         @keys.add("pagedown", eager=True)
-        def page_down(event):
+        def page_down(event: Any) -> None:
             self.scroll_transcript(self._page_lines())
 
         @keys.add(Keys.ScrollUp, eager=True)
-        def wheel_up(event):
+        def wheel_up(event: Any) -> None:
             self.scroll_transcript(-3)
 
         @keys.add(Keys.ScrollDown, eager=True)
-        def wheel_down(event):
+        def wheel_down(event: Any) -> None:
             self.scroll_transcript(3)
 
         @keys.add('f6', eager=True)
-        def next_task(event):
+        def next_task(event: Any) -> None:
             self.task_panel.select_next()
             self.invalidate()
 
         @keys.add('f7', eager=True)
-        def cancel_task(event):
+        def cancel_task(event: Any) -> None:
             with self._lock:
                 callback = self._task_cancellers.get(self.task_panel.selected)
             if callback:
                 callback()
 
         @keys.add("f2", eager=True)
-        def toggle_panel(event):
+        def toggle_panel(event: Any) -> None:
             self.set_panel(not self.panel_enabled)
 
         build_layout(self, keys, file_history(history_path) if history_path else None,
                      prompt_style, input, output, full_screen=self.full_screen)
 
-    def _input_height(self):
+    def _input_height(self) -> Any:
+        """Editor rows, footer and three lines of breathing room in its panel."""
         from prompt_toolkit.utils import get_cwidth
 
         size = self._session.output.get_size()
+        # The panel loses one column to the red bar and two to the ``> `` prefix.
         columns = max(1, size.columns - 4)
         rows = sum(max(1, (get_cwidth(line) + columns - 1) // columns)
                    for line in self.input_document.render().split("\n"))
-        return max(0, len(self.prompt_text.splitlines()) - 1) + min(5, rows) + bool(self.input_document.refs)
+        return 4 + min(5, rows)
 
     @property
-    def _can_edit(self):
+    def _can_edit(self) -> bool:
         # Preserve typeahead between prompts. While working, only an explicit
         # prompt (e.g. operator approval) may unlock the input region.
         return self._accepting or not self._status.busy
@@ -261,22 +315,75 @@ class TuiSession:
         with self._lock:
             return "".join(self._lines)
 
-    def _formatted(self, text):
+    def _formatted(self, text: str) -> StyleAndTextTuples:
         from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 
         fragments = to_formatted_text(ANSI(text))
         return [("", part[1]) for part in fragments] if self.no_color else fragments
 
-    def _toolbar(self):
+    def bind_engagement_source(self, source: Callable[[], str | None]) -> None:
+        """Read the active engagement from the session state on every frame.
+
+        The CLI binds ``lambda: engagement.name or engagement_id``: the badge is
+        then correct as soon as an engagement is initialized or loaded, without
+        waiting for a status push (and without a stale copy after a switch).
+        """
+        self._engagement_source = source
+        self.invalidate()
+
+    def _engagement_label(self) -> str:
+        """Live engagement name (or id) for the compact header badge."""
+        from .presentation import clean_text
+        value: Any = None
+        if self._engagement_source is not None:
+            try:
+                value = self._engagement_source()
+            except Exception:  # noqa: BLE001 - a frame must never fail to render
+                value = None
+        name = ' '.join(clean_text(value or self._status.engagement_name or 'workspace').split())
+        return name or 'workspace'
+
+    def _header_badge(self) -> StyleAndTextTuples:
+        return [("" if self.no_color else "#ff0055",
+                 f"BW · OMNI [ {self._engagement_label()} ]")]
+
+    def mark_startup_banner(self) -> None:
+        """Record the banner's last transcript row for scroll-aware branding."""
+        self._banner_end_line = max(0, self._scrollback.document.line_count - 1)
+        self.invalidate()
+
+    def _show_engagement_badge(self) -> bool:
+        """Show the brand only after scrolling the startup masthead away."""
+        return (self._banner_end_line is not None
+                and self._scrollback_window.vertical_scroll > self._banner_end_line)
+
+    def _completion_formatted(self) -> StyleAndTextTuples:
+        if not self._completion_status:
+            return []
+        return [("#ff0055 bold" if not self.no_color else "", self._completion_status)]
+
+    def _workspace_footer(self) -> StyleAndTextTuples:
+        """``model · ~/cwd`` in the bottom-left corner of the input panel.
+
+        The panel footer is the single line that names the agent and the
+        directory the session is bound to; ``Build`` is never rendered.
+        """
+        from .status import workspace_line
+        with self._lock:
+            from dataclasses import replace
+            text = workspace_line(replace(self._status))
+        return [("" if self.no_color else "#00d7ff", text)]
+
+    def _toolbar(self) -> StyleAndTextTuples:
         if not self.status_bar_enabled:
             return []
         with self._lock:
             from dataclasses import replace
-            fragments = render_status_bar(replace(self._status, busy=False), width=self._session.output.get_size().columns)
-        parts = [("", text) for _, text in fragments] if self.no_color else list(fragments)
+            fragments = render_status_bar(replace(self._status), width=self._session.output.get_size().columns)
+        parts: StyleAndTextTuples = [("", part[1]) for part in fragments] if self.no_color else list(fragments)
         if not self._auto_scroll:
             # Visible affordance: the transcript is paused above the live tail.
-            parts = [("class:scroll", "▲ historial · PgDn/Fin"), ("class:scroll", " · ")] + parts
+            parts[0:0] = [("class:scroll", "▲ historial · PgDn/Fin"), ("class:scroll", " · ")]
         return parts
 
     def update_engagement_names(self, names: list[str]) -> None:
@@ -284,21 +391,33 @@ class TuiSession:
         if self._completer is not None:
             self._completer.engagements = tuple(sorted(set(names)))
 
-    def task_event(self, event):
+    def task_event(self, event: Any) -> None:
         self.task_panel.consume(event)
         if self.use_tui:
-            self._session.app.refresh_interval = 0.25 if self.task_panel.running or self._status.busy else None
+            kind = str(event.get("event_type") or event.get("action") or "") if isinstance(event, dict) else ""
+            raw_payload = event.get("payload") if isinstance(event, dict) else None
+            payload = raw_payload if isinstance(raw_payload, dict) else {}
+            if kind in {"orchestrator.subagent", "subagent.started", "subagent.ended",
+                        "fanout.task.started", "fanout.task.ended"}:
+                from .presentation import clean_text
+                label = " ".join(clean_text(
+                    str(payload.get("subagent_id") or payload.get("task_id") or "subagent")
+                ).splitlines())
+                status = " ".join(clean_text(str(
+                    payload.get("status") or ("running" if kind.endswith("started") else "finished")
+                )).splitlines())
+                self.append_scrollback(f"· Subagent {label} · {status}\n\n")
             self._dispatch(self._session.app.refresh_wake.set)
         self.invalidate()
 
-    def bind_task_cancel(self, key, callback):
+    def bind_task_cancel(self, key: Any, callback: Any) -> None:
         with self._lock:
             if callback is None:
                 self._task_cancellers.pop(key, None)
             else:
                 self._task_cancellers[key] = callback
 
-    def set_plan(self, plan: dict | None) -> None:
+    def set_plan(self, plan: dict[str, Any] | None) -> None:
         """Store the latest engagement plan for the side panel."""
         self._plan = plan if isinstance(plan, dict) else None
         self.invalidate()
@@ -309,7 +428,7 @@ class TuiSession:
         self.invalidate()
         return self.panel_enabled
 
-    def _panel_formatted(self):
+    def _panel_formatted(self) -> StyleAndTextTuples:
         from .panels import panel_lines
 
         return [(style, text) for style, text in panel_lines(self._plan, width=44)]
@@ -353,8 +472,7 @@ class TuiSession:
         if self._answer_cache is not None and self._answer_cache[0] == key:
             return self._answer_cache[1]
         body = render_markdown(self._answer_text, no_color=self.no_color, max_width=width)
-        lines = ["OmniAgent ·"]
-        lines += [("  " + line) if line.strip() else "" for line in body.splitlines()]
+        lines = [("  " + line) if line.strip() else "" for line in body.splitlines()]
         self._answer_cache = (key, lines)
         return lines
 
@@ -363,9 +481,9 @@ class TuiSession:
         if not self.answer_active:
             return 0
         rows = self._session.output.get_size().rows
-        return max(1, min(len(self._answer_lines()), max(1, rows - 6)))
+        return int(max(1, min(len(self._answer_lines()), max(1, rows - 6))))
 
-    def _answer_formatted(self):
+    def _answer_formatted(self) -> StyleAndTextTuples:
         lines = self._answer_lines()
         limit = self.answer_height()
         if limit and len(lines) > limit:
@@ -389,8 +507,7 @@ class TuiSession:
             self._thought_text = None
         self.invalidate()
 
-    def _thought_formatted(self):
-        from prompt_toolkit.utils import get_cwidth
+    def _thought_formatted(self) -> StyleAndTextTuples:
 
         with self._lock:
             text = self._thought_text or ""
@@ -398,13 +515,9 @@ class TuiSession:
             columns = self._session.output.get_size().columns
         except Exception:  # noqa: BLE001 - cosmetic sizing only
             columns = 80
-        prefix = "💭 "
-        width = max(10, columns - get_cwidth(prefix) - 2)
-        line = " ".join(text.split())
-        if get_cwidth(line) > width:
-            # Show the tail: what the model is reasoning about *now*.
-            line = line[-width:]
-        return self._formatted(prefix + line)
+        from .presentation import render_rich, thinking
+        return self._formatted(render_rich(thinking(text), width=max(1, columns - 2),
+                                           no_color=self.no_color).split("\n")[0])
 
     def set_expand(self, enabled: bool) -> bool:
         """Expand/collapse every tool card; returns the new state.
@@ -421,9 +534,10 @@ class TuiSession:
     def approval_active(self) -> bool:
         return self._approval is not None
 
-    def set_approval(self, payload: dict | None) -> bool:
+    def set_approval(self, payload: dict[str, Any] | None) -> bool:
         """Show the approval modal for ``payload``; returns whether it is shown."""
         self._approval = dict(payload) if isinstance(payload, dict) else None
+        self._approval_selected = 0
         self.invalidate()
         return self.approval_active
 
@@ -432,35 +546,56 @@ class TuiSession:
         self._approval = None
         self.invalidate()
 
-    def _approval_formatted(self):
+    def _approval_formatted(self) -> StyleAndTextTuples:
         from .panels import approval_lines
 
-        return [(style, text) for style, text in approval_lines(self._approval, width=62)]
+        return [(style, text) for style, text in approval_lines(
+            self._approval, width=62, selected=self._approval_selected
+        )]
 
-    def set_status_bar_enabled(self, enabled: bool):
+    def set_status_bar_enabled(self, enabled: bool) -> None:
         self.status_bar_enabled = bool(enabled)
         if self.use_tui:
-            def update():
+            def update() -> None:
                 self._session.bottom_toolbar = self._toolbar if enabled else None
                 self.invalidate()
             self._dispatch(update)
 
-    def _answer(self, value):
+    def _answer(self, value: Any) -> None:
         self._accepting = False
         self._answers.put(value)
         self.invalidate()
 
-    def _accept(self, buffer):
+    def _accept(self, buffer: Buffer) -> bool:
         if self._can_edit:
             text = buffer.text if self._secret_mode else self.input_document.reconstruct()
-            visible = self.input_document.render()
+            from .presentation import input_quote, input_chip, render_rich
+            visible = render_rich(input_chip(text), no_color=self.no_color) if len(text) > 500 else self.input_document.render()
             # A secret is never echoed to the transcript: show a fixed mask so
             # the operator still sees that the input was taken.
-            self.print(self.prompt_text + ("••••••" if self._secret_mode else visible))
+            if not self._secret_mode and len(text) > 500:
+                self.append_card({}, pasted_input=text, input_prefix=self._input_prefix(), expanded=False)
+            else:
+                value = "••••••" if self._secret_mode else visible
+                width = int(self._session.output.get_size().columns) if self.use_tui else 100
+                self.append_scrollback(input_quote(
+                    self._input_prefix() + value, width=max(1, width - 2),
+                    no_color=self.no_color,
+                ) + "\n\n")
             self._answer(text)
         return False
 
-    def _input_changed(self, buffer):
+    def _input_prefix(self) -> str:
+        """The chevron that opens the echoed user turn.
+
+        Only the last line of the prompt is echoed: the contextual chips
+        (trust/session/report) belong to the header row, not to every turn of
+        the transcript, so the history stays clean.
+        """
+        lines = self.prompt_text.splitlines()
+        return (lines[-1] if lines else "") or PROMPT_PREFIX
+
+    def _input_changed(self, buffer: Any) -> None:
         if self._secret_mode or self._syncing_input:
             return
         try:
@@ -481,7 +616,7 @@ class TuiSession:
                 self._syncing_input = False
             self.print(f"Entrada conservada: {exc}")
 
-    def paste_text(self, content):
+    def paste_text(self, content: Any) -> None:
         from .paste import paste_threshold
         if self._secret_mode or not paste_threshold(content):
             self._input.insert_text(content)
@@ -495,7 +630,7 @@ class TuiSession:
             return
         self._set_input_document(pos+1)
 
-    def restore_paste_draft(self):
+    def restore_paste_draft(self) -> bool:
         from .paste import InputDocument
         path = self.input_document.path
         if self._secret_mode or self._input.text or not path:
@@ -513,7 +648,7 @@ class TuiSession:
                 return True
         return False
 
-    def _set_input_document(self, cursor):
+    def _set_input_document(self, cursor: Any) -> None:
         from prompt_toolkit.document import Document
         self._syncing_input = True
         try:
@@ -521,25 +656,25 @@ class TuiSession:
         finally:
             self._syncing_input = False
 
-    def _selected_paste(self):
+    def _selected_paste(self) -> int | None:
         cursor = self._input.cursor_position
         return next((p for p in (cursor, cursor-1) if p in self.input_document.refs), None)
 
-    def expand_paste(self):
+    def expand_paste(self) -> None:
         pos = self._selected_paste()
         if pos is not None:
             self._input.save_to_undo_stack()
             self._set_input_document(self.input_document.replace_ref(pos, expand=True))
 
-    def delete_paste(self):
+    def delete_paste(self) -> None:
         pos = self._selected_paste()
         if pos is not None:
             self._input.save_to_undo_stack()
             self._set_input_document(self.input_document.replace_ref(pos, expand=False))
 
-    def _run(self):
-        async def run():
-            def ready():
+    def _run(self) -> None:
+        async def run() -> None:
+            def ready() -> None:
                 self._loop = asyncio.get_running_loop()
                 self._context = copy_context()
                 self._ready.set()
@@ -553,7 +688,7 @@ class TuiSession:
             self._ready.set()
             self._answers.put(EOFError())
 
-    def _start(self):
+    def _start(self) -> None:
         if self._thread is None:
             context = copy_context()
             self._thread = threading.Thread(
@@ -564,7 +699,7 @@ class TuiSession:
         if self._error:
             raise self._error
 
-    def _dispatch(self, callback):
+    def _dispatch(self, callback: Any) -> None:
         if self._loop is not None and self._loop.is_running():
             # All Buffer mutations belong to the UI loop and its app context.
             self._loop.call_soon_threadsafe(self._context.copy().run, callback)
@@ -578,7 +713,7 @@ class TuiSession:
         if prompt_text is not None:
             self.prompt_text = prompt_text
         if not self.use_tui:
-            return fallback_prompt(self.prompt_text)
+            return str(fallback_prompt(self.prompt_text))
         self._accepting = True
         self._start()
         self.invalidate()
@@ -586,9 +721,9 @@ class TuiSession:
         self._accepting = False
         if isinstance(result, BaseException):
             raise result
-        return result
+        return str(result)
 
-    def prompt_secret(self, prompt_text: str = "└─🔒 valor oculto: ") -> str:
+    def prompt_secret(self, prompt_text: str = PROMPT_PREFIX + "🔒 valor oculto: ") -> str:
         """Read one line masked: never echoed, never kept in any history.
 
         Uses the session's own input buffer so it cannot fight the running TUI
@@ -622,12 +757,21 @@ class TuiSession:
             return
         self.append_scrollback(str(text) + end)
 
-    def append_scrollback(self, text: str) -> None:
+    def append_scrollback(self, text: str, *, busy_marker: bool = False) -> None:
         if not self.use_tui:
             print(text, end="")
             return
         segment = {"kind": "text", "text": str(text)}
         with self._lock:
+            if busy_marker:
+                previous = self._lines[-1] if self._lines else ""
+                if previous and not previous.endswith("\n"):
+                    segment["text"] = "\n" + segment["text"]
+                    segment["busy_line_offset"] = 1
+                else:
+                    segment["busy_line_offset"] = 0
+                segment["busy_marker"] = True
+                self._busy_segment = segment
             self._lines.append(segment["text"])
             self._segments.append(segment)
             self._write_queue.append(segment)
@@ -639,10 +783,15 @@ class TuiSession:
         else:
             self._flush_scrollback()
 
-    def append_card(self, result: dict, *, expanded: bool | None = None) -> None:
+    def append_card(self, result: dict[str, Any], *, expanded: bool | None = None,
+                    thought: str | None = None, pasted_input: str | None = None,
+                    input_prefix: str | None = None) -> None:
         """Append a tool-result card that expands/collapses on its own (click)."""
-        card = {
+        card: dict[str, Any] = {
             "kind": "card",
+            "thought": thought,
+            "pasted_input": pasted_input,
+            "input_prefix": input_prefix,
             "id": self._next_card_id,
             "result": result if isinstance(result, dict) else {},
             "expanded": bool(self.expand_cards if expanded is None else expanded),
@@ -665,9 +814,32 @@ class TuiSession:
     def _card_text(self, card: dict[str, Any]) -> str:
         from .stream import render_tool_result
 
-        # A trailing blank line gives each result room to breathe, so turns are
-        # visually separated instead of a flat wall of output.
-        return render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded"))) + "\n\n"
+        if card.get("pasted_input") is not None:
+            from rich.text import Text
+            from .presentation import clean_text, input_chip, input_quote, render_rich
+            value = str(card['pasted_input'])
+            expanded = bool(card.get('expanded'))
+            visible = clean_text(value) if expanded else input_chip(value).plain
+            prefix = clean_text(str(card.get('input_prefix') or self._input_prefix()))
+            width = max(1, int(self._session.output.get_size().columns) - 2)
+            quote = input_quote(prefix + visible, width=width, no_color=self.no_color)
+            footer = render_rich(Text('[ Show less ]' if expanded else '[ Show pasted input ]', style='dim'),
+                                 width=width, no_color=self.no_color)
+            return quote + '\n' + footer + '\n\n'
+        if card.get("thought") is not None:
+            from rich.console import Group
+            from rich.text import Text
+
+            from .presentation import render_rich, thinking
+            expanded = bool(card.get("expanded"))
+            footer = Text("[ Show less ]" if expanded else "[ Show thinking ]", style="dim cyan")
+            width = int(self._session.output.get_size().columns) if self.use_tui else 100
+            return render_rich(Group(thinking(str(card["thought"]), expanded=expanded), footer),
+                               width=max(1, width - 2), no_color=self.no_color) + "\n\n"
+        width = int(self._session.output.get_size().columns) if self.use_tui else 100
+        return render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded")),
+                                  max_lines=5, width=max(1, width - 2),
+                                  no_color=self.no_color) + "\n\n"
 
     def _segment_text(self, segment: dict[str, Any]) -> str:
         if segment.get("kind") == "card":
@@ -675,19 +847,22 @@ class TuiSession:
         return str(segment.get("text") or "")
 
     @staticmethod
-    def _footer_line_index(styled: list[list]) -> int | None:
-        """Index of a card's toggle footer, or ``None`` when it has none.
+    def _has_toggle(card: dict[str, Any]) -> bool:
+        from .presentation import clean_text
+        from .stream import trace_text
+        if card.get("thought") is not None or card.get("pasted_input") is not None:
+            return True
+        result = card.get("result") or {}
+        value, _ = trace_text(result)
+        return len(clean_text(value).splitlines()) > 5
 
-        The footer is the card's last non-empty logical line; a trailing newline
-        leaves an empty line after it, so scanning from the end is required.
-        """
+    @staticmethod
+    def _footer_line_index(styled: list[list[Any]]) -> int | None:
+        """Last physical footer line, including footers wrapped on narrow screens."""
         from prompt_toolkit.formatted_text import fragment_list_to_text
-
         for index in range(len(styled) - 1, -1, -1):
-            text = fragment_list_to_text(styled[index]).strip()
-            if not text:
-                continue
-            return index if "mostrar" in text else None
+            if fragment_list_to_text(styled[index]).strip():
+                return index
         return None
 
     def toggle_card_at_line(self, line: int) -> bool:
@@ -721,8 +896,9 @@ class TuiSession:
         """
         from prompt_toolkit.formatted_text import fragment_list_to_text
         from prompt_toolkit.formatted_text.utils import split_lines
+        from .presentation import wrap_terminal_text
 
-        styled: list[list] = [[]]
+        styled: list[list[Any]] = [[]]
         toggle: dict[int, int] = {}
         raw_lines: list[str] = []
         for segment in self._segments:
@@ -730,12 +906,13 @@ class TuiSession:
             raw_lines.append(text)
             if not text:
                 continue
-            lines = list(split_lines(self._formatted(text)))
+            wrapped = wrap_terminal_text(text, width=self._scrollback_width(), no_color=self.no_color)
+            lines = list(split_lines(self._formatted(wrapped)))
             if not lines:
                 continue
             styled[-1].extend(lines[0])
             styled.extend(lines[1:])
-            if segment.get("kind") == "card":
+            if segment.get("kind") == "card" and self._has_toggle(segment):
                 index = self._footer_line_index(styled)
                 if index is not None:
                     toggle[index] = segment["id"]
@@ -745,10 +922,11 @@ class TuiSession:
         self._lines = raw_lines
         return plain
 
-    def _flush_scrollback(self):
+    def _flush_scrollback(self) -> None:
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import fragment_list_to_text
         from prompt_toolkit.formatted_text.utils import split_lines
+        from .presentation import wrap_terminal_text
 
         with self._lock:
             pending = self._write_queue
@@ -761,13 +939,16 @@ class TuiSession:
             text = self._segment_text(segment)
             if not text:
                 continue
-            fragments = self._formatted(text)
+            if segment.get("busy_marker"):
+                self._busy_line = len(self._styled_lines) - 1 + int(segment.get("busy_line_offset") or 0)
+            wrapped = wrap_terminal_text(text, width=self._scrollback_width(), no_color=self.no_color)
+            fragments = self._formatted(wrapped)
             lines = list(split_lines(fragments))
             if not lines:
                 continue
             self._styled_lines[-1].extend(lines[0])
             self._styled_lines.extend(lines[1:])
-            if segment.get("kind") == "card":
+            if segment.get("kind") == "card" and self._has_toggle(segment):
                 # The footer is the click target for expanding just this card.
                 index = self._footer_line_index(self._styled_lines)
                 if index is not None:
@@ -787,6 +968,14 @@ class TuiSession:
         except Exception:  # noqa: BLE001 - cosmetic sizing only
             rows = 24
         return max(1, rows - 5)
+
+    def _scrollback_width(self) -> int:
+        """Usable text width after the console's two-cell left inset."""
+        try:
+            columns = int(self._session.output.get_size().columns)
+        except Exception:  # noqa: BLE001 - keep render fallback resilient
+            columns = 80
+        return max(1, columns - 2)
 
     def _scroll_to(self, line: int) -> None:
         """Put logical line ``line`` at the top of the transcript region."""
@@ -823,27 +1012,59 @@ class TuiSession:
         else:
             self._scroll_to(target)
 
-    def _render_busy(self):
+    def _render_busy(self) -> StyleAndTextTuples:
         if not self._status.busy:
             return []
         elapsed = max(0, int(time.monotonic() - self._status.busy_started_at))
-        frame = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 4) % 10]
-        message = self._status.busy_message or "Working"
-        text = f" {frame} {message}... ({elapsed}s · esc to interrupt)"
-        return [("" if self.no_color else "class:busy", text)]
+        text = self._working_indicator.frame(
+            self._status.busy_message, now=time.monotonic(), elapsed=elapsed,
+            width=max(1, int(self._session.output.get_size().columns) - 1), no_color=self.no_color)
+        return self._formatted(text)
 
-    def set_busy(self, message: str = ""):
+    def set_busy(self, message: str = "") -> None:
         self._cancel_event.clear()
+        self._completion_status = None
+        if self.use_tui and not self._status.busy:
+            self.append_scrollback("[+][+][+][+][+] · esc interrupt\n\n", busy_marker=True)
         self.set_status(busy=True, busy_message=message)
 
-    def clear_busy(self):
-        self.set_status(busy=False)
+    def clear_busy(self) -> None:
+        from datetime import datetime
+        self.flush()
+        with self._lock:
+            was_busy = self._status.busy
+            elapsed = max(0, int(time.monotonic() - self._status.busy_started_at))
+            plain: str | None = None
+            cursor = self._scrollback.cursor_position if self.use_tui else 0
+            if was_busy and self._busy_segment is not None:
+                self._busy_segment["text"] = "\n\n"
+                self._busy_segment.pop("busy_marker", None)
+                self._busy_segment.pop("busy_line_offset", None)
+                self._busy_line = None
+                self._write_queue = [segment for segment in self._write_queue
+                                     if segment is not self._busy_segment]
+                plain = self._rebuild_state_locked()
+                cursor = len(plain) if self._auto_scroll else min(cursor, len(plain))
+                self._busy_segment = None
+        if was_busy and self.use_tui:
+            minutes, seconds = divmod(elapsed, 60)
+            self._completion_status = (
+                f"Worked for {minutes}m {seconds}s · {datetime.now().strftime('%I:%M %p')}"
+            )
+            if plain is not None:
+                self._dispatch(lambda: self._commit_transcript(plain, cursor))
+            self.set_status(busy=False)
+            self.append_scrollback(self._completion_status + "\n\n")
+            self.invalidate()
+        else:
+            self.set_status(busy=False)
+
 
     def clear_screen(self) -> None:
         """Clear the TUI terminal before its first frame; fallback is untouched."""
         if not self.use_tui:
             return
-        def clear():
+        def clear() -> None:
             self._session.output.erase_screen()
             self._session.output.cursor_goto(0, 0)
             self._session.output.flush()
@@ -857,7 +1078,7 @@ class TuiSession:
             return
         done = threading.Event()
 
-        def drain():
+        def drain() -> None:
             try:
                 self._flush_scrollback()
             finally:
@@ -867,7 +1088,7 @@ class TuiSession:
         if not done.wait(5):
             raise RuntimeError("TUI output did not drain")
 
-    def set_status(self, **fields) -> None:
+    def set_status(self, **fields: Any) -> None:
         if not self.use_tui:
             return
         aliases = {
@@ -886,7 +1107,8 @@ class TuiSession:
                 )
             for key, value in fields.items():
                 setattr(self._status, aliases.get(key, key), value)
-        self._session.app.refresh_interval = 0.25 if self._status.busy or self.task_panel.running else None
+        self._session.app.min_redraw_interval = 0.1
+        self._session.app.refresh_interval = 0.1 if self._status.busy or self.task_panel.running else None
         self._dispatch(self._session.app.refresh_wake.set)
         self.invalidate()
 
@@ -902,7 +1124,7 @@ class TuiSession:
         finally:
             self._closed = True
             if self._thread and self._thread.is_alive():
-                def stop():
+                def stop() -> None:
                     app = self._session.app
                     if app.is_running and not app.future.done():
                         app.exit()

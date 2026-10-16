@@ -3,8 +3,10 @@
 import json
 import re
 import shlex
+from typing import Any
 
-from ..theme import AQUA, AQUA_DIM, GRAY, GREEN, OFFWHITE, RED, RESET
+from ..theme import AQUA_DIM, RESET
+from .presentation import clean_text, render_rich, result_diff, thinking, trace_block
 
 PREFIXES = {
     "nexus.recon.nmap": "Recon-NMAP", "nexus.recon.dns": "Recon-DNS",
@@ -23,9 +25,9 @@ def tool_prefix(tool_id: str) -> str:
     return f"[{PREFIXES.get(str(tool_id or '').lower(), 'Tool')}]"
 
 
-def _line(text, width=100):
-    text = "".join(c if c.isprintable() else " " for c in str(text))
-    return text if len(text) <= width else text[:max(0, width - 1)] + "…"
+def _line(text: Any, width: int = 100) -> str:
+    value = " ".join(clean_text(str(text)).splitlines())
+    return value if len(value) <= width else value[:max(0, width - 1)] + "…"
 
 
 def data_lines(output: str, *, width: int = 100) -> tuple[list[str], bool]:
@@ -61,8 +63,8 @@ def truncate_output(output: str, max_lines: int = 3, *, width: int = 100) -> tup
     return "\n".join([lines[0], "...", *tail]), True
 
 
-def render_thought(text, *, width: int = 180):
-    """The model's reasoning of one ReAct iteration (agent thinking, in red).
+def render_thought(text: str, *, width: int = 180, expanded: bool = False) -> str:
+    """Muted, single-line reasoning summary, expandable without changing history.
 
     The thought is durable (``react.action`` metadata) and is emitted *before*
     the tool it justifies, so the human sees the intent before the action.
@@ -70,11 +72,22 @@ def render_thought(text, *, width: int = 180):
     text = str(text or "").strip()
     if not text:
         return ""
-    return f"{RED}💭 {_line(text, width)}{RESET}"
+    return render_rich(thinking(text, expanded=expanded), width=width)
 
 
-def format_tool_invocation(tool_id, arguments):
+def format_tool_invocation(tool_id: str, arguments: Any) -> str:
     args = arguments if isinstance(arguments, dict) else {}
+    operation = str(tool_id or "").rsplit(".", 1)[-1].lower()
+    file_operations = {
+        "read": "Read", "create": "Create", "write": "Create",
+        "edit": "Edit", "update": "Edit", "write_file": "Create",
+        "edit_file": "Edit", "read_file": "Read",
+    }
+    if operation in file_operations and any(
+        marker in str(tool_id).lower() for marker in ("workspace", "file", "filesystem")
+    ):
+        path = clean_text(str(args.get("path") or args.get("file_path") or "?"))
+        return f"• {file_operations[operation]} {path}"
     if tool_id == "nexus.recon.nmap":
         # This is the argv constructed by the existing handler, including XML.
         flags = args.get("flags") or []
@@ -84,16 +97,20 @@ def format_tool_invocation(tool_id, arguments):
         # Other handlers may transform arguments. Display the durable request
         # honestly rather than inventing a shell command they may not execute.
         text = str(tool_id) + " " + json.dumps(args, ensure_ascii=False, default=str)
-    # Tool calls: gear glyph in aqua, dim tool tag, aqua command line.
-    return f"{AQUA}⚙{RESET}{AQUA_DIM} {tool_prefix(tool_id)}{RESET} {AQUA}{_line(text)}{RESET}"
+    from .presentation import tactical_phase
+    # Preserve exact identifiers as secondary dispatch metadata.
+    return f"· {tactical_phase(tool_id)} · [{tool_id}]\n{AQUA_DIM}  {tool_prefix(tool_id)} {_line(text)}{RESET}"
 
 
-def output_text(result):
-    if isinstance(result.get("stdout"), str) and result["stdout"]:
-        return result["stdout"]
+def output_text(result: dict[str, Any]) -> str:
+    streams = [(name, result.get(name)) for name in ("stdout", "stderr")]
+    present = [(name, value) for name, value in streams if isinstance(value, str) and value]
+    if present:
+        return "\n".join((f"[{name}]\n" if len(present) > 1 else "") + str(value)
+                         for name, value in present)
     output = result.get("output") or ""
     if isinstance(output, str):
-        return output
+        return str(output)
     if isinstance(output, dict) and isinstance(output.get("scan"), dict):
         scan = output["scan"]
         lines = []
@@ -107,7 +124,7 @@ def output_text(result):
     return json.dumps(output, ensure_ascii=False, indent=2, default=str) if output else ""
 
 
-def summarize_tool_result(result):
+def summarize_tool_result(result: dict[str, Any]) -> str:
     evidence = result.get("evidence") or {}
     output = result.get("output") or {}
     evidence = evidence if isinstance(evidence, dict) else {}
@@ -127,40 +144,29 @@ def summarize_tool_result(result):
     return _line(" · ".join(parts) or str(result.get("verification_method") or "completado"))
 
 
-def render_tool_result(result, *, expanded: bool = False, max_lines: int = 5):
-    """Render one tool result as a collapsible card (show more / show less).
-
-    Collapsed (default) keeps ``max_lines`` head/tail data lines and reports how
-    many were hidden; ``expanded`` prints the whole output. The last line is a
-    clickable footer so the TUI can expand just this card; the summary and
-    success marker are always shown. Output is off-white, structure is aqua.
-    """
-    output = output_text(result)
-    total = len(data_lines(output)[0])
-    if expanded:
-        lines, _ = data_lines(output)
-        hidden = 0
-    else:
-        text, _ = truncate_output(output, max_lines)
-        lines = text.splitlines()
-        hidden = max(0, total - (len(lines) - (1 if "..." in lines else 0)))
-    body = []
-    for line in lines:
-        if line == "...":
-            body.append(f"{GRAY}   ...{RESET}")
-        else:
-            body.append(f"{OFFWHITE}   -> {line}{RESET}")
-    ok = bool(result.get("success"))
-    summary = summarize_tool_result(result)
-    body.append(f"{GREEN if ok else RED}   {'✓' if ok else '✗'} {summary}{RESET}")
-    if hidden:
-        body.append(f"{AQUA}   ▼ mostrar {hidden} línea(s) más{RESET}")
-    elif expanded and total > max_lines:
-        body.append(f"{AQUA}   ▲ mostrar menos{RESET}")
-    return "\n".join(body)
+def trace_text(result: dict[str, Any]) -> tuple[str, bool]:
+    """A diff must not hide accompanying stdout/stderr diagnostics."""
+    diff = result_diff(result)
+    raw = output_text(result)
+    if diff is None:
+        return raw, False
+    if (result.get("stdout") or result.get("stderr")) and raw != diff:
+        return raw + "\n" + diff, True
+    return diff, True
 
 
-def observation(message):
+def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
+                       max_lines: int = 5, width: int = 100, no_color: bool = False) -> str:
+    """Fold tool output at five lines with a literal, interactive card toggle."""
+    value, is_diff = trace_text(result)
+    return render_rich(trace_block(
+        value,
+        success=bool(result.get("success")), tool_id=str(result.get("tool_id") or "tool"),
+        summary=summarize_tool_result(result), expanded=expanded, limit=max_lines,
+        diff=is_diff), width=width, no_color=no_color)
+
+
+def observation(message: dict[str, Any]) -> dict[str, Any]:
     metadata = message.get("metadata") or {}
     result = metadata.get("tool_result") or {}
     try:
@@ -169,14 +175,16 @@ def observation(message):
         parsed = None
     if isinstance(parsed, dict):
         result = {**parsed, **result}
-    return result if isinstance(result, dict) else {"success": False}
+    normalized = dict(result) if isinstance(result, dict) else {"success": False}
+    normalized.setdefault("tool_id", str(metadata.get("tool_id") or "tool"))
+    return normalized
 
 
-def render_message(message, *, expanded: bool = False):
+def render_message(message: dict[str, Any], *, expanded: bool = False) -> str:
     meta = message.get("metadata") or {}
     kind = meta.get("kind")
     if kind == "react.action":
-        thought = render_thought(str(meta.get("thought") or ""))
+        thought = render_thought(str(meta.get("thought") or ""), expanded=expanded)
         if meta.get("action") == "tool_call":
             call = format_tool_invocation(meta.get("tool_id", "?"), meta.get("arguments", {}))
             return f"{thought}\n{call}" if thought else call

@@ -67,7 +67,9 @@ def test_repl_banner_shown_before_first_prompt(tui_factory, monkeypatch):
     monkeypatch.delenv("NEXUS_NO_BANNER", raising=False)
     feed(session, ui, ["/exit"])
     session.run_repl()
-    assert ui.session.transcript.index("OMNIAGENTCS") < ui.session.transcript.index("└─$")
+    from nexus_core.cli.tui.presentation import clean_text
+    transcript = clean_text(ui.session.transcript)
+    assert transcript.index("Omni Agent CS") < transcript.index("▌ > /exit")
 
 
 def test_repl_output_routed_through_tui_output(tui_factory, monkeypatch):
@@ -139,7 +141,11 @@ def test_status_live_toggle_and_fixed_input(tui_factory, monkeypatch):
     assert callable(ui.session._session.bottom_toolbar)
     # The dedicated screen (alt-screen) is on by default.
     assert ui.session._session.app.full_screen
-    assert len(ui.session._session.app.layout.container.content.children) == 4
+    # The badge and transient chips sit above the transcript/editor dock.
+    children = ui.session._session.app.layout.container.content.children
+    assert children == ui.session._rows
+    assert children.index(ui.session._input_window) < children.index(ui.session._hints_window)
+    assert children[-1] is ui.session._hints_bottom_margin
 
 
 def test_llm_usage_accumulates_without_double_counting(tui_factory, monkeypatch, tmp_path):

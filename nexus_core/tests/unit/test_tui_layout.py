@@ -1,9 +1,43 @@
 from prompt_toolkit.formatted_text import fragment_list_to_text
 
 
-def test_layout_has_four_regions(tui_factory):
+def test_layout_locks_bottom_to_editor_and_helper_hints(tui_factory):
     ui = tui_factory()
-    assert len(ui.session._app.layout.container.content.children) == 4
+    children = ui.session._app.layout.container.content.children
+    # All status/output renderables stay out of the fixed prompt dock.
+    assert children == ui.session._rows
+    assert children == [
+        ui.session._badge_window,
+        ui.session._scrollback_window,
+        ui.session._chips_window,
+        ui.session._input_window,
+        ui.session._hints_top_margin,
+        ui.session._hints_window,
+        ui.session._hints_bottom_margin,
+    ]
+    assert ui.session._regions == [ui.session._scrollback_window, ui.session._input_window]
+    assert ui.session._busy_window not in children
+    assert ui.session._status_window not in children
+    assert ui.session._completion_window not in children
+    assert ui.session._hints_window not in ui.session._regions
+
+
+def test_engagement_badge_appears_only_after_startup_banner_scrolls_off(tui_factory):
+    ui = tui_factory().session
+    assert not ui._show_engagement_badge()
+    ui.append_scrollback("banner\\n" * 8)
+    ui.mark_startup_banner()
+    assert not ui._show_engagement_badge()
+    ui._scrollback_window.vertical_scroll = ui._banner_end_line + 1
+    assert ui._show_engagement_badge()
+
+
+def test_completion_summary_is_kept_in_scrollable_history(tui_factory):
+    ui = tui_factory().session
+    ui.set_busy()
+    ui.clear_busy()
+    assert "Worked for " in ui.transcript
+    assert ui._completion_window not in ui._rows
 
 
 def test_full_screen_true_by_default(tui_factory):
@@ -24,7 +58,7 @@ def test_full_screen_layout_renders(tui_factory):
     ui = tui_factory()
     ui.pipe.send_text("hi\r")
     assert ui.session.prompt() == "hi"
-    ui.session.set_status(engagement="lab")
+    ui.session.set_status(engagement="lab", scope_targets=2)
     ui.session.print("out")
     ui.session.flush()
     assert "out" in ui.session._scrollback.text
@@ -49,14 +83,14 @@ def test_expand_cards_toggles(tui_factory):
     assert ui.session.set_expand(False) is False
 
 
-def test_status_bar_at_bottom(tui_factory):
+def test_status_bar_is_not_a_fixed_output_region(tui_factory):
     ui = tui_factory()
-    assert ui.session._regions[-1] is ui.session._status_window
+    assert ui.session._status_window not in ui.session._rows
 
 
-def test_input_between_busy_and_status(tui_factory):
+def test_input_is_the_only_fixed_content_region(tui_factory):
     ui = tui_factory()
-    assert ui.session._regions[1:] == [ui.session._busy_window, ui.session._input_window, ui.session._status_window]
+    assert ui.session._regions == [ui.session._scrollback_window, ui.session._input_window]
 
 
 def test_scrollback_grows_independently(tui_factory):
@@ -70,13 +104,13 @@ def test_layout_renders_all_regions(tui_factory):
     ui = tui_factory()
     ui.pipe.send_text("begin\r")
     ui.session.prompt()
-    ui.session.set_status(engagement="lab")
+    ui.session.set_status(engagement="lab", scope_targets=2)
     ui.session.set_busy()
     ui.session.print("output")
     ui.session.flush()
     assert "output" in ui.session._scrollback.text
-    assert "Working" in fragment_list_to_text(ui.session._render_busy())
-    assert "lab" in fragment_list_to_text(ui.session._toolbar())
+    assert "esc interrupt" in fragment_list_to_text(ui.session._render_busy())
+    assert "Scope: 2 targets" in fragment_list_to_text(ui.session._toolbar())
     assert ui.session._app.layout.current_buffer is ui.session._input
 
 
@@ -112,14 +146,15 @@ def test_wheel_scrolls_three_lines(tui_factory):
     assert ui.session._auto_scroll is False
 
 
-def test_answer_overlay_streams_and_commits(tui_factory):
+def test_answer_buffer_has_no_agent_label_and_commits(tui_factory):
     ui = tui_factory()
     ui.session.begin_answer()
     assert ui.session.answer_active is True
     ui.session.append_answer("# Hola\n")
     ui.session.append_answer("una **prueba**")
     assert ui.session.answer_height() >= 2
-    assert "OmniAgent" in "".join(part[1] for part in ui.session._answer_formatted())
+    assert "OmniAgent" not in "".join(part[1] for part in ui.session._answer_formatted())
+    assert ui.session._answer_float not in ui.session._app.layout.container.floats
     text = ui.session.end_answer()
     assert text == "# Hola\nuna **prueba**"
     assert ui.session.answer_active is False

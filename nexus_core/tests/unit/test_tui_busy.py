@@ -16,23 +16,36 @@ def test_busy_window_height_one_when_busy(tui_factory):
     assert ui.session._busy_window.height() == 1
 
 
-def test_busy_shows_working_text(tui_factory):
+def test_busy_shows_pulsing_block_indicator(tui_factory):
     ui = tui_factory()
     ui.session.set_busy()
-    assert "Working..." in fragment_list_to_text(ui.session._render_busy())
+    text = fragment_list_to_text(ui.session._render_busy())
+    assert "[+][+][+][+][+] · esc interrupt" in text
+    assert ui.session._busy_line is not None
+    lexer = ui.session._scrollback_window.content.lexer
+    active_line = lexer.lex_document(ui.session._scrollback.document)(ui.session._busy_line)
+    assert fragment_list_to_text(active_line) == "[+][+][+][+][+] · esc interrupt"
 
 
-def test_busy_shows_elapsed_seconds(tui_factory):
+def test_busy_completion_logs_worked_for_duration(tui_factory):
     ui = tui_factory()
     ui.session.set_busy()
     ui.session._status.busy_started_at = time.monotonic() - 3
-    assert "(3s · esc to interrupt)" in fragment_list_to_text(ui.session._render_busy())
+    # The active indicator carries no elapsed time...
+    assert "esc interrupt" in fragment_list_to_text(ui.session._render_busy())
+    # ...the duration is recorded once the turn completes.
+    ui.session.clear_busy()
+    assert ui.session._completion_status is not None
+    assert ui.session._completion_status.startswith("Worked for 0m 3s ·")
+    assert ui.session._completion_window.height() == 1
+    assert "Worked for" in ui.session.transcript
+    assert "[+][+][+][+][+] · esc interrupt" not in ui.session.transcript
 
 
 def test_busy_shows_custom_message(tui_factory):
     ui = tui_factory()
     ui.session.set_busy("Ejecutando nmap")
-    assert "Ejecutando nmap" in fragment_list_to_text(ui.session._render_busy())
+    assert fragment_list_to_text(ui.session._render_busy()).endswith(" · esc interrupt")
 
 
 def test_busy_clears_after_tool(tui_factory):
@@ -48,12 +61,11 @@ def test_busy_clears_after_tool(tui_factory):
     assert not ui.session._status.busy and ui.session._render_busy() == []
 
 
-def test_busy_elapsed_updates_with_refresh_interval(tui_factory):
+def test_busy_refresh_interval_is_live(tui_factory):
     ui = tui_factory()
     ui.session.set_busy()
-    assert ui.session._app.refresh_interval == 0.25
-    with patch("nexus_core.cli.tui.session.time.monotonic", return_value=ui.session._status.busy_started_at + 5):
-        assert "5s" in fragment_list_to_text(ui.session._render_busy())
+    # The pulse is driven by the existing refresh loop, not a second writer.
+    assert ui.session._app.refresh_interval == 0.1
 
 
 def test_escape_during_busy_emits_cancel(tui_factory):
@@ -92,7 +104,9 @@ def test_busy_does_not_flicker(tui_factory):
 
 def test_busy_visible_above_input(tui_factory):
     ui = tui_factory()
-    assert ui.session._regions.index(ui.session._busy_window) < ui.session._regions.index(ui.session._input_window)
+    ui.session.set_busy()
+    assert "[+][+][+][+][+] · esc interrupt" in ui.session.transcript
+    assert ui.session._busy_window not in ui.session._rows
 
 
 def test_direct_operation_cancel_without_run_does_not_write_audit(tui_factory):

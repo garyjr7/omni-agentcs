@@ -11,7 +11,7 @@ def test_large_paste_roundtrip_and_literal_marker(tui_factory):
     ui.paste_text('Z'*2000)
     ui._input.insert_text(' after')
     assert len(ui._input.text) < 80
-    assert ui.input_document.render().count('caracteres') == 2
+    assert ui.input_document.render().count('characters') == 2
     assert ui.input_document.reconstruct() == 'before [Pegado #1] '+text+' between '+'Z'*2000+' after'
     ui._accept(ui._input)
     assert ui._answers.get_nowait().endswith('Z'*2000+' after')

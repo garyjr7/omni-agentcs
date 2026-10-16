@@ -19,7 +19,7 @@ def decision(reason="requiere aprobación humana", requires_approval=True):
 def test_approval_lines_without_payload_is_tolerant():
     lines = approval_lines(None)
     assert lines
-    assert any("APROBACIÓN" in text for _, text in lines)
+    assert any("AUTORIZACIÓN" in text for _, text in lines)
 
 
 def test_approval_lines_show_tool_risk_reason_and_arguments():
@@ -35,7 +35,8 @@ def test_approval_lines_show_tool_risk_reason_and_arguments():
     assert "post-explotación" in text
     assert "session_id: abc123" in text
     assert "command: id" in text
-    assert "[y] aprobar" in text and "[e] editar" in text
+    assert "Sí / aprobar" in text and "No / rechazar" in text and "Custom / editar" in text
+    assert "Submit" in text and "↑↓ navigate · Enter select" in text
 
 
 def test_approval_style_defines_every_used_rule():

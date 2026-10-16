@@ -1,12 +1,21 @@
 """Four independent regions on the primary terminal screen."""
 
 import asyncio
+from typing import Any, Callable
+from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.clipboard import ClipboardData
+from prompt_toolkit.mouse_events import MouseEvent
+from .paste import PasteRef
+
+Snapshot = tuple[str, int, dict[int, PasteRef]]
 from types import SimpleNamespace
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.layout import ConditionalContainer, Float, FloatContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import ConditionalContainer, Float, FloatContainer, HSplit, Layout, VSplit, Window, WindowAlign
+from prompt_toolkit.layout import Margin, WindowRenderInfo
 from prompt_toolkit.layout.dimension import D
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.mouse_events import MouseEventType
@@ -16,15 +25,15 @@ from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 
 
-class RegionApplication(Application):
+class RegionApplication(Application[Any]):
     """One adaptive refresh task: 4 Hz while busy, 0.5 Hz for the idle clock."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.refresh_wake = asyncio.Event()
 
-    def _start_auto_refresh_task(self):
-        async def refresh():
+    def _start_auto_refresh_task(self) -> None:
+        async def refresh() -> None:
             while True:
                 try:
                     await asyncio.wait_for(self.refresh_wake.wait(), self.refresh_interval or 2.0)
@@ -43,11 +52,11 @@ class ScrollbackControl(BufferControl):
     consumed; every other event falls back to the buffer (selection/scroll).
     """
 
-    def __init__(self, *args, on_line_click=None, **kwargs):
+    def __init__(self, *args: Any, on_line_click: Callable[[int], bool] | None = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._on_line_click = on_line_click
 
-    def mouse_handler(self, mouse_event):
+    def mouse_handler(self, mouse_event: MouseEvent) -> Any:
         if (
             self._on_line_click is not None
             and mouse_event.event_type == MouseEventType.MOUSE_DOWN
@@ -57,27 +66,49 @@ class ScrollbackControl(BufferControl):
         return super().mouse_handler(mouse_event)
 
 
-def build_layout(ui, keys, history, prompt_style, input, output, full_screen=False):
+def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any, output: Any, full_screen: bool = False) -> None:
     from .lexer import OmniLexer
+    from .presentation import PANEL_BAR_STYLE, PANEL_STYLE
+
+    class ConsoleInset(Margin):
+        """Two blank cells that keep transcript and footer content off the edge."""
+
+        def get_width(self, get_ui_content: Callable[[], Any]) -> int:
+            del get_ui_content
+            return 2
+
+        def create_margin(self, window_render_info: WindowRenderInfo,
+                          width: int, height: int) -> StyleAndTextTuples:
+            del window_render_info
+            return [("", " " * width + "\n") for _ in range(height)]
+
+    inset = [ConsoleInset()]
 
     class ScrollbackLexer(Lexer):
-        def lex_document(self, document):
+        def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
             # Styles are parsed once when appended, never over the whole log
-            # on each frame. The Buffer itself contains plain text.
-            return lambda n: ui._styled_lines[n] if n < len(ui._styled_lines) else []
+            # on each frame. The Buffer itself contains plain text. Only the
+            # active marker line is recolored per pulse; its text and position
+            # remain part of the scrollable transcript.
+            def get_line(n: int) -> StyleAndTextTuples:
+                if ui._status.busy and n == ui._busy_line:
+                    return ui._render_busy()
+                return ui._styled_lines[n] if n < len(ui._styled_lines) else []
+            return get_line
 
     ui._scrollback = Buffer(name="scrollback", read_only=True)
     class InputBuffer(Buffer):
-        def reset(self, *args, **kwargs):
+        _segment_undo: list[Snapshot]
+        _segment_redo: list[Snapshot]
+        def reset(self, *args: Any, **kwargs: Any) -> None:
             self._segment_undo, self._segment_redo = [], []
-            result = super().reset(*args, **kwargs)
+            super().reset(*args, **kwargs)
             # Buffer.reset does not emit on_text_changed. Keep the typed side
             # document in sync before subsequent typeahead edits use its ranges.
             if getattr(ui, '_input', None) is self and not ui._secret_mode:
                 ui.input_document.synchronize(self.text)
-            return result
 
-        def _edit_range(self, start, stop, replacement, cursor):
+        def _edit_range(self, start: int, stop: int, replacement: str, cursor: int) -> bool:
             if self.read_only():
                 from prompt_toolkit.buffer import EditReadOnlyBuffer
                 raise EditReadOnlyBuffer()
@@ -89,7 +120,7 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
             ui._set_input_document(cursor)
             return True
 
-        def delete(self, count=1):
+        def delete(self, count: int = 1) -> str:
             if ui._secret_mode:
                 return super().delete(count)
             start = self.cursor_position
@@ -97,7 +128,7 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
             deleted = self.text[start:stop]
             return deleted if self._edit_range(start, stop, '', start) else ''
 
-        def delete_before_cursor(self, count=1):
+        def delete_before_cursor(self, count: int = 1) -> str:
             if ui._secret_mode:
                 return super().delete_before_cursor(count)
             assert count >= 0
@@ -106,7 +137,7 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
             deleted = self.text[start:stop]
             return deleted if self._edit_range(start, stop, '', start) else ''
 
-        def insert_text(self, data, overwrite=False, move_cursor=True, fire_event=True):
+        def insert_text(self, data: str, overwrite: bool = False, move_cursor: bool = True, fire_event: bool = True) -> None:
             if ui._secret_mode:
                 return super().insert_text(data, overwrite, move_cursor, fire_event)
             start = self.cursor_position
@@ -120,7 +151,7 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
                 if self.auto_suggest:
                     get_app().create_background_task(self._async_suggester())
 
-        def copy_selection(self, _cut=False):
+        def copy_selection(self, _cut: bool = False) -> ClipboardData:
             if ui._secret_mode:
                 return super().copy_selection(_cut=_cut)
             from prompt_toolkit.clipboard import ClipboardData
@@ -153,10 +184,10 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
             self.selection_state = None
             return ClipboardData(data, kind)
 
-        def _snapshot(self):
+        def _snapshot(self) -> Snapshot:
             return self.text, self.cursor_position, dict(ui.input_document.refs)
 
-        def save_to_undo_stack(self, clear_redo_stack=True):
+        def save_to_undo_stack(self, clear_redo_stack: bool = True) -> None:
             if ui._secret_mode:
                 return
             snapshot = self._snapshot()
@@ -168,12 +199,12 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
             if clear_redo_stack:
                 self._segment_redo = []
 
-        def _restore(self, snapshot):
+        def _restore(self, snapshot: Snapshot) -> None:
             text, cursor, refs = snapshot
             ui.input_document._commit(text, refs)
             ui._set_input_document(cursor)
 
-        def undo(self):
+        def undo(self) -> None:
             while self._segment_undo:
                 snapshot = self._segment_undo.pop()
                 if snapshot[0] != self.text or snapshot[2] != ui.input_document.refs:
@@ -181,12 +212,12 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
                     self._restore(snapshot)
                     break
 
-        def redo(self):
+        def redo(self) -> None:
             if self._segment_redo:
                 self.save_to_undo_stack(clear_redo_stack=False)
                 self._restore(self._segment_redo.pop())
 
-        def append_to_history(self):
+        def append_to_history(self) -> None:
             if not ui._secret_mode:
                 text = ui.input_document.reconstruct()
                 if text and (not self.history.get_strings() or self.history.get_strings()[-1] != text):
@@ -204,13 +235,20 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
             ui._scrollback, lexer=ScrollbackLexer(), focusable=False,
             on_line_click=ui.toggle_card_at_line,
         ),
-        wrap_lines=True, always_hide_cursor=True,
+        wrap_lines=True, always_hide_cursor=True, left_margins=inset,
     )
     ui._busy_window = Window(FormattedTextControl(ui._render_busy),
-                             height=lambda: int(ui._status.busy))
-    header = Window(FormattedTextControl(lambda: ui._formatted(
+                             height=lambda: int(ui._status.busy), left_margins=inset)
+    ui._completion_window = Window(FormattedTextControl(ui._completion_formatted),
+                                   height=lambda: int(bool(ui._completion_status)), left_margins=inset)
+    ui._completion_gap = Window(height=lambda: int(bool(ui._completion_status)))
+    # Transient prompt chips (trust/session/report, plus the paste keys hint).
+    # They belong to the prompt, not to the textarea, so they render above the
+    # panel: inside it the editor stays the top line and the footer the bottom.
+    chips = Window(FormattedTextControl(lambda: ui._formatted(
         "\n".join(ui.prompt_text.splitlines()[:-1] + (["F3 expandir/editar pegado · F4 eliminar (cursor junto al chip)"] if ui.input_document.refs else [])))),
-        height=lambda: max(0, len(ui.prompt_text.splitlines()) - 1) + bool(ui.input_document.refs))
+        height=lambda: max(0, len(ui.prompt_text.splitlines()) - 1) + bool(ui.input_document.refs),
+        left_margins=inset)
     # While a secure prompt is active the input is masked through a conditional
     # ``PasswordProcessor``, so a secret is never rendered to the screen (see
     # ``TuiSession.prompt_secret``).
@@ -222,15 +260,52 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
     from .paste import PasteProcessor
     editor = Window(BufferControl(
         ui._input, lexer=lexer, input_processors=[PasteProcessor(ui), ui._secret_mask]
-    ), wrap_lines=True,
+    ), wrap_lines=True, style=PANEL_STYLE,
                     get_line_prefix=lambda line, wrapped: ui._formatted(
                         ui.prompt_text.splitlines()[-1] if line == 0 and wrapped == 0 else "  · "))
-    ui._input_window = HSplit([header, editor], height=ui._input_height)
+    # OpenCode-Zen style textarea: a dark grey panel whose only border is a solid
+    # red vertical bar on the left. The editor is its top line and the agent's
+    # identity (``model · cwd``) its bottom-left corner.
+    outer_input_gap = Window(width=2, char=" ", style=PANEL_STYLE)
+    bar = Window(width=1, char="│", style=PANEL_BAR_STYLE)
+    footer = Window(FormattedTextControl(ui._workspace_footer), height=1,
+                    align=WindowAlign.LEFT, style=PANEL_STYLE)
+    top_padding = Window(height=1, style=PANEL_STYLE)
+    input_padding = Window(height=1, style=PANEL_STYLE)
+    bottom_padding = Window(height=1, style=PANEL_STYLE)
+    input_gap = Window(width=1, char=" ", style=PANEL_STYLE)
+    ui._bar_window = bar
+    ui._footer_window = footer
+    ui._chips_window = chips
+    ui._editor_window = editor
+    badge = Window(FormattedTextControl(ui._header_badge),
+                   height=lambda: int(ui._show_engagement_badge()),
+                   align=WindowAlign.LEFT, style="#ff0055", left_margins=inset)
+    ui._badge_window = badge
+    ui._input_window = VSplit(
+        [outer_input_gap, bar, input_gap, HSplit([top_padding, editor, input_padding, footer, bottom_padding],
+                                height=ui._input_height)],
+        height=ui._input_height,
+    )
+    # The helper hints are a static footer line outside the panel, and the
+    # operational bar only occupies a row when it has an alert to show.
+    hints = Window(FormattedTextControl("← for history · ? for help"), height=1,
+                   style="#ffffff", left_margins=inset)
+    hints_top_margin = Window(height=1)
+    hints_bottom_margin = Window(height=1)
+    ui._hints_top_margin = hints_top_margin
+    ui._hints_bottom_margin = hints_bottom_margin
+    ui._hints_window = hints
     ui._status_window = Window(FormattedTextControl(ui._toolbar),
-                               height=lambda: int(ui.status_bar_enabled))
-    ui._regions = [ui._scrollback_window, ui._busy_window, ui._input_window, ui._status_window]
-    # The engagement plan is an overlay Float, not a fifth region: the
-    # four-region invariant of the inline layout stays intact.
+                               height=lambda: int(bool(ui._toolbar())), left_margins=inset)
+    ui._regions = [ui._scrollback_window, ui._input_window]
+    # Keep the prompt dock fixed, with the transcript as the only execution
+    # output surface. No activity, answer, task, or status overlay occupies the
+    # rows below it.
+    ui._rows = [badge, ui._scrollback_window, chips, ui._input_window,
+                hints_top_margin, hints, hints_bottom_margin]
+    # The engagement plan is an overlay Float; it does not consume space in
+    # the transcript or prompt dock.
     from .panels import approval_style, panel_style
 
     ui._panel_window = Window(
@@ -248,6 +323,7 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
     ui._approval_window = Window(
         FormattedTextControl(ui._approval_formatted), width=D(64), wrap_lines=True,
         height=lambda: min(20, max(3, len(ui._approval_formatted()))),
+        style="bg:#1a0d11",
     )
     ui._approval_float = Float(
         content=ConditionalContainer(
@@ -266,7 +342,7 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
         content=ConditionalContainer(
             ui._answer_window, filter=Condition(lambda: bool(ui.answer_active))
         ),
-        bottom=3, left=1, right=1,
+        bottom=3, left=2, right=2,
     )
     # Live ReAct "thinking": one or two wrapped lines above the input bar,
     # showing the model's reasoning as it streams. Not a fifth region.
@@ -275,24 +351,23 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
     )
     ui._thought_float = Float(
         content=ConditionalContainer(
-            ui._thought_window, filter=Condition(lambda: bool(ui.thought_active))
+            ui._thought_window,
+            filter=Condition(lambda: bool(ui.thought_active and not ui.answer_active))
         ),
-        bottom=3, left=1, right=1,
+        bottom=3, left=2, right=2,
     )
     ui._tasks_float = Float(
         content=ConditionalContainer(
             Window(FormattedTextControl(lambda: ui.task_panel.render(no_color=ui.no_color)),
                    height=lambda: len(ui.task_panel.render()), wrap_lines=False),
             filter=Condition(lambda: bool(ui.task_panel.tasks))),
-        bottom=6, left=0, right=0,
+        bottom=6, left=2, right=2,
     )
-    root = FloatContainer(HSplit(ui._regions), [
-        ui._tasks_float,
+    # Reserve its own row, so the badge never obscures transcript content.
+    root = FloatContainer(HSplit(ui._rows), [
         Float(xcursor=True, ycursor=True, content=MultiColumnCompletionsMenu(show_meta=True)),
         ui._panel_float,
         ui._approval_float,
-        ui._answer_float,
-        ui._thought_float,
     ])
     ui._app = RegionApplication(
         layout=Layout(root, focused_element=editor), full_screen=bool(full_screen),
@@ -301,10 +376,10 @@ def build_layout(ui, keys, history, prompt_style, input, output, full_screen=Fal
         mouse_support=True, refresh_interval=None, min_redraw_interval=0.25,
         key_bindings=keys, input=input, output=output,
         style=Style.from_dict({
-            **panel_style(), **approval_style(), "busy": "#00e5ff",
-            "scroll": "#00e5ff", **(prompt_style or {}),
+            **panel_style(), **approval_style(), "busy": "#ff0055",
+            "scroll": "#ff0055", **(prompt_style or {}),
         }),
-        color_depth=ColorDepth.DEPTH_1_BIT if ui.no_color else None,
+        color_depth=ColorDepth.DEPTH_1_BIT if ui.no_color else ColorDepth.DEPTH_24_BIT,
     )
     ui._app.ttimeoutlen = 0.1
     ui._app.timeoutlen = 0.3

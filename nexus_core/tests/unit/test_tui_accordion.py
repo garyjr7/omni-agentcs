@@ -9,13 +9,13 @@ def test_card_expands_and_collapses_by_click(tui_factory):
     ui = tui_factory()
     ui.session.append_card(_card("l", 10))
     ui.session.flush()
-    assert "▼ mostrar" in ui.session._scrollback.text
+    assert "Show more..." in ui.session._scrollback.text
     line = min(ui.session._toggle_rows)
     assert ui.session.toggle_card_at_line(line) is True
-    assert "▲ mostrar menos" in ui.session._scrollback.text
+    assert "[ Show less ]" in ui.session._scrollback.text
     # Expanding moves the footer: use the refreshed click target to collapse.
     assert ui.session.toggle_card_at_line(min(ui.session._toggle_rows)) is True
-    assert "▼ mostrar" in ui.session._scrollback.text
+    assert "Show more..." in ui.session._scrollback.text
 
 
 def test_two_cards_toggle_independently(tui_factory):
@@ -27,15 +27,15 @@ def test_two_cards_toggle_independently(tui_factory):
     assert len(rows) == 2
     ui.session.toggle_card_at_line(rows[0])
     text = ui.session._scrollback.text
-    assert text.count("▲ mostrar menos") == 1
-    assert text.count("▼ mostrar") == 1
+    assert text.count("[ Show less ]") == 1
+    assert text.count("Show more...") == 1
 
 
 def test_small_card_has_no_click_target(tui_factory):
     ui = tui_factory()
     ui.session.append_card({"success": True, "stdout": "solo una línea"})
     ui.session.flush()
-    assert "mostrar" not in ui.session._scrollback.text
+    assert "[ Show " not in ui.session._scrollback.text
     assert ui.session._toggle_rows == {}
     assert ui.session.toggle_card_at_line(0) is False
 
@@ -60,7 +60,7 @@ def test_cards_survive_a_rebuild_with_other_text(tui_factory):
     ui.session.toggle_card_at_line(line)
     text = ui.session._scrollback.text
     assert "intro" in text and "outro" in text
-    assert "▲ mostrar menos" in text
+    assert "[ Show less ]" in text
 
 
 def test_scrollback_control_turns_click_into_toggle(tui_factory):
@@ -79,7 +79,7 @@ def test_scrollback_control_turns_click_into_toggle(tui_factory):
         modifiers=frozenset(),
     )
     assert control.mouse_handler(event) is None
-    assert "▲ mostrar menos" in ui.session._scrollback.text
+    assert "[ Show less ]" in ui.session._scrollback.text
 
 
 def test_thought_overlay_streams_and_closes(tui_factory):

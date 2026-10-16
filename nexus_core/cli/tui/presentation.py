@@ -1,0 +1,179 @@
+"""Pure Rich renderables. Rendering never owns stdout, a cursor or a thread."""
+from __future__ import annotations
+
+import difflib
+import io
+import re
+from dataclasses import dataclass
+from typing import Any
+
+from rich.console import Console, Group, RenderableType
+from rich.syntax import Syntax
+from rich.text import Text
+
+_CONTROLS = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]')
+
+#: Input panel (OpenCode-Zen style): dark grey textarea background with a solid
+#: red vertical bar as its only border. There is no top/bottom horizontal rule.
+PANEL_STYLE = 'bg:#2a2a2a'
+PANEL_BAR_STYLE = 'fg:#ff0055 bg:#2a2a2a'
+
+
+def startup_banner(engagement: str, version: str, *, width: int = 80,
+                   no_color: bool = False) -> str:
+    """Render the first-frame OMNI masthead and three operator metadata rows."""
+    glyphs = (
+        (" █████ ", "██   ██", "██   ██", "██   ██", "██   ██", " █████ "),
+        ("███   ███", "████ ████", "██ ███ ██", "██  █  ██", "██     ██", "██     ██"),
+        ("███    ██", "████   ██", "██ ██  ██", "██  ██ ██", "██   ████", "██    ███"),
+        ("███████", "  ██   ", "  ██   ", "  ██   ", "  ██   ", "███████"),
+    )
+    rows = tuple("  ".join(letter[line] for letter in glyphs) for line in range(6))
+    logo = Text("\n".join(rows), style="#ff0055 bold")
+    metadata = Group(
+        Text(f"[+] [ Omni Agent CS v{clean_text(version)} ] [+]", style="bold white"),
+        Text("[+] [ BAJIOWARE • Red Team ] [+]", style="bold #ff0055"),
+        Text(f"[+] [ {clean_text(engagement)} ] [+]", style="bold white"),
+    )
+    # The official masthead floats freely. Rich styles the contents, but no
+    # Panel/Rule/box renderable is used around the art or metadata.
+    return render_rich(Group(logo, Text(""), metadata),
+                       width=max(40, width), no_color=no_color) + "\n"
+
+
+def clean_text(value: str) -> str:
+    """Keep literal content, remove terminal commands before styling it."""
+    value = _CONTROLS.sub('', value.replace('\r\n', '\n'))
+    return ''.join(char for char in value if char in '\n\t' or char.isprintable())
+
+
+def render_rich(value: RenderableType, *, width: int = 100, no_color: bool = False) -> str:
+    stream = io.StringIO()
+    console = Console(file=stream, width=max(1, width), force_terminal=not no_color,
+                      color_system=None if no_color else 'truecolor', no_color=no_color,
+                      markup=False, highlight=False, legacy_windows=False, soft_wrap=False)
+    console.print(value, end='', overflow='fold', no_wrap=False)
+    return stream.getvalue().rstrip('\n')
+
+
+def wrap_terminal_text(value: str, *, width: int, no_color: bool = False) -> str:
+    """Wrap ANSI/plain scrollback on whitespace before prompt_toolkit sees it."""
+    stream = io.StringIO()
+    console = Console(file=stream, width=max(1, width), force_terminal=not no_color,
+                      color_system=None if no_color else 'truecolor', no_color=no_color,
+                      markup=False, highlight=False, legacy_windows=False)
+    text = Text.from_ansi(value)
+    lines = text.wrap(console, max(1, width), overflow='fold', no_wrap=False)
+    for index, line in enumerate(lines):
+        line.rstrip()
+        console.print(line, end='', overflow='fold', no_wrap=False)
+        if index + 1 < len(lines):
+            stream.write('\n')
+    return stream.getvalue()
+
+
+@dataclass(frozen=True)
+class FoldedLines:
+    head: tuple[str, ...]
+    tail: tuple[str, ...]
+    hidden: int
+
+
+def fold_lines(value: str, *, expanded: bool = False, limit: int = 5) -> FoldedLines:
+    if limit < 1:
+        raise ValueError('line limit must be positive')
+    lines = clean_text(value).splitlines()
+    if expanded or len(lines) <= limit:
+        return FoldedLines(tuple(lines), (), 0)
+    head_count = (limit + 1) // 2
+    tail_count = limit // 2
+    return FoldedLines(tuple(lines[:head_count]), tuple(lines[-tail_count:]) if tail_count else (),
+                       len(lines) - limit)
+
+
+def input_chip(value: str, *, threshold: int = 500) -> Text:
+    if len(value) > threshold:
+        return Text(f'[ 📋 Pasted Input · {len(value):,} characters ]', style='dim cyan')
+    return Text(clean_text(value))
+
+
+def input_quote(value: str, *, width: int = 100, no_color: bool = False) -> str:
+    """Render an operator turn as a clean quote block with a red left rail."""
+    lines = clean_text(value).splitlines() or [""]
+    rows: list[RenderableType] = []
+    for line in lines:
+        rows.append(Text("▌ ", style="#ff0055 bold") + Text(line))
+    return render_rich(Group(*rows), width=width, no_color=no_color)
+
+
+def thinking(value: str, *, expanded: bool = False) -> Text:
+    text = Text('• Thinking...', style='dim', no_wrap=False, overflow='fold')
+    if expanded and value.strip():
+        text.append('\n' + clean_text(value), style='dim')
+    elif value.strip():
+        summary = ' '.join(clean_text(value).split())
+        text.append(' ' + summary[:100] + ('…' if len(summary) > 100 else ''))
+    return text
+
+
+def diff_block(value: str) -> Syntax:
+    return Syntax(clean_text(value), 'diff', theme='ansi_dark', background_color='default',
+                  word_wrap=True, line_numbers=False)
+
+
+def result_diff(result: dict[str, Any]) -> str | None:
+    output = result.get('output')
+    for container in (result, output if isinstance(output, dict) else {}):
+        value = container.get('diff') or container.get('patch')
+        if isinstance(value, str) and value.strip():
+            return value
+    if isinstance(output, dict) and isinstance(output.get('before'), str) and isinstance(output.get('after'), str):
+        path = clean_text(str(output.get('path') or 'file')).replace('\n', ' ')
+        return '\n'.join(difflib.unified_diff(output['before'].splitlines(), output['after'].splitlines(),
+                                               fromfile='a/' + path, tofile='b/' + path, lineterm=''))
+    return None
+
+
+def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
+                expanded: bool = False, limit: int = 5, diff: bool = False) -> Group:
+    folded = fold_lines(value, expanded=expanded, limit=limit)
+    body: list[RenderableType] = []
+    if not success:
+        body.append(Text(f'× failed · {clean_text(tool_id) or "tool"}', style='red'))
+    for index, lines in enumerate((folded.head, folded.tail)):
+        if index and folded.hidden:
+            body.append(Text('   ...', style='dim'))
+        if diff and lines:
+            body.append(diff_block('\n'.join(lines)))
+        else:
+            body.extend(Text('   -> ' + line, style='default') for line in lines)
+    body.append(Text(f'   {"✓" if success else "×"} {clean_text(summary)}',
+                     style='green' if success else 'dim red'))
+    if folded.hidden:
+        body.append(Text(f'   [ Show more... · {folded.hidden} lines ]', style='dim cyan'))
+    elif expanded and len(clean_text(value).splitlines()) > limit:
+        body.append(Text('   [ Show less ]', style='dim cyan'))
+    return Group(*body)
+
+
+class WorkingIndicator:
+    """Pure pulse frames sampled by the existing terminal refresh loop."""
+
+    def frame(self, message: str, *, now: float, elapsed: int, width: int,
+              no_color: bool = False) -> str:
+        pulse = int(now * 5) % 5
+        text = Text()
+        for index in range(5):
+            text.append('[+]', style='#ff0055 bold' if index == pulse else 'white dim')
+        text.append(' · esc interrupt', style='dim')
+        return render_rich(text, width=width, no_color=no_color).split('\n')[0]
+
+
+def tactical_phase(tool_id: str) -> str:
+    """Presentation labels only: never change dispatch or policy identifiers."""
+    if tool_id in {'nexus.web.upload', 'nexus.web.git_dump'}:
+        return 'Weaponization' if tool_id.endswith('upload') else 'Enumeration'
+    family = tool_id.split('.')[1] if '.' in tool_id else ''
+    return {'recon': 'Enumeration', 'web': 'Enumeration', 'exploit': 'Exploitation',
+            'post': 'Post-exploitation', 'cred': 'Credential assessment',
+            'report': 'Reporting'}.get(family, 'Working')

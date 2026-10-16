@@ -51,6 +51,11 @@ REFERENCE_RATES_USD_PER_MTOK: Mapping[str, tuple[float, float]] = {
     # coverage of the Sep 2026 V4.1-Flash release (see FASE36_CLOSE_E2E.md).
     # ``deepseek-chat`` is the older, pricier model and keeps its own row.
     "deepseek-v4.1-flash": (0.15, 0.60),
+    # The client normalizes the V4.1-Flash product name to its API identifier
+    # (``DeepSeekClient._client`` -> ``deepseek-flash``), and that identifier is
+    # what reaches the meter, so it needs its own row: without it every
+    # DeepSeek run reported an unknown cost (``$—``).
+    "deepseek-flash": (0.15, 0.60),
     "deepseek-chat": (0.27, 1.10),
 }
 

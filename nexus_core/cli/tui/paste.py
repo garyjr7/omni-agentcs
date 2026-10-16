@@ -1,9 +1,13 @@
 """Typed input. Object positions, never marker regexes, identify paste content."""
-from dataclasses import dataclass, asdict
+from __future__ import annotations
+
 import json
 import os
-from pathlib import Path
 import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
 from .history import atomic_private
 
 OBJECT = '\ufffc'
@@ -19,16 +23,16 @@ class PasteRef:
     lines: int
 
     @property
-    def label(self):
-        return f'[Pegado #{self.id} · {len(self.content)} caracteres · {self.lines} líneas]'
+    def label(self) -> str:
+        return f'[ 📋 Pasted Input · {len(self.content):,} characters · #{self.id} ]'
 
 
 class InputDocument:
     max_bytes = 2 * 1024 * 1024
-    def __init__(self, *, path=None):
+    def __init__(self, *, path: Any=None) -> None:
         self.path = Path(path) if path else None
         self.text = ''
-        self.refs = {}
+        self.refs: dict[int, PasteRef] = {}
         self.next_id = 1
         if self.path and self.path.exists():
             if self.path.stat().st_size > self.max_bytes * 6:
@@ -44,8 +48,9 @@ class InputDocument:
             self._check(self.text, self.refs)
 
     @property
-    def segments(self):
-        result, start = [], 0
+    def segments(self) -> list[Text | PasteRef]:
+        result: list[Text | PasteRef] = []
+        start = 0
         for pos, ref in sorted(self.refs.items()):
             if pos > start:
                 result.append(Text(self.text[start:pos]))
@@ -55,23 +60,23 @@ class InputDocument:
             result.append(Text(self.text[start:]))
         return result
 
-    def reconstruct(self):
+    def reconstruct(self) -> str:
         return ''.join(segment.content for segment in self.segments)
 
-    def render(self):
+    def render(self) -> str:
         return ''.join(segment.label if isinstance(segment, PasteRef) else segment.content for segment in self.segments)
 
-    def _check(self, text, refs):
+    def _check(self, text: str, refs: dict[int, PasteRef]) -> None:
         if len(text.encode()) + sum(len(ref.content.encode()) for ref in refs.values()) > self.max_bytes:
             raise ValueError('paste/input size limit exceeded (2 MiB)')
 
-    def _commit(self, text, refs):
+    def _commit(self, text: str, refs: dict[int, PasteRef]) -> None:
         self._check(text, refs)
         if self.path:
             atomic_private(self.path, json.dumps({'version':1,'text':text,'refs':{str(p):asdict(r) for p,r in refs.items()}},ensure_ascii=False).encode())
         self.text, self.refs = text, refs
 
-    def replace_text(self, start, stop, replacement):
+    def replace_text(self, start: int, stop: int, replacement: str) -> None:
         """Apply an editor range, preserving identity even for identical glyphs."""
         if not 0 <= start <= stop <= len(self.text):
             raise ValueError('invalid input edit range')
@@ -80,7 +85,7 @@ class InputDocument:
                 if p < start or p >= stop}
         self._commit(self.text[:start]+replacement+self.text[stop:], refs)
 
-    def synchronize(self, new):
+    def synchronize(self, new: str) -> None:
         if new == self.text:
             return
         old = self.text
@@ -95,7 +100,7 @@ class InputDocument:
         refs = {p if p < start else p+delta:r for p,r in self.refs.items() if p < start or p >= stop}
         self._commit(new, refs)
 
-    def insert_paste(self, position, content):
+    def insert_paste(self, position: int, content: str) -> None:
         self._check(self.text+content, self.refs)
         ref = PasteRef(self.next_id, content, content.count('\n')+1)
         refs = {p if p < position else p+1:r for p,r in self.refs.items()}
@@ -103,7 +108,7 @@ class InputDocument:
         self._commit(self.text[:position]+OBJECT+self.text[position:], refs)
         self.next_id += 1
 
-    def replace_ref(self, position, *, expand):
+    def replace_ref(self, position: int, *, expand: bool) -> int:
         ref = self.refs[position]
         replacement = ref.content if expand else ''
         delta = len(replacement)-1
@@ -112,31 +117,35 @@ class InputDocument:
         return position + len(replacement)
 
 
-def paste_threshold(content):
-    chars = max(1, int(os.getenv('NEXUS_PASTE_CHARS', '1000')))
+def paste_threshold(content: str) -> bool:
+    chars = max(1, int(os.getenv('NEXUS_PASTE_CHARS', '500')))
     lines = max(1, int(os.getenv('NEXUS_PASTE_LINES', '4')))
     return len(content) > chars or content.count('\n')+1 > lines
 
 
-def prune_drafts(directory, *, keep=32, days=7):
+def prune_drafts(directory: Any, *, keep: Any=32, days: Any=7) -> None:
     paths = sorted(directory.glob('*.draft.json'), key=lambda p:p.stat().st_mtime, reverse=True)
     for index, path in enumerate(paths):
         if index >= keep or time.time()-path.stat().st_mtime > days*86400:
             path.unlink(missing_ok=True)
 
 
-from prompt_toolkit.layout.processors import Processor, Transformation
+from prompt_toolkit.layout.processors import Processor, Transformation, TransformationInput
+
 
 class PasteProcessor(Processor):
-    def __init__(self, ui):
+    def __init__(self, ui: Any) -> None:
         self.ui = ui
 
-    def apply_transformation(self, ti):
+    def apply_transformation(self, ti: TransformationInput) -> Transformation:
         from prompt_toolkit.formatted_text import fragment_list_to_text
         text = fragment_list_to_text(ti.fragments)
         offset = ti.document.translate_row_col_to_index(ti.lineno, 0)
         refs = self.ui.input_document.refs if not self.ui._secret_mode else {}
-        fragments, source_map, display_map = [], [], []
+        from prompt_toolkit.formatted_text import StyleAndTextTuples
+        fragments: StyleAndTextTuples = []
+        source_map: list[int] = []
+        display_map: list[int] = []
         display = 0
         for col, char in enumerate(text):
             ref = refs.get(offset+col)

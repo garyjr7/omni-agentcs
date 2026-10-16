@@ -58,13 +58,13 @@ def test_status_truncates_to_width():
     state = StatusState(provider_model="界" * 20)
     text = fragment_list_to_text(render_status_bar(state, width=11))
     assert get_cwidth(text) <= 11
-    assert text == "界" * 5
+    assert text == "Status: IDL"
 
 
 def test_status_drops_engagement_first_when_narrow():
     state = StatusState(engagement_name="very-long-engagement-name", provider_model="groq/m")
     text = fragment_list_to_text(render_status_bar(state, width=16))
-    assert "groq/m" in text
+    assert "Status: IDLE" in text
     assert "very-long-engagement-name" not in text
 
 
@@ -83,14 +83,14 @@ def _alert_and_phase_state() -> StatusState:
     )
 
 
-def test_status_alert_and_phase_survive_every_width():
-    """Property: alert (TRUST) and phase are never dropped, only truncated."""
+def test_status_alert_survives_without_phase_chip():
+    """Trust remains visible, while plan progress stays in the plan panel."""
     state = _alert_and_phase_state()
-    minimum = get_cwidth("TRUST · ▸ Recon 1/5")  # both protected segments fit
+    minimum = get_cwidth("TRUST")
     for width in range(minimum, 121):
         text = fragment_list_to_text(render_status_bar(state, width=width))
         assert "TRUST" in text, f"alert dropped at width={width}"
-        assert "▸ Recon 1/5" in text, f"phase dropped at width={width}"
+        assert "Recon" not in text
 
 
 def test_status_never_exceeds_width_for_any_width():
@@ -100,10 +100,10 @@ def test_status_never_exceeds_width_for_any_width():
         assert get_cwidth(text) <= width, f"overflow at width={width}"
 
 
-def test_status_drops_droppable_before_protected():
+def test_status_drops_phase_chip():
     state = StatusState(trust_mode=True, plan_phase="Recon", provider_model="p" * 60)
     text = fragment_list_to_text(render_status_bar(state, width=20))
-    assert "TRUST" in text and "▸ Recon" in text
+    assert "TRUST" in text and "Recon" not in text
     assert "pppp" not in text
 
 
