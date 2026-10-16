@@ -53,8 +53,8 @@ def test_run_event_and_task_results_are_sanitized(tmp_path):
     run = store.create_run('system', {})
     store.append_run_event('system', run['id'], 'llm.error', {'raw_response': 'password=secret123'})
     task = store.enqueue_task(tenant_id='system', run_id=run['id'], task_type='test', payload={})
-    store.claim_task('test-worker')
-    store.complete_task(task['id'], 'test-worker', result={'summary': 'password=secret123'})
+    claimed = store.claim_task('test-worker')
+    store.complete_task(task['id'], 'test-worker', result={'summary': 'password=secret123'}, lease_generation=claimed["lease_generation"])
     with store.connect() as conn:
         for table, column in [('kernel_run_events', 'payload'), ('kernel_tasks', 'result'),
                               ('kernel_runs', 'result'), ('kernel_outbox', 'payload')]:

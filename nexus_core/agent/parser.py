@@ -1,4 +1,4 @@
-"""Tolerant parser for the JSON contract returned by the ReAct LLM.
+"""Tolerant transport extraction with strict Pydantic action validation.
 
 The model is instructed to answer with a single JSON object, but real
 providers add markdown fences, prose or a second stacked action. This module
@@ -8,9 +8,18 @@ tolerate as ``warnings``.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any
+
+from pydantic import ValidationError
+from nexus_core.kernel.domain_dto import (
+    ACTION_ADAPTER,
+    Action,
+    ToolCall as ToolCall,
+    TaskComplete as TaskComplete,
+    RequestClarification as RequestClarification,
+)
+from nexus_core.kernel.serialization import decode_json
 
 ACTION_TOOL_CALL = "tool_call"
 ACTION_TASK_COMPLETE = "task_complete"
@@ -29,7 +38,7 @@ class ReActParseError(ValueError):
 
 @dataclass(frozen=True)
 class ReActAction:
-    """One decoded decision of the loop.
+    """Legacy action adapter for callers and historical session shapes.
 
     ``raw_response`` is retained verbatim so every step can be audited even
     when the parser had to repair the model output. ``warnings`` records the
@@ -118,13 +127,13 @@ def _extract_json_value(text: str, warnings: list[str]) -> Any:
     stripped = text.strip()
     if stripped:
         try:
-            return json.loads(stripped)
+            return decode_json(stripped)
         except ValueError:
             pass
 
     for block in _fenced_blocks(text):
         try:
-            value = json.loads(block)
+            value = decode_json(block)
         except ValueError:
             continue
         warnings.append("json was extracted from a markdown fence")
@@ -133,7 +142,7 @@ def _extract_json_value(text: str, warnings: list[str]) -> Any:
     candidates = _balanced_json_objects(text)
     for index, candidate in enumerate(candidates):
         try:
-            value = json.loads(candidate)
+            value = decode_json(candidate)
         except ValueError:
             continue
         if index > 0 or not stripped.startswith(candidate):
@@ -143,26 +152,8 @@ def _extract_json_value(text: str, warnings: list[str]) -> Any:
     raise ReActParseError("response does not contain a parsable JSON object", text)
 
 
-def _normalize_findings(raw_value: Any, warnings: list[str]) -> list[dict[str, Any]]:
-    """Coerce the findings list, dropping entries that are not objects."""
-    if raw_value is None:
-        return []
-    if not isinstance(raw_value, list):
-        raise ReActParseError("findings must be a JSON array", "")
-    findings: list[dict[str, Any]] = []
-    dropped = 0
-    for item in raw_value:
-        if isinstance(item, dict):
-            findings.append(item)
-        else:
-            dropped += 1
-    if dropped:
-        warnings.append(f"dropped {dropped} finding(s) that were not JSON objects")
-    return findings
-
-
-def _normalize(payload: Any, raw_response: str, warnings: list[str]) -> ReActAction:
-    """Validate an extracted JSON payload against the response contract."""
+def _normalize(payload: Any, raw_response: str, warnings: list[str]) -> Action:
+    """Tolerate transport wrappers; never coerce the domain action."""
     warnings = list(dict.fromkeys(warnings))
     if isinstance(payload, list):
         if not payload:
@@ -172,66 +163,25 @@ def _normalize(payload: Any, raw_response: str, warnings: list[str]) -> ReActAct
         payload = payload[0]
     if not isinstance(payload, dict):
         raise ReActParseError("response is not a JSON object", raw_response)
-
-    action = str(payload.get("action") or "").strip()
-    if action not in KNOWN_ACTIONS:
-        raise ReActParseError(
-            f"unknown or missing action: {action!r} (expected one of {', '.join(KNOWN_ACTIONS)})",
-            raw_response,
-        )
-
-    thought = str(payload.get("thought") or "").strip()
-
-    if action == ACTION_TOOL_CALL:
-        tool_id = payload.get("tool_id")
-        if not isinstance(tool_id, str) or not tool_id.strip():
-            raise ReActParseError("tool_call requires a non-empty tool_id", raw_response)
-        if "arguments" not in payload or payload.get("arguments") is None:
-            raise ReActParseError("tool_call requires arguments", raw_response)
-        arguments = payload["arguments"]
-        if not isinstance(arguments, dict):
+    if payload.get("action") not in KNOWN_ACTIONS:
+        raise ReActParseError("unknown or missing action", raw_response)
+    if "raw_response" in payload or "warnings" in payload:
+        raise ReActParseError("transport metadata is not an action field", raw_response)
+    if payload.get("action") == ACTION_TOOL_CALL and "arguments" in payload:
+        if not isinstance(payload["arguments"], dict):
             raise ReActParseError("tool_call arguments must be a JSON object", raw_response)
-        expected = payload.get("expected_outcome")
-        return ReActAction(
-            thought=thought,
-            action=action,
-            tool_id=tool_id.strip(),
-            arguments=arguments,
-            expected_outcome=str(expected) if expected is not None else None,
-            raw_response=raw_response,
-            warnings=tuple(warnings),
+    try:
+        return ACTION_ADAPTER.validate_python(
+            {**payload, "raw_response": raw_response, "warnings": tuple(warnings)}
         )
-
-    if action == ACTION_TASK_COMPLETE:
-        summary = payload.get("summary")
-        if not isinstance(summary, str) or not summary.strip():
-            raise ReActParseError("task_complete requires a non-empty summary", raw_response)
-        findings = _normalize_findings(payload.get("findings"), warnings)
-        return ReActAction(
-            thought=thought,
-            action=action,
-            summary=summary.strip(),
-            findings=findings,
-            raw_response=raw_response,
-            warnings=tuple(warnings),
-        )
-
-    question = payload.get("question")
-    if not isinstance(question, str) or not question.strip():
-        raise ReActParseError(
-            "request_clarification requires a non-empty question", raw_response
-        )
-    return ReActAction(
-        thought=thought,
-        action=action,
-        question=question.strip(),
-        raw_response=raw_response,
-        warnings=tuple(warnings),
-    )
+    except ValidationError as exc:
+        # Never reflect submitted credentials in a correction or exception.
+        fields = ", ".join(".".join(map(str, error["loc"])) for error in exc.errors())
+        raise ReActParseError(f"invalid action fields: {fields}", raw_response) from None
 
 
-def parse_react_response(text: str) -> ReActAction:
-    """Parse a model response into a :class:`ReActAction`.
+def parse_react_response(text: str) -> Action:
+    """Parse a model response into the discriminated Pydantic ``Action`` union.
 
     Strategy: pure JSON first, then a ```` ```json ```` block, then the first
     balanced ``{...}`` slice. Stacked actions are reduced to the first one and

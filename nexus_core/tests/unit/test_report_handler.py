@@ -274,7 +274,7 @@ def test_report_artifact_store_is_content_addressed(env, tmp_path):
     )
     assert first["verified"] is True and second["verified"] is True
     # The JSON carries the generation timestamp, so only identical bytes are
-    # deduplicated: the stored paths must still be inside the artifact root.
+    # deduplicated: addresses are portable and blobs remain tenant-scoped.
     roots = {item["sha256"] for item in [{"sha256": s} for s in first["evidence"]["artifact_sha256"].values()]}
     assert roots
     digest = next(iter(roots))
@@ -292,7 +292,8 @@ def test_report_artifact_store_is_content_addressed(env, tmp_path):
     assert rows
     root = LocalArtifactStore(store, module.default_artifact_root()).root
     for row in rows:
-        assert Path(row["storage_uri"]).parent.parent == root / support.TENANT
+        assert row["storage_uri"] == f"cas:v1/{support.TENANT}/{digest}"
+        assert (root / support.TENANT / digest[:2] / digest).is_file()
 
 
 def test_report_sarif_format_writes_sarif(env):

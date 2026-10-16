@@ -14,6 +14,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from nexus_core.kernel.artifacts import ArtifactReference, ArtifactStore
+from nexus_core.kernel.serialization import sanitized_object, encode_json, PayloadTooLarge
+
 #: Observations longer than this are compacted (the durable message store is
 #: text; full artifacts belong in the artifact store).
 MAX_OBSERVATION_CHARS = 20_000
@@ -186,22 +189,22 @@ def compact_observation(tool_id: str, observation: dict[str, Any]) -> dict[str, 
     return compact
 
 
-def default_artifact_store(store: Any) -> Any:
+def default_artifact_store(store: Any) -> ArtifactStore:
     """Build the durable content-addressed store for compacted payloads.
 
     Imported lazily so importing this module never creates directories.
     """
     from nexus_core.config.xdg import resolve_xdg_paths
-    from nexus_core.kernel.artifacts import LocalArtifactStore
+    from nexus_core.kernel.artifacts import configured_artifact_store
 
-    return LocalArtifactStore(store, resolve_xdg_paths().data_dir / "artifacts")
+    return configured_artifact_store(store, resolve_xdg_paths().data_dir / "artifacts")
 
 
 def prepare_observation(
     tool_id: str,
     observation: dict[str, Any],
     *,
-    artifact_store: Any = None,
+    artifact_store: ArtifactStore | None = None,
     store: Any = None,
     tenant_id: str | None = None,
     run_id: str | None = None,
@@ -215,45 +218,63 @@ def prepare_observation(
     control store) is only used to *build* an artifact store when the payload is
     oversized, so no directory is created on the happy path.
     """
-    full = {"tool_id": tool_id, **observation}
-    encoded = encode_observation(full)
+    if limit_chars < 512:
+        raise ValueError("observation limit must be at least 512 characters")
+    try:
+        full = sanitized_object({**observation, "tool_id": tool_id})
+    except PayloadTooLarge:
+        return encode_observation({"error": "observation_too_large", "storage": {
+            "status": "failed", "error_code": "PayloadTooLarge"}}), True, None
+    except (ValueError, RecursionError):
+        return encode_observation({"error": "invalid_observation", "storage": {
+            "status": "failed", "error_code": "InvalidPayload"}}), True, None
+    try:
+        encoded = encode_json(full).decode()
+    except PayloadTooLarge:
+        return encode_observation({"error": "observation_too_large", "storage": {
+            "status": "failed", "error_code": "PayloadTooLarge"}}), True, None
     if len(encoded) <= limit_chars:
         return encoded, False, None
 
-    compact = compact_observation(tool_id, observation)
+    try:
+        compact = compact_observation(tool_id, full)
+    except (TypeError, ValueError, AttributeError):
+        compact = {"tool_id": full["tool_id"], "compacted": True,
+                   "output_summary": {"summary_error": "InvalidShape"}}
     artifact: dict[str, Any] | None = None
-    if artifact_store is None and store is not None:
-        try:
+    storage: dict[str, str] = {"status": "unavailable", "error_code": "StoreNotConfigured"}
+    try:
+        if artifact_store is None and store is not None:
             artifact_store = default_artifact_store(store)
-        except Exception:  # noqa: BLE001 - archiving must never break the run
-            artifact_store = None
-    if artifact_store is not None and tenant_id is not None:
-        try:
-            artifact = artifact_store.put(
-                tenant_id,
-                encoded.encode("utf-8"),
-                "application/json",
-                run_id=run_id,
+        if artifact_store is not None and tenant_id is not None:
+            reference = ArtifactReference.parse(artifact_store.put(
+                tenant_id, encoded.encode("utf-8"), "application/json", run_id=run_id,
                 metadata={"tool_id": tool_id, "kind": "react-observation"},
-            )
-        except Exception:  # noqa: BLE001 - archiving must never break the run
-            artifact = None
-    if artifact is not None:
-        compact["artifact"] = {
-            "sha256": artifact.get("sha256"),
-            "size_bytes": artifact.get("size_bytes"),
-        }
-    compact_encoded = encode_observation({"tool_id": tool_id, **compact})
+            ))
+            import hashlib
+            if (reference.tenant_id != tenant_id or reference.size_bytes != len(encoded.encode())
+                    or reference.sha256 != hashlib.sha256(encoded.encode()).hexdigest()
+                    or reference.media_type != "application/json"):
+                raise ValueError("observation artifact reference mismatch")
+            artifact = reference.as_dict()
+            compact["artifact"] = artifact
+            storage = {"status": "stored"}
+    except Exception as exc:  # Boundary: retain a safe summary and explicit failure.
+        storage = {"status": "failed", "error_code": type(exc).__name__}
+    compact["storage"] = storage
+    compact_encoded = encode_observation(compact)
     if len(compact_encoded) > limit_chars:
-        # Still too big: drop the detailed summary but keep *valid* JSON. The
-        # full payload is already pinned in the artifact store.
-        detail = compact.get("output_summary")
-        compact["output_summary"] = {
-            "summary_omitted": True,
-            "summary_chars": len(encode_observation(detail)),
-        }
-        compact_encoded = encode_observation({"tool_id": tool_id, **compact})
+        compact = {"tool_id": full["tool_id"][:100], "compacted": True,
+                   "output_summary": {"summary_omitted": True}, "storage": storage}
+        if artifact is not None:
+            compact["artifact"] = artifact
+        compact_encoded = encode_observation(compact)
+        if len(compact_encoded) > limit_chars:
+            compact.pop("artifact", None)
+            compact["artifact_reference_omitted"] = artifact is not None
+            compact_encoded = encode_observation(compact)
     return compact_encoded, True, artifact
+
 
 
 __all__ = [

@@ -8,8 +8,16 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
+from .domain_dto import (
+    ToolCall as ToolCall, TaskComplete as TaskComplete,
+    RequestClarification as RequestClarification, ToolResultDTO as ToolResultDTO,
+    PolicyDecisionDTO as PolicyDecisionDTO, DomainEvent as DomainEvent,
+    legacy_json_containers,
+)
+
 if TYPE_CHECKING:
     from nexus_core.scope.models import EngagementScope
+    from .job_authority import JobAuthority
 
 
 def utc_now() -> str:
@@ -389,6 +397,10 @@ class ToolResult:
         return self.success or self.outcome in COMPLETED_OUTCOMES
 
     def to_dict(self) -> Dict[str, Any]:
+        return dict(self.to_dto().to_dict())
+
+    def to_dto(self) -> ToolResultDTO:
+        """Validate the legacy handler result at the domain boundary."""
         value = {
             "success": self.success,
             "outcome": self.outcome_class,
@@ -406,7 +418,7 @@ class ToolResult:
             value["tool_id"] = self.tool_id
             value["contract_version"] = self.contract_version
             value["parser_version"] = self.parser_version
-        return value
+        return ToolResultDTO.model_validate(legacy_json_containers(value))
 
     def stamp_versions(self, tool_id: str, contract_version: str, parser_version: str) -> "ToolResult":
         """Return this result tagged with the contract/parser that produced it.
@@ -449,6 +461,11 @@ class RunContext:
     # invocation journal.
     phase: str = ""
     objective: str = ""
+    # Set by ToolGateway from the authenticated invocation, never tool arguments.
+    authorized_permissions: tuple[str, ...] = field(default=(), repr=False, compare=False)
+
+    # Engine-owned, immutable capability envelope; never read from tool arguments.
+    job_authority: JobAuthority | None = field(default=None, repr=False, compare=False)
 
     @property
     def engagement_id(self) -> str:
@@ -468,6 +485,12 @@ class PolicyDecision:
     policy_version: str = "1.0.0"
     requires_approval: bool = False
     obligations: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        self.to_dto()
+
+    def to_dto(self) -> PolicyDecisionDTO:
+        return PolicyDecisionDTO.model_validate(asdict(self))
 
 
 @dataclass

@@ -8,6 +8,7 @@ bounded, structured summary with the full payload archived.
 from __future__ import annotations
 
 import json
+import hashlib
 
 from nexus_core.agent.observations import (
     MAX_OBSERVATION_CHARS,
@@ -29,7 +30,8 @@ class RecordingArtifactStore:
 
     def put(self, tenant_id, content, media_type, run_id=None, metadata=None):
         self.puts.append((tenant_id, len(content), media_type, metadata))
-        return {"id": "artifact_x", "sha256": "deadbeef", "size_bytes": len(content)}
+        return {"id": "artifact_" + "a" * 32, "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content), "tenant_id": tenant_id, "media_type": media_type}
 
 
 def _big_nmap_observation(ports=400):
@@ -94,7 +96,7 @@ def test_large_nmap_observation_is_summarized_and_archived():
     assert len(summary["hosts"][0]["ports"]) <= 80
     assert summary["hosts"][0]["ports"][0]["service"] == "svc"
     # The full payload went to the store, and the sha is pinned to the summary.
-    assert payload["artifact"]["sha256"] == "deadbeef"
+    assert payload["artifact"]["sha256"] == artifact["sha256"]
     assert store.puts[0][1] >= len(content)
 
 
