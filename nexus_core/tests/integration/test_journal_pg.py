@@ -96,3 +96,33 @@ def test_concurrent_workers_on_postgresql(pg_store):
         results = list(pool.map(prepare, range(2)))
     # Exactly one worker may own the in-flight step.
     assert sum(isinstance(result, str) for result in results) == 1
+
+
+def test_versioned_and_legacy_results_with_shared_artifacts(pg_store, tmp_path):
+    import hashlib
+    import json
+    from nexus_core.kernel.artifacts import LocalArtifactStore
+    from nexus_core.kernel.result_references import decode_result
+
+    journal = InvocationJournal(pg_store)
+    ctx = context(pg_store)
+    writer = LocalArtifactStore(pg_store, tmp_path / "shared")
+    reader = LocalArtifactStore(pg_store, tmp_path / "shared")
+    item = journal.prepare(ctx, "pipe-result", {}, "")
+    journal.start(item["invocation_id"], "system")
+    journal.finish(item["invocation_id"], "system", {"output": "left|right"}, artifact_store=writer)
+    row = journal.get(item["invocation_id"], "system")
+    assert journal.result_of(row, artifact_store=reader) == {"output": "left|right"}
+    assert json.loads(row["result_ref"])["version"] == 1
+    raw = '{"output":"left|right"}'
+    legacy = raw + "|" + hashlib.sha256(raw.encode()).hexdigest()
+    assert decode_result(legacy, "system", None) == {"output": "left|right"}
+
+
+def test_artifact_concurrent_publication_on_postgresql(pg_store, tmp_path):
+    from nexus_core.kernel.artifacts import LocalArtifactStore
+    workers = [LocalArtifactStore(pg_store, tmp_path / "shared") for _ in range(8)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        refs = list(pool.map(lambda worker: worker.put("system", b"shared", "text/plain"), workers))
+    assert len({ref["sha256"] for ref in refs}) == 1
+    assert all(workers[0].get("system", ref["id"]) == b"shared" for ref in refs)

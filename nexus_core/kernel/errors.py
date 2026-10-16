@@ -40,3 +40,6 @@ class ProviderFailure(RuntimeError):
 class BudgetExceeded(RuntimeError):
     """A durable token reservation would oversubscribe a shared tree budget."""
 
+
+class LeaseLost(PermissionError):
+    """The supplied task lease expired or no longer owns this generation."""

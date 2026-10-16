@@ -57,6 +57,8 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.post.dpapi",
     "nexus.post.enum_system",
     "nexus.post.listener",
+    "nexus.post.job",
+    "nexus.post.shell_exec",
     "nexus.post.ntlm_capture",
     "nexus.post.pivot_bruteforce",
     "nexus.post.pivot_http",
@@ -73,6 +75,7 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.session.kill",
     "nexus.system.install_tool",
     "nexus.web.request",
+    "nexus.web.upload",
     "nexus.web.sqlmap",
     "nexus.web.wp_bruteforce",
     "nexus.web.wp_exec",
@@ -155,7 +158,7 @@ def test_active_catalog_matches_the_reviewed_expectation():
     assert active == EXPECTED_ACTIVE
     read_only = [entry["tool_id"] for entry in catalog["tools"]
                  if entry["effect"] == "read_only"]
-    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 26
+    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 27
 
 
 def test_the_mislabelled_tools_now_declare_their_real_effect():

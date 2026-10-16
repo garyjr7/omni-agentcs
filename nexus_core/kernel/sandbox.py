@@ -14,7 +14,10 @@ from collections.abc import Iterable, Sequence
 from contextlib import suppress, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
+
+from .output_capture import BoundedCapture, StreamManifest
 from uuid import uuid4
 
 
@@ -81,6 +84,8 @@ class SandboxResult:
     orphans_detected: int = 0
     #: Wall-clock duration of the run, in seconds.
     duration_seconds: float = 0.0
+    stdout_manifest: StreamManifest | None = None
+    stderr_manifest: StreamManifest | None = None
 
 
 def merge_extra_env(env: dict[str, str], extra_env: dict[str, str] | None) -> dict[str, str]:
@@ -161,14 +166,12 @@ async def _terminate_process_group(
     pid is also its process-group id and the whole descendant tree is signaled.
     """
     pgid = process.pid
-    if process.returncode is not None:
-        return _count_process_group(pgid)
     with suppress(ProcessLookupError, PermissionError):
         os.killpg(pgid, signal.SIGTERM)
     deadline = time.monotonic() + max(0.0, float(grace_seconds))
     while process.returncode is None and time.monotonic() < deadline:
         await asyncio.sleep(0.05)
-    if process.returncode is None:
+    if process.returncode is None or _count_process_group(pgid):
         with suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, signal.SIGKILL)
         # Give the kernel a moment to tear the tree down before counting.
@@ -177,6 +180,58 @@ async def _terminate_process_group(
                 break
             await asyncio.sleep(0.05)
     return _count_process_group(pgid)
+
+
+async def _capture_process(
+    process: asyncio.subprocess.Process, limit: int, timeout: float,
+    cancel_event: asyncio.Event | None, grace: float, started: float,
+    cleanup: Callable[[], Awaitable[None]] | None = None,
+) -> SandboxResult:
+    assert process.stdout is not None and process.stderr is not None
+    stdout, stderr = BoundedCapture(limit), BoundedCapture(limit)
+    readers = [asyncio.create_task(stdout.drain(process.stdout)),
+               asyncio.create_task(stderr.drain(process.stderr))]
+    completed = asyncio.gather(process.wait(), *readers)
+    cancel = asyncio.create_task(cancel_event.wait()) if cancel_event else None
+    timed_out = cancelled = False
+    orphans = 0
+    try:
+        waiters: set[asyncio.Future[Any]] = {completed}
+        if cancel is not None:
+            waiters.add(cancel)
+        done, _ = await asyncio.wait(waiters, timeout=timeout,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if completed not in done:
+            cancelled = cancel is not None and cancel in done
+            timed_out = not cancelled
+            if cleanup is not None:
+                await cleanup()
+            orphans = await _terminate_process_group(process, grace)
+            try:
+                await asyncio.wait_for(asyncio.shield(completed), grace + 5)
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await completed
+    except BaseException:
+        try:
+            if cleanup is not None:
+                await cleanup()
+        finally:
+            await _terminate_process_group(process, grace)
+        raise
+    finally:
+        if cancel is not None:
+            cancel.cancel()
+            await asyncio.gather(cancel, return_exceptions=True)
+        if not completed.done():
+            completed.cancel()
+        await asyncio.gather(completed, return_exceptions=True)
+    return SandboxResult(
+        process.returncode if process.returncode is not None else -1,
+        stdout.text(), stderr.text(), timed_out, cancelled, orphans,
+        round(time.monotonic() - started, 3), stdout.manifest(), stderr.manifest(),
+    )
 
 
 class LocalSandbox:
@@ -188,6 +243,8 @@ class LocalSandbox:
     ):
         self.workspace_root = Path(workspace_root).resolve()
         self.allowed_programs = frozenset(allowed_programs)
+        if max_output_bytes < 0:
+            raise ValueError("capture limit must be nonnegative")
         self.max_output_bytes = max_output_bytes
 
     @property
@@ -299,65 +356,9 @@ class LocalSandbox:
             env=merge_extra_env(self._sandbox_env(home_dir), extra_env),
             start_new_session=True,
         )
-        communicate = asyncio.ensure_future(process.communicate())
-        cancel_waiter = (
-            asyncio.ensure_future(cancel_event.wait())
-            if cancel_event is not None
-            else None
-        )
-        drained: bytes | None = None
-        drained_err: bytes | None = None
-        timed_out = cancelled = False
-        try:
-            waiters: set[Any] = {communicate}
-            if cancel_waiter is not None:
-                waiters.add(cancel_waiter)
-            done, _ = await asyncio.wait(
-                waiters,
-                timeout=timeout_seconds,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if communicate in done:
-                drained, drained_err = await communicate
-            elif cancel_waiter is not None and cancel_waiter in done:
-                cancelled = True
-            else:
-                timed_out = True
-        except asyncio.CancelledError:
-            # External cancellation: kill the tree, then let cancellation flow.
-            if cancel_waiter is not None:
-                cancel_waiter.cancel()
-                await asyncio.gather(cancel_waiter, return_exceptions=True)
-            await self.terminate(process, grace_seconds=grace_seconds)
-            communicate.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await communicate
-            raise
-        finally:
-            if cancel_waiter is not None and not cancel_waiter.done():
-                cancel_waiter.cancel()
-                await asyncio.gather(cancel_waiter, return_exceptions=True)
+        return await _capture_process(process, self.max_output_bytes, timeout_seconds,
+                                      cancel_event, grace_seconds, started)
 
-        orphans = 0
-        if cancelled or timed_out:
-            orphans = await self.terminate(process, grace_seconds=grace_seconds)
-            try:
-                drained, drained_err = await asyncio.wait_for(
-                    communicate, timeout=grace_seconds + 5.0
-                )
-            except Exception:  # noqa: BLE001 - the kill already happened
-                drained, drained_err = b"", b""
-        elif drained is None:
-            drained, drained_err = await communicate
-        return SandboxResult(
-            exit_code=process.returncode if process.returncode is not None else -1,
-            stdout=(drained or b"")[: self.max_output_bytes].decode("utf-8", errors="replace"),
-            stderr=(drained_err or b"")[: self.max_output_bytes].decode("utf-8", errors="replace"),
-            timed_out=timed_out,
-            cancelled=cancelled,
-            orphans_detected=orphans,
-            duration_seconds=round(time.monotonic() - started, 3),
-        )
 
 
 class OCISandbox:
@@ -371,6 +372,7 @@ class OCISandbox:
         memory: str = "512m",
         cpus: str = "1.0",
         pids_limit: int = 128,
+        max_output_bytes: int = 1_000_000,
     ):
         if runtime not in {"docker", "podman"}:
             raise ValueError("OCI runtime must be docker or podman")
@@ -380,6 +382,9 @@ class OCISandbox:
         self.memory = memory
         self.cpus = cpus
         self.pids_limit = pids_limit
+        if max_output_bytes < 0:
+            raise ValueError("capture limit must be nonnegative")
+        self.max_output_bytes = max_output_bytes
 
     def build_argv(self, image: str, command: Sequence[str]) -> list[str]:
         if image not in self.allowed_images:
@@ -462,64 +467,19 @@ class OCISandbox:
             env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
             start_new_session=True,
         )
-        communicate = asyncio.ensure_future(process.communicate())
-        cancel_waiter = (
-            asyncio.ensure_future(cancel_event.wait())
-            if cancel_event is not None
-            else None
-        )
-        drained: bytes | None = None
-        drained_err: bytes | None = None
-        timed_out = cancelled = False
-        try:
-            waiters: set[Any] = {communicate}
-            if cancel_waiter is not None:
-                waiters.add(cancel_waiter)
-            done, _ = await asyncio.wait(
-                waiters,
-                timeout=timeout_seconds,
-                return_when=asyncio.FIRST_COMPLETED,
+        async def cleanup_container() -> None:
+            cleanup = await asyncio.create_subprocess_exec(
+                self.runtime, "rm", "--force", argv[argv.index("--name") + 1],
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
             )
-            if communicate in done:
-                drained, drained_err = await communicate
-            elif cancel_waiter is not None and cancel_waiter in done:
-                cancelled = True
-            else:
-                timed_out = True
-        except asyncio.CancelledError:
-            if cancel_waiter is not None:
-                cancel_waiter.cancel()
-                await asyncio.gather(cancel_waiter, return_exceptions=True)
-            await _terminate_process_group(process, grace_seconds)
-            communicate.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await communicate
-            raise
-        finally:
-            if cancel_waiter is not None and not cancel_waiter.done():
-                cancel_waiter.cancel()
-                await asyncio.gather(cancel_waiter, return_exceptions=True)
-
-        orphans = 0
-        if cancelled or timed_out:
-            orphans = await _terminate_process_group(process, grace_seconds)
             try:
-                drained, drained_err = await asyncio.wait_for(
-                    communicate, timeout=grace_seconds + 5.0
-                )
-            except Exception:  # noqa: BLE001
-                drained, drained_err = b"", b""
-        elif drained is None:
-            drained, drained_err = await communicate
-        return SandboxResult(
-            process.returncode if process.returncode is not None else -1,
-            (drained or b"").decode("utf-8", errors="replace")[:1_000_000],
-            (drained_err or b"").decode("utf-8", errors="replace")[:1_000_000],
-            timed_out,
-            cancelled,
-            orphans,
-            round(time.monotonic() - started, 3),
-        )
+                await asyncio.wait_for(cleanup.wait(), 10)
+            except asyncio.TimeoutError:
+                await _terminate_process_group(cleanup, 1)
+
+        return await _capture_process(process, self.max_output_bytes, timeout_seconds,
+                                      cancel_event, grace_seconds, started, cleanup_container)
 
 
 def sandbox_for_environment(

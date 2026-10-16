@@ -40,7 +40,11 @@ def sanitize(value: Any) -> Any:
 
 def sanitize_text(content: str) -> str:
     """Redact JSON fragments and defensive named assignments in arbitrary text."""
-    output = []
+    content = re.sub(r"-----BEGIN (?:[A-Z ]*PRIVATE KEY)-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)",
+                     "[REDACTED PRIVATE KEY]", content, flags=re.DOTALL)
+    content = re.sub(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@", r"\1[REDACTED]@", content)
+    content = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", content)
+    output: list[str] = []
     copied = index = 0
     while index < len(content):
         if content[index] not in "{[":

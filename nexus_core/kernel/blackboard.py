@@ -19,6 +19,8 @@ import json
 from typing import Any, Literal, TypedDict
 
 from .knowledge import KnowledgeStore
+from .serialization import sanitized_object
+from .redaction import sanitize_text
 from .models import utc_now
 
 #: Fact types the planner understands. ``key`` disambiguates within a type.
@@ -89,7 +91,8 @@ class Blackboard:
         """Persist one fact and return its normalized record."""
         if fact_type not in FACT_TYPES:
             raise ValueError(f"unsupported fact type: {fact_type!r}")
-        key = str(key).strip()
+        key = sanitize_text(str(key).strip())
+        engagement_id = sanitize_text(engagement_id)
         if not key:
             raise ValueError("fact key is required")
         if asserted_by not in {"agent", "verifier"}:
@@ -108,13 +111,14 @@ class Blackboard:
             "invocation_id": invocation_id,
             "recorded_at": utc_now(),
         }
+        record = sanitized_object(record)
         self.knowledge.ingest(
             tenant_id=tenant_id,
             title=key[:200],
             source_uri=_source_uri(engagement_id, fact_type, key),
             content=json.dumps(record, sort_keys=True),
-            created_by=created_by,
-            classification=classification,
+            created_by=sanitize_text(created_by),
+            classification=sanitize_text(classification),
             metadata={
                 "engagement_id": engagement_id,
                 "fact_type": fact_type,
@@ -154,8 +158,8 @@ class Blackboard:
             if uri in latest:
                 continue
             try:
-                latest[uri] = json.loads(row["content"])
-            except (TypeError, json.JSONDecodeError):
+                latest[uri] = sanitized_object(json.loads(row["content"]))
+            except (TypeError, ValueError, RecursionError):
                 continue
         return list(latest.values())
 
@@ -189,11 +193,24 @@ class Blackboard:
         return "\n".join(lines)
 
     def summary(self, tenant_id: str, engagement_id: str) -> dict[str, Any]:
-        """Return counts per fact type for prompt/planner consumption."""
+        """Return counts per fact type for prompt/planner consumption.
+
+        ``counts`` holds only verified facts (the evidence a parser attested, the
+        only thing that can advance a phase). ``leads`` holds the agent-recorded,
+        unverified facts: they never count as evidence, but they tell the profile
+        selector which service is worth testing next - without them a discovered
+        ``user`` never reaches the credential profile and the chain dead-ends in
+        enumeration.
+        """
         facts = self.list_facts(tenant_id, engagement_id)
         counts: dict[str, int] = {}
+        leads: dict[str, int] = {}
         for fact in facts:
-            if not is_verified_fact(fact):
-                continue
-            counts[fact["fact_type"]] = counts.get(fact["fact_type"], 0) + 1
-        return {"engagement_id": engagement_id, "total": len(facts), "counts": counts}
+            bucket = counts if is_verified_fact(fact) else leads
+            bucket[fact["fact_type"]] = bucket.get(fact["fact_type"], 0) + 1
+        return {
+            "engagement_id": engagement_id,
+            "total": len(facts),
+            "counts": counts,
+            "leads": leads,
+        }

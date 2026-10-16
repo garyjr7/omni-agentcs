@@ -21,9 +21,15 @@ from __future__ import annotations
 import hashlib
 import json
 from uuid import uuid4
+from typing import Any
+
+from .artifacts import ArtifactStore
+from .result_references import encode_result, decode_result
 
 from .audit import AuditWriter
-from .models import utc_now
+from .models import utc_now, RunContext
+from .control_store import ControlStore
+from .database import DatabaseConnection
 
 SCHEMA = '''CREATE TABLE IF NOT EXISTS kernel_invocations (
  invocation_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
@@ -33,7 +39,7 @@ SCHEMA = '''CREATE TABLE IF NOT EXISTS kernel_invocations (
 
 
 class InvocationJournal:
-    def __init__(self, store):
+    def __init__(self, store: ControlStore) -> None:
         self.store = store
         with store.connect() as conn:
             conn.execute(SCHEMA)
@@ -56,7 +62,7 @@ class InvocationJournal:
             )
 
     @staticmethod
-    def _migrate(conn, store=None) -> None:
+    def _migrate(conn: DatabaseConnection, store: ControlStore | None = None) -> None:
         """Add the P2-D closing columns to pre-existing journals.
 
         The backend is detected from the store, never by probing with
@@ -74,14 +80,14 @@ class InvocationJournal:
                 conn.execute(f'ALTER TABLE kernel_invocations ADD COLUMN {name} TEXT')
 
     @staticmethod
-    def arguments_hash(arguments):
+    def arguments_hash(arguments: dict[str, Any]) -> str:
         # Raw arguments are never persisted; hash still distinguishes secrets.
         return hashlib.sha256(
             json.dumps(arguments, sort_keys=True, separators=(',', ':'), default=str).encode()
         ).hexdigest()
 
     @staticmethod
-    def step_key(tool_id, arguments, *, phase='', objective=''):
+    def step_key(tool_id: str, arguments: dict[str, Any], *, phase: str = '', objective: str = '') -> str:
         """Stable intent key: tool + canonical args + phase + objective prefix."""
         payload = json.dumps(
             [str(tool_id), arguments, str(phase or ''),
@@ -90,7 +96,7 @@ class InvocationJournal:
         )
         return hashlib.sha256(payload.encode()).hexdigest()
 
-    def get(self, invocation_id, tenant_id):
+    def get(self, invocation_id: str, tenant_id: str) -> dict[str, Any] | None:
         with self.store.connect() as conn:
             row = conn.execute(
                 'SELECT * FROM kernel_invocations WHERE invocation_id=? AND tenant_id=?',
@@ -98,7 +104,8 @@ class InvocationJournal:
             ).fetchone()
         return dict(row) if row else None
 
-    def matching(self, context, tool_id, arguments, *, step_key=None):
+    def matching(self, context: RunContext, tool_id: str, arguments: dict[str, Any], *,
+                 step_key: str | None = None) -> dict[str, Any] | None:
         """Latest invocation for this exact step (step_key preferred)."""
         key = step_key or self.step_key(tool_id, arguments)
         with self.store.connect() as conn:
@@ -109,8 +116,9 @@ class InvocationJournal:
             ).fetchone()
         return dict(row) if row else None
 
-    def prepare(self, context, tool_id, arguments, target, *, retry_of=None,
-                step_key=None, lease_id=None):
+    def prepare(self, context: RunContext, tool_id: str, arguments: dict[str, Any], target: str, *,
+                retry_of: str | None = None, step_key: str | None = None,
+                lease_id: str | None = None) -> dict[str, Any]:
         identifier = context.invocation_id or uuid4().hex
         key = step_key or self.step_key(tool_id, arguments)
         lease = lease_id if lease_id is not None else getattr(context, 'worker_id', '') or None
@@ -131,9 +139,12 @@ class InvocationJournal:
                  self.arguments_hash(arguments), str(target), 'prepared', retry_of,
                  key, lease, utc_now()),
             )
-        return self.get(identifier, context.tenant_id)
+        item = self.get(identifier, context.tenant_id)
+        if item is None:
+            raise RuntimeError("prepared invocation disappeared")
+        return item
 
-    def start(self, invocation_id, tenant_id):
+    def start(self, invocation_id: str, tenant_id: str) -> None:
         with self.store.connect() as conn:
             updated = conn.execute(
                 "UPDATE kernel_invocations SET state='running',started_at=? "
@@ -143,48 +154,26 @@ class InvocationJournal:
         if updated != 1:
             raise PermissionError('invocation is not prepared')
 
-    def finish(self, invocation_id, tenant_id, result, *, artifact_store=None):
-        """Mark ``succeeded`` with a durable result reference.
-
-        With an artifact store the sanitized payload is content-addressed and the
-        journal keeps only the artifact id + its sha256; without one it falls back
-        to an inline sanitized JSON blob (never a raw secret).
-        """
-        from .redaction import sanitize
-
-        encoded = json.dumps(sanitize(result), default=str).encode()
-        reference = encoded.decode()
-        digest = hashlib.sha256(encoded).hexdigest()
-        if artifact_store is not None:
-            stored = artifact_store.put(
-                tenant_id, encoded, 'application/json',
-                run_id=None, metadata={'source': 'invocation_journal'},
-            )
-            reference = stored['id']
-            digest = stored['sha256']
+    def finish(self, invocation_id: str, tenant_id: str, result: dict[str, Any], *,
+               artifact_store: ArtifactStore | None = None) -> None:
+        reference = encode_result(result, tenant_id, artifact_store)
         with self.store.connect() as conn:
             updated = conn.execute(
                 "UPDATE kernel_invocations SET state='succeeded',result_ref=?,ended_at=? "
                 "WHERE invocation_id=? AND tenant_id=? AND state='running'",
-                (f'{reference}|{digest}', utc_now(), invocation_id, tenant_id),
+                (reference, utc_now(), invocation_id, tenant_id),
             ).rowcount
         if updated != 1:
             raise PermissionError('invocation is not running')
 
-    def result_of(self, item, *, artifact_store=None):
-        """Read back a stored result (artifact store first, inline otherwise)."""
-        reference = item.get('result_ref') or ''
+    def result_of(self, item: dict[str, Any], *,
+                  artifact_store: ArtifactStore | None = None) -> dict[str, Any] | None:
+        reference = item.get('result_ref')
         if not reference:
             return None
-        value, _, digest = reference.partition('|')
-        if artifact_store is not None and not value.lstrip().startswith('{'):
-            raw = artifact_store.get(item['tenant_id'], value)
-            if hashlib.sha256(raw).hexdigest() != digest:
-                raise RuntimeError('invocation result integrity check failed')
-            return json.loads(raw)
-        return json.loads(value)
+        return decode_result(reference, item['tenant_id'], artifact_store)
 
-    def unknown(self, invocation_id, tenant_id):
+    def unknown(self, invocation_id: str, tenant_id: str) -> None:
         with self.store.connect() as conn:
             conn.execute(
                 "UPDATE kernel_invocations SET state='unknown',ended_at=? "
@@ -192,7 +181,7 @@ class InvocationJournal:
                 (utc_now(), invocation_id, tenant_id),
             )
 
-    def recover(self, context, *, lease_id=None):
+    def recover(self, context: RunContext, *, lease_id: str | None = None) -> int:
         """Mark a crashed run's ``running`` invocations ``unknown``.
 
         ``lease_id`` is the worker that currently owns the run's task lease (a
@@ -225,7 +214,7 @@ class InvocationJournal:
             )
         return len(ids)
 
-    def mark_failed(self, invocation_id, tenant_id, reason='operator_skip'):
+    def mark_failed(self, invocation_id: str, tenant_id: str, reason: str = 'operator_skip') -> None:
         """Operator decided an ``unknown`` invocation had no effect; no replay."""
         with self.store.connect() as conn:
             updated = conn.execute(
@@ -241,7 +230,7 @@ class InvocationJournal:
             resource_id=invocation_id, payload={'reason': reason}, decision='deny',
         )
 
-    def unknown_for_run(self, tenant_id, run_id):
+    def unknown_for_run(self, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
         """All invocations of a run still awaiting a resume decision."""
         with self.store.connect() as conn:
             rows = conn.execute(
@@ -251,7 +240,7 @@ class InvocationJournal:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def claim_retry(self, invocation_id, tenant_id):
+    def claim_retry(self, invocation_id: str, tenant_id: str) -> None:
         """Validate that an ``unknown`` invocation may be retried under approval."""
         item = self.get(invocation_id, tenant_id)
         if not item or item['state'] != 'unknown':
