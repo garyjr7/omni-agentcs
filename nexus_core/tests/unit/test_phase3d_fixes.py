@@ -100,7 +100,10 @@ OTHER_BUDGETS = {
     "postexploit": 8,
     "privesc": 10,
     "lateral": 8,
-    "reporter": 4,
+    # V1-41 moved this one to 6 (rerun 11: the reject-and-retry loop of the
+    # completion gate costs more than the 4 it had). Every other profile keeps
+    # the value this table pins; its own test lives in test_phase3k_fixes.py.
+    "reporter": 6,
 }
 
 

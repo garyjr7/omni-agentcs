@@ -34,6 +34,14 @@ class Phase:
     it is done when any of them reaches ``min_count``. ``optional`` phases
     render in the pipeline but never become the *current* phase, so they cannot
     block the endgame (reporting).
+
+    ``requires`` is the *sustainer* of a phase whose own evidence is only a
+    signal: when it is non-empty the phase is done only if one of its
+    ``evidence`` types fired **and** one of ``requires`` is on the board. It is
+    what keeps ``post_exploitation`` from closing on a bare ``loot`` (V1-39): a
+    captured file -the *user* flag included- says there is something to collect,
+    not that the engagement reached the tail of the chain. Escalated privilege or
+    an interactive session is what says that.
     """
 
     id: str
@@ -43,6 +51,7 @@ class Phase:
     evidence: tuple[str, ...] = ()
     min_count: int = 1
     optional: bool = False
+    requires: tuple[str, ...] = ()
 
 
 #: The kill chain, in order. Reporting is never auto-completed: only the model's
@@ -82,6 +91,11 @@ PHASES: tuple[Phase, ...] = (
         "recolectar loot/artefactos y registrar evidencia",
         "Recolecta loot y registra artefactos con su procedencia.",
         ("loot", "artifact"),
+        # V1-39: loot/artifact is the signal, the escalation is the closure.
+        # Measured in rerun 11 (`run_30bfde08…`): `cat /home/lin/Desktop/user.txt`
+        # produced a verified `loot` fact, that alone closed this phase, and the
+        # chain jumped past the escalation it had not performed.
+        requires=("privilege", "session"),
     ),
     Phase(
         "lateral_movement",
@@ -266,9 +280,18 @@ def count_leads(facts: Iterable[Any] | None = None) -> dict[str, int]:
 
 
 def _is_done(phase: Phase, counts: Mapping[str, int]) -> bool:
+    """Whether *phase* is closed by the evidence on the board.
+
+    Its own evidence type must reach ``min_count``; when the phase declares a
+    ``requires`` sustainer, one of those types must be on the board too (V1-39).
+    """
     if not phase.evidence:
         return False
-    return any(counts.get(fact_type, 0) >= phase.min_count for fact_type in phase.evidence)
+    if not any(counts.get(fact_type, 0) >= phase.min_count for fact_type in phase.evidence):
+        return False
+    if phase.requires and not any(counts.get(fact_type, 0) >= 1 for fact_type in phase.requires):
+        return False
+    return True
 
 
 def _last_closed_index(counts: Mapping[str, int]) -> int:
@@ -316,17 +339,18 @@ def build_plan(
     normalized = normalize_counts(counts=counts, facts=facts)
     lead_counts = normalize_counts(counts=leads) if leads is not None else count_leads(facts)
     current = active_phase(normalized)
-    current_index = PHASE_IDS.index(current)
     statuses: list[PhaseStatus] = []
-    for index, phase in enumerate(PHASES):
-        if _is_done(phase, normalized) or (index < current_index and not phase.optional):
-            # Closed by its own evidence, or left behind by it: a mandatory
-            # phase ``pending`` behind the current one is a plan the completion
-            # gate can never close (V1-18), and the evidence of a later phase is
-            # exactly the deterministic decision that the earlier one yielded.
-            # An *optional* phase is only ever closed by its own evidence: it
-            # blocks nothing, so its status must keep meaning "the engagement did
-            # it" (a single session never closes lateral movement).
+    for phase in PHASES:
+        if _is_done(phase, normalized):
+            # Closed by its own evidence, and only by its own evidence: a status
+            # of ``done`` is a claim about what the engagement proved, so it can
+            # never be derived from the *position* of another phase (V1-40).
+            # Measured in rerun 11 (`run_30bfde08…`): the ``loot`` fact advanced
+            # ``current`` to ``reporting`` and this loop marked
+            # ``privilege_escalation`` done with no ``privilege`` fact on the
+            # board, so the plan claimed a root the run never got. A deliberate
+            # hand-off still closes the phase it leaves: that is
+            # :func:`hand_over_phase`, where the rule itself is the decision.
             status = STATUS_DONE
         elif phase.id == current:
             status = STATUS_CURRENT

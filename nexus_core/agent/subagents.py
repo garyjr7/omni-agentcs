@@ -426,7 +426,14 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         focus="consolidar hallazgos verificados y cerrar el engagement",
         tools=_with_common({"nexus.report.generate"}),
         token_budget=30_000,
-        max_iterations=4,
+        # V1-41: measured in rerun 11 (`run_30bfde08…`), the reporter spent its 4
+        # iterations on one denied attempt, `report.generate`, a `task_complete`
+        # the gate rejected and the recovery turn that fetched the right evidence
+        # -and died just before it could retry with it. The gate itself is not
+        # relaxed (that is V1-45 territory): the profile gets the margin the
+        # reject-and-retry loop costs. `token_budget` is untouched (V1-21 stays
+        # closed).
+        max_iterations=6,
         read_only=True,
     ),
 )

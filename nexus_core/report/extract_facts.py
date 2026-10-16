@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
-from typing import Any, Iterable
+import re
+from typing import Any, Iterable, Mapping
 
 from nexus_core.kernel.blackboard import is_verified_fact
 
@@ -82,12 +84,69 @@ def _loot_targets(value: dict[str, Any]) -> tuple[str, ...]:
     return tuple(seen[:50])
 
 
+#: A host or a domain, never a flag, a vault handle or a fact key like
+#: ``cred:ssh:lin@10.0.0.1``.
+_HOST_LIKE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z]{2,}$")
+
+
+def _host_like(value: Any) -> str:
+    """Return the host a fact candidate names, or ``""`` when it names none.
+
+    Accepts an address, a ``host:port`` pair and the ``user@host`` tail of a fact
+    key (the three shapes the blackboard actually stores); a flag or a free-text
+    key yields nothing, so a loot can never be attributed to its own artifact.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    candidate = text.rsplit("@", 1)[-1]
+    if candidate.count(":") == 1:
+        head, _, port = candidate.partition(":")
+        if port.isdigit():
+            candidate = head
+    candidate = candidate.strip().strip("[]")
+    try:
+        ipaddress.ip_address(candidate)
+        return candidate
+    except ValueError:
+        pass
+    return candidate if _HOST_LIKE.fullmatch(candidate) else ""
+
+
+def _invocation_targets(facts: Iterable[dict[str, Any]]) -> dict[str, str]:
+    """``invocation_id -> host`` recovered from the facts that name one (V1-43).
+
+    A captured artifact records the command and the channel, not the host it came
+    from: ``{"flag": ..., "command": ..., "service": "ssh"}``. The invocation
+    that captured it usually asserted the host as well (the ``access`` fact of the
+    same ``ssh_exec`` call carries it), so the invocation is the context that
+    attributes the loot. Only ``loot`` facts are excluded: their key *is* the
+    artifact, so it can never be the target.
+    """
+    index: dict[str, str] = {}
+    for fact in facts:
+        if not isinstance(fact, Mapping):
+            continue
+        if str(fact.get("fact_type") or "") == "loot":
+            continue
+        invocation_id = str(fact.get("invocation_id") or "")
+        if not invocation_id or invocation_id in index:
+            continue
+        for candidate in _fact_targets(dict(fact)):
+            host = _host_like(candidate)
+            if host:
+                index[invocation_id] = host
+                break
+    return index
+
+
 def _loot_finding(
     fact: dict[str, Any],
     *,
     key: str,
     value: dict[str, Any],
     scope: Any = None,
+    fallback_targets: tuple[str, ...] = (),
 ) -> Finding | None:
     """Turn one *verified* captured artifact into a confirmed finding (V1-37).
 
@@ -104,10 +163,15 @@ def _loot_finding(
       this engagement (the fact still exists; it just is not reported as impact).
       A loot that names no target at all is attributed to the engagement: the
       blackboard is engagement-scoped and every fact came from a scoped call.
+
+    The target is read from the value first, and from ``fallback_targets`` -the
+    host the invoking call was run against- when the artifact itself names none
+    (V1-43: the rerun 11 loot finding was the only one of the report with an empty
+    ``affected_targets``).
     """
     if not is_verified_fact(fact):
         return None
-    targets = _loot_targets(value)
+    targets = _loot_targets(value) or tuple(fallback_targets)
     if scope is not None and targets and not any(matches_scope(item, scope) for item in targets):
         return None
     severity = (
@@ -176,15 +240,22 @@ def _fact_findings(
     ``scope`` (optional) is the signed engagement scope: when given, a fact that
     names targets entirely outside it is not reported as impact.
     """
+    records = [fact for fact in facts if isinstance(fact, dict)]
+    invocation_targets = _invocation_targets(records)
     results: list[Finding] = []
-    for fact in facts:
-        if not isinstance(fact, dict):
-            continue
+    for fact in records:
         fact_type = str(fact.get("fact_type") or "hint")
         key = str(fact.get("key") or "")
         value = _as_dict(fact.get("value"))
         if fact_type == "loot":
-            loot = _loot_finding(fact, key=key, value=value, scope=scope)
+            host = invocation_targets.get(str(fact.get("invocation_id") or ""))
+            loot = _loot_finding(
+                fact,
+                key=key,
+                value=value,
+                scope=scope,
+                fallback_targets=(host,) if host else (),
+            )
             if loot is not None:
                 results.append(loot)
             continue

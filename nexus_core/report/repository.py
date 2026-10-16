@@ -42,6 +42,39 @@ def _load_messages(store: Any, tenant_id: str) -> list[dict[str, Any]]:
     return values
 
 
+def _load_runs(store: Any, tenant_id: str) -> list[dict[str, Any]]:
+    """Read the runs of the tenant, oldest first (never raises).
+
+    ``kernel_runs.context`` is where the CLI records the engagement a run was
+    launched for (``{"source": "omni-headless", "engagement_id": "eng-…"}``), so
+    it is the authoritative engagement-to-runs mapping a report needs (V1-42).
+    """
+    try:
+        with store.connect() as conn:
+            rows = conn.execute(
+                """SELECT id, context, result, created_at, updated_at
+                FROM kernel_runs WHERE tenant_id=? ORDER BY created_at""",
+                (tenant_id,),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - a report is better than an exception
+        return []
+    values: list[dict[str, Any]] = []
+    for row in rows:
+        value = dict(row)
+        value["run_id"] = str(value.get("id") or "")
+        for key in ("context", "result"):
+            raw = value.get(key)
+            if isinstance(raw, str):
+                try:
+                    value[key] = json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    value[key] = {}
+            elif not isinstance(raw, dict):
+                value[key] = {}
+        values.append(value)
+    return values
+
+
 def _load_artifacts(store: Any, tenant_id: str) -> list[dict[str, Any]]:
     try:
         with store.connect() as conn:
@@ -72,6 +105,9 @@ class ReportRepository:
 
     def messages(self, tenant_id: str) -> list[dict[str, Any]]:
         return _load_messages(self.store, tenant_id)
+
+    def runs(self, tenant_id: str) -> list[dict[str, Any]]:
+        return _load_runs(self.store, tenant_id)
 
     def artifacts(self, tenant_id: str) -> list[dict[str, Any]]:
         return _load_artifacts(self.store, tenant_id)

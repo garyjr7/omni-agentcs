@@ -10,7 +10,7 @@ _VIOLATION_TARGET = re.compile(r"ScopeViolation\(([^)]+)\)")
 import ipaddress
 import json
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from nexus_core.scope import EngagementScope, EngagementStore
 
@@ -362,14 +362,109 @@ def _run_targets(observations: Iterable[Observation], scope: EngagementScope) ->
     return attributed
 
 
+def engagement_runs(
+    runs: Iterable[dict[str, Any]] | None,
+    events: Iterable[dict[str, Any]] | None,
+    engagement_id: str,
+) -> set[str]:
+    """Run ids the durable record attributes to ``engagement_id`` (V1-42).
+
+    Two sources, both explicit statements of *which engagement* a run worked on:
+    the engagement the CLI recorded in the run context, and the engagement the
+    audit trail carries in the payload of an event (the REPL records
+    ``session.command`` with the live engagement, and such a run may well have
+    been created without one).
+    """
+    wanted = str(engagement_id or "")
+    if not wanted:
+        return set()
+    selected: set[str] = set()
+    for run in runs or ():
+        if not isinstance(run, Mapping):
+            continue
+        context = run.get("context")
+        if isinstance(context, str):
+            try:
+                context = json.loads(context or "{}")
+            except (TypeError, ValueError):
+                context = {}
+        if not isinstance(context, Mapping):
+            context = {}
+        if str(context.get("engagement_id") or "") == wanted:
+            selected.add(str(run.get("id") or run.get("run_id") or ""))
+    for event in events or ():
+        payload = event.get("payload") or {}
+        if str(payload.get("engagement_id") or "") == wanted:
+            selected.add(str(event.get("trace_id") or ""))
+    selected.discard("")
+    return selected
+
+
+def _foreign_runs(
+    runs: Iterable[dict[str, Any]] | None,
+    events: Iterable[dict[str, Any]] | None,
+    engagement_id: str,
+) -> set[str]:
+    """Run ids the durable record attributes to a *different* engagement.
+
+    Only a run that *states* another engagement is foreign. An unattributed run
+    is not: it says nothing about which engagement it worked on, so excluding it
+    would silently empty the report of every engagement whose runs predate the
+    engagement tag in the run context.
+    """
+    wanted = str(engagement_id or "")
+    foreign: set[str] = set()
+    for run in runs or ():
+        if not isinstance(run, Mapping):
+            continue
+        context = run.get("context")
+        if isinstance(context, str):
+            try:
+                context = json.loads(context or "{}")
+            except (TypeError, ValueError):
+                context = {}
+        if not isinstance(context, Mapping):
+            context = {}
+        tag = str(context.get("engagement_id") or "")
+        if tag and tag != wanted:
+            foreign.add(str(run.get("id") or run.get("run_id") or ""))
+    for event in events or ():
+        payload = event.get("payload") or {}
+        tag = str(payload.get("engagement_id") or "")
+        if tag and tag != wanted:
+            foreign.add(str(event.get("trace_id") or ""))
+    foreign.discard("")
+    return foreign
+
+
 def _select_runs(
     events: list[dict[str, Any]],
     observations: list[Observation],
     scope: EngagementScope,
     run_ids: list[str] | None,
+    runs: list[dict[str, Any]] | None = None,
 ) -> set[str]:
+    """Runs the report is about: the engagement's own, never the tenant's.
+
+    Measured in rerun 11 (``run_30bfde08…``): the report declared the runs of
+    *another* engagement (rerun 10 attacked the same IP and both scopes covered
+    it) plus a run from two hours before the engagement existed, because the
+    selection fell back to "a run whose targets match this scope". Two rules now
+    bound it (V1-42):
+
+    * the runs the record attributes to this engagement are the selection, and
+    * a run the record attributes to *another* engagement is never included.
+
+    The target heuristic only remains for a record that attributes no run at all
+    (an engagement whose runs were launched before the context carried it): with
+    no attribution to contradict it, matching the signed scope is the best
+    evidence available, and dropping it would report nothing for such data.
+    """
     if run_ids is not None:
         return {str(item) for item in run_ids}
+    attributed = engagement_runs(runs, events, scope.engagement_id)
+    if attributed:
+        return attributed
     selected = _run_targets(observations, scope)
     for event in events:
         payload = event.get("payload") or {}
@@ -377,6 +472,7 @@ def _select_runs(
             # The REPL records ``session.command`` with the live engagement, and
             # a session command has no target of its own to match against.
             selected.add(str(event.get("trace_id") or ""))
+    selected -= _foreign_runs(runs, events, scope.engagement_id)
     selected.discard("")
     return selected
 
@@ -552,6 +648,10 @@ class _Collection:
     selected: set[str]
     context: _Context
     undecodable: int
+    #: ``created_at`` of the first selected run, when the record knows its runs
+    #: (V1-42). The report started when the engagement's first run started, not
+    #: when some other run of the tenant happened to write an event.
+    first_run_at: str = ""
 
 
 def _collect(
@@ -567,8 +667,9 @@ def _collect(
     repository = ReportRepository(store)
     events = repository.events(tenant_id)
     messages = repository.messages(tenant_id)
+    runs = repository.runs(tenant_id)
     observations, undecodable = _observations(messages)
-    selected = _select_runs(events, observations, scope, run_ids)
+    selected = _select_runs(events, observations, scope, run_ids, runs)
     scoped_events = [event for event in events if str(event.get("trace_id") or "") in selected]
     event_by_run: dict[str, list[dict[str, Any]]] = {}
     completion_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -592,4 +693,13 @@ def _collect(
             completion_by_key=completion_by_key,
         ),
         undecodable=undecodable,
+        first_run_at=min(
+            (
+                str(run.get("created_at") or "")
+                for run in runs
+                if str(run.get("id") or run.get("run_id") or "") in selected
+                and str(run.get("created_at") or "")
+            ),
+            default="",
+        ),
     )

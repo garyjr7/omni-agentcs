@@ -476,7 +476,14 @@ async def build_report(
         engagement_name=str(metadata["engagement_name"]),
         client=str(metadata["client"]),
         operator=str(metadata["operator"]),
-        started_at=min(times) if times else str(metadata["valid_from"]),
+        # V1-42: the engagement started when its first run started. Falling back
+        # to the earliest event of the tenant is what dated the rerun 11 report
+        # two hours before the engagement existed (an untagged run of another
+        # engagement had written the earliest event).
+        started_at=(
+            collection.first_run_at
+            or (min(times) if times else str(metadata["valid_from"]))
+        ),
         ended_at=max(times) if times else utc_now(),
         scope_summary=str(metadata["scope_summary"]),
         scope_full=dict(metadata["scope_full"]),
