@@ -23,16 +23,24 @@ Design notes:
   source**, so a truncated or redirected upload is a declared negative
   (``ssh_upload_hash_mismatch``) instead of a silent success.
 * Connections are short-lived (connect, run, disconnect); no credential is
-  persisted by these handlers.
+  persisted by these handlers. The client closes the transport in a ``finally``
+  and :func:`_run_ssh_client` serializes sessions to the same target with a
+  quiet period between them: Simple CTF answered ``Authentication failed`` to
+  the second and third connection opened seconds apart, and the agent read that
+  as a bad password. Serializing plus pacing is what keeps ``sshd``/fail2ban
+  from treating our own recon as a brute-force attempt.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import re
-from dataclasses import replace
+import threading
+import time
+from dataclasses import dataclass, field, replace
 from functools import wraps
 from typing import Any
 
@@ -53,6 +61,13 @@ ENUM_DEFAULT_TIMEOUT_SECONDS = 300
 UPLOAD_DEFAULT_TIMEOUT_SECONDS = 180
 SSH_MAX_TIMEOUT_SECONDS = 600
 SSH_ENUM_MARKER = "__SUDO__"
+
+#: Quiet period between the end of one SSH session and the next connection to
+#: the same target. One second is enough for ``sshd`` to reap the closed channel
+#: and too short to be mistaken for a brute-force sweep; the handlers used to
+#: open ``enum_system`` and ``ssh_exec`` back to back, and Simple CTF answered
+#: the second one with ``Authentication failed``. Overridable in tests.
+SSH_CONNECT_COOLDOWN_SECONDS = 1.0
 
 #: Octal file mode accepted by ``ssh_upload`` (``755``, ``0644``, ...).
 SSH_FILE_MODE_RE = re.compile(r"^[0-7]{3,4}$")
@@ -300,6 +315,60 @@ def main():
 
 main()
 """
+
+
+@dataclass
+class _SSHGate:
+    """One target's connection slot: at most one session, then a cooldown.
+
+    The gate is bound to the event loop that created it. Handlers run on the
+    app's loop; tests that use one ``asyncio.run`` per call get a fresh gate
+    instead of a lock attached to a closed loop.
+    """
+
+    loop: asyncio.AbstractEventLoop
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: Monotonic time before which the next connection must not open.
+    ready_at: float = 0.0
+
+
+#: Gates keyed by ``(host, port)``. Guarded by a plain lock because the dict is
+#: also read from a different loop when the process runs several of them.
+_SSH_GATES: dict[tuple[str, int], _SSHGate] = {}
+_SSH_GATES_LOCK = threading.Lock()
+
+
+def _ssh_gate(host: str, port: int) -> _SSHGate:
+    """The gate of ``(host, port)`` for the running loop, pruned when stale."""
+    loop = asyncio.get_running_loop()
+    key = (host, port)
+    with _SSH_GATES_LOCK:
+        gate = _SSH_GATES.get(key)
+        if gate is None or gate.loop is not loop:
+            gate = _SSHGate(loop=loop)
+            _SSH_GATES[key] = gate
+        if len(_SSH_GATES) > 64:
+            stale = [
+                other_key
+                for other_key, other in _SSH_GATES.items()
+                if other is not gate
+                and (other.loop.is_closed() or other.ready_at < _now() - 60)
+            ]
+            for other_key in stale:
+                _SSH_GATES.pop(other_key, None)
+        return gate
+
+
+def _now() -> float:
+    """Monotonic clock of the gate (patchable in tests)."""
+    return time.monotonic()
+
+
+async def _wait_for_ssh_slot(gate: _SSHGate) -> None:
+    """Sleep until the target's cooldown expires (no-op on a cold target)."""
+    delay = gate.ready_at - _now()
+    if delay > 0:
+        await asyncio.sleep(delay)
 
 
 def _validate_text(value: Any, field: str, *, max_length: int) -> str:
@@ -575,13 +644,24 @@ async def _run_ssh_client(
     ]
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
     sandbox = sandbox_for_environment(workspace_root, allowed_programs=SSH_ALLOWED_PROGRAMS)
-    return await run_in_sandbox(
-        sandbox,
-        argv,
-        timeout_seconds=timeout_seconds,
-        image_env="NEXUS_SSH_IMAGE",
-        default_image="python:3.12-alpine",
-    )
+    # One session at a time per target, and never sooner than the cooldown after
+    # the previous one ended. ``sshd`` (and any ban daemon in front of it) sees a
+    # single, paced client instead of three parallel ones from the same IP.
+    gate = _ssh_gate(host, port)
+    async with gate.lock:
+        await _wait_for_ssh_slot(gate)
+        try:
+            return await run_in_sandbox(
+                sandbox,
+                argv,
+                timeout_seconds=timeout_seconds,
+                image_env="NEXUS_SSH_IMAGE",
+                default_image="python:3.12-alpine",
+            )
+        finally:
+            # The cooldown starts when the client process is gone, which is when
+            # the remote side has seen the disconnect.
+            gate.ready_at = _now() + SSH_CONNECT_COOLDOWN_SECONDS
 
 
 #: Bound on the backend diagnostic echoed back to the model (V1-32). The client

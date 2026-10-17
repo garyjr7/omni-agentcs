@@ -54,6 +54,12 @@ from nexus_core.tools.handlers.ssh_post import SSH_CLIENT_SCRIPT, ssh_exec_handl
 
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("lab_scope")]
 
+
+@pytest.fixture(autouse=True)
+def _no_connect_cooldown(monkeypatch):
+    """Pacing has its own module; a real second per call here only slows the suite."""
+    monkeypatch.setattr(module, "SSH_CONNECT_COOLDOWN_SECONDS", 0.0)
+
 TARGET = "10.0.0.5"
 TENANT = "system"
 ENGAGEMENT = "eng-1"
@@ -231,7 +237,9 @@ class SSHClient:
         {body}
 
     def close(self):
-        pass
+        # The target's client must drop the transport on every exit path; the
+        # marker proves the ``finally`` ran, not just that the call returned.
+        open("closed.flag", "w").write("1")
 '''
 
 
@@ -275,6 +283,20 @@ def test_the_client_never_labels_a_post_login_failure_as_authentication(tmp_path
     assert payload["exit_status"] == 1
     assert payload["error"].startswith("CommandFailed:")
     assert "AuthenticationException" not in payload["error"]
+
+
+@pytest.mark.parametrize(
+    "body, exit_code",
+    [
+        ("return _Stream(), _Stream(), _Stream(b'')", 0),
+        ('raise AuthenticationException("boom")', 1),
+    ],
+)
+def test_the_client_always_closes_the_transport(tmp_path, body, exit_code) -> None:
+    """No dangling session, whether the command worked or broke the session."""
+    _run_client(tmp_path, exit_code=exit_code, body=body)
+
+    assert (tmp_path / "closed.flag").exists()
 
 
 def test_the_client_reports_a_nonzero_exit_as_a_command_failure(tmp_path) -> None:

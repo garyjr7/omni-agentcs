@@ -16,6 +16,12 @@ Por cada intento:
 5. busca las flags en el NDJSON **y** en los artefactos del workspace;
 6. escribe ``bench/results/<sala>-<timestamp>-runN.json``.
 
+Una sala declara sus flags de una de dos formas: ``flag_regex`` (el patron
+``flag{fake_flag}`` de la mayoria de salas) o ``flags_literal`` (la lista de cadenas
+exactas, para salas como Simple CTF cuyo ``user.txt`` no lleva prefijo). Si
+estan las dos, manda ``flags_literal``: el valor literal es el criterio, no una
+aproximacion por forma.
+
 Creacion y ejecucion comparten **un solo entorno** (:func:`run_environment`):
 una DB de control dentro del directorio del run. Si el creador y el agente
 abren bases distintas, el id recien creado no existe para el agente y el run
@@ -79,13 +85,28 @@ def load_config(path: Path = DEFAULT_ROOMS) -> dict[str, Any]:
     if not rooms:
         raise ValueError("rooms.yaml: no rooms defined")
     for room_id, room in rooms.items():
-        missing = {"target_env", "flag_regex", "expected_flags", "objective"} - set(room)
+        missing = {"target_env", "expected_flags", "objective"} - set(room)
         if missing:
             raise ValueError(f"rooms.yaml: room {room_id!r} lacks {sorted(missing)}")
-        try:
-            re.compile(str(room["flag_regex"]))
-        except re.error as exc:
-            raise ValueError(f"rooms.yaml: {room_id!r} has an invalid flag_regex") from exc
+        literals = room.get("flags_literal")
+        if literals is None and "flag_regex" not in room:
+            raise ValueError(
+                f"rooms.yaml: room {room_id!r} needs flag_regex or flags_literal"
+            )
+        if literals is not None:
+            if (
+                not isinstance(literals, list)
+                or not literals
+                or any(not isinstance(value, str) or not value.strip() for value in literals)
+            ):
+                raise ValueError(
+                    f"rooms.yaml: {room_id!r} flags_literal must be a non-empty list of strings"
+                )
+        if "flag_regex" in room:
+            try:
+                re.compile(str(room["flag_regex"]))
+            except re.error as exc:
+                raise ValueError(f"rooms.yaml: {room_id!r} has an invalid flag_regex") from exc
         if int(room["expected_flags"]) < 1:
             raise ValueError(f"rooms.yaml: {room_id!r} expects no flags")
     data.setdefault("defaults", {})
@@ -166,6 +187,41 @@ def extract_flags(paths: list[Path], pattern: str) -> list[str]:
                 if value and value not in found:
                     found.append(value)
     return found
+
+
+def extract_literal_flags(paths: list[Path], literals: list[str]) -> list[str]:
+    """Every literal flag that appears verbatim under ``paths``.
+
+    A room whose flags carry no ``flag{fake_flag}`` shape (Simple CTF's
+    ``G00d j0b, keep up!``) declares the exact strings instead of a regex: a
+    pattern written to match one sentence would count any lookalike text, and
+    would still miss the trailing punctuation. Same discovery order and dedupe
+    as :func:`extract_flags`, so ``len(found) >= expected_flags`` keeps meaning
+    "distinct flags captured".
+    """
+    found: list[str] = []
+    for start in paths:
+        if not start.exists():
+            continue
+        candidates = [start] if start.is_file() else sorted(start.rglob("*"))
+        for path in candidates:
+            if not path.is_file():
+                continue
+            text = _text(path)
+            if not text:
+                continue
+            for literal in literals:
+                if literal in text and literal not in found:
+                    found.append(literal)
+    return found
+
+
+def room_flags(paths: list[Path], room: dict[str, Any]) -> list[str]:
+    """Flags captured for *room*: literal strings when declared, else the regex."""
+    literals = room.get("flags_literal") or []
+    if literals:
+        return extract_literal_flags(paths, [str(value) for value in literals])
+    return extract_flags(paths, str(room["flag_regex"]))
 
 
 def tokens_from_ndjson(path: Path) -> int:
@@ -381,10 +437,7 @@ def run_once(
             exit_code = process.wait(timeout=KILL_GRACE_SECONDS)
     duration = round(time.monotonic() - started, 2)
 
-    flags = extract_flags(
-        [ndjson, workspace, run_dir / "data"],
-        str(room["flag_regex"]),
-    )
+    flags = room_flags([ndjson, workspace, run_dir / "data"], room)
     expected = int(room["expected_flags"])
     result = {
         "room": room_id,
@@ -485,6 +538,7 @@ def main(argv: list[str] | None = None) -> int:
                 "target": target,
                 "target_env": room.get("target_env"),
                 "flag_regex": room.get("flag_regex"),
+                "flags_literal": room.get("flags_literal"),
                 "expected_flags": int(room["expected_flags"]),
                 "timeout_seconds": int(room["timeout_seconds"]),
                 "max_iterations": int(room["max_iterations"]),

@@ -24,6 +24,12 @@ from nexus_core.tools.handlers.ssh_post import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_connect_cooldown(monkeypatch):
+    """Pacing is covered by test_ssh_connection_pacing.py; no need to sleep here."""
+    monkeypatch.setattr(module, "SSH_CONNECT_COOLDOWN_SECONDS", 0.0)
+
+
 class FakeSandbox:
     def __init__(self, result: SandboxResult):
         self.result = result

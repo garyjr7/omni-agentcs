@@ -23,6 +23,28 @@ from .blackboard import Blackboard
 #: turning any brace-wrapped text into "loot".
 FLAG_RE = re.compile(r"(?:THM|HTB|FLAG|flag|CTF|ctf)\{[^}\s\x00]{4,200}\}")
 
+#: A single read of one file (``cat``, optionally behind ``sudo``). Only this
+#: shape attributes the output to the file it came from: a pipe or a loop could
+#: print anything, so it is not evidence about a path.
+_FLAG_FILE_READ_RE = re.compile(
+    r"^\s*(?:sudo\s+(?:-[A-Za-z]+\s+)*)?(?:cat|tac|less|more|type)\s+"
+    r"(?P<path>\"[^\"]+\"|'[^']+'|[^\s|;&<>]+)\s*$",
+    re.IGNORECASE,
+)
+
+#: Conventional CTF flag files (``user.txt``, ``root.txt``, ``flag.txt``,
+#: ``flag1.txt``...). The *name* is what makes a verified read loot; Simple CTF
+#: stores ``G00d j0b, keep up!`` in ``user.txt``, with no ``flag{fake_flag}`` shape, and
+#: the engine used to record nothing because of it.
+_FLAG_FILE_NAME_RE = re.compile(
+    r"(?:^|/)(?:user|root|flag|proof|local|system)(?:[._-]?\d+)?\.txt$",
+    re.IGNORECASE,
+)
+
+#: Longest file content promoted as loot; a longer line is not a flag and
+#: truncating it would store a text that never existed on the target.
+FLAG_FILE_TEXT_MAX = 500
+
 #: ``verification_method`` of the facts an accepted MSF session asserts (V1-24).
 #: Distinct from the handler's ``session_established``: that one is the *result's*
 #: method, this one is the *fact's*, so the planner can tell a session this engine
@@ -82,6 +104,33 @@ _WIN_READ_RE = re.compile(
     r"^\s*(?:get-content|gc|type|cat)\s+(?P<path>\"[^\"]+\"|'[^']+'|[^\s|;<>]+)\s*$",
     re.IGNORECASE,
 )
+
+
+def flag_file_path(command):
+    """Path a command reads, when that command is a single read of a flag file."""
+    match = _FLAG_FILE_READ_RE.match(str(command or ""))
+    if not match:
+        return ""
+    path = match.group("path").strip("\"'")
+    return path if _FLAG_FILE_NAME_RE.search(path) else ""
+
+
+def flag_file_text(command, stdout):
+    """Content of the flag file a verified read printed, or ``""``.
+
+    One line, because that is what these files hold; a multi-line answer is a
+    hint, an error or someone else's output, not a flag.
+    """
+    if not flag_file_path(command):
+        return ""
+    for line in str(stdout or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if len(text) > FLAG_FILE_TEXT_MAX or any(ord(ch) < 0x20 for ch in text):
+            return ""
+        return text
+    return ""
 
 
 def _net_group_members(text):
@@ -224,8 +273,21 @@ def derive_assertions(tool_id, arguments, result, context):
         # ran on the host. Same contract as ``nexus.web.wp_exec`` (the Windows
         # channel stays stricter and only attributes a single literal file read).
         if output.get('exit_status') == 0:
-            for flag in FLAG_RE.findall(stdout):
+            captured = FLAG_RE.findall(stdout)
+            for flag in captured:
                 add('loot', flag, {'flag': flag, 'command': command, 'service': 'ssh'}, flag)
+            # A verified read of a conventional flag file is loot on its own
+            # evidence: the SSH channel is proven (exit 0) and the path says what
+            # the text is, so a room whose flags carry no prefix still registers
+            # the capture. Measured in Simple CTF: `cat ~/user.txt` printed the
+            # flag, nothing derived it, and the agent could not see it had won.
+            path = flag_file_path(command)
+            text = flag_file_text(command, stdout)
+            if text and text not in captured:
+                add('loot', text,
+                    {'content': text, 'flag': text, 'command': command,
+                     'path': path, 'service': 'ssh'},
+                    f"ssh:file:{path}")
     elif tool_id == 'nexus.pwn.ret2libc' and result.verification_method == 'ret2libc_root_command':
         target = output.get('target')
         add('privilege', target, {'uid': 0, 'user': 'root'})
