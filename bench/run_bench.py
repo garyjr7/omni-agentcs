@@ -16,6 +16,11 @@ Por cada intento:
 5. busca las flags en el NDJSON **y** en los artefactos del workspace;
 6. escribe ``bench/results/<sala>-<timestamp>-runN.json``.
 
+Creacion y ejecucion comparten **un solo entorno** (:func:`run_environment`):
+una DB de control dentro del directorio del run. Si el creador y el agente
+abren bases distintas, el id recien creado no existe para el agente y el run
+muere con ``engagement no encontrado`` antes de gastar un token.
+
 El proceso devuelve ``0`` **solo** si todas las flags esperadas aparecen. El
 criterio es la flag, no el exit code de OMNI: un run que captura las flags y
 muere en el reporte sigue siendo un PASS del solver (el plan mide pass@1).
@@ -36,6 +41,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -191,10 +197,41 @@ def _kill_group(process: subprocess.Popen[Any]) -> None:
         return
 
 
+def run_environment(run_dir: Path, workspace: Path) -> dict[str, str]:
+    """The environment of one run; creation and agent must agree on the DB.
+
+    ``--new-engagement`` used to inherit the operator's environment while the
+    agent got a fresh ``XDG_DATA_HOME``, so the engagement the runner had just
+    created lived in a database the agent never opened (``engagement no
+    encontrado``, ``exit=2``, 0 tokens). Both processes now receive this dict.
+
+    ``NEXUS_DB_PATH`` is pinned instead of left implicit because an ambient
+    value (or a ``sqlite:///`` ``DATABASE_URL``, which wins over it) would
+    override ``XDG_DATA_HOME`` in *both* processes: the run would then write
+    into the operator's control DB instead of its own directory.
+    """
+    data_home = run_dir / "data"
+    env = dict(os.environ)
+    env["NEXUS_WORKSPACE_ROOT"] = str(workspace)
+    env["XDG_DATA_HOME"] = str(data_home)
+    env["NEXUS_DB_PATH"] = str(data_home / "omni" / "control.db")
+    if env.get("DATABASE_URL", "").startswith("sqlite:///"):
+        del env["DATABASE_URL"]
+    return env
+
+
 def create_engagement(
-    room_id: str, target: str, *, timeout_seconds: int = 180
+    room_id: str,
+    target: str,
+    *,
+    env: dict[str, str] | None = None,
+    timeout_seconds: int = 180,
 ) -> tuple[str | None, str]:
-    """Create a short-lived signed engagement for one bench run."""
+    """Create a short-lived signed engagement for one bench run.
+
+    ``env`` must be the environment the agent will run with, or the id is
+    created in one database and looked up in another.
+    """
     stamp = datetime.now(timezone.utc).strftime(TIMESTAMP_FORMAT)
     command = [
         sys.executable, str(OMNI_ENTRY), "--new-engagement",
@@ -203,7 +240,7 @@ def create_engagement(
     ]
     try:
         completed = subprocess.run(
-            command, cwd=REPO_ROOT, capture_output=True, text=True,
+            command, cwd=REPO_ROOT, env=env, capture_output=True, text=True,
             timeout=timeout_seconds, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -213,6 +250,47 @@ def create_engagement(
     if completed.returncode != 0 or match is None:
         return None, output.strip()[-2000:]
     return match.group(1), output.strip()[-2000:]
+
+
+def list_engagements(env: dict[str, str], *, tenant: str = "system",
+                     timeout_seconds: int = 180) -> tuple[bool, str]:
+    """Run ``--list-engagements`` in ``env``; return ``(ok, output)``."""
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(OMNI_ENTRY), "--list-engagements", "--tenant", tenant],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+            timeout=timeout_seconds, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}".strip()
+
+
+def probe_engagement(tenant: str = "system") -> dict[str, Any]:
+    """Create an engagement and read it back the way the agent will.
+
+    The ``--dry-run`` self-check: same two CLI calls the runner depends on
+    (create, then look up on startup), in a throwaway data directory, with no
+    network traffic. A mismatch of databases -the bug this guards against-
+    shows up as ``found: false`` instead of a 0-token run.
+    """
+    with tempfile.TemporaryDirectory(prefix="omni-bench-probe-") as tmp:
+        run_dir = Path(tmp)
+        workspace = run_dir / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        env = run_environment(run_dir, workspace)
+        engagement_id, creation_log = create_engagement("probe", "127.0.0.1", env=env)
+        if engagement_id is None:
+            return {"tenant": tenant, "found": False, "engagement_id": None,
+                    "detail": creation_log}
+        ok, listing = list_engagements(env, tenant=tenant)
+        found = ok and engagement_id in listing
+        return {
+            "tenant": tenant,
+            "engagement_id": engagement_id,
+            "found": found,
+            "detail": "" if found else listing[-2000:],
+        }
 
 
 def _run_reset(room: dict[str, Any], *, no_reset: bool) -> str | None:
@@ -254,7 +332,11 @@ def run_once(
     objective = build_objective(room, target)
 
     reset_error = _run_reset(room, no_reset=no_reset)
-    engagement_id, creation_log = create_engagement(room_id, target)
+    # One environment for the whole run: the creator, the agent and the flag
+    # scan all point at ``run_dir``, so the id is created in the database the
+    # agent opens.
+    env = run_environment(run_dir, workspace)
+    engagement_id, creation_log = create_engagement(room_id, target, env=env)
     if engagement_id is None:
         result: dict[str, Any] = {
             "room": room_id, "name": room.get("name"), "run": run_number,
@@ -263,6 +345,7 @@ def run_once(
             "detail": creation_log, "flags_found": [], "flags_expected": int(room["expected_flags"]),
             "tokens_used": 0, "duration_seconds": 0.0, "exit_code": None,
             "timed_out": False, "reset_error": reset_error,
+            "db_path": env["NEXUS_DB_PATH"],
         }
         _write_result(results_dir, room_id, stamp, run_number, result)
         return result
@@ -274,13 +357,6 @@ def run_once(
         "--stream-json", "--trust-mode", "--no-tui",
         "--max-iterations", str(room["max_iterations"]),
     ]
-    env = dict(os.environ)
-    # Everything the run writes stays inside its own directory: workspace loot,
-    # artifacts and the NDJSON are all scanned together and never mixed with
-    # another run's evidence.
-    env["NEXUS_WORKSPACE_ROOT"] = str(workspace)
-    env["XDG_DATA_HOME"] = str(run_dir / "data")
-
     started = time.monotonic()
     exit_code: int | None = None
     timed_out = False
@@ -319,6 +395,7 @@ def run_once(
         "exit_code": exit_code,
         "timed_out": timed_out,
         "reset_error": reset_error,
+        "db_path": env["NEXUS_DB_PATH"],
         "ndjson": str(ndjson),
         "workspace": str(workspace),
         "stderr_log": str(stderr_log),
@@ -377,6 +454,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.dry_run:
+        # The runner's own integration, verified without a target or a network:
+        # create an engagement and look it up from the agent's side.
+        engagement_check = probe_engagement()
+        if not engagement_check["found"]:
+            print(
+                "bench: el engagement creado no aparece en la DB que abriria el agente\n"
+                f"{engagement_check['detail']}",
+                file=sys.stderr,
+            )
+            return 2
         summary = []
         for room_id in room_ids:
             room = room_settings(config, room_id)
@@ -394,7 +481,10 @@ def main(argv: list[str] | None = None) -> int:
                 "timeout_seconds": int(room["timeout_seconds"]),
                 "max_iterations": int(room["max_iterations"]),
             })
-        print(json.dumps({"dry_run": True, "rooms": summary}, indent=2, ensure_ascii=False))
+        print(json.dumps(
+            {"dry_run": True, "engagement_check": engagement_check, "rooms": summary},
+            indent=2, ensure_ascii=False,
+        ))
         return 0
 
     results: list[dict[str, Any]] = []
