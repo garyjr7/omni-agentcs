@@ -172,7 +172,9 @@ def ftp_definition(tenant_id: str = "system") -> ToolDefinition:
         tenant_id=tenant_id,
         description=(
             "Conecta a un servicio FTP, prueba login (anónimo por defecto), "
-            "lista un directorio o descarga un archivo. Read-only."
+            "lista un directorio o descarga un archivo. Read-only. En "
+            "'download' el fichero se guarda siempre en el workspace del "
+            "engagement (<workspace>/ftp_<run>/): no se elige ruta local."
         ),
         input_schema={
             "type": "object",
@@ -184,6 +186,18 @@ def ftp_definition(tenant_id: str = "system") -> ToolDefinition:
                 "username": {"type": "string", "minLength": 1, "maxLength": 128},
                 "password": {"type": "string", "maxLength": 256},
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 600},
+                # Legacy argument kept only so an older model that still sends
+                # it is not rejected by the closed schema (Simple CTF: it cost
+                # an iteration). The handler drops it: the download path is
+                # always the workspace, so there is nothing to choose.
+                "local_path": {
+                    "type": "string",
+                    "maxLength": 1024,
+                    "description": (
+                        "IGNORADO. La descarga va siempre al workspace "
+                        "(<workspace>/ftp_<run>/). No lo envíes."
+                    ),
+                },
             },
             "required": ["target"],
             "additionalProperties": False,
@@ -226,6 +240,10 @@ def _parse_last_json(stdout: str) -> dict[str, Any]:
 
 async def ftp_handler(arguments: dict, context: RunContext) -> ToolResult:
     """Run an allowlisted FTP listing/download inside a sandbox."""
+    # ``local_path`` is not part of the contract (the client always writes to
+    # the workspace); dropping it here keeps a legacy call working instead of
+    # failing on an argument that has no effect either way.
+    arguments = {key: value for key, value in arguments.items() if key != "local_path"}
     target = _validate_text(arguments.get("target"), "target", max_length=255)
     action = str(arguments.get("action") or "list").strip().lower()
     if action not in FTP_ACTIONS:

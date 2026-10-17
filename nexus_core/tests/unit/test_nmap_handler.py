@@ -227,6 +227,13 @@ def test_explicit_timeout_overrides_profile_timeout():
     assert sandbox.calls[0][1] == 90
 
 
+def test_profile_description_warns_against_passing_ports():
+    definition = nmap_definition()
+    properties = definition.input_schema["properties"]
+    assert "NO pases" in properties["profile"]["description"]
+    assert "'-p'" in properties["flags"]["description"]
+
+
 def test_profile_flags_combine_with_explicit_flags():
     with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
         _run({"target": "203.0.113.10", "profile": "full_tcp", "flags": ["-sV"]})
@@ -259,6 +266,41 @@ def test_unknown_profile_is_rejected():
         _run({"target": "203.0.113.10", "profile": "does-not-exist"})
 
 
-def test_profile_all_ports_conflicts_with_explicit_port_list():
+def test_profile_all_ports_ignores_an_explicit_port_list():
+    # Simple CTF: the model sent profile="service" + flags=["-p", "-p", ...];
+    # raising here cost the run an iteration and the scan never happened. The
+    # profile already means -p-, so the port selection is dropped, not fatal.
+    with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
+        result = _run(
+            {"target": "203.0.113.10", "profile": "full_tcp", "flags": ["-p", "22,80"]}
+        )
+    argv = sandbox.calls[0][0]
+    assert "-p-" in argv
+    assert "22,80" not in argv and "-p" not in argv
+    assert result.output["ignored_flags"] == ["-p", "22,80"]
+    assert any("ignored redundant port flags" in warning for warning in result.evidence["warnings"])
+
+
+def test_service_profile_ignores_inline_port_selection():
+    with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
+        result = _run(
+            {"target": "203.0.113.10", "profile": "service", "flags": ["-p=21,80", "-sV"]}
+        )
+    argv = sandbox.calls[0][0]
+    assert "-p=21,80" not in argv and "-sV" in argv
+    assert result.output["ignored_flags"] == ["-p=21,80"]
+
+
+def test_profiles_leave_the_port_selection_alone_without_all_ports():
+    with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
+        result = _run({"target": "203.0.113.10", "profile": "quick", "flags": ["-p", "21,80"]})
+    argv = sandbox.calls[0][0]
+    assert "-p" in argv and "21,80" in argv
+    assert "ignored_flags" not in result.output
+
+
+def test_explicit_all_ports_with_port_list_is_still_a_conflict():
+    # Without a profile there is no server-side expansion to fall back on: the
+    # two port selectors are genuinely ambiguous, so the guard stays.
     with pytest.raises(ValueError):
-        _run({"target": "203.0.113.10", "profile": "full_tcp", "flags": ["-p", "22,80"]})
+        _run({"target": "203.0.113.10", "flags": ["-p-", "-p", "22,80"]})

@@ -322,6 +322,22 @@ def test_the_prompt_carries_the_skill_index_on_every_turn() -> None:
     prompt = _render(0)
     assert "SKILLS DISPONIBLES" in prompt
     assert "- web-upload-webshell:" in prompt
+    assert "- bruteforce-hydra:" in prompt
+
+
+def test_the_bruteforce_skill_ships_the_hydra_fallback() -> None:
+    # Simple CTF: ``nexus.cred.bruteforce`` rejected rockyou.txt (133 MB) and the
+    # run died before falling back to hydra by hand. The recipe is the fallback.
+    skill = load_skill("bruteforce-hydra", REPO_ROOT)
+    assert skill is not None and skill.usable
+    content = skill.content
+    assert (
+        "hydra -l <user> -P /usr/share/wordlists/rockyou.txt ssh://<target> -s <port>"
+        in content
+    )
+    assert "nexus.shell.exec" in content
+    assert "wordlist exceeds 16 MB" in content
+    assert "/usr/share/wordlists/rockyou.txt" in content
 
 
 # ------------------------------- loop harness ------------------------------- #

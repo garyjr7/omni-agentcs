@@ -62,6 +62,11 @@ TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 MAX_SCAN_BYTES = 5_000_000
 #: Grace between SIGTERM and SIGKILL when a run exceeds its deadline.
 KILL_GRACE_SECONDS = 5
+#: Tool-call budget handed to ``omni`` when the room does not declare one. The
+#: agent's own default is 12, and the Simple CTF run spent it retrying tools
+#: with the wrong schema before it could fall back to ``nexus.shell.exec`` +
+#: hydra; 30 leaves room for that plan B.
+DEFAULT_MAX_ITERATIONS = 30
 
 
 # --------------------------------------------------------------------- config
@@ -96,7 +101,10 @@ def room_settings(config: dict[str, Any], room_id: str) -> dict[str, Any]:
     if not room.get("timeout_seconds"):
         raise ValueError(f"room {room_id!r} has no timeout_seconds")
     if not room.get("max_iterations"):
-        raise ValueError(f"room {room_id!r} has no max_iterations")
+        # Unrun room: fall back to the bench default instead of refusing to run.
+        room["max_iterations"] = DEFAULT_MAX_ITERATIONS
+    if int(room["max_iterations"]) < 1:
+        raise ValueError(f"room {room_id!r} has an invalid max_iterations")
     return room
 
 
@@ -355,7 +363,7 @@ def run_once(
         "--engagement", engagement_id,
         "--objective", objective,
         "--stream-json", "--trust-mode", "--no-tui",
-        "--max-iterations", str(room["max_iterations"]),
+        "--max-iterations", str(room.get("max_iterations") or DEFAULT_MAX_ITERATIONS),
     ]
     started = time.monotonic()
     exit_code: int | None = None

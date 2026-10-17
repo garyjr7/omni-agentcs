@@ -75,8 +75,12 @@ NMAP_STDOUT_MAX_BYTES = 500
 
 # Perfiles de reconocimiento: nombre -> (flags base, timeout recomendado).
 # El perfil se expande server-side, así que el modelo nunca inventa flags: pide
-# un nombre conocido. ``full_tcp`` cubre los 65535 puertos TCP (-p-), que es el
-# paso que descubre servicios fuera de la lista "común" (p. ej. FTP en 21).
+# un nombre conocido. ``full_tcp`` y ``service`` cubren los 65535 puertos TCP
+# (-p-), que es el paso que descubre servicios fuera de la lista "común" (p. ej.
+# FTP en 21). Por eso, cuando el perfil ya trae ``-p-``, un ``-p`` del modelo no
+# puede acotar nada: se descarta (ver ``drop_redundant_port_flags``) en lugar de
+# romper la llamada, que es lo que le costó una iteración al run de Simple CTF
+# (``profile="service"`` + ``flags=["-p", ...]``).
 NMAP_PROFILES: dict[str, dict[str, Any]] = {
     "quick": {"flags": ["-Pn", "-n", "-F", "-T4"], "timeout_seconds": 120},
     "full_tcp": {"flags": ["-Pn", "-n", "-p-", "-T4", "--open"], "timeout_seconds": 600},
@@ -144,6 +148,46 @@ def validate_and_canonicalize_flags(raw_flags: list[str]) -> tuple[list[str], st
     return canonical, NOISE_NAMES[noise_rank], warnings
 
 
+def drop_redundant_port_flags(
+    raw_flags: list[str], base_flags: list[str]
+) -> tuple[list[str], list[str]]:
+    """Drop the model's port selection when the profile already scans all ports.
+
+    ``full_tcp``/``service`` expand to ``-p-`` server-side, so a ``-p 21,80``
+    sent alongside them cannot narrow anything: it only produced a ValueError
+    that cost the run an iteration. The pair is removed (with its value) and
+    reported back in ``evidence.warnings`` instead of failing the call.
+
+    Returns ``(kept_flags, dropped_flags)``.
+    """
+    if "-p-" not in base_flags:
+        return list(raw_flags), []
+    kept: list[str] = []
+    dropped: list[str] = []
+    index = 0
+    while index < len(raw_flags):
+        token = str(raw_flags[index]).strip()
+        index += 1
+        if token == "-p":
+            dropped.append(token)
+            # The value is the next token when it is not itself a flag.
+            if index < len(raw_flags) and not str(raw_flags[index]).startswith("-"):
+                dropped.append(str(raw_flags[index]))
+                index += 1
+            continue
+        if token.startswith("-p=") or token.startswith("--top-ports="):
+            dropped.append(token)
+            continue
+        if token == "--top-ports":
+            dropped.append(token)
+            if index < len(raw_flags) and not str(raw_flags[index]).startswith("-"):
+                dropped.append(str(raw_flags[index]))
+                index += 1
+            continue
+        kept.append(raw_flags[index - 1])
+    return kept, dropped
+
+
 def truncate_stdout(
     stdout: str, limit: int = NMAP_STDOUT_MAX_BYTES
 ) -> tuple[str, bool]:
@@ -168,7 +212,11 @@ def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
         idempotent=True,
         name="Nmap scan",
         tenant_id=tenant_id,
-        description="Ejecuta nmap contra un target dentro del scope.",
+        description=(
+            "Ejecuta nmap contra un target dentro del scope. Los perfiles "
+            "'full_tcp' y 'service' ya incluyen -p- (todos los puertos TCP): "
+            "no añadas flags '-p' con ellos."
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -179,13 +227,20 @@ def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
                     "description": (
                         "Perfil de escaneo predefinido. Usa 'full_tcp' para "
                         "descubrimiento completo de puertos (-p-) y 'service' "
-                        "para detección de versiones sobre todos los puertos."
+                        "para detección de versiones sobre todos los puertos. "
+                        "'full_tcp' y 'service' ya incluyen -p-: NO pases flags "
+                        "'-p' ni '--top-ports' con esos perfiles (se ignoran)."
                     ),
                 },
                 "flags": {
                     "type": "array",
                     "items": {"type": "string", "maxLength": 64},
                     "maxItems": 20,
+                    "description": (
+                        "Flags sueltos extra (p. ej. ['-sV']). Si usas el perfil "
+                        "'service' o 'full_tcp', no incluyas '-p': el perfil ya "
+                        "barre los 65535 puertos TCP."
+                    ),
                 },
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 1800},
             },
@@ -214,7 +269,6 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
     from nexus_core.tools.execution_contract import validate_target
 
     target = validate_target(arguments["target"])
-    raw_flags = list(arguments.get("flags") or [])
 
     profile = arguments.get("profile")
     profile_name: str | None = None
@@ -228,12 +282,22 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
         base_flags = list(spec["flags"])
         profile_timeout = int(spec["timeout_seconds"])
 
+    raw_flags, dropped_port_flags = drop_redundant_port_flags(
+        list(arguments.get("flags") or []), base_flags
+    )
     flags, noise_level, warnings = validate_and_canonicalize_flags([*base_flags, *raw_flags])
     if "-p-" in flags and "-p" in flags:
         raise ValueError("conflicting nmap flags: '-p-' (all ports) and '-p <ports>'")
+    warnings = set(warnings)
     if profile_name:
-        warnings = set(warnings)
         warnings.add(f"profile: {profile_name}")
+    if dropped_port_flags:
+        # The call succeeds; tell the model why its port selection had no effect.
+        warnings.add(
+            "ignored redundant port flags "
+            f"{' '.join(dropped_port_flags)}: profile {profile_name!r} already "
+            "scans all 65535 TCP ports (-p-)"
+        )
 
     requested_timeout = arguments.get("timeout_seconds")
     if requested_timeout:
@@ -289,6 +353,8 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
         "profile": profile_name,
         "scan": scan.to_dict(),
     }
+    if dropped_port_flags:
+        output["ignored_flags"] = dropped_port_flags
     if stdout_truncated:
         output["stdout_truncated"] = True
     return ToolResult(

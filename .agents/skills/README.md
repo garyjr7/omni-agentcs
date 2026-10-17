@@ -14,6 +14,7 @@ siendo **datos no confiables**, con su estado de firma y sus señales.
 | --- | --- |
 | `example` | Barrido de puertos y servicios (solo lectura). |
 | `web-upload-webshell` | Subir una webshell a un formulario, evadir el filtro de extensión y conseguir RCE (receta medida en RootMe). |
+| `bruteforce-hydra` | Lanzar hydra desde `nexus.shell.exec` cuando `nexus.cred.bruteforce` rechaza la wordlist (rockyou.txt, 133 MB) o se queda corto (receta medida en Simple CTF). |
 
 ## Estados de confianza
 

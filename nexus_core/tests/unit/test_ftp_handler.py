@@ -143,6 +143,33 @@ def test_timeout_is_not_verified():
     assert result.verification_method == "ftp_timeout"
 
 
+def test_legacy_local_path_is_accepted_and_ignored():
+    # Simple CTF: the model sent ``local_path`` and the closed schema rejected
+    # the whole call. The download path is chosen by the handler, so the
+    # argument has no effect; it must not cost an iteration either.
+    from nexus_core.kernel.schema_validation import validate
+
+    definition = ftp_definition()
+    validate(
+        {"target": "203.0.113.10", "action": "download", "remote_path": "locks.txt",
+         "local_path": "/tmp/elsewhere/locks.txt"},
+        definition.input_schema,
+    )
+    payload = {
+        "ok": True, "action": "download", "file": "locks.txt",
+        "path": "/ws/ftp_run/locks.txt", "size": 418, "sha256": "a" * 64,
+    }
+    with _fake_sandbox(_sandbox_for(payload)) as sandbox:
+        result = _run(
+            {"target": "203.0.113.10", "action": "download", "remote_path": "locks.txt",
+             "local_path": "/tmp/elsewhere/locks.txt"}
+        )
+    # The handler never forwards it: the client always writes to the workspace.
+    assert all("/tmp/elsewhere" not in argument for argument in sandbox.calls[0][0])
+    assert result.verified is True
+    assert result.output["result"]["path"] == "/ws/ftp_run/locks.txt"
+
+
 def test_unsupported_action_is_rejected():
     with pytest.raises(ValueError):
         _run({"target": "203.0.113.10", "action": "delete"})
