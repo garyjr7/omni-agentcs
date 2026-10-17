@@ -29,6 +29,11 @@ Design notes:
   the second and third connection opened seconds apart, and the agent read that
   as a bad password. Serializing plus pacing is what keeps ``sshd``/fail2ban
   from treating our own recon as a brute-force attempt.
+* Plan B (Simple CTF runs 1 and 2): when the login is refused for a credential
+  the blackboard already proved valid, ``ssh_exec`` replays the command through
+  ``nexus.shell.exec`` with the native ``ssh`` client driven by ``sshpass``
+  (:func:`_run_sshpass_fallback`). No second paramiko session is opened, and
+  the password travels on stdin (``sshpass -d 0``), never in an argv.
 """
 
 from __future__ import annotations
@@ -38,6 +43,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -63,11 +70,18 @@ SSH_MAX_TIMEOUT_SECONDS = 600
 SSH_ENUM_MARKER = "__SUDO__"
 
 #: Quiet period between the end of one SSH session and the next connection to
-#: the same target. One second is enough for ``sshd`` to reap the closed channel
-#: and too short to be mistaken for a brute-force sweep; the handlers used to
-#: open ``enum_system`` and ``ssh_exec`` back to back, and Simple CTF answered
-#: the second one with ``Authentication failed``. Overridable in tests.
-SSH_CONNECT_COOLDOWN_SECONDS = 1.0
+#: the same target. The previous one-second window still produced
+#: ``Authentication failed`` on the second connection in Simple CTF, so the gate
+#: now waits three full seconds -long enough to clear one ``sshd``/fail2ban
+#: observation interval, still far below a brute-force sweep. Overridable in
+#: tests.
+SSH_CONNECT_COOLDOWN_SECONDS = 3.0
+
+#: Plan B of the SSH handlers: when the target refuses a credential that the
+#: blackboard already proved valid, the command is replayed with the native
+#: ``ssh`` client driven by ``sshpass``. This bypasses paramiko entirely, which
+#: is what the target's rate limiter was answering as a burst of logins.
+SSHPASS_BINARY = "sshpass"
 
 #: Octal file mode accepted by ``ssh_upload`` (``755``, ``0644``, ...).
 SSH_FILE_MODE_RE = re.compile(r"^[0-7]{3,4}$")
@@ -721,6 +735,170 @@ def _is_authentication_failure(detail: str) -> bool:
     return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
 
 
+def _verified_ssh_access(context: RunContext, target: str, username: str) -> bool:
+    """Whether the blackboard already proved this SSH credential works.
+
+    Plan B only makes sense for a credential the engine *already* validated: a
+    genuinely bad password must stay ``denied`` and must never be replayed
+    against a rate limiter. The proof is the verified ``access`` fact a
+    successful ``ssh_exec`` derives (``value = {"transport": "ssh",
+    "username": …}``) or the ``cred:ssh:<user>@<target>`` vault handle.
+    """
+    store = getattr(context, "store", None)
+    engagement_id = str(getattr(context, "engagement_id", "") or "")
+    if store is None or not engagement_id:
+        return False
+    from nexus_core.kernel.blackboard import Blackboard, is_verified_fact
+
+    try:
+        facts = Blackboard(store).list_facts(context.tenant_id, engagement_id)
+    except Exception:  # noqa: BLE001 - a failed lookup must not break the tool
+        return False
+    for fact in facts:
+        if not is_verified_fact(fact):
+            continue
+        value = fact.get("value") or {}
+        if (
+            fact.get("fact_type") == "access"
+            and str(fact.get("key") or "") == target
+            and str(value.get("transport") or "") == "ssh"
+            and str(value.get("username") or "") == username
+        ):
+            return True
+        if (
+            fact.get("fact_type") == "credential"
+            and str(fact.get("key") or "") == f"cred:ssh:{username}@{target}"
+        ):
+            return True
+    return False
+
+
+def _sshpass_argv(*, host: str, port: int, username: str, command: str) -> list[str]:
+    """Native ``ssh`` invocation driven by ``sshpass`` (Plan B).
+
+    ``-d 0`` takes the password from stdin instead of ``-p`` / ``-e``: the secret
+    never reaches the command line, so it cannot land in the shell audit, the
+    artifact or the model's observation. ``sshpass`` reads exactly one line and
+    the rest of stdin reaches the remote command (that is what ``sudo -S``
+    consumes when the original call injected a password there).
+    """
+    return [
+        SSHPASS_BINARY,
+        "-d",
+        "0",
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=20",
+        "-o", "PreferredAuthentications=password",
+        "-o", "PubkeyAuthentication=no",
+        "-o", "NumberOfPasswordPrompts=1",
+        "-p", str(port),
+        f"{username}@{host}",
+        command,
+    ]
+
+
+async def _run_sshpass_fallback(
+    *,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    command: str,
+    stdin_data: str | None,
+    timeout_seconds: int,
+    context: RunContext,
+) -> ToolResult | None:
+    """Replay ``command`` through ``nexus.shell.exec`` + native ``ssh``.
+
+    Returns ``None`` when ``sshpass`` is not installed, so the caller keeps the
+    original determinate ``denied`` result and says why Plan B was not tried.
+    The replay never touches paramiko: a fresh native client after the auth
+    refusal is exactly the escape hatch the measured Simple CTF runs needed,
+    where the credential was right and the server refused the *next* session.
+    """
+    if shutil.which(SSHPASS_BINARY) is None:
+        return None
+    # Imported lazily: ``shell_exec_local`` imports the sandbox/workspace layer
+    # and this module is also imported at registry build time.
+    from .shell_exec_local import shell_exec_handler
+
+    # ``sshpass -d 0`` consumes the first line; when the original call injected
+    # the password into ``sudo -S`` on stdin, the second line reaches the remote
+    # command exactly as it did over paramiko.
+    remote_stdin = password + "\n"
+    if stdin_data:
+        remote_stdin += stdin_data
+    invocation = shlex.join(
+        _sshpass_argv(host=host, port=port, username=username, command=command)
+    )
+    result = await shell_exec_handler(
+        {
+            "command": invocation,
+            "stdin": remote_stdin,
+            "timeout_seconds": max(5, min(300, timeout_seconds)),
+        },
+        context,
+    )
+    summary = str(result.output.get("summary") or "")
+    exit_status = result.exit_code
+    evidence: dict[str, Any] = {
+        "fallback_transport": "sshpass",
+        "fallback_command": command,
+        "exit_status": exit_status,
+        "artifact_ref": result.output.get("artifact_ref"),
+    }
+    if "sshpass" in summary.lower() and exit_status in (None, 127):
+        return ToolResult(
+            output={
+                "target": host,
+                "command": command,
+                "stdout": summary,
+                "stderr": "",
+                "exit_status": exit_status,
+                "error": "sshpass fallback is not available in the local sandbox",
+            },
+            verified=False,
+            outcome="unavailable",
+            verification_method="ssh_exec_sshpass_unavailable",
+            evidence=evidence,
+            exit_code=exit_status,
+        )
+    if result.verified:
+        return ToolResult(
+            output={
+                "target": host,
+                "command": command,
+                "stdout": summary,
+                "stderr": "",
+                "exit_status": exit_status,
+                "fallback": "sshpass",
+            },
+            verified=True,
+            verification_method="ssh_exec_sshpass_completed",
+            evidence=evidence,
+            exit_code=exit_status,
+            accepted_exit_codes=(0,),
+            stdout=summary,
+        )
+    return ToolResult(
+        output={
+            "target": host,
+            "command": command,
+            "stdout": summary,
+            "stderr": "",
+            "exit_status": exit_status,
+            "error": "sshpass fallback failed after a refused paramiko login",
+        },
+        verified=False,
+        outcome="command_failed",
+        verification_method="ssh_exec_sshpass_failed",
+        evidence=evidence,
+        exit_code=exit_status,
+    )
+
+
 def _parse_client_json(stdout: str) -> dict[str, Any]:
     for line in reversed((stdout or "").splitlines()):
         line = line.strip()
@@ -855,6 +1033,37 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
             evidence["error_detail"] = detail
         output["error"] = detail or "ssh connection failed"
         denied = _is_authentication_failure(detail)
+        if denied and password:
+            # Plan B: a credential the board already proved valid is not retried
+            # against paramiko -the target just refused *that* session. Replay
+            # the command with the native client through ``sshpass``.
+            if _verified_ssh_access(context, target, username):
+                replacement = await _run_sshpass_fallback(
+                    host=target,
+                    port=port,
+                    username=username,
+                    password=password,
+                    command=remote_command,
+                    stdin_data=stdin_data,
+                    timeout_seconds=timeout_seconds,
+                    context=context,
+                )
+                if replacement is not None:
+                    return replacement
+                evidence["fallback"] = {
+                    "attempted": False,
+                    "reason": "sshpass_not_installed",
+                }
+                output["guidance"] = (
+                    "La credencial ya está validada en el tablero, pero `sshpass` "
+                    "no está instalado en el Kali del operador: instálalo para "
+                    "usar el plan B (ssh nativo) o espacia las conexiones."
+                )
+            else:
+                evidence["fallback"] = {
+                    "attempted": False,
+                    "reason": "no_verified_credential",
+                }
         return ToolResult(
             output=output,
             verified=False,

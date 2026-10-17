@@ -15,9 +15,11 @@ from nexus_core.kernel.domain_dto import TaskComplete
 from nexus_core.llm.abstraction import (
     DeepSeekClient,
     LLMConfig,
+    LLMInvalidJSONError,
     LLMMessage,
     LLMProvider,
     NexusLLMError,
+    is_invalid_json_error,
 )
 from nexus_core.llm.limits import (
     DEFAULT_DEEPSEEK_MAX_ATTEMPTS,
@@ -116,6 +118,27 @@ async def test_invalid_json_and_truncation_fail_closed(text: str, finish: str) -
     llm = client(httpx.MockTransport(lambda _: httpx.Response(200, json=response(text, finish))))
     with pytest.raises(NexusLLMError):
         await llm.complete([LLMMessage("user", "JSON")], response_format={"type": "json_object"})
+    await llm.client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_answer_is_a_typed_retryable_error() -> None:
+    """Run 3: the loop has to tell a bad answer from a dead provider."""
+    llm = client(
+        httpx.MockTransport(
+            lambda _: httpx.Response(200, json=response('{"x":1,"x":2}', "stop"))
+        )
+    )
+    with pytest.raises(LLMInvalidJSONError) as error:
+        await llm.complete(
+            [LLMMessage("user", "JSON")], response_format={"type": "json_object"}
+        )
+    assert is_invalid_json_error(error.value)
+    # The wrapper used by the loop must stay classifiable through its cause.
+    wrapped = NexusLLMError("Primary LLM provider failed and no fallback is configured.")
+    wrapped.__cause__ = error.value
+    assert is_invalid_json_error(wrapped)
+    assert not is_invalid_json_error(NexusLLMError("daily quota exhausted"))
     await llm.client.close()
 
 

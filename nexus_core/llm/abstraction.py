@@ -86,6 +86,39 @@ class NexusLLMError(Exception):
     """Custom exception for errors within the NexusLLM layer."""
     pass
 
+
+class LLMInvalidJSONError(NexusLLMError):
+    """The provider answered with content that is not the requested JSON object.
+
+    A malformed *answer* says nothing about the health of the provider or of the
+    engagement: the ReAct loop retries that turn with an explicit correction
+    instead of closing the run as ``provider_error`` (measured in Simple CTF
+    Run 3, 2026-10-17: DeepSeek answered a non-JSON object on iteration 3 and
+    the engine aborted with exit 3 while the target was still live).
+    """
+
+
+def is_invalid_json_error(error: BaseException | None) -> bool:
+    """Whether ``error`` -or the cause it wraps- is a malformed JSON answer.
+
+    The ReAct turn reaches the provider through ``NexusLLM`` (and, with a
+    configured fallback, through a second client), so the typed error is
+    usually reachable only through the exception chain. The text check keeps the
+    contract for a client that already translated it into a plain
+    ``NexusLLMError``.
+    """
+    seen: set[int] = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, LLMInvalidJSONError):
+            return True
+        if "invalid json" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _is_transport_stall(error: Exception) -> bool:
     """True when an exception is a network stall, not a rejected request.
 
@@ -547,9 +580,9 @@ class DeepSeekClient(OpenAIClient):
             try:
                 value = decode_json(text)
             except (ValueError, RecursionError):
-                raise NexusLLMError("DeepSeek returned invalid JSON") from None
+                raise LLMInvalidJSONError("DeepSeek returned invalid JSON") from None
             if not isinstance(value, dict):
-                raise NexusLLMError("DeepSeek JSON response must be an object")
+                raise LLMInvalidJSONError("DeepSeek JSON response must be an object")
 
     async def _retry(self, error: Exception, attempt: int) -> bool:
         """Replay a transient DeepSeek failure with exponential backoff.

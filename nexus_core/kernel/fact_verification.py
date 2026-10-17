@@ -218,6 +218,14 @@ def _session_sid(result):
     return sid if isinstance(sid, int) and not isinstance(sid, bool) else None
 
 
+#: ``verification_method`` values that prove the SSH channel reached the host
+#: and ran the command. ``ssh_exec_sshpass_completed`` is Plan B (Simple CTF
+#: runs 1 and 2): the same authenticated command, replayed with the native
+#: client because the target refused the next paramiko session. It is as much a
+#: real channel as the paramiko one, so it derives the same facts.
+SSH_EXEC_CHANNEL_METHODS = ('ssh_exec_completed', 'ssh_exec_sshpass_completed')
+
+
 def derive_assertions(tool_id, arguments, result, context):
     if not result.success or not context.invocation_id:
         return []
@@ -249,7 +257,7 @@ def derive_assertions(tool_id, arguments, result, context):
         for hit in output.get('hits', []):
             if hit.get('status_code'):
                 add('endpoint', hit.get('url') or output.get('target'), hit, hit.get('path'))
-    elif tool_id == 'nexus.post.ssh_exec' and result.verification_method == 'ssh_exec_completed':
+    elif tool_id == 'nexus.post.ssh_exec' and result.verification_method in SSH_EXEC_CHANNEL_METHODS:
         target = output.get('target')
         add('access', target, {'transport': 'ssh', 'username': arguments.get('username')})
         command = output.get('command', '').strip()

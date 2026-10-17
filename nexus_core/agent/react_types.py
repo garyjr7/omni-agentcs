@@ -7,6 +7,19 @@ from nexus_core.kernel.domain_dto import ApprovalDecisionDTO
 
 DEFAULT_AGENT_ID = "omni"
 MAX_CONSECUTIVE_TOOL_FAILURES = 3
+#: A model answer that is not the JSON object the contract asks for is an
+#: *answer* problem, not a dead provider. The loop injects a correction and asks
+#: again; after this many turns in a row it gives up and closes the run. Measured
+#: in Simple CTF Run 3 (2026-10-17): DeepSeek answered garbage on iteration 3 and
+#: the engine aborted with exit 3 while the target was still live.
+MAX_INVALID_JSON_TURNS = 3
+INVALID_JSON_EVENT_TYPE = "react.invalid_json_retry"
+#: The exact correction the model reads on the next turn. It names the required
+#: shape so the retry is actionable, not just a complaint.
+INVALID_JSON_CORRECTION = (
+    "Tu respuesta anterior no fue un JSON válido. Debes devolver un objeto JSON "
+    "con la acción (tool_call, task_complete o request_clarification)."
+)
 CANCEL_EVENT_TYPE = "react.cancel_requested"
 #: A tool that fails this many times *as a tool* (not as invalid input) is
 #: marked unavailable for the rest of the run, so the agent pivots instead of

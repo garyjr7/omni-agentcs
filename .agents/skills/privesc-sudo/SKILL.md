@@ -63,6 +63,30 @@ el fallo. `nexus.post.enum_system` hace lo mismo de forma determinista (`sudo -n
 -l`, y si falla `sudo -S -l` con la contraseña) y además devuelve las reglas ya
 parseadas en `sudo_rules`: úsalo antes de inventar comandos.
 
+### Rate-limit: `AuthenticationException` después de haber entrado
+
+Si `ssh_exec` falla con `AuthenticationException` después de haber entrado, usa
+`nexus.shell.exec` con `sshpass` para evitar el rate-limit. Medido en Simple CTF
+(runs 1 y 2, iteraciones 19-22): `user.txt` se leyó con `mitch`, y las
+conexiones siguientes -`enum_system`, dos `ssh_exec` segundos después- fueron
+rechazadas con `Authentication failed` aunque la contraseña era correcta. El
+servidor (o fail2ban) estaba contando nuestras propias sesiones paramiko.
+
+El handler de `ssh_exec` ya lo intenta solo cuando el tablero prueba que la
+credencial es válida (hecho `access` verificado): reejecuta el comando con
+`sshpass -d 0` y el cliente `ssh` nativo, sin abrir otra sesión paramiko. Si
+prefieres hacerlo a mano:
+
+```
+nexus.shell.exec(command="printf '%s\\n' 'secret' | sshpass -d 0 ssh -o StrictHostKeyChecking=no -p 2222 mitch@<target> 'id'")
+```
+
+La forma corta equivalente es `sshpass -p 'secret' ssh ...`, pero deja la
+contraseña en el argv local (y en la auditoría del shell): prefiere `-d 0` con
+la contraseña por stdin o `-f` con un fichero temporal. No repitas el `ssh_exec`
+que acaba de fallar -cada reintento vuelve a abrir una sesión y alarga el
+bloqueo-; cambia de transporte una vez y sigue con el comando.
+
 ### Por `nexus.shell.exec` con PTY
 
 Hay hosts con `Defaults requiretty` en los que sudo exige un terminal. El

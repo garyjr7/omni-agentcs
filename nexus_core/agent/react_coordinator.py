@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from nexus_core.kernel.audit import AuditWriter
-from nexus_core.llm.abstraction import LLMMessage
+from nexus_core.llm.abstraction import LLMMessage, is_invalid_json_error
 from nexus_core.scope import ScopeViolation
 
 from . import memory
@@ -44,6 +44,9 @@ from .react_types import (
     STUCK_EVENT_TYPE,
     PREMATURE_COMPLETION_EVENT_TYPE,
     MAX_PREMATURE_COMPLETIONS,
+    MAX_INVALID_JSON_TURNS,
+    INVALID_JSON_EVENT_TYPE,
+    INVALID_JSON_CORRECTION,
     RUN_EVIDENCE_MAX_OBSERVATIONS,
     STATUS_COMPLETED,
     STATUS_MAX_ITERATIONS,
@@ -168,6 +171,10 @@ class ReActCoordinator:
     findings: list[dict[str, Any]]
     question: str | None
     consecutive_failures: int
+    #: Model answers in a row that were not the requested JSON object. Reset by
+    #: every usable answer; after ``MAX_INVALID_JSON_TURNS`` the run closes as
+    #: ``provider_error`` (a provider that only emits garbage is truly unhealthy).
+    invalid_json_turns: int
     last_phase: str | None
     last_plan: Plan | None
     last_subagent_id: str | None
@@ -392,6 +399,7 @@ class ReActCoordinator:
         self.findings = []
         self.question = None
         self.consecutive_failures = 0
+        self.invalid_json_turns = 0
         self.last_phase = None
         self.last_plan = None
         self.last_subagent_id = None
@@ -1114,6 +1122,31 @@ class ReActCoordinator:
                 exc, estimated=estimated, started=reasoning_started, reservation=reservation
             )
         except Exception as exc:
+            # A malformed answer is not a dead provider: retry the turn with a
+            # correction before giving up (Run 3, Simple CTF 2026-10-17).
+            if (
+                is_invalid_json_error(exc)
+                and self.invalid_json_turns < MAX_INVALID_JSON_TURNS
+            ):
+                return self._invalid_json_retry(
+                    exc,
+                    estimated=estimated,
+                    started=reasoning_started,
+                    reservation=reservation,
+                )
+            if is_invalid_json_error(exc):
+                # The retry budget is spent: a provider that only emits garbage
+                # is unhealthy, and the operator needs that reason in the
+                # terminal summary (Run 3, Simple CTF 2026-10-17).
+                return self._provider_error_stop(
+                    ProviderFailure(
+                        "model answered invalid JSON "
+                        f"{self.invalid_json_turns} times in a row"
+                    ),
+                    estimated=estimated,
+                    started=reasoning_started,
+                    reservation=reservation,
+                )
             # The failed turn still carries what it cost (the estimate) and how
             # long the provider took before it died; the run closes with the
             # terminal status instead of propagating ``ProviderFailure`` (B8.2).
@@ -1123,6 +1156,9 @@ class ReActCoordinator:
                 started=reasoning_started,
                 reservation=reservation,
             )
+        # A usable answer clears the malformed-answer streak: the budget is for
+        # consecutive garbage, never for the whole run.
+        self.invalid_json_turns = 0
         self.telemetry.note_reasoning(
             response, estimated=estimated, duration_ms=_elapsed_ms(reasoning_started)
         )
@@ -1140,6 +1176,64 @@ class ReActCoordinator:
         )
         self.raw_response = str(getattr(response, "content", "") or "")
         return Transition.READY
+
+    def _invalid_json_retry(
+        self,
+        exc: Exception,
+        *,
+        estimated: int,
+        started: float,
+        reservation: Any,
+    ) -> Transition:
+        """Ask the model again after a non-JSON answer (Simple CTF Run 3).
+
+        ``DeepSeekClient._check_content`` raises before the loop can see the
+        text, so this path has no raw answer to decode: the only way to keep the
+        mission alive is to re-issue the turn with a correction in the history.
+        The failed attempt still books its estimate with zero actual tokens and
+        releases its reservation, exactly like ``_provider_error_stop``, so no
+        hold is left open. The streak is capped by
+        :data:`MAX_INVALID_JSON_TURNS`; a provider that only emits garbage ends
+        the run as ``provider_error`` instead of looping forever.
+        """
+        self.invalid_json_turns += 1
+        self.telemetry.note_reasoning(
+            None, estimated=estimated, duration_ms=_elapsed_ms(started)
+        )
+        if reservation is not None and self.config.after_provider_call is not None:
+            self.config.after_provider_call(reservation, 0)
+        memory.append_step(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            "user",
+            INVALID_JSON_CORRECTION,
+            {
+                "kind": "react.correction",
+                "iteration": self.iteration,
+                "run_id": self.run_id,
+                "reason": "invalid_json",
+                "attempt": self.invalid_json_turns,
+            },
+        )
+        self.telemetry.flag(FrictionFlag.PARSE_ERROR)
+        self.context.event(
+            INVALID_JSON_EVENT_TYPE,
+            iteration=self.iteration,
+            attempt=self.invalid_json_turns,
+            limit=MAX_INVALID_JSON_TURNS,
+            error=str(exc)[:300],
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="parse_error",
+            decision="deny",
+            reason="invalid_json",
+            attempt=self.invalid_json_turns,
+            limit=MAX_INVALID_JSON_TURNS,
+            error=str(exc)[:300],
+        )
+        return Transition.NEXT_TURN
 
     def _provider_error_stop(
         self,
@@ -2282,8 +2376,11 @@ class ReActCoordinator:
 
     async def _iteration_body(self) -> Transition:
         """One model turn and the transition it asked for (the loop's unit)."""
-        if await self._request_action() is Transition.STOP:
-            return Transition.STOP
+        # ``_request_action`` may also answer ``NEXT_TURN``: a malformed JSON
+        # answer is corrected and the turn re-issued instead of decoded.
+        request = await self._request_action()
+        if request is not Transition.READY:
+            return request
         if self._decode_action() is Transition.NEXT_TURN:
             return Transition.NEXT_TURN
         if isinstance(self.action, TaskComplete):

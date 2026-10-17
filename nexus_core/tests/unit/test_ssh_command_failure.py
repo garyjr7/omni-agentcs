@@ -243,7 +243,9 @@ class SSHClient:
 '''
 
 
-def _run_client(tmp_path, *, exit_code: int, body: str) -> dict:
+def _run_client(
+    tmp_path, *, exit_code: int, body: str, mode: str = "exec", payload: dict | None = None
+) -> dict:
     """Run the real client script against a fake ``paramiko`` module."""
     (tmp_path / "paramiko.py").write_text(
         _FAKE_PARAMIKO.format(exit_code=exit_code, body=body), encoding="utf-8"
@@ -253,12 +255,12 @@ def _run_client(tmp_path, *, exit_code: int, body: str) -> dict:
             sys.executable,
             "-c",
             SSH_CLIENT_SCRIPT,
-            "exec",
+            mode,
             TARGET,
             "22",
             "mitch",
             "secret",
-            json.dumps({"command": "sudo -n -l", "command_timeout": 10}),
+            json.dumps(payload or {"command": "sudo -n -l", "command_timeout": 10}),
         ],
         cwd=tmp_path,
         env={**os.environ, "PYTHONPATH": str(tmp_path)},
@@ -296,6 +298,20 @@ def test_the_client_always_closes_the_transport(tmp_path, body, exit_code) -> No
     """No dangling session, whether the command worked or broke the session."""
     _run_client(tmp_path, exit_code=exit_code, body=body)
 
+    assert (tmp_path / "closed.flag").exists()
+
+
+def test_the_enumeration_client_closes_the_transport_too(tmp_path) -> None:
+    """Iteration 20 was ``enum_system``: the same ``finally`` must close it."""
+    payload = _run_client(
+        tmp_path,
+        exit_code=0,
+        body="return _Stream(), _Stream(), _Stream(b'')",
+        mode="enum",
+        payload={"commands": {"identity": "id"}, "command_timeout": 10},
+    )
+
+    assert payload["connected"] is True and payload["ok"] is True
     assert (tmp_path / "closed.flag").exists()
 
 

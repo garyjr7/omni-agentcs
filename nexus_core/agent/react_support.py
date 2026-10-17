@@ -12,7 +12,7 @@ import time
 from typing import Any, Callable, Mapping, cast
 
 from nexus_core.kernel.audit import AuditWriter
-from nexus_core.llm.abstraction import LLMMessage
+from nexus_core.llm.abstraction import LLMMessage, is_invalid_json_error
 
 from . import memory
 from nexus_core.kernel.domain_dto import Action
@@ -699,8 +699,14 @@ async def _complete_turn(llm_client: Any, messages: list[Any], config: ReActConf
             if thought and thought != last:
                 last = thought
                 _notify(config.on_thought, thought)
-    except Exception:  # noqa: BLE001 - retry the whole turn without streaming
+    except Exception as exc:  # noqa: BLE001 - retry the whole turn without streaming
         _notify(config.on_thought_done)
+        # A malformed *answer* is not a streaming transport failure: replaying
+        # the whole turn would spend a second provider call producing the same
+        # garbage. The ReAct loop corrects and retries it instead (Run 3, Simple
+        # CTF 2026-10-17).
+        if is_invalid_json_error(exc):
+            raise
         return await llm_client.complete(messages, **options)
     finally:
         _notify(config.on_thought_done)

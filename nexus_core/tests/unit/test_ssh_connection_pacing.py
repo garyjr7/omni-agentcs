@@ -69,6 +69,11 @@ def _patched(sandbox):
     return mock.patch.object(module, "sandbox_for_environment", lambda *a, **k: sandbox)
 
 
+def test_the_default_cooldown_is_three_seconds():
+    """One second still produced ``Authentication failed`` in Simple CTF."""
+    assert module.SSH_CONNECT_COOLDOWN_SECONDS == 3.0
+
+
 def test_a_second_session_waits_the_cooldown(monkeypatch):
     sandbox = _RecordingSandbox()
     clock = [100.0]
