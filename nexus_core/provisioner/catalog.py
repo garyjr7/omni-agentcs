@@ -146,6 +146,18 @@ def assess_tool_catalog(
                 "session-adapter", "unverified",
                 "requires an owned session and its configured HTTP/MSF/Sliver transport",
             )
+        elif module == "shell_exec_local":
+            transport, state, detail = (
+                "local-sandbox", "unverified",
+                "requires bash/sh in the sandbox and a confined workspace",
+            )
+            binaries = ("bash", "sh")
+        elif module == "session_pty":
+            transport, state, detail = (
+                "tmux", "unverified",
+                "requires tmux and a run-owned socket in the sandbox",
+            )
+            binaries = ("tmux",)
         elif module in PYTHON_HANDLERS:
             transport, state, detail = (
                 "python-sandbox",

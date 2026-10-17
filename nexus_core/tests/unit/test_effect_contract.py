@@ -73,6 +73,8 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.report.generate",
     "nexus.session.interact",
     "nexus.session.kill",
+    "nexus.session.pty",
+    "nexus.shell.exec",
     "nexus.system.install_tool",
     "nexus.web.request",
     "nexus.web.upload",

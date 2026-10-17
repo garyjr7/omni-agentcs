@@ -186,11 +186,34 @@ async def _capture_process(
     process: asyncio.subprocess.Process, limit: int, timeout: float,
     cancel_event: asyncio.Event | None, grace: float, started: float,
     cleanup: Callable[[], Awaitable[None]] | None = None,
+    *, input_data: bytes | None = None,
 ) -> SandboxResult:
     assert process.stdout is not None and process.stderr is not None
     stdout, stderr = BoundedCapture(limit), BoundedCapture(limit)
+    # Start draining stdout/stderr *before* writing stdin: a child that writes
+    # more than a pipe buffer before reading its input would otherwise deadlock
+    # against a full stdout pipe on both ends.
     readers = [asyncio.create_task(stdout.drain(process.stdout)),
                asyncio.create_task(stderr.drain(process.stderr))]
+    stdin_task: asyncio.Task[None] | None = None
+    if input_data is not None and process.stdin is not None:
+        async def _feed_stdin() -> None:
+            assert process.stdin is not None
+            try:
+                process.stdin.write(input_data)
+                await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                # The child exited without consuming stdin; that is its answer,
+                # not a transport failure of the sandbox.
+                pass
+            finally:
+                process.stdin.close()
+                with suppress(BrokenPipeError, ConnectionResetError):
+                    await process.stdin.wait_closed()
+
+        # A child that never reads stdin must not stall the call: the feed runs
+        # concurrently with the timeout/cancel waiters below.
+        stdin_task = asyncio.create_task(_feed_stdin())
     completed = asyncio.gather(process.wait(), *readers)
     cancel = asyncio.create_task(cancel_event.wait()) if cancel_event else None
     timed_out = cancelled = False
@@ -227,6 +250,10 @@ async def _capture_process(
         if not completed.done():
             completed.cancel()
         await asyncio.gather(completed, return_exceptions=True)
+        if stdin_task is not None:
+            if not stdin_task.done():
+                stdin_task.cancel()
+            await asyncio.gather(stdin_task, return_exceptions=True)
     return SandboxResult(
         process.returncode if process.returncode is not None else -1,
         stdout.text(), stderr.text(), timed_out, cancelled, orphans,
@@ -333,6 +360,7 @@ class LocalSandbox:
         extra_env: dict[str, str] | None = None,
         cancel_event: asyncio.Event | None = None,
         grace_seconds: float = 3.0,
+        input_data: bytes | str | None = None,
     ) -> SandboxResult:
         """Run ``argv`` in its own process group, honouring timeout and cancel.
 
@@ -341,23 +369,27 @@ class LocalSandbox:
         ``cancel_event`` the group gets SIGTERM, then SIGKILL after
         ``grace_seconds``; an external ``task.cancel()`` is treated the same
         way before the ``CancelledError`` is re-raised. ``extra_env`` adds
-        tool-specific variables (never PATH/HOME/XDG).
+        tool-specific variables (never PATH/HOME/XDG). ``input_data`` feeds
+        stdin (used by the universal shell); the handlers cap its size.
         """
         if not argv or argv[0] not in self.allowed_programs:
             raise PermissionError("program is not allowed in this sandbox")
         working_directory = self.resolve_workspace(cwd)
+        encoded = (input_data.encode("utf-8") if isinstance(input_data, str)
+                   else input_data)
         started = time.monotonic()
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(working_directory),
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE if encoded is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=merge_extra_env(self._sandbox_env(home_dir), extra_env),
             start_new_session=True,
         )
         return await _capture_process(process, self.max_output_bytes, timeout_seconds,
-                                      cancel_event, grace_seconds, started)
+                                      cancel_event, grace_seconds, started,
+                                      input_data=encoded)
 
 
 
@@ -455,13 +487,16 @@ class OCISandbox:
         extra_env: dict[str, str] | None = None,
         cancel_event: asyncio.Event | None = None,
         grace_seconds: float = 3.0,
+        input_data: bytes | str | None = None,
     ) -> SandboxResult:
         argv = self.build_argv(image, command)
         _insert_oci_env(argv, image, extra_env)
+        encoded = (input_data.encode("utf-8") if isinstance(input_data, str)
+                   else input_data)
         started = time.monotonic()
         process = await asyncio.create_subprocess_exec(
             *argv,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE if encoded is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
@@ -479,7 +514,8 @@ class OCISandbox:
                 await _terminate_process_group(cleanup, 1)
 
         return await _capture_process(process, self.max_output_bytes, timeout_seconds,
-                                      cancel_event, grace_seconds, started, cleanup_container)
+                                      cancel_event, grace_seconds, started, cleanup_container,
+                                      input_data=encoded)
 
 
 def sandbox_for_environment(

@@ -96,4 +96,4 @@ def test_check_env_registered_in_catalog():
     # the synthetic run; 61 was the governed TFTP payload delivery (nexus.post.tftp) in the
     # same room; 60 were the governed DNS query, dynamic DNS update, AD password
     # reset and AD escalation (RUN_sala10); 56 were the two Windows tools.
-    assert len(catalog) == 68
+    assert len(catalog) == 70

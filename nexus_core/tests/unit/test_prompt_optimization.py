@@ -78,7 +78,7 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # (220,2 per tool) against 14,519 / 213,5 before. The total ceiling is also
     # the ticket's stop threshold (15,500): over it, ask before raising anything,
     # and it is constraint data -never prose- what earns the room.
-    assert len(catalog) == 68
+    assert len(catalog) == 70
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
     assert len(text) < 15500
@@ -89,9 +89,11 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # was published (22,485 after the forbidden values, 22,028 with the enums only,
     # 20,883 before those). Fase 3d (V1-20) costs 128 characters for the two tools
     # that own a callback: what earns the room is the constraint the ticket asked
-    # for -that ``lhost``/``lport`` are the operator's- not prose. The catalog
-    # ceilings (15,500 total, 225 per tool) were not moved and still hold.
-    assert len(_prompt(catalog)) < 22700
+    # for -that ``lhost``/``lport`` are the operator's- not prose. WP1 adds the
+    # execution substrate (``nexus.shell.exec`` + ``nexus.session.pty``): +306
+    # characters, measured at 23,006. The catalog ceilings (15,500 total, 225 per
+    # tool) were not moved and still hold.
+    assert len(_prompt(catalog)) < 23_300
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):

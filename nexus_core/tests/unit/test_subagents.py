@@ -22,14 +22,24 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # + nexus.post.tftp (the synthetic run/the synthetic lab: only UDP/69 was reachable).
     # + nexus.post.dpapi (the synthetic run/the synthetic lab: the KeePass flag behind user DPAPI).
     # + nexus.post.ssh_upload, nexus.recon.nikto (RUN_sala12/Intrusion Detection).
-    assert len(catalog) == 68
+    assert len(catalog) == 70
 
 
 def test_read_only_profiles_list_no_active_tool():
     for profile in subagents.SUBAGENTS:
         if profile.read_only:
-            assert not (profile.tools & subagents.ACTIVE_TOOLS), profile.id
+            # WP1: the universal execution substrate (shell + PTY) is available
+            # to every profile by design; the read-only kill-chain subset still
+            # cannot acquire any other active tool.
+            leaked = profile.tools & (subagents.ACTIVE_TOOLS - subagents.UNIVERSAL_TOOLS)
+            assert not leaked, profile.id
             assert profile.parallel_safe
+
+
+def test_every_profile_has_the_execution_substrate():
+    """WP1: no profile can lose the shell when the planner changes phase."""
+    for profile in subagents.SUBAGENTS:
+        assert subagents.UNIVERSAL_TOOLS <= profile.tools, profile.id
 
 
 def test_every_profile_has_a_positive_budget_and_iterations():

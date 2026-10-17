@@ -42,6 +42,7 @@ async def run_in_sandbox(
     image_env: str,
     default_image: str,
     extra_env: dict[str, str] | None = None,
+    input_data: bytes | str | None = None,
 ) -> SandboxResult:
     """Run ``argv`` in ``sandbox``, normalizing the OCI container signature.
 
@@ -55,6 +56,8 @@ async def run_in_sandbox(
     options: dict[str, Any] = {"timeout_seconds": timeout_seconds}
     if extra_env:
         options["extra_env"] = extra_env
+    if input_data is not None:
+        options["input_data"] = input_data
     result: SandboxResult = await sandbox.run(*args, **options)
     record_capture(result)
     return result

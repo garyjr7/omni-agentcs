@@ -53,6 +53,21 @@ COMMON_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+#: The WP1 execution substrate: available to **every** profile, including the
+#: read-only ones. This is the deliberate product decision of the plan -a shell
+#: and a persistent session are not a kill-chain tool, they are the substrate
+#: every phase needs- and it fixes the measured failure where the planner moved
+#: the run to ``reporter`` and the profile then denied ``ssh_exec`` with root
+#: already on the board (rerun 13).
+#:
+#: They are *active* tools (``ACTIVE_TOOLS``) and remain governed by the
+#: gateway, the signed engagement and the audit chain. ``validate_registry``
+#: excludes exactly this overlay from the read-only subset invariant; the
+#: read-only *kill-chain* subset still cannot acquire an active tool.
+UNIVERSAL_TOOLS: frozenset[str] = frozenset(
+    {"nexus.shell.exec", "nexus.session.pty"}
+)
+
 #: Tools that change state on a target, a session or the local system. A profile
 #: that declares itself read-only must not list any of them: two independent
 #: classifications, so a mismatch is caught instead of failing open. Kept
@@ -69,6 +84,9 @@ ACTIVE_TOOLS: frozenset[str] = frozenset(
         # command_execution / local_elevation_heuristics phases unimplementable.
         "nexus.post.shell_exec",
         "nexus.post.job",
+        # WP1 universal substrate (available to every profile).
+        "nexus.shell.exec",
+        "nexus.session.pty",
         "nexus.cred.bruteforce",
         "nexus.exploit.msf_auxiliary",
         "nexus.exploit.msf_exploit",
@@ -151,7 +169,8 @@ PHASE_GRACE_ITERATIONS = 2
 
 
 def _with_common(tools: Iterable[str]) -> frozenset[str]:
-    return COMMON_TOOLS | frozenset(tools)
+    """Profile subset plus the shared tools and the universal execution overlay."""
+    return COMMON_TOOLS | UNIVERSAL_TOOLS | frozenset(tools)
 
 
 @dataclass(frozen=True)
@@ -673,7 +692,9 @@ def validate_registry(catalog: Mapping[str, Any] | None = None) -> list[str]:
             problems.append(f"duplicate subagent id: {profile.id}")
         seen.add(profile.id)
         if profile.read_only:
-            leaked = sorted(profile.tools & ACTIVE_TOOLS)
+            # The universal execution substrate is profile-independent and is
+            # never counted as a leak (WP1); every other active tool is.
+            leaked = sorted(profile.tools & (ACTIVE_TOOLS - UNIVERSAL_TOOLS))
             if leaked:
                 problems.append(
                     f"profile '{profile.id}' is read-only but lists active tools: {leaked}"
@@ -754,6 +775,7 @@ __all__ = [
     "SUBAGENTS",
     "SUBAGENTS_BY_ID",
     "SUBAGENT_IDS",
+    "UNIVERSAL_TOOLS",
     "BUDGET_ENV_PREFIX",
     "SubAgentDefinition",
     "WEB_ENUM_TOOLS",

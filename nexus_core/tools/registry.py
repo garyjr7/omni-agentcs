@@ -309,11 +309,24 @@ def durable_tool_definitions(
     }
     from .handlers.web_upload import web_upload_definition, web_upload_handler
     from .handlers.shell_exec import shell_exec_definition, shell_exec_handler
+    from .handlers.shell_exec_local import (
+        shell_exec_definition as shell_exec_local_definition,
+        shell_exec_handler as shell_exec_local_handler,
+    )
+    from .handlers.session_pty import (
+        session_pty_definition,
+        session_pty_handler,
+    )
     from .handlers.jobs import jobs_definition, jobs_handler
     from .handlers.git_dump import git_dump_definition, git_dump_handler
     catalog.update({
         "nexus.web.upload": (web_upload_definition(tenant_id), web_upload_handler),
         "nexus.post.shell_exec": (shell_exec_definition(tenant_id), shell_exec_handler),
+        # WP1: the universal execution substrate. ``nexus.post.shell_exec``
+        # stays as the owned-session adapter; these two run *local* processes
+        # through the sandbox and keep them alive across turns.
+        "nexus.shell.exec": (shell_exec_local_definition(tenant_id), shell_exec_local_handler),
+        "nexus.session.pty": (session_pty_definition(tenant_id), session_pty_handler),
         "nexus.post.job": (jobs_definition(tenant_id), jobs_handler),
         "nexus.web.git_dump": (git_dump_definition(tenant_id), git_dump_handler),
     })
