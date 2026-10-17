@@ -929,6 +929,178 @@ class ObjectiveCompletion:
 
 
 _FLAG_SHAPED = re.compile(r"(?:THM|HTB|FLAG|flag|CTF|ctf)\{[^}\s]{4,200}\}")
+#: Depth ceiling of :func:`flag_tokens`: a tool output is arbitrary JSON, and a
+#: cyclic/hostile value must not turn the closure check into a crash.
+FLAG_MAX_DEPTH = 12
+#: Flag files a CTF objective names. One named file is one expected flag, so an
+#: objective that asks for ``user.txt`` *and* ``root.txt`` closes only after both
+#: were captured -never after the user flag alone, which would abandon the
+#: escalation that the room still expects.
+FLAG_FILE_TARGETS: tuple[str, ...] = ("user.txt", "root.txt", "local.txt", "proof.txt")
+#: Objective words that say the engagement is a flag hunt. Checked casefolded.
+FLAG_OBJECTIVE_TOKENS: tuple[str, ...] = ("flag", "flags", "bandera", "banderas", "ctf")
+
+
+def flag_tokens(value: Any) -> tuple[str, ...]:
+    """Every flag-shaped token inside *value* (deduplicated, input order).
+
+    The value is scanned recursively because a captured flag is not always under
+    a key called ``flag``: the RootMe run recorded ``rootme_flags`` with
+    ``user_txt``/``root_txt`` as the leaves, and a rule that only looked at
+    ``flag``/``content``/``excerpt`` would have seen nothing. Keys are scanned
+    too: a ``loot`` fact whose *key* is the flag is the shape the ssh/ret2libc
+    branches record. Never raises: anything that is not a mapping, sequence or
+    string carries no flag.
+    """
+    found: list[str] = []
+
+    def walk(node: Any, depth: int) -> None:
+        if depth > FLAG_MAX_DEPTH:
+            return
+        if isinstance(node, Mapping):
+            for key, item in node.items():
+                walk(key, depth + 1)
+                walk(item, depth + 1)
+        elif isinstance(node, (list, tuple, set, frozenset)):
+            for item in node:
+                walk(item, depth + 1)
+        elif isinstance(node, str):
+            for token in _FLAG_SHAPED.findall(node):
+                if token not in found:
+                    found.append(token)
+
+    walk(value, 0)
+    return tuple(found)
+
+
+def objective_asks_for_flags(objective: Any) -> bool:
+    """Whether the engagement objective is a flag hunt (deterministic, no LLM)."""
+    text = str(objective or "").casefold()
+    return any(token in text for token in FLAG_OBJECTIVE_TOKENS) or any(
+        name in text for name in FLAG_FILE_TARGETS
+    )
+
+
+def expected_flag_count(objective: Any) -> int:
+    """How many distinct flags the objective names, at least one.
+
+    Only the flag *files* are counted (``user.txt`` + ``root.txt`` = 2). An
+    objective that just says "captura la flag" counts one; a plural it does not
+    enumerate stays at one, because forcing a higher number would keep the run
+    alive forever on a single-flag room.
+    """
+    text = str(objective or "").casefold()
+    named = sum(1 for name in FLAG_FILE_TARGETS if name in text)
+    return max(1, named)
+
+
+@dataclass(frozen=True)
+class TargetReached:
+    """Verdict of the target-reached rule plus the evidence behind each flag."""
+
+    reached: bool = False
+    flags: tuple[str, ...] = ()
+    sources: tuple[dict[str, Any], ...] = ()
+    verified: bool = False
+    expected: int = 1
+
+    def to_payload(self) -> dict[str, Any]:
+        """Payload of the ``react.target_reached`` / forced events."""
+        return {
+            "flags": list(self.flags),
+            "verified": self.verified,
+            "expected": self.expected,
+            "sources": [dict(source) for source in self.sources],
+        }
+
+
+def _fact_target(fact: Mapping[str, Any]) -> str:
+    """Best target of a loot fact: its value fields, else its key (never raises)."""
+    value = _fact_value(fact)
+    for name in ("target", "url", "host", "address"):
+        text = str(value.get(name) or "").strip()
+        if text:
+            return text
+    return str(fact.get("key") or "")
+
+
+def target_reached(
+    facts: Iterable[Any] | None = None,
+    *,
+    objective: str = "",
+    observed_flags: Mapping[str, Mapping[str, Any]] | None = None,
+) -> TargetReached:
+    """Rule ``si X entonces Y``: the flags the objective asked for were captured.
+
+    A flag counts when it comes from one of two deterministic sources:
+
+    * a **verified** ``loot`` fact on the board (the verifier attested it);
+    * a flag-shaped token in the output of a successful tool call of this run
+      (``observed_flags``), which is how a webshell/curl branch reports it: the
+      RootMe run captured both flags through command output and never derived a
+      verifier assertion for them.
+
+    The objective must ask for flags (or name ``user.txt``/``root.txt``), and as
+    many distinct flags as the objective names must be present. Anything else
+    returns ``TargetReached(reached=False)``; nothing is closed by this function.
+    """
+    from nexus_core.kernel.blackboard import is_verified_fact
+
+    if not objective_asks_for_flags(objective):
+        return TargetReached(expected=expected_flag_count(objective))
+    sources: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for fact in facts or ():
+        if not isinstance(fact, Mapping) or not is_verified_fact(fact):
+            continue
+        if str(fact.get("fact_type") or "") != "loot":
+            continue
+        key = str(fact.get("key") or "")
+        tokens = flag_tokens(_fact_value(fact)) or flag_tokens(key)
+        for token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            sources.append(
+                {
+                    "flag": token,
+                    "ref": key,
+                    "fact_type": "loot",
+                    "invocation_id": str(fact.get("invocation_id") or ""),
+                    "verification_method": str(fact.get("verification_method") or ""),
+                    "target": _fact_target(fact),
+                    "source": "blackboard",
+                    "verified": True,
+                }
+            )
+    for token, source in (observed_flags or {}).items():
+        flag = str(token or "").strip()
+        if not flag or flag in seen:
+            continue
+        seen.add(flag)
+        detail: dict[str, Any] = dict(source) if isinstance(source, Mapping) else {}
+        detail.update(
+            {
+                "flag": flag,
+                "ref": str(detail.get("ref") or ""),
+                "fact_type": "loot",
+                "source": "observation",
+                "verified": True,
+            }
+        )
+        sources.append(detail)
+    expected = expected_flag_count(objective)
+    flags = tuple(source["flag"] for source in sources)
+    reached = len(flags) >= expected
+    return TargetReached(
+        reached=reached,
+        flags=flags,
+        sources=tuple(sources),
+        # Both sources are evidence of this engagement: a verifier assertion or the
+        # literal output of a successful tool call. Nothing here is a model claim.
+        verified=bool(sources),
+        expected=expected,
+    )
 
 
 def _fact_value(fact: Any) -> Mapping[str, Any]:
@@ -1104,6 +1276,11 @@ __all__ = [
     "enumeration_still_open",
     "loot_is_evidence",
     "objective_completion",
+    "flag_tokens",
+    "objective_asks_for_flags",
+    "expected_flag_count",
+    "TargetReached",
+    "target_reached",
     "top_privilege",
     "escalate_credential",
     "escalate_enumeration",

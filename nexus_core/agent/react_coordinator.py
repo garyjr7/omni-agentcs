@@ -59,6 +59,9 @@ from .react_types import (
     BUDGET_SUBJECT_ID,
     SKILL_NUDGE_EVENT_TYPE,
     SKILL_NUDGE_TURNS,
+    TARGET_REACHED_EVENT_TYPE,
+    TARGET_REACHED_FORCED_EVENT_TYPE,
+    TARGET_REACHED_GRACE_TURNS,
     ReActConfig,
     ReActResult,
 )
@@ -95,6 +98,8 @@ from .react_support import (
 from enum import Enum
 from .planner import (
     CREDENTIAL_FOUND_REASON,
+    flag_tokens,
+    target_reached,
     ENUMERATION_EXHAUSTED_REASON,
     SESSION_ESTABLISHED_REASON,
     CredentialHandover,
@@ -212,6 +217,21 @@ class ReActCoordinator:
     objective_complete_emitted: bool
     #: Whether the last budget check was waived because the objective is complete.
     budget_exempt: bool
+    #: WP5: the objective's flags were captured (verified loot on the board or in
+    #: the successful output of this run). Once true it latches for the run: the
+    #: prompt orders the closure and the margin below is spent.
+    target_reached: bool
+    target_reached_emitted: bool
+    #: flag -> source (invocation id, target, ref) of every captured flag.
+    captured_flag_refs: dict[str, dict[str, Any]]
+    #: Tool calls the model proposed after the warning; at
+    #: ``TARGET_REACHED_GRACE_TURNS`` the next one is intercepted.
+    tool_calls_since_target_reached: int
+    #: The run was closed by the loop (not by the model) because the objective was
+    #: reached and the margin ran out. ``completion_verified`` is then decided by
+    #: the captured evidence, not by the old "no objections" derivation.
+    forced_completion: bool
+    completion_verified_override: bool | None
     #: Per-turn operational telemetry (tokens, reasoning duration, friction,
     #: blackboard delta). Built in ``_initialize`` and published one record per
     #: iteration; it is the only place those four signals are joined.
@@ -419,6 +439,12 @@ class ReActCoordinator:
         self.objective_complete = False
         self.objective_complete_emitted = False
         self.budget_exempt = False
+        self.target_reached = False
+        self.target_reached_emitted = False
+        self.captured_flag_refs = {}
+        self.tool_calls_since_target_reached = 0
+        self.forced_completion = False
+        self.completion_verified_override = None
         self.telemetry = TurnTelemetryRecorder(
             store=self.store, tenant_id=self.tenant_id, run_id=self.run_id
         )
@@ -565,6 +591,11 @@ class ReActCoordinator:
             self._apply_credential_handover()
             self._apply_session_handover()
         self._refresh_objective_complete()
+        # WP5: the same board (plus the flags this run already saw in a tool
+        # output) decides whether the objective's flags are in hand. It is read
+        # every turn, so a flag captured after the previous turn is announced on
+        # the very next prompt instead of when the budget runs out.
+        self._refresh_target_reached()
         self.last_plan = self.plan
         return Transition.READY
 
@@ -692,6 +723,77 @@ class ReActCoordinator:
             },
         )
         self.objective_complete_emitted = True
+
+    def _refresh_target_reached(self) -> None:
+        """Detect that the flags the objective asked for were captured (WP5).
+
+        The rule lives in the planner (deterministic, unit-tested); here it is
+        only *applied*. Once reached the state latches for the run -captured
+        evidence never disappears- so the margin counter cannot be reset by a
+        later turn that writes no new fact.
+        """
+        if self.target_reached:
+            return
+        verdict = target_reached(
+            self._blackboard_facts(),
+            objective=self.objective,
+            observed_flags=self.captured_flag_refs,
+        )
+        for source in verdict.sources:
+            flag = str(source.get("flag") or "")
+            if flag and flag not in self.captured_flag_refs:
+                self.captured_flag_refs[flag] = dict(source)
+        if not verdict.reached:
+            return
+        self.target_reached = True
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            TARGET_REACHED_EVENT_TYPE,
+            {
+                **verdict.to_payload(),
+                "iteration": self.iteration,
+                "phase": str(getattr(self.plan, "current", "") or ""),
+                "subagent_id": self.last_subagent_id,
+            },
+        )
+        self.target_reached_emitted = True
+
+    def _note_observed_flags(self) -> None:
+        """Keep every flag seen in the successful output of this run (WP5).
+
+        The verifier only derives ``loot`` for the tools it parses; a webshell
+        command (``nexus.shell.exec``) reports a flag in its stdout with no
+        assertion at all. The literal token in a *successful* tool output is the
+        same evidence the bench scores, so it is recorded here and fed to
+        :func:`target_reached` as an observation source.
+        """
+        observation = self.observation or {}
+        if not observation.get("success"):
+            return
+        tokens = flag_tokens(observation.get("output"))
+        if not tokens:
+            return
+        arguments = getattr(self.action, "arguments", None) or {}
+        target = str(
+            arguments.get("target") or arguments.get("url") or arguments.get("host") or ""
+        )
+        for token in tokens:
+            if token in self.captured_flag_refs:
+                continue
+            self.captured_flag_refs[token] = {
+                "flag": token,
+                "ref": str(getattr(self.action, "tool_id", "") or ""),
+                "fact_type": "loot",
+                "invocation_id": str(observation.get("invocation_id") or ""),
+                "verification_method": str(
+                    observation.get("verification_method") or ""
+                ),
+                "target": target,
+                "source": "observation",
+                "verified": True,
+            }
+        self._refresh_target_reached()
 
     def _blackboard_facts(self) -> list[dict[str, Any]]:
         """Every fact of the engagement (never raises)."""
@@ -981,6 +1083,7 @@ class ReActCoordinator:
             no_progress=self.consecutive_no_progress,
             stuck_threshold=self.stuck_threshold,
             same_tool_no_progress=self.same_tool_no_progress,
+            target_reached=self.target_reached,
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)
@@ -1736,6 +1839,7 @@ class ReActCoordinator:
                 )
                 return Transition.STOP
             self.observation = _observation_payload(invocation or {})
+            self._note_observed_flags()
             self.telemetry.note_tool(
                 duration_ms=_elapsed_ms(tool_started),
                 success=bool(self.observation.get("success")),
@@ -1955,6 +2059,125 @@ class ReActCoordinator:
             return self.status
         return "next_turn" if transition is Transition.NEXT_TURN else "completed_turn"
 
+    def _target_margin_spent(self) -> bool:
+        """Count a tool call made after the warning; ``True`` when it must be cut.
+
+        The warning turn itself counts as the first tool call, so two more are
+        executed and the third is intercepted (``TARGET_REACHED_GRACE_TURNS``).
+        """
+        if not self.target_reached:
+            return False
+        self.tool_calls_since_target_reached += 1
+        return self.tool_calls_since_target_reached >= TARGET_REACHED_GRACE_TURNS
+
+    def _flag_findings(self) -> list[dict[str, Any]]:
+        """One finding per captured flag, citing the evidence that proved it."""
+        findings: list[dict[str, Any]] = []
+        for flag, source in self.captured_flag_refs.items():
+            findings.append(
+                {
+                    "severity": "critical",
+                    "title": f"Flag capturada: {flag}",
+                    "invocation_id": str(source.get("invocation_id") or ""),
+                    "target": str(source.get("target") or ""),
+                    "fact_type": "loot",
+                    "value": {"flag": flag},
+                    "evidence": (
+                        f"la salida de la herramienta devolvió {flag}"
+                        if source.get("source") == "observation"
+                        else f"hecho loot verificado en el tablero: {flag}"
+                    ),
+                }
+            )
+        return findings
+
+    def _force_target_completion(self) -> Transition:
+        """Close the run with a synthesized ``task_complete`` (WP5).
+
+        The model ignored the imperative warning for the whole margin, so the
+        loop closes on the evidence it already has. The completion is grounded in
+        the captured flags themselves (verified loot facts or the successful tool
+        output that printed them), which is why it can be marked verified without
+        asking the model for anything else.
+        """
+        self.forced_completion = True
+        flags = list(self.captured_flag_refs)
+        # The board facts the closure reports, without inventing any: type, key and
+        # provenance of what the engagement already proved (capped for the record).
+        board_facts = [
+            {
+                "fact_type": str(fact.get("fact_type") or ""),
+                "key": str(fact.get("key") or ""),
+                "verified": bool(fact.get("verified")),
+                "verification_method": str(fact.get("verification_method") or ""),
+            }
+            for fact in self._blackboard_facts()[:50]
+            if isinstance(fact, dict)
+        ]
+        self.findings = self._flag_findings()
+        self.final_summary = (
+            "Cierre forzado por objetivo cumplido: "
+            f"{len(flags)} flag(s) capturada(s) - " + ", ".join(flags)
+        )
+        self.status = STATUS_COMPLETED
+        # The evidence is the captured flags, not a model summary: the closure is
+        # verified when at least one of them came from a verifier assertion or a
+        # successful tool output (both are true by construction of the state).
+        self.completion_verified_override = bool(flags)
+        self.actions.append(
+            _action_entry(
+                self.iteration,
+                ACTION_TASK_COMPLETE,
+                thought="Cierre forzado: el objetivo estaba cumplido y el margen de 3 turnos se agotó.",
+                summary=self.final_summary,
+                findings=self.findings,
+                forced=True,
+                flags=flags,
+                board_facts=board_facts,
+            )
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            TARGET_REACHED_FORCED_EVENT_TYPE,
+            {
+                "iteration": self.iteration,
+                "tool_calls": self.tool_calls_since_target_reached,
+                "flags": flags,
+                "board_facts": board_facts,
+                "tool_id": str(getattr(self.action, "tool_id", "") or ""),
+                "subagent_id": self.last_subagent_id,
+            },
+        )
+        memory.append_step(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            "assistant",
+            json.dumps(
+                {"summary": self.final_summary, "findings": self.findings},
+                ensure_ascii=False,
+            ),
+            {
+                "kind": "react.final",
+                "iteration": self.iteration,
+                "findings_count": len(self.findings),
+                "forced": True,
+                "flags": flags,
+                "run_id": self.run_id,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=ACTION_TASK_COMPLETE,
+            decision="allow",
+            reason="target_reached_forced",
+            forced=True,
+            flags=flags,
+            findings_count=len(self.findings),
+        )
+        return Transition.STOP
+
     def _result(self) -> ReActResult:
         if self.status == STATUS_MAX_ITERATIONS and (not self.final_summary):
             self.final_summary = (
@@ -1981,10 +2204,16 @@ class ReActCoordinator:
             subagent_id=self.last_subagent_id,
             evidence_stats=self.evidence_stats,
             completion_objections=list(self.completion_objections),
-            completion_verified=self.status == STATUS_COMPLETED
-            and self.config.enforce_completion_gates
-            and (not self.completion_objections)
-            and bool(self.run_evidence),
+            completion_verified=(
+                bool(self.completion_verified_override)
+                if self.completion_verified_override is not None
+                else (
+                    self.status == STATUS_COMPLETED
+                    and self.config.enforce_completion_gates
+                    and (not self.completion_objections)
+                    and bool(self.run_evidence)
+                )
+            ),
         )
 
     async def run(self) -> ReActResult:
@@ -2041,6 +2270,12 @@ class ReActCoordinator:
             return await self._complete()
         if isinstance(self.action, RequestClarification):
             return self._clarify()
+        # WP5: once the objective is reached the model gets an imperative warning
+        # and a fixed margin of tool calls. When it spends them without closing,
+        # the next call is intercepted: the run ends with a synthesized
+        # ``task_complete`` instead of dying at the budget with the work done.
+        if self._target_margin_spent():
+            return self._force_target_completion()
         return await self._tool_turn()
 
     async def _tool_turn(self) -> Transition:

@@ -46,6 +46,23 @@ SKILL_NUDGE_PROMPT = (
     "Estás atascado. Considera usar `nexus.skill.list()` y cargar una skill "
     "que se adapte a tu problema (ej. web-upload-webshell)."
 )
+#: Emitted once when the board (or the successful output of this run) proves the
+#: flags the objective asked for were captured. From that turn on the prompt
+#: carries :data:`TARGET_REACHED_PROMPT` and the loop counts the tool calls the
+#: model still makes before closing (WP5).
+TARGET_REACHED_EVENT_TYPE = "react.target_reached"
+#: Emitted when the 3-turn margin ran out and the loop closed the run itself.
+TARGET_REACHED_FORCED_EVENT_TYPE = "react.target_reached_forced"
+#: Tool calls the model may still spend after the warning before the loop
+#: intercepts the next one and closes with a synthesized ``task_complete``.
+TARGET_REACHED_GRACE_TURNS = 3
+#: Appended to the prompt of every turn while the objective is reached. The
+#: wording is the product contract: name the success, order the closure and
+#: forbid more tools.
+TARGET_REACHED_PROMPT = (
+    "OBJETIVO CUMPLIDO: Has capturado las flags. Llama a task_complete AHORA "
+    "con los hallazgos. No sigas ejecutando herramientas."
+)
 #: Output-token ceiling for one ReAct turn. Providers with a low tokens-per-
 #: minute budget count the *reserved* ``max_tokens`` against the request, so an
 #: oversized default (4096) makes every call fail even when the prompt is small

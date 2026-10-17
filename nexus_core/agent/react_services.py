@@ -39,6 +39,7 @@ from .react_types import (
     SKILL_NUDGE_PROMPT,
     SKILL_NUDGE_TURNS,
     STUCK_PROMPT_LINE,
+    TARGET_REACHED_PROMPT,
 )
 from .project_context import render_project_instruction
 from .skills import discover_skills, render_skill_index, render_skills
@@ -251,6 +252,7 @@ class ContextBuilder:
         no_progress: int = 0,
         stuck_threshold: int = DEFAULT_STUCK_THRESHOLD,
         same_tool_no_progress: int = 0,
+        target_reached: bool = False,
     ) -> list[LLMMessage]:
         history_summary, plan, facts_text = (
             snapshot.history_summary,
@@ -287,6 +289,11 @@ class ContextBuilder:
         # needs the way out (the index) and the recipe behind it.
         if same_tool_no_progress >= SKILL_NUDGE_TURNS:
             system_prompt = f"{system_prompt}\n\n{SKILL_NUDGE_PROMPT}"
+        # WP5: the objective's flags are in hand. The model still decides how to
+        # close -the loop only forbids more exploration and orders the closure-;
+        # if it ignores the order for the whole margin, the loop closes itself.
+        if target_reached:
+            system_prompt = f"{system_prompt}\n\n{TARGET_REACHED_PROMPT}"
         messages: list[LLMMessage] = [LLMMessage(role="system", content=system_prompt)]
         # Bound the raw history: a shared work session accumulates every prior
         # run's messages, and paying for all of them on every turn can exceed a
