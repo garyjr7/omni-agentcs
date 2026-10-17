@@ -25,7 +25,11 @@ MAX_OBSERVATION_CHARS = 20_000
 #: session accumulates every prior run's messages, and an unbounded prompt is
 #: paid on every turn (and can exceed a provider's per-request token limit).
 #: Older context still reaches the model through the summarised history block.
-MAX_CONTEXT_CHARS = 8_000
+#: Measured on Simple CTF (2026-10-17): at 8 000 chars the raw history added
+#: ~2 000 tokens to every turn on top of the (already compacted) system prompt
+#: and pushed the run past 10 600 tokens/turn; 6 000 keeps the last few tool
+#: results and lands the prompt under the 6 000-token target.
+MAX_CONTEXT_CHARS = 6_000
 
 #: Ports kept per host in an nmap summary. Real engagements rarely exceed this
 #: and the model needs the services, not 65 535 closed ports.

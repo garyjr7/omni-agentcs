@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
@@ -67,6 +68,32 @@ NOISE_NAMES = ("low", "medium", "high")
 NMAP_ALLOWED_PROGRAMS = ("python3", "git", "rg", "nmap")
 NMAP_DEFAULT_TIMEOUT_SECONDS = 120
 NMAP_MAX_TIMEOUT_SECONDS = 600
+
+#: ``full_tcp`` finding fewer open ports than this triggers the fallback scan.
+#: Measured on Simple CTF (2026-10-17): ``-p- -T4`` reported 65 533 ports as
+#: ``filtered`` and missed 2222/tcp, the only way into the room, while a
+#: ``--top-ports 1000`` pass found it in 9,65 s. A host with fewer than three
+#: open ports over a full sweep is far more likely to have paced itself out
+#: than to be that empty.
+NMAP_FALLBACK_MIN_OPEN_PORTS = 3
+#: A sweep that reports at least this many ``filtered`` ports could not tell
+#: "closed" from "dropped" (the measured host answers 65 533 of them), so its
+#: port list is untrustworthy even when it did find a few open ones.
+NMAP_FALLBACK_FILTERED_PORTS = 1_000
+#: The fallback re-scans only the top 1 000 ports: the point is to defeat the
+#: rate-limit that swallowed the full sweep, not to sweep twice.
+NMAP_FALLBACK_FLAGS: tuple[str, ...] = (
+    "-Pn",
+    "-n",
+    "-sS",
+    "--top-ports",
+    "1000",
+    "--min-rate",
+    "1000",
+    "-T4",
+    "--open",
+)
+NMAP_FALLBACK_TIMEOUT_SECONDS = 180
 #: Hard cap on the raw XML handed back in ``stdout`` once it has been parsed.
 #: The full XML averages ~30 KB and only floods the agent context: the parsed
 #: ``output.scan`` + ``raw_xml_sha256`` carry the whole finding, so the raw text
@@ -188,6 +215,70 @@ def drop_redundant_port_flags(
     return kept, dropped
 
 
+def needs_port_fallback(
+    flags: list[str], open_ports_total: int, filtered_ports_total: int = 0
+) -> bool:
+    """Whether a full-port sweep came back either empty or blind.
+
+    Only a sweep that claimed to cover every TCP port (``-p-``) is retried: a
+    deliberate ``-p 21,80`` that returns two ports is the operator's contract,
+    not a false negative. Two signatures are retried, both measured on Simple
+    CTF: a sweep with fewer than :data:`NMAP_FALLBACK_MIN_OPEN_PORTS` open ports
+    (2 open, 65 533 filtered, 2222/tcp invisible) and one that could not tell
+    closed from dropped for at least :data:`NMAP_FALLBACK_FILTERED_PORTS` ports.
+    The thresholds are named so both cases stay regression tests instead of
+    magic numbers.
+    """
+    if "-p-" not in flags:
+        return False
+    return (
+        open_ports_total < NMAP_FALLBACK_MIN_OPEN_PORTS
+        or filtered_ports_total >= NMAP_FALLBACK_FILTERED_PORTS
+    )
+
+
+def _port_key(port: dict[str, Any]) -> tuple[str, str]:
+    return (str(port.get("protocol", "")), str(port.get("port", "")))
+
+
+def merge_scans(primary: Any, fallback: Any) -> tuple[Any, list[dict[str, Any]]]:
+    """Union the fallback's ports into the primary scan.
+
+    Returns ``(merged_scan, recovered_ports)``. Ports keep their primary
+    finding (state, service, product) and only the ones the first sweep missed
+    are added, so a fallback that fails or repeats the same answer costs nothing
+    but its own absence.
+    """
+    recovered: list[dict[str, Any]] = []
+    if not fallback.hosts:
+        return primary, recovered
+    by_ip = {host.ip: host for host in fallback.hosts if host.ip}
+    merged_hosts = []
+    for host in primary.hosts:
+        extra = by_ip.get(host.ip)
+        if extra is None:
+            merged_hosts.append(host)
+            continue
+        known = {_port_key(port) for port in host.ports}
+        added = [dict(port) for port in extra.ports if _port_key(port) not in known]
+        recovered.extend(added)
+        if added:
+            merged_hosts.append(replace(host, ports=(*host.ports, *added)))
+        else:
+            merged_hosts.append(host)
+    if not primary.hosts:
+        # A sweep that missed the host entirely: the fallback's hosts are the
+        # only evidence there is.
+        merged_hosts = list(fallback.hosts)
+        recovered = [dict(port) for host in fallback.hosts for port in host.ports]
+    merged = replace(
+        primary,
+        hosts=tuple(merged_hosts),
+        elapsed_seconds=primary.elapsed_seconds + fallback.elapsed_seconds,
+    )
+    return merged, recovered
+
+
 def truncate_stdout(
     stdout: str, limit: int = NMAP_STDOUT_MAX_BYTES
 ) -> tuple[str, bool]:
@@ -215,7 +306,9 @@ def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
         description=(
             "Ejecuta nmap contra un target dentro del scope. Los perfiles "
             "'full_tcp' y 'service' ya incluyen -p- (todos los puertos TCP): "
-            "no añadas flags '-p' con ellos."
+            "no añadas flags '-p' con ellos. Si un barrido -p- sale vacío o "
+            "ciego (pocos abiertos, muchos filtered), se reintenta top-1000 "
+            "(-sS -Pn --min-rate 1000)."
         ),
         input_schema={
             "type": "object",
@@ -342,6 +435,62 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
     open_ports_total = sum(
         1 for host in scan.hosts for port in host.ports if port["state"] == "open"
     )
+    filtered_ports_total = sum(
+        int(count)
+        for host in scan.hosts
+        for state, count in host.extraports.items()
+        if state == "filtered"
+    )
+    fallback_evidence: dict[str, Any] | None = None
+    primary_open_ports = open_ports_total
+    if needs_port_fallback(flags, open_ports_total, filtered_ports_total):
+        # The full sweep paced itself out on a host that drops closed ports; a
+        # short ``--top-ports`` pass with an explicit rate crosses that floor.
+        fallback_argv = ["nmap", *NMAP_FALLBACK_FLAGS, "-oX", "-", target]
+        fallback_result = await _run_nmap(
+            sandbox, fallback_argv, min(timeout_seconds, NMAP_FALLBACK_TIMEOUT_SECONDS)
+        )
+        fallback_evidence = {
+            "reason": (
+                f"full port sweep returned {open_ports_total} open ports and "
+                f"{filtered_ports_total} filtered"
+            ),
+            "args": " ".join(fallback_argv),
+            "timed_out": fallback_result.timed_out,
+            "exit_code": fallback_result.exit_code,
+        }
+        if not fallback_result.timed_out and fallback_result.exit_code in {0, 1}:
+            try:
+                fallback_scan = parse_nmap_xml(fallback_result.stdout)
+            except ValueError as exc:
+                fallback_evidence["error"] = str(exc)
+            else:
+                scan, recovered = merge_scans(scan, fallback_scan)
+                fallback_evidence["raw_xml_sha256"] = fallback_scan.raw_xml_sha256
+                fallback_evidence["ports_open_total"] = sum(
+                    1 for host in fallback_scan.hosts for port in host.ports
+                    if port["state"] == "open"
+                )
+                fallback_evidence["recovered_ports"] = [
+                    f"{port['port']}/{port['protocol']}" for port in recovered
+                ]
+                if recovered:
+                    warnings.add(
+                        "fallback scan recovered ports the full sweep missed: "
+                        + ", ".join(
+                            f"{port['port']}/{port['protocol']}" for port in recovered
+                        )
+                    )
+        else:
+            fallback_evidence["error"] = "fallback scan failed"
+        open_ports_total = sum(
+            1 for host in scan.hosts for port in host.ports if port["state"] == "open"
+        )
+        warnings.add(
+            "fallback: top-1000 scan (-sS -Pn --min-rate 1000) after the full "
+            f"sweep returned {primary_open_ports} open ports out of "
+            f"{filtered_ports_total} filtered"
+        )
     verified = result.exit_code in {0, 1}
     # The XML is already parsed into ``output.scan``; do not ship the raw ~30 KB
     # back in stdout (it only inflates the agent's context). Keep a short prefix
@@ -371,6 +520,7 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
             "raw_xml_sha256": scan.raw_xml_sha256,
             "warnings": sorted(warnings),
             "stdout_truncated": stdout_truncated,
+            **({"fallback": fallback_evidence} if fallback_evidence else {}),
         },
         exit_code=result.exit_code,
         accepted_exit_codes=(0, 1),

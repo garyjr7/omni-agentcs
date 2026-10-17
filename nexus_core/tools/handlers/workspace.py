@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 from pathlib import Path
+from typing import Any
 
+from nexus_core.kernel.artifacts import configured_artifact_store
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import sandbox_for_environment
 
@@ -31,6 +34,10 @@ WORKSPACE_READ_MAX_BYTES = 65_536
 WORKSPACE_READ_DEFAULT_BYTES = WORKSPACE_READ_MAX_BYTES
 #: Chunk size of the streaming sha256 pass.
 _HASH_CHUNK_BYTES = 65_536
+#: The ids ``shell.exec``/``web.request`` return when they archive a long
+#: output: ``artifact_<32 hex>`` (canonical) or the bare 32-hex digest.
+_ARTIFACT_ID_RE = re.compile(r"artifact_[a-f0-9]{32}")
+_ARTIFACT_BARE_RE = re.compile(r"[a-f0-9]{32}")
 
 
 def workspace_root() -> str:
@@ -105,6 +112,63 @@ async def workspace_search_handler(arguments: dict, context: RunContext) -> Tool
     )
 
 
+def artifact_id_from_path(path: str) -> str | None:
+    """Return the artifact id named by ``path``, or ``None`` for a real path.
+
+    ``shell.exec`` and ``web.request`` truncate a long observation and hand the
+    model an ``artifact_id`` instead of the payload; before this, the only tool
+    that could read it (``nexus.workspace.read``) answered ``file not found``
+    and the agent lost two turns of the Simple CTF run (2026-10-17). The id is
+    accepted as ``artifact:<id>``, ``artifact_<32 hex>`` or a bare 32-hex digest;
+    anything else stays a filesystem path and is confined as before.
+    """
+    text = str(path or "").strip()
+    if text.startswith("artifact:"):
+        text = text.split(":", 1)[1].strip()
+    if _ARTIFACT_ID_RE.fullmatch(text):
+        return text
+    if _ARTIFACT_BARE_RE.fullmatch(text):
+        return f"artifact_{text}"
+    return None
+
+
+def _read_artifact(
+    artifact_id: str, context: RunContext, limit: int
+) -> tuple[dict[str, Any], bytes, bytes, bool]:
+    """Load one stored artifact, capped at ``limit`` bytes.
+
+    Returns ``(reference, full_bytes, returned_bytes, truncated)``. Raises
+    ``ValueError`` when the run has no store, the artifact does not exist in this
+    tenant, or the stored media type is not text-like.
+    """
+    if context.store is None:
+        raise ValueError("artifact store is not available in this run")
+    from nexus_core.tools.handlers.report_generate import default_artifact_root
+
+    repository = configured_artifact_store(context.store, default_artifact_root())
+    try:
+        data = repository.get(context.tenant_id, artifact_id)
+    except KeyError:
+        raise ValueError(f"artifact not found: {artifact_id}") from None
+    with repository.store.connect() as conn:
+        row = conn.execute(
+            "SELECT media_type FROM kernel_artifacts WHERE id=? AND tenant_id=?",
+            (artifact_id, context.tenant_id),
+        ).fetchone()
+    media_type = str(row["media_type"] if row is not None else "") or "application/octet-stream"
+    return (
+        {
+            "id": artifact_id,
+            "media_type": media_type,
+            "size_bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        },
+        data,
+        data[:limit],
+        len(data) > limit,
+    )
+
+
 def workspace_read_definition(tenant_id: str = "system") -> ToolDefinition:
     """Return the durable ToolDefinition for ``nexus.workspace.read``."""
     return ToolDefinition(
@@ -114,13 +178,23 @@ def workspace_read_definition(tenant_id: str = "system") -> ToolDefinition:
         tenant_id=tenant_id,
         description=(
             "Lee un archivo del workspace del engagement (loot descargado, "
-            "wordlists, notas) y devuelve su contenido con sha256. Solo lectura, "
-            "confindado al workspace."
+            "wordlists, notas) y devuelve su contenido con sha256. También "
+            "acepta el artifact_id de una salida archivada (artifact_<hex32>). "
+            "Solo lectura, confinado al workspace."
         ),
         input_schema={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "description": (
+                        "Ruta relativa al workspace, o el artifact_id que "
+                        "devuelve una tool cuando archiva una salida larga "
+                        "(sqlmap, web.request, shell.exec)."
+                    ),
+                },
                 "max_bytes": {
                     "type": "integer",
                     "minimum": 1,
@@ -193,6 +267,37 @@ async def workspace_read_handler(arguments: dict, context: RunContext) -> ToolRe
         raise ValueError("max_bytes must be an integer") from None
     limit = max(1, min(int(limit), WORKSPACE_READ_MAX_BYTES))
 
+    artifact_id = artifact_id_from_path(raw_path)
+    if artifact_id is not None:
+        reference, full, data, truncated = _read_artifact(artifact_id, context, limit)
+        content, encoding = _decode(data)
+        return ToolResult(
+            output={
+                "path": artifact_id,
+                "artifact": reference,
+                "size_bytes": len(full),
+                "bytes_returned": len(data),
+                "truncated": truncated,
+                "sha256": reference["sha256"],
+                "encoding": encoding,
+                "lines": content.count("\n") + (1 if content else 0),
+                "content": content,
+            },
+            verified=True,
+            verification_method="workspace_read_artifact",
+            evidence={
+                "artifact_id": artifact_id,
+                "media_type": reference["media_type"],
+                "size_bytes": len(full),
+                "bytes_returned": len(data),
+                "sha256": reference["sha256"],
+                "truncated": truncated,
+                "noise_level": "none",
+            },
+            exit_code=0,
+            accepted_exit_codes=(0,),
+        )
+
     path = resolve_workspace_path(raw_path, root=root)
     size = path.stat().st_size
     with path.open("rb") as handle:
@@ -235,6 +340,7 @@ async def workspace_read_handler(arguments: dict, context: RunContext) -> ToolRe
 __all__ = [
     "WORKSPACE_READ_DEFAULT_BYTES",
     "WORKSPACE_READ_MAX_BYTES",
+    "artifact_id_from_path",
     "resolve_workspace_path",
     "workspace_read_definition",
     "workspace_read_handler",

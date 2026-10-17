@@ -1093,6 +1093,7 @@ class ReActCoordinator:
             stuck_threshold=self.stuck_threshold,
             same_tool_no_progress=self.same_tool_no_progress,
             target_reached=self.target_reached,
+            iteration=self.iteration,
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)

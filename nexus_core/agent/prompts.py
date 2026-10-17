@@ -176,6 +176,23 @@ HISTORIAL A RESUMIR:
 CATALOG_DESCRIPTION_CHARS = 64
 #: Cap on how many declared arguments are listed per tool.
 CATALOG_MAX_ARGUMENTS = 5
+#: The abbreviated catalog sent on most turns: the tool id and its required
+#: arguments only. The description is prose the model already used to pick the
+#: tool; the argument names are contract data (half of the measured schema
+#: rejections) and stay. Measured on the 72-tool catalog: 15 780 chars full vs
+#: 5 200 compact, ~2 600 tokens of the 10 600 Simple CTF paid per turn.
+COMPACT_MAX_ARGUMENTS = 4
+#: How often the full catalog is re-sent. Every turn it cost ~3 945 tokens of
+#: the measured 10 600 (Simple CTF, 2026-10-17) and the model never needed the
+#: argument hints of a tool it had already called. One turn in five (plus the
+#: first one and every subagent change) keeps the full contract discoverable.
+CATALOG_REFRESH_TURNS = 5
+#: Header line that tells the model *why* the argument hints are missing, so it
+#: re-reads the full catalog instead of guessing a schema it cannot see.
+COMPACT_CATALOG_NOTE = (
+    "(catálogo resumido: id, descripción y argumentos obligatorios; el catálogo "
+    f"completo se repite cada {CATALOG_REFRESH_TURNS} turnos y al cambiar de subagente)"
+)
 
 
 def _enum_values(spec: Any) -> tuple[str, ...]:
@@ -305,28 +322,64 @@ def _schema_arguments(definition: Any) -> str:
     return ", ".join(parts) or "-"
 
 
-def render_tool_catalog(catalog: dict[str, Any]) -> str:
+def _required_arguments(definition: Any) -> str:
+    """Compact ``name:type*`` list of only the required arguments.
+
+    Required names are half of the schema rejections measured in
+    run_abe04509c5064c6e8e475f46ba8f8c60, so they survive the trim; the legal
+    values of an ``enum`` survive too, *only* when the argument is required (a
+    rejected value costs more than the bytes saved).
+    """
+    schema = getattr(definition, "input_schema", None) or {}
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(properties, dict):
+        return "-"
+    required = [name for name in (schema.get("required") or ()) if name in properties]
+    parts: list[str] = []
+    for name in required[:COMPACT_MAX_ARGUMENTS]:
+        spec = properties[name]
+        values = _enum_values(spec)
+        if values:
+            label = f"{name}∈{{{', '.join(values)}}}"
+        else:
+            kind = spec.get("type") if isinstance(spec, dict) else None
+            label = f"{name}:{kind or 'any'}"
+        parts.append(label + "*")
+    if len(required) > COMPACT_MAX_ARGUMENTS:
+        parts.append("…")
+    return ", ".join(parts) or "-"
+
+
+def render_tool_catalog(catalog: dict[str, Any], *, compact: bool = False) -> str:
     """Render the tool catalog as one compact, stable line per tool.
 
     The full JSON schema is deliberately *not* embedded: the compact form (id,
     description, arguments, risk, scope) is enough for the model and keeps the
     prompt small. The catalog is rendered exactly once per prompt.
+
+    ``compact=True`` is the per-turn variant: same tool ids, 40-character
+    description and only the required arguments. It halves the block (measured
+    on the 72-tool catalog: 15 780 chars full vs 7 774 compact) and is what the
+    loop sends on four turns out of five.
     """
     if not catalog:
         return "(no hay herramientas disponibles)"
     lines: list[str] = []
     for tool_id in sorted(catalog):
         definition = catalog[tool_id][0] if isinstance(catalog[tool_id], tuple) else catalog[tool_id]
-        risk = getattr(definition.risk, "value", str(getattr(definition, "risk", "unknown")))
+        note = _env_fixed_note(definition)
+        owned = f" | {note}" if note else ""
+        if compact:
+            lines.append(f"- {tool_id} | req[{_required_arguments(definition)}]{owned}")
+            continue
         description = " ".join(str(getattr(definition, "description", "") or "").split())
         if len(description) > CATALOG_DESCRIPTION_CHARS:
             description = description[:CATALOG_DESCRIPTION_CHARS].rstrip() + "…"
+        risk = getattr(definition.risk, "value", str(getattr(definition, "risk", "unknown")))
         if getattr(definition, "scope_required", False):
             scope = f"scope:{getattr(definition, 'scope_target_field', None) or '?'}"
         else:
             scope = "sin scope"
-        note = _env_fixed_note(definition)
-        owned = f" | {note}" if note else ""
         lines.append(
             f"- {tool_id}: {description or '(sin descripción)'} | "
             f"args[{_schema_arguments(definition)}]{owned} | riesgo:{risk} | {scope}"
@@ -372,9 +425,18 @@ def render_system_prompt(
     skills_summary: str = "(sin skills activas)",
     skill_index: str = "(sin skills disponibles)",
     playbook_summary: str = "(ningún playbook aplica todavía)",
+    full_catalog: bool = True,
 ) -> str:
-    """Fill :data:`REACT_SYSTEM_PROMPT` for one iteration."""
-    catalog_text = render_tool_catalog(catalog)
+    """Fill :data:`REACT_SYSTEM_PROMPT` for one iteration.
+
+    ``full_catalog=False`` sends the abbreviated catalog (ids, short
+    description, required arguments) plus :data:`COMPACT_CATALOG_NOTE`. The
+    default is the full form so every existing caller and test keeps the
+    reviewed contract.
+    """
+    catalog_text = render_tool_catalog(catalog, compact=not full_catalog)
+    if not full_catalog:
+        catalog_text = f"{catalog_text}\n{COMPACT_CATALOG_NOTE}"
     return REACT_SYSTEM_PROMPT.format(
         tool_catalog=catalog_text,
         objective=objective,

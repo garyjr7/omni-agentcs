@@ -237,3 +237,102 @@ def test_ftp_client_script_uses_the_configured_preview_size():
 
 def test_workspace_search_still_exists_beside_read():
     assert workspace_module.workspace_search_definition().tool_id == "nexus.workspace.search"
+
+
+# --------------------------------------------- reading an archived observation
+# ``shell.exec``/``web.request`` hand the model an ``artifact_id`` when the
+# output is long. Before this, ``workspace.read`` answered ``file not found``
+# and the Simple CTF run (2026-10-17) lost two turns to it.
+
+
+def _artifact_workspace(tmp_path, monkeypatch, payload: bytes) -> tuple[dict, RunContext]:
+    """Store one artifact the way a handler does, and return its reference."""
+    from nexus_core.kernel.artifacts import configured_artifact_store
+    from nexus_core.kernel.control_store import ControlStore
+    from nexus_core.tools.handlers.report_generate import default_artifact_root
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    store = ControlStore(tmp_path / "artifacts.db")
+    store.initialize()
+    reference = configured_artifact_store(store, default_artifact_root()).put(
+        "system", payload, "text/plain; charset=utf-8", run_id="run-1",
+        metadata={"kind": "shell-output"},
+    )
+    context = RunContext(
+        "system", Identity("operator-1", "system", roles=("operator",)), store=store
+    )
+    return reference, context
+
+
+def test_artifact_id_forms_are_recognised_and_paths_are_left_alone():
+    from nexus_core.tools.handlers.workspace import artifact_id_from_path
+
+    digest = "a" * 32
+    assert artifact_id_from_path(f"artifact_{digest}") == f"artifact_{digest}"
+    assert artifact_id_from_path(f"artifact:artifact_{digest}") == f"artifact_{digest}"
+    assert artifact_id_from_path(f"artifact:{digest}") == f"artifact_{digest}"
+    assert artifact_id_from_path(digest) == f"artifact_{digest}"
+    # Anything else stays a workspace path.
+    assert artifact_id_from_path("ftp_run_1/ForMitch.txt") is None
+    assert artifact_id_from_path("b" * 31) is None
+    assert artifact_id_from_path("") is None
+
+
+def test_reads_the_archived_output_of_a_long_shell_command(tmp_path, monkeypatch):
+    payload = b"$ exploit.py --crack\n" + b"[*] Try: 1d3\n" * 400
+    reference, context = _artifact_workspace(tmp_path, monkeypatch, payload)
+
+    result = asyncio.run(workspace_read_handler({"path": reference["id"]}, context))
+
+    assert result.verified is True
+    assert result.verification_method == "workspace_read_artifact"
+    assert result.output["path"] == reference["id"]
+    assert result.output["content"] == payload.decode()
+    assert result.output["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert result.output["artifact"]["media_type"] == "text/plain; charset=utf-8"
+    assert result.output["truncated"] is False
+    assert result.evidence["noise_level"] == "none"
+
+
+def test_artifact_read_accepts_the_prefixed_and_bare_id(tmp_path, monkeypatch):
+    reference, context = _artifact_workspace(tmp_path, monkeypatch, b"loot")
+    for alias in (
+        f"artifact:{reference['id']}",
+        reference["id"].removeprefix("artifact_"),
+        f"artifact:{reference['id'].removeprefix('artifact_')}",
+    ):
+        result = asyncio.run(workspace_read_handler({"path": alias}, context))
+        assert result.output["content"] == "loot"
+        assert result.output["path"] == reference["id"]
+
+
+def test_artifact_read_is_capped_at_the_requested_bytes(tmp_path, monkeypatch):
+    reference, context = _artifact_workspace(tmp_path, monkeypatch, b"A" * 5000)
+    result = asyncio.run(
+        workspace_read_handler({"path": reference["id"], "max_bytes": 100}, context)
+    )
+    assert result.output["bytes_returned"] == 100
+    assert result.output["size_bytes"] == 5000
+    assert result.output["truncated"] is True
+    # The digest still describes the whole artifact.
+    assert result.output["sha256"] == hashlib.sha256(b"A" * 5000).hexdigest()
+
+
+def test_unknown_artifact_id_is_refused(tmp_path, monkeypatch):
+    _, context = _artifact_workspace(tmp_path, monkeypatch, b"x")
+    with pytest.raises(ValueError, match="artifact not found"):
+        asyncio.run(workspace_read_handler({"path": "artifact_" + "f" * 32}, context))
+
+
+def test_artifact_read_without_a_store_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    context = RunContext("system", Identity("operator-1", "system", roles=("operator",)))
+    with pytest.raises(ValueError, match="artifact store is not available"):
+        asyncio.run(workspace_read_handler({"path": "artifact_" + "a" * 32}, context))
+
+
+def test_a_real_workspace_path_still_wins_over_the_artifact_branch(workspace):
+    (workspace / "locks.txt").write_text("lin\n")
+    result = _run(workspace, {"path": "locks.txt"})
+    assert result.verification_method == "workspace_read_sha256"
+    assert result.output["content"] == "lin\n"

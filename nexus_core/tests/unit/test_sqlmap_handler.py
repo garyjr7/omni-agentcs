@@ -176,3 +176,57 @@ def test_definition_declares_scope_and_risk():
     assert definition.scope_target_field == "url"
     assert definition.scope_required is True
     assert definition.required_permissions == ["execute:tool:nexus.web.sqlmap"]
+
+
+# ------------------------------------------------- timeout, flush, feedback
+# Simple CTF (2026-10-17): the handler handed sqlmap 1 800 s inside a 1 200 s
+# run, and the agent watched a silent call for 9 min 44 s until the SIGTERM.
+
+
+def test_the_default_timeout_is_a_ten_minute_slice():
+    from nexus_core.tools.handlers.sqlmap import (
+        SQLMAP_DEFAULT_TIMEOUT_SECONDS,
+        SQLMAP_MAX_TIMEOUT_SECONDS,
+    )
+
+    assert SQLMAP_DEFAULT_TIMEOUT_SECONDS == 600
+    assert SQLMAP_MAX_TIMEOUT_SECONDS == 900
+    with _fake_sandbox(SandboxResult(0, NOT_INJECTABLE, "")) as (sandbox, _):
+        _run({"url": "http://x/?id=1"})
+    assert sandbox.calls[0][1] == SQLMAP_DEFAULT_TIMEOUT_SECONDS
+
+
+def test_a_longer_requested_timeout_is_capped():
+    from nexus_core.tools.handlers.sqlmap import SQLMAP_MAX_TIMEOUT_SECONDS
+
+    with _fake_sandbox(SandboxResult(0, NOT_INJECTABLE, "")) as (sandbox, _):
+        _run({"url": "http://x/?id=1", "timeout_seconds": 3600})
+    assert sandbox.calls[0][1] == SQLMAP_MAX_TIMEOUT_SECONDS
+
+
+def test_the_definition_never_waits_longer_than_the_cap():
+    from nexus_core.tools.handlers.sqlmap import SQLMAP_MAX_TIMEOUT_SECONDS
+
+    assert sqlmap_definition().timeout_seconds == SQLMAP_MAX_TIMEOUT_SECONDS + 60
+
+
+def test_a_timeout_returns_the_partial_output_and_the_narrower_options():
+    partial = (
+        "[INFO] testing connection to the target URL\n"
+        "[INFO] testing if the target URL content is stable\n"
+        "[INFO] testing if GET parameter 'cntnt01articleid' is dynamic\n"
+    )
+    with _fake_sandbox(SandboxResult(-1, partial, "", timed_out=True)):
+        result = _run({"url": "http://x/?id=1"})
+
+    assert result.verified is False
+    assert result.output["summary"].endswith("is dynamic")
+    assert result.output["timeout_seconds"] == 600
+    assert "--technique" in result.output["guidance"]
+    assert result.evidence["partial_output"] is True
+
+
+def test_a_timeout_with_no_output_says_so_instead_of_an_empty_string():
+    with _fake_sandbox(SandboxResult(-1, "", "", timed_out=True)):
+        result = _run({"url": "http://x/?id=1"})
+    assert result.output["summary"] == "(sin salida)"

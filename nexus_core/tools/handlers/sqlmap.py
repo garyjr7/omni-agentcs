@@ -21,9 +21,16 @@ from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id
 
 SQLMAP_ALLOWED_PROGRAMS = RECON_ALLOWED_PROGRAMS + ("sqlmap",)
 
-SQLMAP_DEFAULT_TIMEOUT_SECONDS = 1800
+#: Measured on Simple CTF (2026-10-17): the handler gave sqlmap 1 800 s, the
+#: bench gave the run 1 200 s, and a single ``level 3 / risk 2`` call sat on the
+#: target for 9 min 44 s without a line of output until the SIGTERM. The default
+#: is now a 10-minute slice the agent can reason about, and the ceiling keeps a
+#: deliberate long probe possible without ever outlasting a normal run.
+SQLMAP_DEFAULT_TIMEOUT_SECONDS = 600
 SQLMAP_MIN_TIMEOUT_SECONDS = 30
-SQLMAP_MAX_TIMEOUT_SECONDS = 3600
+SQLMAP_MAX_TIMEOUT_SECONDS = 900
+#: Lines of partial stdout quoted back when the run times out.
+SQLMAP_PARTIAL_LINES = 20
 SQLMAP_DEFAULT_LEVEL = 1
 SQLMAP_DEFAULT_RISK = 1
 SQLMAP_THREADS = 1
@@ -217,7 +224,7 @@ def sqlmap_definition(tenant_id: str = "system") -> ToolDefinition:
         },
         risk=RiskLevel.MEDIUM,
         required_permissions=["execute:tool:nexus.web.sqlmap"],
-        timeout_seconds=1800,
+        timeout_seconds=SQLMAP_MAX_TIMEOUT_SECONDS + 60,
         max_output_bytes=10_000_000,
         scope_target_field="url",
         scope_required=True,
@@ -240,6 +247,17 @@ def _build_sqlmap_flags(arguments: dict, safe_mode: bool) -> tuple[list[str], st
     if any(token in SQLMAP_DUMP_FLAGS for token in canonical) and "--stop" not in canonical:
         user_flags.extend(["--stop", str(SQLMAP_STOP_LIMIT)])
     return user_flags, noise, warnings
+
+
+def _tail(stdout: str, stderr: str, *, limit: int = SQLMAP_PARTIAL_LINES) -> str:
+    """Last ``limit`` lines of sqlmap's output (stdout, then stderr)."""
+    text = stdout
+    if stderr:
+        text = f"{stdout}\n[stderr]\n{stderr}" if stdout else f"[stderr]\n{stderr}"
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "(sin salida)"
+    return "\n".join(lines[-limit:])
 
 
 async def sqlmap_handler(arguments: dict, context: RunContext) -> ToolResult:
@@ -335,8 +353,22 @@ async def sqlmap_handler(arguments: dict, context: RunContext) -> ToolResult:
     }
 
     if result.timed_out:
+        # A timeout with no feedback is what forced the agent to guess for ten
+        # minutes: hand back the tail of whatever sqlmap did print, plus the
+        # narrower options it can retry with.
+        evidence["partial_output"] = True
         return ToolResult(
-            output={"error": "sqlmap run timed out", "url": url, "noise_level": noise_level},
+            output={
+                "error": "sqlmap run timed out",
+                "url": url,
+                "noise_level": noise_level,
+                "timeout_seconds": timeout_seconds,
+                "summary": _tail(result.stdout, result.stderr),
+                "guidance": (
+                    "Acota el sondeo antes de reintentar: --technique=T/B/E con "
+                    "--time-sec bajo, level<=2 y risk<=1; o usa otra vía."
+                ),
+            },
             verified=False,
             verification_method="sqlmap_timeout",
             evidence=evidence,

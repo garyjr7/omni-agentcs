@@ -33,7 +33,11 @@ from .react_support import (
 )
 from .observations import bounded_context
 from .injection import render_for_model
-from .prompts import render_system_prompt, describe_scope
+from .prompts import (
+    CATALOG_REFRESH_TURNS,
+    describe_scope,
+    render_system_prompt,
+)
 from .react_types import (
     DEFAULT_STUCK_THRESHOLD,
     SKILL_NUDGE_PROMPT,
@@ -189,6 +193,25 @@ class ContextSnapshot:
 
 
 class ContextBuilder:
+    def __init__(self) -> None:
+        #: Last subagent the catalog was rendered for. A phase change swaps the
+        #: allowed tools, so the full catalog is re-sent once instead of leaving
+        #: the model without the argument contract of the new set.
+        self._last_subagent_id: str | None = None
+
+    def full_catalog_for(self, *, iteration: int, subagent: SubAgentDefinition) -> bool:
+        """Whether this turn gets the full tool catalog (see prompts.py).
+
+        Four turns out of five carry the abbreviated catalog; the first turn,
+        every ``CATALOG_REFRESH_TURNS`` and any subagent change carry the full
+        one. Measured on the 72-tool catalog: 15 780 chars full vs 7 774
+        compact, i.e. ~2 000 tokens per turn of the ~10 600 Simple CTF paid.
+        """
+        subagent_id = str(getattr(subagent, "id", "") or "")
+        changed = self._last_subagent_id is not None and subagent_id != self._last_subagent_id
+        self._last_subagent_id = subagent_id
+        return iteration <= 1 or changed or iteration % CATALOG_REFRESH_TURNS == 0
+
     async def gather(
         self,
         *,
@@ -253,7 +276,9 @@ class ContextBuilder:
         stuck_threshold: int = DEFAULT_STUCK_THRESHOLD,
         same_tool_no_progress: int = 0,
         target_reached: bool = False,
+        iteration: int = 0,
     ) -> list[LLMMessage]:
+        full_catalog = self.full_catalog_for(iteration=iteration, subagent=subagent)
         history_summary, plan, facts_text = (
             snapshot.history_summary,
             snapshot.plan,
@@ -275,6 +300,7 @@ class ContextBuilder:
             # engagement is loadable without restarting the run (WP4).
             skill_index=render_skill_index(discover_skills(secret=_skills_secret())),
             playbook_summary=_playbook_guidance(store, tenant_id, engagement_id, run_id=snapshot.run_id),
+            full_catalog=full_catalog,
         )
         # A stalled loop (no new verified fact for N turns) gets one explicit
         # line: measured in run_abe04509c5064c6e8e475f46ba8f8c60, ten such turns

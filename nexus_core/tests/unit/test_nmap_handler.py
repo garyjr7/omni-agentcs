@@ -304,3 +304,135 @@ def test_explicit_all_ports_with_port_list_is_still_a_conflict():
     # two port selectors are genuinely ambiguous, so the guard stays.
     with pytest.raises(ValueError):
         _run({"target": "203.0.113.10", "flags": ["-p-", "-p", "22,80"]})
+
+
+# -------------------------------------------------------- port-sweep fallback
+# Simple CTF (2026-10-17): ``-p- -T4`` reported 65 533 ports as ``filtered`` and
+# missed 2222/tcp -- the only way into the room -- while ``--top-ports 1000``
+# found it in 9,65 s. A sweep that comes back that empty is retried.
+
+
+class SequenceSandbox:
+    """A sandbox that answers each call with the next queued result."""
+
+    def __init__(self, results: list[SandboxResult]):
+        self.results = list(results)
+        self.calls: list[tuple[list[str], float]] = []
+
+    async def run(self, argv, *, timeout_seconds: float = 30):
+        self.calls.append((list(argv), timeout_seconds))
+        index = min(len(self.calls) - 1, len(self.results) - 1)
+        return self.results[index]
+
+
+@contextlib.contextmanager
+def _sequence_sandbox(*results: SandboxResult):
+    sandbox = SequenceSandbox(list(results))
+    with mock.patch.object(
+        nmap_module, "sandbox_for_environment", lambda *args, **kwargs: sandbox
+    ):
+        yield sandbox
+
+
+def _scan_xml(ports: list[str], filtered: int = 0) -> str:
+    entries = "".join(
+        f'<port protocol="tcp" portid="{port}"><state state="open"/>'
+        f'<service name="svc"/></port>'
+        for port in ports
+    )
+    extra = f'<extraports state="filtered" count="{filtered}"/>' if filtered else ""
+    return (
+        '<?xml version="1.0"?>'
+        '<nmaprun scanner="nmap" args="nmap -p-">'
+        '<host><status state="up"/><address addr="10.64.128.102" addrtype="ipv4"/>'
+        f"<ports>{entries}{extra}</ports></host>"
+        '<runstats><hosts up="1" down="0"/><finished elapsed="180"/></runstats>'
+        "</nmaprun>"
+    )
+
+
+def test_needs_port_fallback_only_for_an_empty_or_blind_full_sweep():
+    from nexus_core.tools.handlers.nmap import needs_port_fallback
+
+    # Empty: fewer open ports than the threshold.
+    assert needs_port_fallback(["-p-"], 2) is True
+    assert needs_port_fallback(["-p-"], 3) is False
+    # Blind: it found some ports but cannot tell closed from dropped.
+    assert needs_port_fallback(["-p-"], 3, 65_533) is True
+    assert needs_port_fallback(["-p-"], 12, 1_000) is True
+    assert needs_port_fallback(["-p-"], 12, 999) is False
+    # An explicit short list is the operator's contract, not a false negative.
+    assert needs_port_fallback(["-p", "21,80"], 2) is False
+    assert needs_port_fallback(["-p", "21,80"], 2, 65_533) is False
+
+
+def test_a_blind_full_sweep_is_retried_even_when_it_found_ports():
+    # 21/80/3306 open and 65 532 filtered: nmap cannot tell whether 2222 was
+    # closed or dropped, so the cheap top-1000 pass runs anyway.
+    primary = SandboxResult(0, _scan_xml(["21", "80", "3306"], filtered=65532), "")
+    fallback = SandboxResult(0, _scan_xml(["21", "80", "2222", "3306"]), "")
+    with _sequence_sandbox(primary, fallback) as sandbox:
+        result = _run({"target": "10.64.128.102", "profile": "full_tcp"})
+
+    assert len(sandbox.calls) == 2
+    assert result.evidence["fallback"]["recovered_ports"] == ["2222/tcp"]
+    assert result.evidence["ports_open_total"] == 4
+    assert "65532 filtered" in result.evidence["fallback"]["reason"]
+
+
+def test_empty_full_sweep_triggers_a_top_1000_fallback_that_recovers_the_port():
+    primary = SandboxResult(0, _scan_xml(["21", "80"], filtered=65533), "")
+    fallback = SandboxResult(0, _scan_xml(["21", "80", "2222"]), "")
+    with _sequence_sandbox(primary, fallback) as sandbox:
+        result = _run({"target": "10.64.128.102", "profile": "full_tcp"})
+
+    assert len(sandbox.calls) == 2
+    argv = sandbox.calls[1][0]
+    for expected in ("-sS", "-Pn", "--top-ports", "1000", "--min-rate", "1000"):
+        assert expected in argv
+    # nmap accepts --top-ports with a value, so the value must travel with it.
+    assert argv[argv.index("--top-ports") + 1] == "1000"
+    assert argv[argv.index("--min-rate") + 1] == "1000"
+    ports = [port["port"] for host in result.output["scan"]["hosts"] for port in host["ports"]]
+    assert ports == ["21", "80", "2222"]
+    assert result.evidence["ports_open_total"] == 3
+    assert result.evidence["fallback"]["recovered_ports"] == ["2222/tcp"]
+    assert any("recovered ports" in warning for warning in result.evidence["warnings"])
+    assert result.verified is True
+
+
+def test_a_full_sweep_with_enough_ports_is_not_retried():
+    # Enough open ports and a trustworthy sweep: no second scan is paid for.
+    with _sequence_sandbox(SandboxResult(0, _scan_xml(["21", "22", "80"], filtered=500), "")) as sandbox:
+        result = _run({"target": "10.64.128.102", "profile": "full_tcp"})
+    assert len(sandbox.calls) == 1
+    assert "fallback" not in result.evidence
+
+
+def test_an_explicit_port_list_never_triggers_the_fallback():
+    with _sequence_sandbox(SandboxResult(0, _scan_xml(["21", "80"]), "")) as sandbox:
+        result = _run({"target": "10.64.128.102", "flags": ["-Pn", "-p", "21,80"]})
+    assert len(sandbox.calls) == 1
+    assert "fallback" not in result.evidence
+
+
+def test_a_failed_fallback_keeps_the_primary_scan():
+    primary = SandboxResult(0, _scan_xml(["21", "80"], filtered=65533), "")
+    with _sequence_sandbox(primary, SandboxResult(1, "", "nmap: no such device")) as sandbox:
+        result = _run({"target": "10.64.128.102", "profile": "full_tcp"})
+
+    assert len(sandbox.calls) == 2
+    assert result.evidence["fallback"]["error"]
+    assert result.evidence["ports_open_total"] == 2
+    ports = [port["port"] for host in result.output["scan"]["hosts"] for port in host["ports"]]
+    assert ports == ["21", "80"]
+
+
+def test_a_timed_out_fallback_keeps_the_primary_scan():
+    primary = SandboxResult(0, _scan_xml(["21", "80"], filtered=65533), "")
+    with _sequence_sandbox(primary, SandboxResult(-1, "", "", timed_out=True)) as sandbox:
+        result = _run({"target": "10.64.128.102", "profile": "full_tcp"})
+    assert len(sandbox.calls) == 2
+    assert result.evidence["fallback"]["timed_out"] is True
+    assert result.evidence["fallback"]["error"] == "fallback scan failed"
+    assert result.verified is True
