@@ -177,6 +177,29 @@ def timeout_guidance(tool_id: Any) -> str:
     )
 
 
+def command_failed_guidance(tool_id: Any) -> str:
+    """Model-facing guidance for a command that ran and exited non-zero.
+
+    Measured in Simple CTF: ``nexus.post.ssh_exec`` ran ``sudo -n -l`` after the
+    login had already succeeded, the tool answered ``AuthenticationException``
+    and the agent concluded the *SSH password* was wrong. It then repeated the
+    same call until the run timed out. The channel was healthy and the command
+    was the problem; this message says so and names the alternative, so the next
+    turn is a new strategy instead of a fifth guess at the credential.
+    """
+    return (
+        f"'{tool_id}' estableció el canal y ejecutó el comando en el objetivo: el "
+        "fallo es del comando, NO de la credencial ni de la conexión. No repitas "
+        "la misma invocación. Lee el stderr real del resultado y cambia de "
+        "estrategia: si era `sudo` y el objetivo pide contraseña, `sudo -n` nunca "
+        "la pregunta y por eso siempre falla; carga la skill 'privesc-sudo' con "
+        "nexus.skill.load (contraseña por stdin con `sudo -S -l`, PTY si el host "
+        "lo exige o abuso de `sudo vim`), usa nexus.post.enum_system -que resuelve "
+        "`sudo -S -l` con la credencial del engagement- o elige otra ruta de la "
+        "fase."
+    )
+
+
 def repeated_action_correction(tool_id: Any) -> str:
     """Model-facing correction for an identical repeat of a failed action (V1-26).
 

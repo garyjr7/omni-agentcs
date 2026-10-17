@@ -84,6 +84,7 @@ from .react_support import (
     _observation_payload,
     unavailable_guidance,
     timeout_guidance,
+    command_failed_guidance,
     repeated_action_correction,
     _invocation_signature,
     _budget_tokens,
@@ -1849,8 +1850,17 @@ class ReActCoordinator:
                 self.run_evidence.extend(self.observation.get("assertions") or [])
                 del self.run_evidence[:-RUN_EVIDENCE_MAX_OBSERVATIONS]
             else:
-                self.consecutive_failures += 1
                 failure_outcome = str(self.observation.get("outcome") or "")
+                if failure_outcome == "command_failed":
+                    # The tool worked: the channel reached the target and the
+                    # command ran. A non-zero exit is about the command, so it is
+                    # not the "this tool is broken" signal that aborts the run
+                    # after N failures -three failed ``sudo`` invocations must not
+                    # end the engagement. The stuck/no-progress counter still
+                    # sees the barren turn.
+                    self.consecutive_failures = 0
+                else:
+                    self.consecutive_failures += 1
                 if failure_outcome == "unavailable":
                     # Fase 3b: a handler (or the gateway) declared that the
                     # backend did not serve the call. It is a *tool* failure -
@@ -1871,6 +1881,16 @@ class ReActCoordinator:
                     # after repeated attempts so the phase pivots.
                     self.observation["guidance"] = timeout_guidance(self.action.tool_id)
                     self._note_tool_failure(str(self.action.tool_id))
+                elif failure_outcome == "command_failed":
+                    # The channel reached the target and the command ran: the
+                    # credential is fine, so the tool does NOT retire. The model
+                    # is told *what* failed and which strategy replaces it; an
+                    # identical repeat is already intercepted by the V1-26 guard.
+                    # Measured in Simple CTF: `sudo -n -l` failed after a working
+                    # SSH login, the agent blamed the password and looped.
+                    self.observation["guidance"] = command_failed_guidance(
+                        self.action.tool_id
+                    )
         self.entry["tool_result"] = self.observation
         self.actions.append(self.entry)
         _inject_observation(

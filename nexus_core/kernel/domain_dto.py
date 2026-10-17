@@ -141,7 +141,8 @@ class PolicyDecisionDTO(DomainDTO):
 class ToolResultDTO(DomainDTO):
     success: bool
     outcome: Literal[
-        "success", "negative", "denied", "unsupported", "unavailable", "timeout", "error"
+        "success", "negative", "denied", "unsupported", "unavailable", "timeout",
+        "command_failed", "error"
     ]
     output: dict[str, JsonValue]
     verified: bool

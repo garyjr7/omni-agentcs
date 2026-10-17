@@ -138,6 +138,10 @@ def main():
         return
     result = {"ok": False, "mode": mode, "host": host, "username": user}
     client = None
+    # ``connected`` separates the two failures this client can produce: the login
+    # itself (bad or refused credential) and anything that breaks *after* the
+    # login (the command, the channel). Only the first one is authentication.
+    connected = False
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -152,6 +156,7 @@ def main():
             allow_agent=False,
             look_for_keys=False,
         )
+        connected = True
         result["connected"] = True
         if mode == "upload":
             local_path = payload["local_path"]
@@ -208,6 +213,10 @@ def main():
             err = stderr.read().decode("utf-8", "replace")
             code = stdout.channel.recv_exit_status()
             result.update({"ok": True, "command": command, "stdout": out, "stderr": err, "exit_status": code})
+            if code != 0:
+                # The login worked; the command is what failed. Saying so here is
+                # what stops the caller from blaming the credential.
+                result.update({"ok": False, "outcome": "command_failed"})
         elif mode == "enum":
             commands = payload.get("commands", {})
             command_timeout = payload.get("command_timeout", 60)
@@ -253,7 +262,34 @@ def main():
         else:
             result["error"] = "unsupported mode: %s" % mode
     except Exception as exc:
-        result["error"] = "%s: %s" % (type(exc).__name__, exc)
+        if connected:
+            # A successful login is proof the credential is right: never report
+            # this as an authentication failure (Simple CTF: ``sudo -l`` failed
+            # after an established session, the client said
+            # "AuthenticationException", and the agent went on to assume the SSH
+            # password was wrong and looped until the timeout).
+            result.update({
+                "ok": False,
+                "connected": True,
+                "outcome": "command_failed",
+                # The class name is deliberately left out: rewriting
+                # ``AuthenticationException`` as text is exactly what made the
+                # measured agent hunt a credential that was already valid.
+                "error": (
+                    "CommandFailed: the SSH session was established and the "
+                    "command failed (%s)" % (str(exc) or type(exc).__name__)
+                ),
+                "exit_status": int(result.get("exit_status") or 1),
+                "stdout": result.get("stdout", ""),
+                "stderr": result.get("stderr", ""),
+            })
+        else:
+            result.update({
+                "ok": False,
+                "connected": False,
+                "error": "%s: %s" % (type(exc).__name__, exc),
+                "error_kind": "connect_failed",
+            })
     finally:
         if client is not None:
             try:
@@ -588,6 +624,23 @@ def _credential_detail(payload: dict[str, Any]) -> str:
     return detail[:SSH_ERROR_DETAIL_MAX]
 
 
+#: Fragments that mean the *login* was refused (wrong credential or a server
+#: that does not accept password authentication). Only consulted when the client
+#: never reached an authenticated session: after a successful login the same
+#: exception text describes the command, not the credential.
+_AUTH_FAILURE_MARKERS = (
+    "authenticationexception",
+    "authentication failed",
+    "permission denied (publickey",
+)
+
+
+def _is_authentication_failure(detail: str) -> bool:
+    """Whether a pre-login diagnostic reports a refused credential."""
+    lowered = (detail or "").lower()
+    return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
+
+
 def _parse_client_json(stdout: str) -> dict[str, Any]:
     for line in reversed((stdout or "").splitlines()):
         line = line.strip()
@@ -693,27 +746,84 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
             evidence=evidence,
             exit_code=result.exit_code,
         )
-    ok = bool(payload.get("ok")) and bool(payload.get("connected"))
-    evidence["exit_status"] = payload.get("exit_status")
-    detail = "" if ok else _credential_detail(payload)
-    if detail:
-        # V1-32: the reason the channel failed belongs in the observation.
-        evidence["error_detail"] = detail
+    # ``connected`` is the fact that decides *what* failed. A non-zero remote
+    # exit status used to be a verified success (the client process exited 0),
+    # and any failure was a bare ``RuntimeError`` that read as a bad credential;
+    # the Simple CTF run spent its last iterations re-authenticating because of
+    # it.
+    connected = bool(payload.get("connected"))
+    detail = _credential_detail(payload)
+    raw_exit_status = payload.get("exit_status")
+    try:
+        exit_status = int(raw_exit_status) if raw_exit_status is not None else None
+    except (TypeError, ValueError):
+        exit_status = None
+    evidence["exit_status"] = exit_status
+    evidence["connected"] = connected
     output: dict[str, Any] = {
         "target": target,
         "command": command,
         "stdout": payload.get("stdout", ""),
         "stderr": payload.get("stderr", ""),
-        "exit_status": payload.get("exit_status"),
+        "exit_status": exit_status,
     }
+    if not connected:
+        # The login itself failed: the credential (or the link) was refused, and
+        # the invocation still decided something, so it is a determinate result
+        # instead of an invariant the gateway turns into ``RuntimeError``.
+        if detail:
+            evidence["error_detail"] = detail
+        output["error"] = detail or "ssh connection failed"
+        denied = _is_authentication_failure(detail)
+        return ToolResult(
+            output=output,
+            verified=False,
+            outcome="denied" if denied else "unavailable",
+            verification_method=(
+                "ssh_exec_authentication_failed" if denied else "ssh_exec_unreachable"
+            ),
+            evidence=evidence,
+            exit_code=result.exit_code,
+            accepted_exit_codes=(0,),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    failed = bool(detail) or exit_status != 0
+    if not failed:
+        return ToolResult(
+            output=output,
+            verified=True,
+            verification_method="ssh_exec_completed",
+            evidence=evidence,
+            exit_code=result.exit_code,
+            accepted_exit_codes=(0,),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    if "authenticationexception" in detail.lower():
+        # The client already translates this; the guarantee is kept here too so
+        # no payload shape can report an established session as a login failure.
+        detail = re.sub(
+            r"^AuthenticationException:\s*", "CommandFailed: ", detail, flags=re.IGNORECASE
+        )
+    exit_status = exit_status if exit_status not in (None, 0) else 1
+    output["exit_status"] = exit_status
     if detail:
+        # V1-32: the reason the command failed belongs in the observation.
         output["error"] = detail
+        evidence["error_detail"] = detail
+    evidence["exit_status"] = exit_status
+    # The *real* streams of the remote command, not the JSON envelope of the
+    # client: the model has to read `sudo: a password is required` to pivot.
+    evidence["stdout"] = output["stdout"]
+    evidence["stderr"] = output["stderr"]
     return ToolResult(
         output=output,
-        verified=ok,
-        verification_method="ssh_exec_completed" if ok else "ssh_exec_failed",
+        verified=False,
+        outcome="command_failed",
+        verification_method="ssh_exec_command_failed",
         evidence=evidence,
-        exit_code=result.exit_code,
+        exit_code=exit_status,
         accepted_exit_codes=(0,),
         stdout=result.stdout,
         stderr=result.stderr,

@@ -264,6 +264,50 @@ async def test_the_webshell_skill_carries_the_steps_the_run_missed(
     assert "workspace" in content
 
 
+def test_the_sudo_skill_is_shipped_unsigned() -> None:
+    body = SKILL_DIR.parent / "privesc-sudo" / "SKILL.md"
+    assert body.is_file()
+    assert not body.with_name("SKILL.md.sig").exists()
+    skill = load_skill("privesc-sudo", REPO_ROOT)
+    assert skill is not None
+    assert skill.trust == "unsigned"
+    assert skill.usable is True
+
+
+async def test_the_sudo_skill_carries_the_simple_ctf_recipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recipe the run needed: -S over stdin, a PTY and the vim escape."""
+    monkeypatch.chdir(REPO_ROOT)
+    monkeypatch.delenv("NEXUS_SCOPE_SIGNING_SECRET", raising=False)
+
+    content = (await skill_load_handler({"name": "privesc-sudo"}, _run_context())).output[
+        "content"
+    ]
+
+    # `-n` never asks: that is the failure that was misread as a bad password.
+    assert "sudo -n -l" in content
+    assert "sudo: a password is required" in content
+    # The exact example for the room's user, and the stdin form.
+    assert "echo 'secret' | sudo -S -l" in content
+    assert "sudo -S" in content and "stdin" in content
+    # PTY paths: ssh -t, tmux and pexpect through the local shell.
+    assert "nexus.shell.exec" in content
+    assert "ssh -t" in content and "tmux" in content and "pexpect" in content
+    # The privilege escalation of Simple CTF.
+    assert "sudo vim -c ':!/bin/sh'" in content
+    assert "sudo vim -c '!sh'" in content
+    assert "cat /root/root.txt" in content
+
+
+def test_the_prompt_index_names_the_sudo_skill_without_offering_tools() -> None:
+    """The index only names the recipe: it must not leak tool ids to a profile."""
+    index = render_skill_index(discover_skills(REPO_ROOT))
+    assert "- privesc-sudo:" in index
+    sudo_line = next(line for line in index.splitlines() if "privesc-sudo" in line)
+    assert "nexus." not in sudo_line
+
+
 def test_the_prompt_index_names_the_skills_and_their_sentence() -> None:
     index = render_skill_index(discover_skills(REPO_ROOT))
     assert "- web-upload-webshell:" in index

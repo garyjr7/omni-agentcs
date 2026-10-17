@@ -192,6 +192,9 @@ OUTCOME_TAXONOMY = frozenset({
     "unavailable",
     #: The operation ran out of time.
     "timeout",
+    #: The channel worked and the command ran, but it exited non-zero: the
+    #: *command* failed, not the credential nor the connection.
+    "command_failed",
     #: Anything else, including an unparsed or corrupt answer.
     "error",
 })
@@ -208,7 +211,11 @@ OUTCOME_TAXONOMY = frozenset({
 #: the outcome is ``unavailable``, never ``negative``, so nothing reads as "we
 #: looked and there was nothing" and no assertion is derived. A *bare* failure
 #: that declares no outcome still keeps its own error and does not complete.
-COMPLETED_OUTCOMES = frozenset({"negative", "denied", "unsupported", "unavailable"})
+#: ``command_failed`` is here too: reaching the target and getting a non-zero
+#: exit status is a determinate observation about it. Raising instead turned
+#: every failed `sudo` command into a broken post-condition, and the model read
+#: the resulting message as a bad credential (measured in Simple CTF).
+COMPLETED_OUTCOMES = frozenset({"negative", "denied", "unsupported", "unavailable", "command_failed"})
 
 #: ``verification_method`` suffixes that mean "the backend this tool talks to did
 #: not serve the call" -MSF RPC down, missing RPC credentials, absent binary,
