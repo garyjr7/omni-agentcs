@@ -22,7 +22,8 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # + nexus.post.tftp (the synthetic run/the synthetic lab: only UDP/69 was reachable).
     # + nexus.post.dpapi (the synthetic run/the synthetic lab: the KeePass flag behind user DPAPI).
     # + nexus.post.ssh_upload, nexus.recon.nikto (RUN_sala12/Intrusion Detection).
-    assert len(catalog) == 70
+    # + nexus.skill.list, nexus.skill.load (WP4: the dynamic skill loader).
+    assert len(catalog) == 72
 
 
 def test_read_only_profiles_list_no_active_tool():

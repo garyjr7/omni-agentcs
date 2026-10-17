@@ -57,6 +57,8 @@ from .react_types import (
     SUBAGENT_EVENT_TYPE,
     BUDGET_EVENT_TYPE,
     BUDGET_SUBJECT_ID,
+    SKILL_NUDGE_EVENT_TYPE,
+    SKILL_NUDGE_TURNS,
     ReActConfig,
     ReActResult,
 )
@@ -179,6 +181,10 @@ class ReActCoordinator:
     #: ``react.stuck_detected`` signal and the enumeration→exploit hand-over.
     consecutive_no_progress: int
     stuck_threshold: int
+    #: WP4: turns in a row that repeated the *same* tool with no new fact. At
+    #: ``SKILL_NUDGE_TURNS`` the next prompt offers the skill catalogue.
+    same_tool_no_progress: int
+    last_turn_tool: str | None
     #: Reason of the last deterministic phase change, copied into the
     #: ``orchestrator.plan`` event so the hand-over is auditable and never reads
     #: as a model inference.
@@ -404,6 +410,8 @@ class ReActCoordinator:
         self.completion_objections = []
         self.consecutive_no_progress = 0
         self.stuck_threshold = stuck_threshold()
+        self.same_tool_no_progress = 0
+        self.last_turn_tool = None
         self.plan_reason = None
         self.enumeration_escalated = False
         self.session_handed_over = False
@@ -972,6 +980,7 @@ class ReActCoordinator:
             tenant_id=self.tenant_id,
             no_progress=self.consecutive_no_progress,
             stuck_threshold=self.stuck_threshold,
+            same_tool_no_progress=self.same_tool_no_progress,
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)
@@ -1868,6 +1877,7 @@ class ReActCoordinator:
             return
         self.consecutive_no_progress = self.consecutive_no_progress + 1 if delta <= 0 else 0
         self.telemetry.note_no_progress(consecutive=self.consecutive_no_progress)
+        self._track_repeated_tool(delta)
         threshold = self.stuck_threshold
         if threshold <= 0 or self.consecutive_no_progress < threshold:
             return
@@ -1879,6 +1889,35 @@ class ReActCoordinator:
             phase=self.plan.current,
             subagent_id=self.subagent.id,
             last_tools=self._last_tools(),
+        )
+
+    def _track_repeated_tool(self, delta: int) -> None:
+        """Count turns that repeat one tool without adding a fact (WP4).
+
+        The stuck signal above counts *any* barren turn; this one is narrower:
+        a run that keeps asking the same capability is not exploring, it is
+        guessing at the same door, and the cheapest way out is the curated
+        recipe the skill catalogue already ships. When the streak reaches
+        ``SKILL_NUDGE_TURNS`` the next prompt says so and names the loader; the
+        signal never stops the run nor changes the phase.
+        """
+        # A turn that could not be decoded (a parse error) never sets
+        # ``self.action``, and its barren turn still has to be counted safely.
+        action = getattr(self, "action", None)
+        tool_id = str(getattr(action, "tool_id", "") or "")
+        if delta <= 0 and tool_id and tool_id == self.last_turn_tool:
+            self.same_tool_no_progress += 1
+        else:
+            self.same_tool_no_progress = 1 if (delta <= 0 and tool_id) else 0
+        self.last_turn_tool = tool_id or None
+        if self.same_tool_no_progress != SKILL_NUDGE_TURNS:
+            return
+        self.context.event(
+            SKILL_NUDGE_EVENT_TYPE,
+            iterations_stuck=self.same_tool_no_progress,
+            tool_id=tool_id,
+            phase=self.plan.current,
+            subagent_id=self.subagent.id,
         )
 
     def _last_tools(self, limit: int = 5) -> list[str]:

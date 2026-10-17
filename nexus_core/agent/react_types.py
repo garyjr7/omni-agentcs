@@ -30,6 +30,22 @@ STUCK_PROMPT_LINE = (
     "Detectado estancamiento: {iterations} turnos sin hechos nuevos. "
     "Cambia de estrategia o propón task_complete si ya no hay rutas viables."
 )
+#: WP4: turns in a row that repeat the *same* tool without a new fact before the
+#: loop offers the skill catalogue. Narrower than the stuck threshold on purpose:
+#: asking one capability three times is not exploring, it is guessing at the same
+#: door. Measured in the RootMe run, 21 calls between ``shell.exec`` and
+#: ``web.upload`` never uploaded the webshell and the run died at
+#: ``stuck_detected``; a recipe the model can load is the cheapest way out.
+SKILL_NUDGE_TURNS = 3
+#: Emitted once when the repeated-tool streak reaches :data:`SKILL_NUDGE_TURNS`.
+SKILL_NUDGE_EVENT_TYPE = "react.skill_nudge"
+#: Appended to the next prompt when the repeated-tool streak is reached. The
+#: wording is the product contract of WP4 (FIX 3): the model has to be told both
+#: that it is stuck and how to get unstuck.
+SKILL_NUDGE_PROMPT = (
+    "Estás atascado. Considera usar `nexus.skill.list()` y cargar una skill "
+    "que se adapte a tu problema (ej. web-upload-webshell)."
+)
 #: Output-token ceiling for one ReAct turn. Providers with a low tokens-per-
 #: minute budget count the *reserved* ``max_tokens`` against the request, so an
 #: oversized default (4096) makes every call fail even when the prompt is small

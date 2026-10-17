@@ -50,6 +50,10 @@ COMMON_TOOLS: frozenset[str] = frozenset(
         "nexus.system.status",
         "nexus.system.check_env",
         "nexus.orchestrator.playbook",
+        # WP4: the skill catalogue. Read-only local files, no target, so every
+        # profile (including the read-only ones) may consult and load a recipe.
+        "nexus.skill.list",
+        "nexus.skill.load",
     }
 )
 

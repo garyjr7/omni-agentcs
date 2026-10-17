@@ -1,7 +1,19 @@
 # Skills de OmniAgentCS
 
 Una *skill* es un procedimiento curado en `.agents/skills/<nombre>/SKILL.md`. El
-operador decide cuáles activar; nada se carga de forma implícita.
+operador puede activarlas (`/skills use`, `--skill`), y desde WP4 el agente
+también puede consultarlas y cargarlas por su cuenta con las tools de solo
+lectura `nexus.skill.list` y `nexus.skill.load`: el prompt lleva un índice de una
+línea por skill y, si el bucle detecta un atasco (tres turnos con la misma tool
+sin hechos nuevos), le sugiere cargar la que encaje. El cuerpo cargado sigue
+siendo **datos no confiables**, con su estado de firma y sus señales.
+
+## Skills incluidas
+
+| Skill | Para qué |
+| --- | --- |
+| `example` | Barrido de puertos y servicios (solo lectura). |
+| `web-upload-webshell` | Subir una webshell a un formulario, evadir el filtro de extensión y conseguir RCE (receta medida en RootMe). |
 
 ## Estados de confianza
 

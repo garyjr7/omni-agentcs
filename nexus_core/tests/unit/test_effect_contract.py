@@ -160,7 +160,8 @@ def test_active_catalog_matches_the_reviewed_expectation():
     assert active == EXPECTED_ACTIVE
     read_only = [entry["tool_id"] for entry in catalog["tools"]
                  if entry["effect"] == "read_only"]
-    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 27
+    # WP4 adds two read-only tools (nexus.skill.list/load): 72 - 43 active = 29.
+    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 29
 
 
 def test_the_mislabelled_tools_now_declare_their_real_effect():

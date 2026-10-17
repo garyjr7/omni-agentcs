@@ -77,11 +77,14 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # once more, by the measured growth of that data: 14,976 chars at 68 tools
     # (220,2 per tool) against 14,519 / 213,5 before. The total ceiling is also
     # the ticket's stop threshold (15,500): over it, ask before raising anything,
-    # and it is constraint data -never prose- what earns the room.
-    assert len(catalog) == 70
+    # and it is constraint data -never prose- what earns the room. WP4 adds the
+    # dynamic skill loader (``nexus.skill.list`` + ``nexus.skill.load``): +262
+    # chars for two capability lines, measured at 15,762 (218,9 per tool), so the
+    # total ceiling moves to 16,000 and the per-tool bound does *not*.
+    assert len(catalog) == 72
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 15500
+    assert len(text) < 16000
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -91,9 +94,11 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # that own a callback: what earns the room is the constraint the ticket asked
     # for -that ``lhost``/``lport`` are the operator's- not prose. WP1 adds the
     # execution substrate (``nexus.shell.exec`` + ``nexus.session.pty``): +306
-    # characters, measured at 23,006. The catalog ceilings (15,500 total, 225 per
-    # tool) were not moved and still hold.
-    assert len(_prompt(catalog)) < 23_300
+    # characters, measured at 23,006. WP4 adds the one-line skill index ("SKILLS
+    # DISPONIBLES"): +106 characters on a prompt without skills, measured at
+    # 23,374, plus the two catalog lines above. The ceiling moves to 23,700; the
+    # per-tool catalog bound (225) was not moved and still holds.
+    assert len(_prompt(catalog)) < 23_700
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):

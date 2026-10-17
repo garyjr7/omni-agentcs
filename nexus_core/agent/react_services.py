@@ -34,10 +34,26 @@ from .react_support import (
 from .observations import bounded_context
 from .injection import render_for_model
 from .prompts import render_system_prompt, describe_scope
-from .react_types import DEFAULT_STUCK_THRESHOLD, STUCK_PROMPT_LINE
+from .react_types import (
+    DEFAULT_STUCK_THRESHOLD,
+    SKILL_NUDGE_PROMPT,
+    SKILL_NUDGE_TURNS,
+    STUCK_PROMPT_LINE,
+)
 from .project_context import render_project_instruction
-from .skills import render_skills
+from .skills import discover_skills, render_skill_index, render_skills
 from .evidence import annotate_findings
+
+
+def _skills_secret() -> str | None:
+    """Shared HMAC secret used to verify signed skills (``None`` when absent).
+
+    Imported lazily: the kernel loader pulls the scope layer, and the ReAct
+    services must stay importable without a store.
+    """
+    from nexus_core.kernel.scope_loader import scope_signing_secret
+
+    return scope_signing_secret()
 
 
 class ActionDecoder:
@@ -234,6 +250,7 @@ class ContextBuilder:
         tenant_id: str,
         no_progress: int = 0,
         stuck_threshold: int = DEFAULT_STUCK_THRESHOLD,
+        same_tool_no_progress: int = 0,
     ) -> list[LLMMessage]:
         history_summary, plan, facts_text = (
             snapshot.history_summary,
@@ -252,6 +269,9 @@ class ContextBuilder:
             subagent_summary=subagent.describe(),
             project_summary=render_project_instruction(project_instruction),
             skills_summary=render_skills(active_skills),
+            # The catalogue is read on every turn, so a skill created during the
+            # engagement is loadable without restarting the run (WP4).
+            skill_index=render_skill_index(discover_skills(secret=_skills_secret())),
             playbook_summary=_playbook_guidance(store, tenant_id, engagement_id, run_id=snapshot.run_id),
         )
         # A stalled loop (no new verified fact for N turns) gets one explicit
@@ -262,6 +282,11 @@ class ContextBuilder:
                 f"{system_prompt}\n\n"
                 + STUCK_PROMPT_LINE.format(iterations=int(no_progress))
             )
+        # A model repeating one tool with no new fact is the concrete stall a
+        # skill can break (WP4): telling it *that* it is stuck is not enough, it
+        # needs the way out (the index) and the recipe behind it.
+        if same_tool_no_progress >= SKILL_NUDGE_TURNS:
+            system_prompt = f"{system_prompt}\n\n{SKILL_NUDGE_PROMPT}"
         messages: list[LLMMessage] = [LLMMessage(role="system", content=system_prompt)]
         # Bound the raw history: a shared work session accumulates every prior
         # run's messages, and paying for all of them on every turn can exceed a

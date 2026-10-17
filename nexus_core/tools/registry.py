@@ -319,6 +319,12 @@ def durable_tool_definitions(
     )
     from .handlers.jobs import jobs_definition, jobs_handler
     from .handlers.git_dump import git_dump_definition, git_dump_handler
+    from .handlers.skill import (
+        skill_list_definition,
+        skill_list_handler,
+        skill_load_definition,
+        skill_load_handler,
+    )
     catalog.update({
         "nexus.web.upload": (web_upload_definition(tenant_id), web_upload_handler),
         "nexus.post.shell_exec": (shell_exec_definition(tenant_id), shell_exec_handler),
@@ -329,6 +335,10 @@ def durable_tool_definitions(
         "nexus.session.pty": (session_pty_definition(tenant_id), session_pty_handler),
         "nexus.post.job": (jobs_definition(tenant_id), jobs_handler),
         "nexus.web.git_dump": (git_dump_definition(tenant_id), git_dump_handler),
+        # WP4: the loop's dynamic skill loader. Read-only and scope-free: the
+        # agent lists the catalogue and loads the recipe it needs when stuck.
+        "nexus.skill.list": (skill_list_definition(tenant_id), skill_list_handler),
+        "nexus.skill.load": (skill_load_definition(tenant_id), skill_load_handler),
     })
     from .execution_contract import with_execution_contract
 

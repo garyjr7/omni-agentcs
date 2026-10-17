@@ -67,6 +67,9 @@ INTERNAL_HANDLERS = frozenset(
         "playbook",
         "jobs",
         "shell_exec",
+        # WP4: the skill loader reads the project's own SKILL.md files in-process;
+        # there is no binary, transport or target behind it.
+        "skill",
     }
 )
 

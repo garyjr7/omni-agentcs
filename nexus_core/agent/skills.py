@@ -17,6 +17,7 @@ Nothing is activated implicitly: a skill must be named by the operator
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -165,6 +166,72 @@ def activate_skills(
     return usable, refused
 
 
+#: Characters of a description published in the one-line skill index.
+SKILL_DESCRIPTION_CHARS = 160
+
+
+def _one_line(text: str, limit: int = SKILL_DESCRIPTION_CHARS) -> str:
+    """Collapse ``text`` to one bounded line (an index entry is one line)."""
+    value = " ".join(str(text or "").strip().strip("\"'").split())
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
+def skill_description(content: str, *, limit: int = SKILL_DESCRIPTION_CHARS) -> str:
+    """One sentence about the skill: frontmatter ``description:`` or first prose.
+
+    The prompt carries one line per skill so the model knows *why* it would load
+    it. The author writes that sentence once, in the frontmatter; older skills
+    without one fall back to their first non-heading line, so a skill never
+    appears in the index with an empty description.
+    """
+    lines = str(content or "").splitlines()
+    body_start = 0
+    if lines and lines[0].strip() == "---":
+        for index in range(1, len(lines)):
+            if lines[index].strip() == "---":
+                body_start = index + 1
+                for meta in lines[1:index]:
+                    key, _, value = meta.partition(":")
+                    if key.strip().lower() == "description" and value.strip():
+                        return _one_line(value, limit)
+                break
+    for line in lines[body_start:]:
+        text = line.strip()
+        if not text or text.startswith(("#", "---", "<!--", "|", "-")):
+            continue
+        return _one_line(text, limit)
+    return "(sin descripción)"
+
+
+def render_skill_index(
+    skills: Mapping[str, Skill] | list[Skill] | tuple[Skill, ...],
+) -> str:
+    """Render ``name: one sentence`` per skill for the system prompt.
+
+    This is the *index*, not the body: it costs one line per skill on every turn
+    and is what lets the model decide to call ``nexus.skill.load``. It is wrapped
+    as untrusted data because every field comes from a file that may have arrived
+    with a cloned repository.
+    """
+    items = list(skills.values()) if isinstance(skills, Mapping) else list(skills)
+    lines: list[str] = []
+    for skill in sorted(items, key=lambda item: item.name):
+        if skill.trust == TRUST_SIGNED:
+            label = "firmada"
+        elif skill.trust == TRUST_INVALID:
+            label = "firma inválida: se rechaza al cargar"
+        else:
+            label = "sin firma"
+        if skill.signals:
+            label += " · señales de inyección: " + ", ".join(skill.signals)
+        lines.append(f"- {skill.name}: {skill_description(skill.content)} ({label})")
+    if not lines:
+        return "(sin skills disponibles)"
+    return wrap_untrusted_output("\n".join(lines))
+
+
 def render_skills(skills: list[Skill]) -> str:
     """Render the active skills as a prompt block (wrapped as untrusted text)."""
     if not skills:
@@ -193,7 +260,9 @@ __all__ = [
     "activate_skills",
     "discover_skills",
     "load_skill",
+    "render_skill_index",
     "render_skills",
+    "skill_description",
     "sign_skill",
     "skills_root",
     "verify_skill_signature",
