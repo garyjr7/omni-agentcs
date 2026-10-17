@@ -22,7 +22,8 @@ from nexus_core.kernel.runtime import ExecutionContext
 from nexus_core.llm.abstraction import LLMProvider, LLMResponse
 from nexus_core.scope import EngagementScope, EngagementStore
 
-pytestmark = pytest.mark.unit
+#: The marks are declared at the end of the module, once, where the scope mode
+#: they belong to is documented.
 
 TENANT = "system"
 
@@ -89,9 +90,17 @@ def harness(tmp_path):
 # ------------------------------------------------------------- resolution rules
 
 
-def test_budget_default_unlimited(monkeypatch):
+def test_budget_default_is_the_wp2_ceiling(monkeypatch):
+    """WP2: an unconfigured run is bounded by 250k, not unlimited."""
     monkeypatch.delenv("NEXUS_RUN_BUDGET_TOKENS", raising=False)
-    assert _budget_tokens({}, None) == 0
+    assert _budget_tokens({}, None) == 250_000
+
+
+def test_budget_explicit_zero_is_still_unlimited(monkeypatch):
+    """The documented escape hatch: an explicit 0 disables the ceiling."""
+    monkeypatch.delenv("NEXUS_RUN_BUDGET_TOKENS", raising=False)
+    assert _budget_tokens({}, 0) == 0
+    assert _budget_tokens({"budget_tokens": 0}, None) == 0
 
 
 def test_budget_reads_environment(monkeypatch):
@@ -269,7 +278,4 @@ def _loop_config(**kwargs):
 
 # This module's unsigned scopes exercise targeting/session behavior. Authentication
 # is covered separately in test_scope_governed_mode with the governed default.
-pytestmark = globals().get("pytestmark", [])
-if not isinstance(pytestmark, list):
-    pytestmark = [pytestmark]
-pytestmark.append(pytest.mark.usefixtures("lab_scope"))
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("lab_scope")]

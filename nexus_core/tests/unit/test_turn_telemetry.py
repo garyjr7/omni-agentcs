@@ -424,3 +424,9 @@ async def test_loop_records_unknown_tool_as_input_friction(tmp_path: Path) -> No
 
     assert FrictionFlag.INPUT_REJECTED.value in result.turns[0]["friction"]
     assert result.turns[0]["tool_id"] == "nexus.does.not_exist"
+
+
+@pytest.fixture(autouse=True)
+def _legacy_phase_loop(monkeypatch):
+    """WP2: these tests pin the phase-gated loop, now behind the legacy flag."""
+    monkeypatch.setenv("NEXUS_LEGACY_PROFILES", "1")

@@ -139,6 +139,26 @@ DEFAULT_MAX_PARALLEL = 4
 #: restrictive read-only profile, so an unrecognised phase fails *closed*.
 DEFAULT_SUBAGENT_ID = "recon"
 
+#: WP2 (Loop v2): the single default profile. It is deliberately **not** part of
+#: ``SUBAGENTS``: the legacy profiles stay intact for ``--subagent`` pins, the
+#: TUI and the regression suite behind ``NEXUS_LEGACY_PROFILES=1``.
+OMNI_SUBAGENT_ID = "omni"
+
+#: Operator escape hatch to the old phase-gated loop. Truthy values enable it.
+LEGACY_PROFILES_ENV = "NEXUS_LEGACY_PROFILES"
+
+
+def legacy_profiles() -> bool:
+    """Whether the phase-gated loop (one tool subset per phase) is requested.
+
+    WP2 declares the phase model a *hint*. The flag exists so a regression can
+    still reproduce the old behaviour exactly, with the same tool intersections
+    and the same per-profile budgets; it is read per call, so a process can flip
+    it only through its own environment.
+    """
+    raw = os.getenv(LEGACY_PROFILES_ENV, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
 #: Tools of the web-enumeration subset. ``web`` (the refinement) is exactly
 #: these; ``services`` (the enumeration entry profile) adds the non-web ones on
 #: top, so enumerating a target that exposes both HTTP and, say, FTP never needs
@@ -189,6 +209,10 @@ class SubAgentDefinition:
     #: Optional, profile-specific line for the prompt (V1-44): the correction a
     #: measured run needed, stated where the model reads the active profile.
     hint: str | None = None
+    #: WP2: ``True`` for the single ``omni`` profile, which may invoke every tool
+    #: in the durable catalog. It is not a permission grant - the gateway keeps
+    #: governing every call - it only removes the *subset* intersection.
+    unrestricted: bool = False
 
     @property
     def parallel_safe(self) -> bool:
@@ -197,7 +221,7 @@ class SubAgentDefinition:
 
     def allows(self, tool_id: str) -> bool:
         """Whether the tool is in this profile's own subset (not external)."""
-        return tool_id in self.tools
+        return self.unrestricted or tool_id in self.tools
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -212,23 +236,40 @@ class SubAgentDefinition:
             "read_only": self.read_only,
             "parallel_safe": self.parallel_safe,
             "hint": self.hint,
+            "unrestricted": self.unrestricted,
         }
 
     def describe(self) -> str:
         """Compact, prompt-ready frame for the system message."""
         mode = "solo lectura (paralelizable)" if self.parallel_safe else "activo (secuencial)"
         lines = [
-            f"SUBAGENTE ACTIVO: {self.id} ({self.label})",
+            (
+                f"PERFIL ACTIVO: {self.id} ({self.label})"
+                if self.unrestricted
+                else f"SUBAGENTE ACTIVO: {self.id} ({self.label})"
+            ),
             f"foco: {self.focus}",
             f"modo: {mode}",
-            f"presupuesto: {self.token_budget} tokens · {self.max_iterations} iteraciones",
         ]
+        if self.unrestricted:
+            lines.extend(
+                [
+                    "catálogo: TODAS las tools del catálogo están disponibles en todas las fases.",
+                    "límites: presupuesto y presupuesto de iteraciones son *soft* (telemetría); "
+                    "solo el presupuesto global del run puede detenerlo.",
+                ]
+            )
+        else:
+            lines.append(
+                f"presupuesto: {self.token_budget} tokens · {self.max_iterations} iteraciones"
+            )
         if self.hint:
             lines.append(f"pista: {self.hint}")
-        lines.append(
-            "solo puedes invocar tools de tu subconjunto; cualquier otra será denegada "
-            "y auditada."
-        )
+        if not self.unrestricted:
+            lines.append(
+                "solo puedes invocar tools de tu subconjunto; cualquier otra será denegada "
+                "y auditada."
+            )
         return "\n".join(lines)
 
 
@@ -477,6 +518,25 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
     ),
 )
 
+#: WP2: the default profile of the loop. One profile, every tool. The phase
+#: labels remain as prompt hints (the plan block), never as a tool intersection.
+#: Its budgets are soft: they only produce telemetry and can never stop the run.
+OMNI_PROFILE = SubAgentDefinition(
+    id=OMNI_SUBAGENT_ID,
+    label="Agente único",
+    phase="",
+    focus="resolver el engagement de principio a fin con todo el catálogo disponible",
+    tools=frozenset(),
+    token_budget=250_000,
+    max_iterations=10_000,
+    read_only=False,
+    unrestricted=True,
+    hint=(
+        "La fase del plan es una pista, no una puerta: si la evidencia pide otra "
+        "herramienta, úsala aunque la fase diga otra cosa."
+    ),
+)
+
 SUBAGENTS_BY_ID: Mapping[str, SubAgentDefinition] = {item.id: item for item in SUBAGENTS}
 SUBAGENT_IDS: tuple[str, ...] = tuple(item.id for item in SUBAGENTS)
 
@@ -677,6 +737,24 @@ def filter_catalog(
     }
 
 
+def select_run_profile(plan: Any, *, override: str | None = None) -> SubAgentDefinition:
+    """Pick the profile the *loop* runs with (WP2).
+
+    New default: one ``omni`` profile with every tool, so the phase can never
+    remove the tool the engagement needs. ``NEXUS_LEGACY_PROFILES=1`` restores
+    the old phase-driven selection, and an explicit operator pin still wins in
+    both modes (it is the debug/escape hatch, not the product default).
+    """
+    if override:
+        resolved = resolve_subagent_id(override)
+        if resolved is None:
+            raise ValueError(f"unknown subagent: {override}")
+        return apply_budget_overrides(SUBAGENTS_BY_ID[resolved])
+    if legacy_profiles():
+        return select_for_plan(plan)
+    return OMNI_PROFILE
+
+
 def validate_registry(catalog: Mapping[str, Any] | None = None) -> list[str]:
     """Return the problems that would make the registry unsafe.
 
@@ -691,6 +769,10 @@ def validate_registry(catalog: Mapping[str, Any] | None = None) -> list[str]:
         if profile.id in seen:
             problems.append(f"duplicate subagent id: {profile.id}")
         seen.add(profile.id)
+        if profile.unrestricted:
+            # The single omni profile is not a subset; its authority is the
+            # gateway's, not a list. Nothing to validate against the catalog.
+            continue
         if profile.read_only:
             # The universal execution substrate is profile-independent and is
             # never counted as a leak (WP1); every other active tool is.
@@ -769,6 +851,9 @@ __all__ = [
     "DEFAULT_MAX_PARALLEL",
     "DEFAULT_SUBAGENT_ID",
     "EXTERNAL_TOOL_PREFIXES",
+    "LEGACY_PROFILES_ENV",
+    "OMNI_PROFILE",
+    "OMNI_SUBAGENT_ID",
     "PHASE_GRACE_ITERATIONS",
     "PHASE_SUBAGENT",
     "SUBAGENT_ALIASES",
@@ -784,9 +869,11 @@ __all__ = [
     "filter_catalog",
     "gather_readonly",
     "is_external",
+    "legacy_profiles",
     "permits",
     "resolve_subagent_id",
     "select_for_plan",
+    "select_run_profile",
     "select_subagent",
     "validate_registry",
     "with_phase_grace",

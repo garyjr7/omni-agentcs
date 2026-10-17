@@ -310,6 +310,7 @@ class CompletionVerifier:
         tenant_id: str,
         hooks: HookRunner,
         objective: str,
+        require_plan_phase: bool = True,
     ) -> CompletionAssessment:
         from nexus_core.kernel.blackboard import Blackboard, is_verified_fact
 
@@ -319,6 +320,7 @@ class CompletionVerifier:
             enforce_completion_gates=config.enforce_completion_gates,
             evidence_stats=stats,
             engagement_id=engagement_id,
+            require_plan_phase=require_plan_phase,
         )
         facts = (
             [

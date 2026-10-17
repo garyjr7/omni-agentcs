@@ -77,7 +77,9 @@ STATUS_PREMATURE_COMPLETION = "premature_completion"
 STATUS_CANCELLED = "cancelled"
 STATUS_SCOPE_VIOLATION = "scope_violation_aborted"
 STATUS_BUDGET_EXCEEDED = "budget_exceeded"
-#: A subagent exhausted its own iteration/token allowance.
+#: A subagent exhausted its own iteration/token allowance. In the WP2 default
+#: loop this status is unreachable (the limits are soft); it stays for the
+#: ``NEXUS_LEGACY_PROFILES=1`` path and its regression tests.
 STATUS_SUBAGENT_BUDGET = "subagent_budget_exceeded"
 SUBAGENT_EVENT_TYPE = "orchestrator.subagent"
 #: Emitted once when the planner sees the objective *completed* on the board:
@@ -89,6 +91,17 @@ BUDGET_EVENT_TYPE = "react.budget_exceeded"
 #: already complete: the loop spends the turn closing instead of dying without a
 #: ``task_complete`` (V1-38). Payload carries ``budget_exempt_if_objective_complete``.
 BUDGET_EXEMPT_EVENT_TYPE = "react.budget_exempt"
+#: WP2: emitted once when the board proves objective completion. It grants the
+#: run ``OBJECTIVE_GRACE_TURNS`` extra turns (and, if the global budget is hit,
+#: the same number of budget-grace turns) so the model can close with
+#: ``task_complete`` instead of dying with the work done.
+OBJECTIVE_GRACE_EVENT_TYPE = "react.objective_grace"
+BUDGET_GRACE_EVENT_TYPE = "react.budget_grace"
+OBJECTIVE_GRACE_TURNS = 5
+#: WP2: a per-subagent budget was exceeded but the loop kept going, because the
+#: per-profile numbers are soft limits (telemetry) and only the global run
+#: budget may stop a run.
+SUBAGENT_SOFT_LIMIT_EVENT_TYPE = "react.subagent_soft_limit"
 #: Subject under which the loop books its own token spend.
 BUDGET_SUBJECT_TYPE = "model_route"
 BUDGET_SUBJECT_ID = "react"

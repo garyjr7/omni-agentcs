@@ -978,11 +978,17 @@ def objective_completion(
     facts: Iterable[Any] | None = None,
     *,
     subagent_id: str | None = None,
+    legacy: bool | None = None,
 ) -> ObjectiveCompletion:
-    """Rule ``si X entonces Y`` (no inference): the board already holds a verified
-    top privilege **and** verified loot, and the turn is being run by a profile
-    that owns the tail of the kill chain. Then the engagement's objective is met
-    and the model is *suggested* to close.
+    """Rule ``si X entonces Y`` (no inference): the board holds a verified top
+    privilege **and** verified loot, so the objective is met.
+
+    WP2: the verdict reads the **board only**. It used to also require the turn
+    to be run by a profile that owns the tail of the chain, which is what let a
+    planner hand-off turn a root+loot board into ``complete=False`` and kill the
+    run (rerun 13). ``subagent_id`` is kept for the legacy path:
+    ``NEXUS_LEGACY_PROFILES=1`` (or an explicit ``legacy=True``) restores the
+    profile gate so the old regression suite keeps its meaning.
 
     A lead never counts (``is_verified_fact``): an agent-declared ``privilege`` or
     ``loot`` is a hypothesis. Anything outside the shape returns
@@ -990,7 +996,11 @@ def objective_completion(
     """
     from nexus_core.kernel.blackboard import is_verified_fact
 
-    if str(subagent_id or "") not in OBJECTIVE_COMPLETE_SUBAGENTS:
+    if legacy is None:
+        from .subagents import legacy_profiles
+
+        legacy = legacy_profiles()
+    if legacy and str(subagent_id or "") not in OBJECTIVE_COMPLETE_SUBAGENTS:
         return ObjectiveCompletion()
     privilege_ref = ""
     loot_refs: list[str] = []

@@ -27,7 +27,8 @@ from nexus_core.kernel.runtime import ExecutionContext
 from nexus_core.llm.abstraction import LLMProvider, LLMResponse
 from nexus_core.scope import EngagementScope, EngagementStore
 
-pytestmark = pytest.mark.unit
+#: The marks are declared at the end of the module, once, where the scope mode
+#: they belong to is documented.
 
 TENANT = "system"
 ENGAGEMENT = "eng-enum"
@@ -310,7 +311,10 @@ def test_repl_subagent_command_sets_and_clears_the_pin():
 
 # This module's unsigned scopes exercise targeting/session behavior. Authentication
 # is covered separately in test_scope_governed_mode with the governed default.
-pytestmark = globals().get("pytestmark", [])
-if not isinstance(pytestmark, list):
-    pytestmark = [pytestmark]
-pytestmark.append(pytest.mark.usefixtures("lab_scope"))
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("lab_scope")]
+
+
+@pytest.fixture(autouse=True)
+def _legacy_phase_loop(monkeypatch):
+    """WP2: these tests pin the phase-gated loop, now behind the legacy flag."""
+    monkeypatch.setenv("NEXUS_LEGACY_PROFILES", "1")

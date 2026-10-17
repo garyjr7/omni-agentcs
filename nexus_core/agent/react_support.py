@@ -320,7 +320,10 @@ def _citation_objections(evidence_stats: Mapping[str, Any] | None) -> list[str]:
     for item in rejected[:CITATION_DETAIL_LIMIT]:
         if not isinstance(item, Mapping):
             continue
-        cited = item.get("cited") if isinstance(item.get("cited"), Mapping) else {}
+        cited: Mapping[str, Any] = {}
+        raw_cited = item.get("cited")
+        if isinstance(raw_cited, Mapping):
+            cited = raw_cited
         ref = str(item.get("finding_ref") or "finding")
         invocation = str(cited.get("invocation_id") or "(sin invocation_id)")
         fact_type = str(cited.get("fact_type") or "(sin fact_type)")
@@ -328,9 +331,9 @@ def _citation_objections(evidence_stats: Mapping[str, Any] | None) -> list[str]:
         reason = str(item.get("reason") or "stale_evidence")
         line = (
             f"Hallazgo '{ref}' ({reason}) citó invocation_id={invocation} "
-            f"fact_type={fact_type} target={target}; en el corpus de este run no hay "
-            "ninguna observación que coincida. Verifica tu cita con query_facts antes "
-            "de reintentar."
+            f"fact_type={fact_type} target={target}, pero no coincide con ninguna "
+            "observación de este run. Usa query_facts para obtener el ID correcto "
+            "antes de reintentar."
         )
         if not item.get("found_in_corpus") and cited.get("invocation_id"):
             line += f" Ese invocation_id ({invocation}) no aparece en ninguna observación de este run."
@@ -352,12 +355,41 @@ def _citation_objections(evidence_stats: Mapping[str, Any] | None) -> list[str]:
     return lines
 
 
+def missing_evidence(evidence_stats: Mapping[str, Any] | None) -> list[dict[str, str]]:
+    """Machine-readable detail of every refused finding (WP2, Fix 3).
+
+    ``premature_completion`` used to expose only counters, so the next turn could
+    not know *which* citation to repair. Each entry names the finding, why it was
+    refused and the observation reference that would satisfy it (the closest
+    verified observation of this run). Empty when nothing was refused.
+    """
+    entries: list[dict[str, str]] = []
+    for item in (evidence_stats or {}).get("rejected_findings") or []:
+        if not isinstance(item, Mapping):
+            continue
+        match = item.get("closest_match")
+        expected = (
+            str(match.get("invocation_id") or "")
+            if isinstance(match, Mapping)
+            else ""
+        )
+        entries.append(
+            {
+                "finding_id": str(item.get("finding_ref") or ""),
+                "reason": str(item.get("reason") or "stale_evidence"),
+                "observation_ref_expected": expected,
+            }
+        )
+    return entries
+
+
 def _completion_objections(
     plan: Any,
     *,
     enforce_completion_gates: bool,
     evidence_stats: dict[str, Any] | None = None,
     engagement_id: str | None = None,
+    require_plan_phase: bool = True,
 ) -> list[str]:
     """Why this ``task_complete`` must not be accepted yet (B8.2.2/B8.2.3).
 
@@ -373,9 +405,13 @@ def _completion_objections(
 
     V1-48 adds *detail* to the second check and nothing else: the gate itself is
     untouched (``fabricated_evidence`` still refuses the completion).
+
+    WP2 adds ``require_plan_phase``: the default loop passes ``False`` so the
+    phase is a hint and never refuses a closure the board supports; the legacy
+    path keeps ``True`` for the old regression suite.
     """
     objections: list[str] = []
-    if enforce_completion_gates and engagement_id and plan is not None:
+    if require_plan_phase and enforce_completion_gates and engagement_id and plan is not None:
         current = getattr(plan, "current", None)
         if current != FINAL_PHASE_ID:
             from .planner import STATUS_PENDING
@@ -537,14 +573,25 @@ def _observation_payload(invocation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: WP2 global ceiling of one run. It is the only budget that can stop the loop;
+#: the per-subagent numbers are soft telemetry. 250k is the plan's default.
+DEFAULT_RUN_BUDGET_TOKENS = 250_000
+
+
 def _budget_tokens(payload: dict[str, Any], explicit: int | None) -> int:
-    """Resolve the per-run token budget from the payload, env or explicit arg."""
+    """Resolve the per-run token budget from the payload, env or explicit arg.
+
+    An explicit ``0`` (payload or argument) keeps its documented meaning:
+    unlimited. Only an *absent* configuration falls back to the WP2 default.
+    """
     if explicit is not None:
         raw: Any = explicit
     elif payload.get("budget_tokens") not in (None, ""):
         raw = payload.get("budget_tokens")
     else:
-        raw = os.getenv("NEXUS_RUN_BUDGET_TOKENS", "0")
+        raw = os.getenv("NEXUS_RUN_BUDGET_TOKENS")
+        if raw is None or str(raw).strip() == "":
+            raw = DEFAULT_RUN_BUDGET_TOKENS
     try:
         return max(0, int(raw))
     except (TypeError, ValueError):

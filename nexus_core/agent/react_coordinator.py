@@ -17,7 +17,13 @@ from nexus_core.kernel.errors import ApprovalRequired, ProviderFailure
 from .preflight import unavailable_tools_from_env
 from .project_context import load_project_instruction
 from .skills import activate_skills
-from .subagents import filter_catalog, permits, select_for_plan, with_phase_grace
+from .subagents import (
+    filter_catalog,
+    legacy_profiles,
+    permits,
+    select_run_profile,
+    with_phase_grace,
+)
 from .parser import (
     ACTION_TASK_COMPLETE,
     ReActParseError,
@@ -25,7 +31,11 @@ from .parser import (
 
 from .react_types import (
     BUDGET_EXEMPT_EVENT_TYPE,
+    BUDGET_GRACE_EVENT_TYPE,
     DEFAULT_AGENT_ID,
+    OBJECTIVE_GRACE_EVENT_TYPE,
+    OBJECTIVE_GRACE_TURNS,
+    SUBAGENT_SOFT_LIMIT_EVENT_TYPE,
     OBJECTIVE_COMPLETE_EVENT_TYPE,
     MAX_CONSECUTIVE_TOOL_FAILURES,
     MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE,
@@ -62,6 +72,7 @@ from .react_support import (
     _keep_going_after_failures,
     _run_messages,
     _premature_completion_message,
+    missing_evidence,
     _persisted_actions,
     _last_persisted_iteration,
     _action_entry,
@@ -382,6 +393,12 @@ class ReActCoordinator:
         #: instantly. A run resumed from history starts untracked for the phases it
         #: already ran, which at worst costs one extra turn.
         self.phase_turns: dict[str, int] = {}
+        #: WP2: the only hard ceiling of a run (``NEXUS_RUN_BUDGET_TOKENS``) and
+        #: the 5-turn grace the board grants once the objective is complete.
+        self.iteration_limit = self.config.max_iterations
+        self.grace_turns_remaining: int | None = None
+        self.grace_granted = False
+        self.soft_limits_reported: set[str] = set()
         self.evidence_stats = None
         self.premature_rejections = 0
         self.completion_objections = []
@@ -419,20 +436,84 @@ class ReActCoordinator:
             **extra,
         )
 
+    def _grant_objective_grace(self, completion: Any = None) -> None:
+        """Extend the run by ``OBJECTIVE_GRACE_TURNS`` once the board is complete.
+
+        WP2: a run with root + loot verified does not die of bookkeeping. The
+        grace is granted once, extends the iteration ceiling the model can use to
+        emit ``task_complete``, and is measured separately from the legacy
+        per-profile waiver so telemetry can tell them apart.
+        """
+        if getattr(self, "grace_granted", False) or legacy_profiles():
+            return
+        self.grace_granted = True
+        self.grace_turns_remaining = OBJECTIVE_GRACE_TURNS
+        limit = getattr(self, "iteration_limit", None)
+        if limit is None:
+            limit = getattr(getattr(self, "config", None), "max_iterations", 0)
+        self.iteration_limit = max(int(limit or 0), self.iteration + OBJECTIVE_GRACE_TURNS)
+        payload: dict[str, Any] = {
+            "grace_turns": OBJECTIVE_GRACE_TURNS,
+            "iteration_limit": self.iteration_limit,
+            "iteration": self.iteration,
+            "phase": str(getattr(self.plan, "current", "") or ""),
+        }
+        if completion is not None and hasattr(completion, "to_payload"):
+            payload.update(completion.to_payload())
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            OBJECTIVE_GRACE_EVENT_TYPE,
+            payload,
+        )
+
     def _guard(self) -> Transition:
         used = _budget_used(self.store, self.tenant_id, self.run_id) if self.budget else 0
         if self.budget and used >= self.budget:
-            self.status = STATUS_BUDGET_EXCEEDED
-            self.final_summary = (
-                f"token budget exhausted: {used} >= {self.budget} without task_complete"
-            )
-            self.store.append_run_event(
-                self.tenant_id,
-                self.run_id,
-                BUDGET_EVENT_TYPE,
-                {"used": used, "budget": self.budget, "iteration": self.iteration},
-            )
-            return Transition.STOP
+            grace = False
+            if not legacy_profiles():
+                # The board is re-read here on purpose: the fact that completes
+                # the objective may have landed in the turn that just spent the
+                # last token, and the next guard used to kill the run before the
+                # context turn could even see it (the rerun-13 shape).
+                if not self.objective_complete:
+                    completion = objective_completion(
+                        self._blackboard_facts(), subagent_id=self.last_subagent_id
+                    )
+                    if completion.complete:
+                        self.objective_complete = True
+                        self._grant_objective_grace(completion)
+                if self.objective_complete:
+                    if not self.grace_granted:
+                        self._grant_objective_grace()
+                    remaining = int(self.grace_turns_remaining or 0)
+                    if remaining > 0:
+                        self.grace_turns_remaining = remaining - 1
+                        grace = True
+                        self.store.append_run_event(
+                            self.tenant_id,
+                            self.run_id,
+                            BUDGET_GRACE_EVENT_TYPE,
+                            {
+                                "used": used,
+                                "budget": self.budget,
+                                "grace_turns_remaining": self.grace_turns_remaining,
+                                "iteration": self.iteration,
+                            },
+                        )
+                        self.telemetry.flag(FrictionFlag.BUDGET_EXEMPT)
+            if not grace:
+                self.status = STATUS_BUDGET_EXCEEDED
+                self.final_summary = (
+                    f"token budget exhausted: {used} >= {self.budget} without task_complete"
+                )
+                self.store.append_run_event(
+                    self.tenant_id,
+                    self.run_id,
+                    BUDGET_EVENT_TYPE,
+                    {"used": used, "budget": self.budget, "iteration": self.iteration},
+                )
+                return Transition.STOP
         if self.cancel_event is not None and self.cancel_event.is_set():
             self.status = STATUS_CANCELLED
             self.store.append_run_event(
@@ -468,9 +549,13 @@ class ReActCoordinator:
         # rebuilt from the blackboard on every turn, so a reason from an earlier
         # turn must never ride along on a later, organic phase change.
         self.plan_reason = None
-        self._apply_enumeration_exhaustion()
-        self._apply_credential_handover()
-        self._apply_session_handover()
+        # WP2: the hand-overs existed because a phase locked the tool subset. The
+        # default loop has one profile with every tool, so they are dead code
+        # there; they stay exactly as measured behind the legacy flag.
+        if legacy_profiles():
+            self._apply_enumeration_exhaustion()
+            self._apply_credential_handover()
+            self._apply_session_handover()
         self._refresh_objective_complete()
         self.last_plan = self.plan
         return Transition.READY
@@ -573,6 +658,9 @@ class ReActCoordinator:
         is authorized and nothing is closed by this - the phases were closed by
         their own evidence, and ``task_complete`` stays the model's decision.
         """
+        # WP2: board only. The profile that happens to hold the turn is not an
+        # input of the verdict anymore (rerun 13 died with root+loot verified and
+        # the reporter profile active).
         completion = objective_completion(
             self._blackboard_facts(), subagent_id=self.last_subagent_id
         )
@@ -580,6 +668,7 @@ class ReActCoordinator:
         if not completion.complete:
             return
         self.plan = apply_objective_completion(self.plan, completion)
+        self._grant_objective_grace(completion)
         if self.objective_complete_emitted:
             return
         self.store.append_run_event(
@@ -674,8 +763,39 @@ class ReActCoordinator:
         except Exception:  # noqa: BLE001 - a missing board must not abort a run
             return False
 
+    def _note_soft_limit(self, kind: str, detail: dict[str, Any]) -> None:
+        """Record a per-profile limit once; it never stops the run (WP2).
+
+        The per-subagent numbers survived as *telemetry*: they tell the operator
+        when a phase spent its calibrated allowance, but only the global run
+        budget (and the model's own completion) can end the engagement.
+        """
+        key = f"{self.subagent.id}:{kind}"
+        if key in self.soft_limits_reported:
+            return
+        self.soft_limits_reported.add(key)
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            SUBAGENT_SOFT_LIMIT_EVENT_TYPE,
+            {
+                "subagent_id": self.subagent.id,
+                "limit": kind,
+                "soft": True,
+                "iteration": self.iteration,
+                **detail,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="subagent_soft_limit",
+            decision="allow",
+            limit=kind,
+            **detail,
+        )
+
     async def _select_profile(self) -> Transition:
-        selected = select_for_plan(self.plan, override=self.subagent_override)
+        selected = select_run_profile(self.plan, override=self.subagent_override)
         if self.plan.current != self.last_phase:
             self.phase_started = time.monotonic()
         changed = selected.id != self.last_subagent_id
@@ -699,7 +819,17 @@ class ReActCoordinator:
                     "phase": self.plan.current,
                     "read_only": self.subagent.read_only,
                     "token_budget": self.subagent.token_budget,
-                    "tools": sorted(self.subagent.tools),
+                    "tools": (
+                        sorted(self.catalog)
+                        if self.subagent.unrestricted
+                        else sorted(self.subagent.tools)
+                    ),
+                    "tools_count": (
+                        len(self.catalog)
+                        if self.subagent.unrestricted
+                        else len(self.subagent.tools)
+                    ),
+                    "unrestricted": self.subagent.unrestricted,
                     "iteration": self.iteration,
                 },
             )
@@ -720,10 +850,17 @@ class ReActCoordinator:
                 audit_step=self.audit_step,
             )
             self.last_subagent_id = selected.id
+        legacy = legacy_profiles()
         if self.subagent_iterations > self.subagent.max_iterations:
-            self.status = STATUS_SUBAGENT_BUDGET
-            self.final_summary = f"subagent '{self.subagent.id}' exceeded its iteration budget ({self.subagent.max_iterations})"
-            return Transition.STOP
+            if legacy:
+                self.status = STATUS_SUBAGENT_BUDGET
+                self.final_summary = f"subagent '{self.subagent.id}' exceeded its iteration budget ({self.subagent.max_iterations})"
+                return Transition.STOP
+            self._note_soft_limit(
+                "iterations",
+                {"iterations": self.subagent_iterations,
+                 "max_iterations": self.subagent.max_iterations},
+            )
         if self.subagent.token_budget:
             spent = _budget_used(
                 self.store, self.tenant_id, self.run_id, subagent_budget_subject(self.subagent.id)
@@ -736,7 +873,12 @@ class ReActCoordinator:
                 # 60 000 tokens spent by ``privesc`` *after* root.txt was on the
                 # board, and the run ended without ``task_complete``). The ceiling
                 # is waived, audited and counted as friction - never silently.
-                if self.objective_complete:
+                if not legacy:
+                    self._note_soft_limit(
+                        "tokens",
+                        {"spent": spent, "token_budget": self.subagent.token_budget},
+                    )
+                elif self.objective_complete:
                     self.budget_exempt = True
                     self.store.append_run_event(
                         self.tenant_id,
@@ -992,6 +1134,9 @@ class ReActCoordinator:
             tenant_id=self.tenant_id,
             hooks=self.hooks,
             objective=self.objective,
+            # WP2: in the default loop the phase is a hint; only the legacy path
+            # keeps refusing a task_complete because the plan is not on reporting.
+            require_plan_phase=legacy_profiles(),
         )
         annotated, self.evidence_stats = (assessment.findings, assessment.evidence_stats)
         self.completion_objections = assessment.objections
@@ -1021,6 +1166,9 @@ class ReActCoordinator:
                     "attempt": self.premature_rejections,
                     "objections": list(self.completion_objections),
                     "evidence": self.evidence_stats,
+                    # WP2 (Fix 3): the exact finding and the reference that would
+                    # satisfy it, not just a count of stale citations.
+                    "missing_evidence": missing_evidence(self.evidence_stats),
                     "subagent_id": self.active_subagent_id,
                 },
             )
@@ -1802,7 +1950,7 @@ class ReActCoordinator:
 
     async def run(self) -> ReActResult:
         await self._initialize()
-        while self.iteration < self.config.max_iterations:
+        while self.iteration < self.iteration_limit:
             if self._guard() is Transition.STOP:
                 break
             await self._build_context()

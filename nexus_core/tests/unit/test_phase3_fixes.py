@@ -731,3 +731,9 @@ def test_the_approval_flow_is_untouched(tmp_path: Path) -> None:
     with pytest.raises(PermissionError):
         _invoke(gateway, context, same, approval_id=approval_id)
     assert calls == [same]
+
+
+@pytest.fixture(autouse=True)
+def _legacy_phase_loop(monkeypatch):
+    """WP2: these tests pin the phase-gated loop, now behind the legacy flag."""
+    monkeypatch.setenv("NEXUS_LEGACY_PROFILES", "1")
