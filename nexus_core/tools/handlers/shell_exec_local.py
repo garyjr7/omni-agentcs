@@ -19,6 +19,11 @@ What it guarantees (and what it does not)
 * **The full output is an artifact** (sha256 included); the model only reads a
   bounded summary of ``<= 60`` lines plus the artifact reference. This is the
   token-budget contract of the plan: observations never paste 10 MB back.
+* **A detached job returns at once** (V1-51): a command that asks for ``&`` or
+  starts with ``nohup`` is launched with ``setsid``, its stdio redirected to a
+  workspace log, and the observation carries the PID and the log path instead of
+  the (never arriving) output. The OCI sandbox refuses it explicitly: an
+  ephemeral container cannot keep the job alive.
 * **A lexical deny list** (``NEXUS_SHELL_DENY`` can extend it) blocks the
   obviously destructive local commands. It is a guard-rail, not a security
   boundary: an arbitrary argv cannot be validated against the engagement
@@ -31,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -60,6 +66,119 @@ SHELL_MAX_TIMEOUT_SECONDS = 900
 
 #: The model never receives more than this many lines of an observation.
 SHELL_SUMMARY_LINES = 60
+
+#: Workspace directory that holds the logs of detached commands. The model can
+#: read them with ``cat``/``tail`` (they are relative to its workspace).
+BACKGROUND_LOG_DIRNAME = ".shell-background"
+
+#: How long the *launch* of a detached command may take. Backgrounding exists so
+#: the agent does not wait for the job; the launch itself still has to answer,
+#: and a wrapper that cannot start is a determinate failure instead of a timeout.
+BACKGROUND_LAUNCH_TIMEOUT_SECONDS = 10
+
+#: A ``nohup`` in command position (not the word inside a quoted argument).
+_NO_HUP_RE = re.compile(
+    r"(?:^|[;&|(\n])\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*nohup\s"
+)
+
+#: The PID the launch wrapper echoes back (the only output it is read for).
+_BACKGROUND_PID_RE = re.compile(r"NEXUS_BG_PID=(\d+)")
+
+
+def shell_code(command: str) -> str:
+    """*command* with the quoted regions and escapes blanked out.
+
+    Operator detection must not be fooled by ``echo 'a & b'`` or by a flag with
+    ``&`` inside: the grammar only exists outside quotes, so the scan runs over
+    this projection while the original text is what gets executed.
+    """
+    out: list[str] = []
+    quote = ""
+    escaped = False
+    for char in str(command or ""):
+        if escaped:
+            escaped = False
+            out.append(" ")
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            out.append(" ")
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            out.append(" ")
+            continue
+        if char in "\"'":
+            quote = char
+            out.append(" ")
+            continue
+        out.append(char)
+    return "".join(out)
+
+
+def has_background_operator(command: str) -> bool:
+    """Whether the command ends a list with ``&`` (not ``&&``, ``&>`` or ``>&``)."""
+    code = shell_code(command)
+    for index, char in enumerate(code):
+        if char != "&":
+            continue
+        previous = code[index - 1] if index else ""
+        following = code[index + 1] if index + 1 < len(code) else ""
+        if following in {"&", ">"} or previous in {"&", ">"}:
+            # ``&&`` (both members), ``&>file`` and ``2>&1`` are not background
+            # operators: skipping both members is what keeps ``cmd && next``
+            # on the foreground path.
+            continue
+        return True
+    return False
+
+
+def is_background_command(command: str) -> bool:
+    """Whether *command* asks for a detached job (V1-51).
+
+    Measured in Simple CTF (2026-10-18): the agent wrote
+    ``nohup python ... &`` inside ``nexus.shell.exec`` to keep a job running
+    while it did something else, the child inherited the handler's stdout pipe,
+    and the call blocked until the 60 s timeout -two turns and a chunk of budget
+    burned on a process that had already started. ``nohup`` without a redirect
+    has the same effect: ``nohup`` only redirects when stdout is a terminal.
+    """
+    return has_background_operator(command) or bool(_NO_HUP_RE.search(shell_code(command)))
+
+
+def background_body(command: str) -> str:
+    """*command* without the trailing ``&`` the wrapper supplies itself."""
+    text = str(command or "").rstrip()
+    code = shell_code(text).rstrip()
+    if code.endswith("&") and not code.endswith("&&"):
+        index = len(code) - 1
+        text = (text[:index] + text[index + 1 :]).rstrip()
+    return text
+
+
+def background_script(command: str, log_path: str) -> str:
+    """Shell wrapper that detaches *command*, redirects it and echoes its PID.
+
+    ``setsid`` puts the child in its own session so the sandbox's process-group
+    cleanup cannot take it down with the launch wrapper. ``</dev/null`` and the
+    log redirect are what actually remove the hang: a detached child that still
+    holds the handler's stdout/stderr pipe keeps the call blocked even though
+    the shell exited. ``$!`` is the PID to report back to the model.
+    """
+    body = background_body(command)
+    return (
+        f"setsid sh -c {shlex.quote(body)} </dev/null "
+        f">{shlex.quote(log_path)} 2>&1 & echo NEXUS_BG_PID=$!"
+    )
+
+
+def background_log_path(root: str | Path, run_id: str) -> Path:
+    """Workspace-relative log of one detached command (created lazily)."""
+    base = Path(root) / BACKGROUND_LOG_DIRNAME
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = re.sub(r"[^A-Za-z0-9_-]", "", str(run_id or "run"))[:32] or "run"
+    return base / f"{stamp}-{int(time.time() * 1000)}.log"
 
 #: Local guard-rail patterns; ``NEXUS_SHELL_DENY`` can only add more.
 _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
@@ -240,6 +359,137 @@ def _audit(
     )
 
 
+async def _launch_background(
+    request: ShellExecRequest,
+    context: RunContext,
+    sandbox: Any,
+    program: str,
+    cwd_relative: str,
+    root: Path,
+    started: float,
+) -> ToolResult:
+    """Start *request.command* detached and return at once with its PID (V1-51).
+
+    The answer is not "the command finished": it is "the process exists". The
+    model gets the PID, the log it writes and a pointer to read it, which is what
+    lets it run ``sqlmap``/``hydra`` in the background and keep enumerating; the
+    launch is audited like any other ``shell.exec`` with ``reason=background``.
+    """
+    if isinstance(sandbox, OCISandbox):
+        duration_ms = int((time.monotonic() - started) * 1000)
+        _audit(
+            context, command=request.command, cwd=cwd_relative,
+            exit_code=None, duration_ms=duration_ms, bytes_written=0,
+            timed_out=False, decision="deny", reason="background_not_supported_in_oci",
+        )
+        return ToolResult(
+            output={
+                "error": "background execution is not available in the OCI sandbox",
+                "command": request.command,
+                "guidance": (
+                    "El contenedor OCI es efímero: un proceso en segundo plano muere "
+                    "con él. Ejecuta el comando en primer plano con un "
+                    "timeout_seconds mayor, o divídelo en pasos más cortos."
+                ),
+            },
+            verified=False,
+            outcome="unavailable",
+            verification_method="shell_background_unavailable",
+            evidence={"background": False, "cwd": cwd_relative},
+        )
+    log_file = background_log_path(root, context.run_id)
+    log_relative = str(log_file.relative_to(Path(root).resolve()))
+    script = background_script(request.command, str(log_file))
+    try:
+        async with _run_lock(context.run_id):
+            launch = await run_in_sandbox(
+                sandbox,
+                [program, "-lc", script],
+                timeout_seconds=min(request.timeout_seconds, BACKGROUND_LAUNCH_TIMEOUT_SECONDS),
+                image_env="NEXUS_SHELL_IMAGE",
+                default_image="python:3.12-alpine",
+            )
+    except (FileNotFoundError, PermissionError) as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        _audit(
+            context, command=request.command, cwd=cwd_relative,
+            exit_code=None, duration_ms=duration_ms, bytes_written=0,
+            timed_out=False, decision="deny", reason=type(exc).__name__,
+        )
+        return ToolResult(
+            output={"error": f"shell unavailable: {type(exc).__name__}", "cwd": cwd_relative},
+            verified=False,
+            outcome="unavailable",
+            verification_method="shell_unavailable",
+        )
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    match = _BACKGROUND_PID_RE.search(launch.stdout or "")
+    pid = int(match.group(1)) if match else None
+    content = _combined_output(
+        request.command, launch.stdout, launch.stderr, launch.exit_code, launch.timed_out
+    )
+    artifact = configured_artifact_store(context.store, default_artifact_root()).put(
+        context.tenant_id,
+        content,
+        "text/plain; charset=utf-8",
+        run_id=context.run_id,
+        metadata={
+            "engagement_id": context.engagement_id,
+            "kind": "shell-background-launch",
+            "pid": pid,
+            "log": log_relative,
+        },
+    )
+    launched = pid is not None and launch.exit_code == 0 and not launch.timed_out
+    _audit(
+        context, command=request.command, cwd=cwd_relative,
+        exit_code=launch.exit_code, duration_ms=duration_ms,
+        bytes_written=len(content), timed_out=launch.timed_out,
+        reason="background" if launched else "background_launch_failed",
+    )
+    summary = (
+        f"Comando lanzado en segundo plano (PID {pid}). Sigue con otra tarea y "
+        f"lee su salida con `tail -n 40 {log_relative}` cuando la necesites."
+        if launched
+        else "No se pudo lanzar el comando en segundo plano; revisa la salida del wrapper."
+    )
+    return ToolResult(
+        output={
+            "background": True,
+            "launched": launched,
+            "pid": pid,
+            "log": log_relative,
+            "command": request.command,
+            "summary": summary,
+            "artifact": artifact,
+            "artifact_ref": artifact.get("id"),
+            "sha256": artifact.get("sha256"),
+            "exit_code": launch.exit_code,
+            "timed_out": launch.timed_out,
+            "duration_ms": duration_ms,
+            "cwd": cwd_relative,
+        },
+        verified=launched,
+        outcome="" if launched else ("timeout" if launch.timed_out else "error"),
+        verification_method=(
+            "shell_background_launched" if launched else "shell_background_not_started"
+        ),
+        evidence={
+            "background": True,
+            "pid": pid,
+            "log": log_relative,
+            "cwd": cwd_relative,
+            "sha256": artifact.get("sha256"),
+            "artifact_ref": artifact.get("id"),
+        },
+        exit_code=launch.exit_code,
+        stdout=summary,
+        stderr="",
+        timed_out=launch.timed_out,
+    )
+
+
 async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     """Run one sandboxed command, archive its output and return a summary."""
     request = ShellExecRequest.model_validate(arguments)
@@ -282,6 +532,13 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
     with suppress(AttributeError):
         sandbox.max_output_bytes = SHELL_MAX_OUTPUT_BYTES
     program = "sh" if isinstance(sandbox, OCISandbox) else "bash"
+    if is_background_command(request.command):
+        # ``nohup ... &`` used to block until the timeout: the detached child
+        # inherited the handler's pipes. A background request is answered at
+        # once with the PID instead of waited for (V1-51).
+        return await _launch_background(
+            request, context, sandbox, program, cwd_relative, root, started
+        )
     try:
         async with _run_lock(context.run_id):
             result = await run_in_sandbox(
@@ -378,9 +635,15 @@ __all__ = [
     "SHELL_MAX_STDIN_BYTES",
     "SHELL_MAX_TIMEOUT_SECONDS",
     "SHELL_MIN_TIMEOUT_SECONDS",
-    "SHELL_SUMMARY_LINES",
-    "ShellExecRequest",
-    "prohibited_reason",
+    "SHELL_SUMMARY_LINES",        "BACKGROUND_LOG_DIRNAME",
+        "ShellExecRequest",
+        "background_body",
+        "background_log_path",
+        "background_script",
+        "has_background_operator",
+        "is_background_command",
+        "prohibited_reason",
+        "shell_code",
     "resolve_cwd",
     "shell_exec_definition",
     "shell_exec_handler",

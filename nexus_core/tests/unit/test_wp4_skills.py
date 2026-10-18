@@ -68,6 +68,46 @@ def _iso(delta: timedelta) -> str:
     return (datetime.now(timezone.utc) + delta).isoformat()
 
 
+def test_methodology_skill_orders_enumeration_before_attack() -> None:
+    """The recipe the model lacks: enumerate everything, then pick a vector.
+
+    Measured in Simple CTF (2026-10-17): the agent found the anonymous FTP, spent
+    the run trying to exploit it and never enumerated ``/simple/`` -the CMS and
+    the SQLi that carried the chain. The skill is the deterministic order the
+    prompt can offer when the loop sees the same tool repeated.
+    """
+    skill = load_skill("methodology-senior", REPO_ROOT)
+    assert skill is not None and skill.usable
+    flat = " ".join(skill.content.split())
+    assert "NUNCA intentes explotar un servicio (FTP, SSH) solo porque encontraste una pista." in flat
+    assert "Primero completa la enumeración de TODOS los puertos abiertos." in flat
+
+    # The four steps are present in the order the skill prescribes.
+    steps = [
+        "### 1. Todos los puertos",
+        "### 2. Si hay HTTP/HTTPS",
+        "### 3. FTP anónimo",
+        "### 4. Con el mapa completo",
+    ]
+    positions = [skill.content.index(step) for step in steps]
+    assert positions == sorted(positions), "the flow must be ordered, not a list"
+
+    # It names the real tools, not abstractions the model cannot call.
+    for tool_id in (
+        "nexus.recon.nmap",
+        "nexus.recon.gobuster",
+        "nexus.recon.whatweb",
+        "nexus.exploit.searchsploit",
+        "nexus.recon.ftp",
+    ):
+        assert tool_id in skill.content
+
+    # And it reaches the model: the prompt carries a one-line index entry.
+    index = render_skill_index(discover_skills(REPO_ROOT))
+    line = next(line for line in index.splitlines() if "- methodology-senior:" in line)
+    assert "enumeración" in line
+
+
 def _write_skill(root: Path, name: str, body: str) -> Path:
     directory = root / ".agents" / "skills" / name
     directory.mkdir(parents=True, exist_ok=True)

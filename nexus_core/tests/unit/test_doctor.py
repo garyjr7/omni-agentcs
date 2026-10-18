@@ -70,6 +70,45 @@ def test_doctor_reports_effective_provider_model(onboarding_env, capsys, monkeyp
     assert json.loads(capsys.readouterr().out)["config"]["default_model"] == "nexus-fake-v1"
 
 
+def test_doctor_warns_when_sshpass_is_missing(onboarding_env, capsys):
+    """The plan B of ``ssh_exec`` needs the binary, and the operator must know.
+
+    Measured in Simple CTF: the credential was valid, the paramiko login was
+    refused and the fallback could not run -the run read that as a wrong
+    password. The doctor says it *before* the run, never with a secret.
+    """
+    with patch.object(d, "_sshpass_available", return_value=False):
+        d.run_doctor(onboarding_env.paths, OmniConfig(), as_json=True)
+    report = json.loads(capsys.readouterr().out)
+    entry = next(
+        item for item in report["runtime_preconditions"] if item["service"] == "sshpass"
+    )
+    assert entry["severity"] == "warning"
+    assert entry["missing_env"] == []
+    assert "sudo apt install sshpass" in entry["action"]
+
+
+def test_doctor_is_quiet_when_sshpass_is_installed(onboarding_env, capsys):
+    with patch.object(d, "_sshpass_available", return_value=True):
+        d.run_doctor(onboarding_env.paths, OmniConfig(), as_json=True)
+    report = json.loads(capsys.readouterr().out)
+    assert "sshpass" not in {item["service"] for item in report["runtime_preconditions"]}
+
+
+def test_sshpass_probe_uses_the_sandbox_path():
+    """The binary is probed on the same PATH the sandbox hands its children."""
+    seen: dict[str, object] = {}
+
+    def fake_which(name, path=None):
+        seen["name"], seen["path"] = name, path
+        return "/usr/bin/sshpass"
+
+    with patch.object(d.shutil, "which", fake_which):
+        assert d._sshpass_available() is True
+    assert seen["name"] == "sshpass"
+    assert seen["path"] == d.sandbox_path()
+
+
 def test_doctor_does_not_inspect_sqlite_for_postgres(onboarding_env, capsys, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:private@localhost/db")
     with patch.object(d, "_audit") as audit:

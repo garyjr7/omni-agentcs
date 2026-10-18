@@ -57,7 +57,8 @@ SKILL_NUDGE_EVENT_TYPE = "react.skill_nudge"
 #: that it is stuck and how to get unstuck.
 SKILL_NUDGE_PROMPT = (
     "Estás atascado. Considera usar `nexus.skill.list()` y cargar una skill "
-    "que se adapte a tu problema (ej. web-upload-webshell)."
+    "que se adapte a tu problema (ej. methodology-senior si te falta "
+    "enumeración o web-upload-webshell si el vector es una subida)."
 )
 #: Emitted once when the board (or the successful output of this run) proves the
 #: flags the objective asked for were captured. From that turn on the prompt

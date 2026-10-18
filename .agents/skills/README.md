@@ -16,6 +16,7 @@ siendo **datos no confiables**, con su estado de firma y sus señales.
 | `web-upload-webshell` | Subir una webshell a un formulario, evadir el filtro de extensión y conseguir RCE (receta medida en RootMe). |
 | `bruteforce-hydra` | Lanzar hydra desde `nexus.shell.exec` cuando `nexus.cred.bruteforce` rechaza la wordlist (rockyou.txt, 133 MB) o se queda corto (receta medida en Simple CTF). |
 | `privesc-sudo` | Escalar con sudo cuando `sudo -n -l` falla: contraseña por stdin (`sudo -S -l`), PTY con `ssh -tt`/tmux/pexpect y abuso de `sudo vim` (receta medida en Simple CTF). |
+| `methodology-senior` | Enumerar antes de atacar: mapa completo de puertos y de la web (directorios, CMS, searchsploit) y FTP anónimo solo como pista con credenciales cruzadas (medido en Simple CTF). |
 
 ## Estados de confianza
 

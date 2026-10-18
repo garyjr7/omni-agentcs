@@ -10,6 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
+import signal
+import time
+from contextlib import suppress
+from pathlib import Path
 
 import pytest
 
@@ -22,8 +27,10 @@ from nexus_core.scope import EngagementStore
 from nexus_core.tools.handlers.report_generate import default_artifact_root
 from nexus_core.tools.handlers.shell_exec_local import (
     ShellExecRequest,
+    is_background_command,
     shell_exec_definition,
     shell_exec_handler,
+    workspace_root,
 )
 
 SECRET = "test-signing-secret"
@@ -200,6 +207,120 @@ def test_an_sshpass_run_feeds_the_board_and_closes_the_objective(context, tmp_pa
     statuses = {phase.id: phase.status for phase in build_plan(facts=facts).phases}
     assert statuses["exploitation"] == "done"
     assert statuses["privilege_escalation"] == "done"
+
+
+# --------------------------------------------------------------- V1-51 · background
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("nohup python3 worker.py > out.txt 2>&1 &", True),
+        ("nohup python3 worker.py", True),
+        ("sqlmap -u http://t/ --batch &", True),
+        ("echo hi &", True),
+        ("echo hi && echo bye", False),
+        ("cmd 2>&1 | tee log", False),
+        ("cmd &> out.txt", False),
+        ("curl -s 'http://t/?a=1&b=2'", False),
+        ("echo 'a & b'", False),
+    ],
+)
+def test_only_a_real_ampersand_is_a_background_operator(command, expected):
+    """``&&``, ``&>``, ``2>&1`` and quoted ``&`` are not background requests."""
+    assert is_background_command(command) is expected
+
+
+def _kill(pid: int | None) -> None:
+    if not pid:
+        return
+    with suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, signal.SIGKILL)
+
+
+def test_a_background_command_returns_at_once_with_its_pid(context):
+    """The measured hang: ``nohup ... &`` blocked until the 60 s timeout.
+
+    The wrapper detaches the child with ``setsid`` and redirects its stdio, so
+    the handler answers with the PID instead of waiting for a job it was told to
+    leave running. The child's output is not lost: it goes to the workspace log
+    the observation names.
+    """
+    started = time.monotonic()
+    result = _run(context, {
+        "command": "nohup sh -c 'sleep 1; printf hola-bg' &",
+        "timeout_seconds": 60,
+    })
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10, "a background launch must not wait for the job"
+    assert result.verified is True and result.timed_out is False
+    # The gateway validates every result before it becomes an observation.
+    assert result.success is True and result.to_dto().outcome == "success"
+    assert result.verification_method == "shell_background_launched"
+    assert result.output["background"] is True and result.output["launched"] is True
+    pid = result.output["pid"]
+    assert isinstance(pid, int) and pid > 0
+    assert result.evidence["pid"] == pid
+
+    log = Path(workspace_root()) / result.output["log"]
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and "hola-bg" not in (
+            log.read_text() if log.is_file() else ""
+        ):
+            time.sleep(0.1)
+        assert "hola-bg" in log.read_text()
+    finally:
+        _kill(pid)
+
+
+def test_a_background_command_never_holds_the_handler_pipes(context):
+    """``nohup python -c 'sleep 30' &`` returns in seconds, not in 60."""
+    started = time.monotonic()
+    result = _run(context, {
+        "command": "nohup python3 -c 'import time; time.sleep(30)' >/dev/null 2>&1 &",
+        "timeout_seconds": 60,
+    })
+    elapsed = time.monotonic() - started
+    try:
+        assert elapsed < 10
+        assert result.verified is True
+        assert result.output["pid"] > 0
+    finally:
+        _kill(result.output["pid"])
+
+
+def test_a_background_command_is_audited_as_such(context):
+    result = _run(context, {"command": "sleep 5 &", "timeout_seconds": 30})
+    _kill(result.output["pid"])
+    events = AuditWriter(context.store).export(context.tenant_id, trace_id=context.trace_id)
+    audited = [event for event in events if event["action"] == "shell.exec"]
+    assert audited[-1]["payload"]["reason"] == "background"
+
+
+def test_a_foreground_list_is_not_detached(context):
+    result = _run(context, {"command": "echo uno && echo dos"})
+    assert result.verified is True
+    assert "uno" in result.output["summary"] and "dos" in result.output["summary"]
+    assert result.verification_method == "shell_exit_code"
+
+
+def test_the_oci_sandbox_refuses_background_work_explicitly(context):
+    """An ephemeral container cannot keep a detached process alive: say so."""
+    from unittest import mock
+
+    import nexus_core.tools.handlers.shell_exec_local as shell_module
+    from nexus_core.kernel.sandbox import OCISandbox
+
+    sandbox = OCISandbox(workspace_root(), allowed_images=["x"])
+    with mock.patch.object(shell_module, "sandbox_for_environment", lambda *a, **k: sandbox):
+        result = _run(context, {"command": "sleep 30 &"})
+
+    assert result.verified is False
+    assert result.outcome == "unavailable"
+    assert result.verification_method == "shell_background_unavailable"
+    assert "timeout_seconds" in result.output["guidance"]
 
 
 def test_shell_exec_archives_full_stdout_and_stderr(context):

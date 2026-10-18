@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import socket
 import sqlite3
 from urllib.parse import urlsplit
@@ -47,6 +48,11 @@ NUCLEI_DEFAULT_TEMPLATES = "/opt/nuclei-templates"
 
 def _unset(names: tuple[str, ...]) -> list[str]:
     return [name for name in names if not str(os.getenv(name) or "").strip()]
+
+
+def _sshpass_available() -> bool:
+    """Whether the native ssh fallback can run (``sshpass`` on the sandbox PATH)."""
+    return shutil.which("sshpass", path=sandbox_path()) is not None
 
 
 def _runtime_preconditions(tools, rpc) -> list[dict]:
@@ -93,6 +99,25 @@ def _runtime_preconditions(tools, rpc) -> list[dict]:
                     "observed": "operator_config=set",
                 }
             )
+    if not _sshpass_available():
+        # Plan B of ``nexus.post.ssh_exec``: when the server refuses the paramiko
+        # session, the handler replays the command with the native ``ssh``
+        # client driven by ``sshpass`` (the credential already proved on the
+        # board). Without the binary the fallback answers
+        # ``sshpass_not_installed`` mid-run and the agent reads it as a bad
+        # password. Measured in Simple CTF (2026-10-17).
+        entries.append(
+            {
+                "service": "sshpass",
+                "missing_env": [],
+                "severity": "warning",
+                "action": (
+                    "instálalo con `sudo apt install sshpass` (lo necesita el plan B "
+                    "de ssh_exec cuando el servidor rechaza la sesión paramiko)"
+                ),
+                "observed": "binary=absent",
+            }
+        )
     if getattr(tools.get("nuclei"), "present", False):
         configured = str(os.getenv("NEXUS_NUCLEI_TEMPLATES") or "").strip()
         templates = Path(configured) if configured else Path(NUCLEI_DEFAULT_TEMPLATES)
@@ -252,11 +277,13 @@ def run_doctor(paths, config, *, as_json=False) -> int:
                     print("  (sin avisos)")
                 for item in value:
                     missing = ", ".join(f"{name}=unset" for name in item["missing_env"])
-                    observed = f"{item['observed']} · " if item.get("observed") else ""
-                    print(
-                        f"  {item['service']}: {observed}{missing} "
-                        f"({item['severity'].upper()}: {item['action']})"
+                    # A check can report a missing *binary* (``sshpass``) instead
+                    # of an unset variable, so the two halves are optional.
+                    detail = " · ".join(
+                        part for part in (item.get("observed") or "", missing) if part
                     )
+                    head = f"  {item['service']}:" + (f" {detail}" if detail else "")
+                    print(f"{head} ({item['severity'].upper()}: {item['action']})")
             elif isinstance(value, dict):
                 for name, item in value.items():
                     print(f"  {name}: {json.dumps(item, ensure_ascii=False)}")

@@ -382,19 +382,18 @@ def _citation_objections(evidence_stats: Mapping[str, Any] | None) -> list[str]:
         target = str(cited.get("target") or "(sin target)")
         reason = str(item.get("reason") or "stale_evidence")
         objection = str(item.get("objection") or "")
-        if objection.startswith("value_conflict:"):
-            # The citation is real and the type/target match: what made the gate
-            # refuse is one declared value. Saying "no coincide con ninguna
-            # observación" here sent the model hunting for another invocation_id
-            # for four turns (Simple CTF, 2026-10-18) while both flags were
-            # already captured.
+        if objection.startswith("flag_conflict:"):
+            # The citation is real: what refused it is a flag the observation
+            # never captured. Telling the model "no coincide con ninguna
+            # observación" here sent it hunting for another invocation_id while
+            # both flags were already on the board.
             conflict = objection.split(":", 1)[1]
             line = (
                 f"Hallazgo '{ref}' citó invocation_id={invocation} "
-                f"fact_type={fact_type} target={target}: la observación existe y "
-                "coincide, pero el campo `value` del hallazgo contradice el de la "
-                f"observación en: {conflict}. Omite esas clave(s) del hallazgo o "
-                "cópialas exactamente como las devolvió la tool, y reintenta."
+                f"fact_type={fact_type} target={target}: la observación existe, "
+                "pero el hallazgo afirma una flag que esa observación no capturó "
+                f"({conflict}). Cita la observación que sí contiene esa flag o "
+                "elimínala del texto del hallazgo, y reintenta."
             )
             lines.append(line)
             continue
@@ -510,8 +509,8 @@ def _completion_objections(
             )
     if enforce_completion_gates and evidence_stats and fabricated_evidence(evidence_stats):
         counts = (
-            f"{evidence_stats.get('stale')} hallazgo(s) citan evidencia que no "
-            "aparece en ninguna observación de este run (stale_evidence)"
+            f"{evidence_stats.get('stale')} hallazgo(s) no se sostienen con las "
+            "observaciones de este run (stale_evidence)"
         )
         if evidence_stats.get("unsupported"):
             # Otherwise the line above reads "0 hallazgo(s)…" while the refusal is

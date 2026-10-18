@@ -151,35 +151,131 @@ def evidence_corpus(
 _ROOT_CLAIM_RE = re.compile(r"(?<![\w/])root(?![\w./])|uid=0|administrator", re.IGNORECASE)
 
 
-def _value_conflict(declared: Any, observed: Any) -> tuple[str, ...]:
-    """Keys the finding declares that **contradict** the observation's value.
+def _flag_tokens(value: Any) -> frozenset[str]:
+    """Flag-shaped tokens inside *value* (imported lazily: the planner is heavy)."""
+    from .planner import flag_tokens
 
-    Only a contradiction refuses a citation. The model habitually attaches its
-    own summary dict to an otherwise exact citation (``{"obtained_via": …}``,
-    ``{"flag": …}``), and demanding byte equality turned every real citation
-    into ``stale_evidence`` -measured in the Simple CTF run of 2026-10-18
-    (``run_fc39e6369d1c440e92a4d2e4e2db5250``): both flags captured, four
-    ``task_complete`` attempts, and every finding refused although its
-    ``invocation_id``, ``fact_type`` and ``target`` were identical to the
-    observation it cited. Fabrication is still impossible: a grounded finding
-    keeps the *observation's* value, never the model's.
+    return frozenset(flag_tokens(value))
 
-    Keys the observation does not carry are not a contradiction -the finding is
-    summarizing- and only keys present on both sides are compared.
+
+def _declared_flags(finding: Mapping[str, Any]) -> frozenset[str]:
+    """Flags the finding itself asserts, in its ``value`` or in its prose."""
+    return _flag_tokens(finding.get("value")) | _flag_tokens(finding_text(finding))
+
+
+def _observed_flags(observation: Mapping[str, Any]) -> frozenset[str]:
+    """Flags the observation actually captured (its whole payload, ``value`` included)."""
+    return _flag_tokens(observation)
+
+
+def _flag_conflict(finding: Mapping[str, Any], observation: Mapping[str, Any]) -> str:
+    """The flags the finding claims that the observation does not carry (or "").
+
+    A citation may summarize the observation freely -its prose, its extra keys
+    and its own view of the target all get replaced by the observation's value
+    when the finding grounds- but a **flag** is the one value that is either the
+    captured one or a fabrication. Changing it is the only value contradiction
+    that still refuses a citation (V1-50): measured in Simple CTF (2026-10-18),
+    the gate refused three real citations in a row for keys such as ``port`` and
+    the run never closed with both flags already on the board.
     """
-    if not isinstance(declared, Mapping):
-        return ()
-    if not isinstance(observed, Mapping):
-        return ()
-    return tuple(
-        str(key)
-        for key, value in declared.items()
-        if key in observed and str(value) != str(observed[key])
+    declared = _declared_flags(finding)
+    observed = _observed_flags(observation)
+    if not declared or not observed:
+        # Nothing to contradict: a citation that names no flag can only be a
+        # summary, and an assertion that captured no flag has no flag to
+        # disagree with. Neither case can put a model-written flag into the
+        # report -grounding replaces the finding's value with the observation's.
+        return ""
+    unexpected = declared - observed
+    return ",".join(sorted(unexpected))
+
+
+def grounding_proof(finding, observations, *, run_id=None):
+    """The observation that substantiates *finding*, or ``None`` (V1-50).
+
+    The invocation is the identity: a citation names an assertion the gateway
+    produced in this run, and any assertion of that invocation can substantiate
+    it. ``fact_type`` and ``target`` only **rank** the candidates (exact first,
+    then same type, then the rest), so a model that cites ``access`` where the
+    invocation also asserted ``host`` -or that writes the target differently- is
+    still pointing at real evidence instead of at a guess. The invocation must
+    exist: an id that is not in the corpus is still ``stale_evidence``.
+
+    Two guards survive the relaxation, because they are about truth rather than
+    about wording: a finding whose prose claims root needs a verified
+    ``privilege`` assertion, and a finding may not name a flag the cited
+    observation did not capture.
+    """
+    if not isinstance(finding, Mapping) or not finding.get("invocation_id") or not run_id:
+        return None
+    wanted = str(finding["invocation_id"])
+    cited_type = str(finding.get("fact_type") or "")
+    cited_target = str(finding.get("target") or "")
+    claims_root = bool(_ROOT_CLAIM_RE.search(finding_text(finding)))
+    exact: list[Mapping[str, Any]] = []
+    typed: list[Mapping[str, Any]] = []
+    rest: list[Mapping[str, Any]] = []
+    for observation in observations:
+        if not isinstance(observation, Mapping):
+            continue
+        if not (observation.get("verified") is True
+                and observation.get("verification_method")
+                and str(observation.get("invocation_id") or "") == wanted
+                and str(observation.get("run_id") or "") == str(run_id)):
+            continue
+        # A reference to anything but a privilege assertion cannot substantiate a
+        # root claim, however well it matches.
+        if claims_root and observation.get("fact_type") != "privilege":
+            continue
+        fact_type = str(observation.get("fact_type") or "")
+        target = str(observation.get("target") or "")
+        if fact_type == cited_type and target == cited_target:
+            exact.append(observation)
+        elif fact_type == cited_type:
+            typed.append(observation)
+        else:
+            rest.append(observation)
+    for tier in (exact, typed, rest):
+        for observation in tier:
+            if not _flag_conflict(finding, observation):
+                return observation
+    return None
+
+
+def _refusal_reason(finding: Mapping[str, Any], observations, run_id) -> str:
+    """Why no observation substantiates *finding* (the refusal's detail)."""
+    wanted = str(finding.get("invocation_id") or "")
+    candidates = [
+        observation
+        for observation in observations
+        if isinstance(observation, Mapping)
+        and observation.get("verified") is True
+        and observation.get("verification_method")
+        and str(observation.get("invocation_id") or "") == wanted
+        and str(observation.get("run_id") or "") == str(run_id)
+    ]
+    if not candidates:
+        return "no_matching_observation"
+    if _ROOT_CLAIM_RE.search(finding_text(finding)) and not any(
+        observation.get("fact_type") == "privilege" for observation in candidates
+    ):
+        return "root_claim_needs_privilege_fact"
+    flags = sorted(
+        {
+            flag
+            for observation in candidates
+            for flag in _flag_conflict(finding, observation).split(",")
+            if flag
+        }
     )
+    if flags:
+        return "flag_conflict:" + ",".join(flags)
+    return "no_matching_observation"
 
 
 def is_grounded(finding, observations, *, run_id=None, objections=None):
-    """Require a trusted invocation, current run, exact target and semantic type.
+    """Whether a verified assertion of this run substantiates *finding*.
 
     Token coincidence and server/model-authored verification flags carry no
     authority. Observations must come from gateway verifier assertions. When
@@ -193,38 +289,10 @@ def is_grounded(finding, observations, *, run_id=None, objections=None):
 
     if not isinstance(finding, Mapping) or not finding.get("invocation_id") or not run_id:
         return refuse("missing_citation_or_run")
-    # One invocation can carry several assertions (the measured run derived
-    # ``access`` and ``credential`` from the same call), so a candidate that does
-    # not fit yet never ends the search: the reasons are remembered and reported
-    # only when no observation fits.
-    claimed_root = False
-    conflicting: set[str] = set()
-    claims_root = bool(_ROOT_CLAIM_RE.search(finding_text(finding)))
-    for observation in observations:
-        if not isinstance(observation, Mapping):
-            continue
-        if not (observation.get("verified") is True
-                and observation.get("verification_method")
-                and observation.get("invocation_id") == finding["invocation_id"]
-                and observation.get("run_id") == run_id
-                and finding.get("target") and finding.get("target") == observation.get("target")
-                and finding.get("fact_type") and finding.get("fact_type") == observation.get("fact_type")):
-            continue
-        # A reference to anything but a privilege assertion cannot substantiate a
-        # root claim.
-        if claims_root and observation.get("fact_type") != "privilege":
-            claimed_root = True
-            continue
-        conflict = _value_conflict(finding.get("value"), observation.get("value"))
-        if conflict:
-            conflicting.update(conflict)
-            continue
+    materialized = list(observations or ())
+    if grounding_proof(finding, materialized, run_id=run_id) is not None:
         return True
-    if claimed_root:
-        return refuse("root_claim_needs_privilege_fact")
-    if conflicting:
-        return refuse("value_conflict:" + ",".join(sorted(conflicting)))
-    return refuse("no_matching_observation")
+    return refuse(_refusal_reason(finding, materialized, run_id))
 
 
 #: Fields of a rejection that are echoed back to the model verbatim (V1-48).
@@ -317,8 +385,8 @@ def annotate_findings(findings, *, observations=(), corpus=None, run_id=None):
         record = dict(finding) if isinstance(finding, Mapping) else {"value": finding}
         # Always overwrite model-provided status flags.
         record.pop("stale_evidence", None)
-        if is_grounded(record, materialized, run_id=run_id):
-            proof = next(item for item in materialized if is_grounded(record, [item], run_id=run_id))
+        proof = grounding_proof(record, materialized, run_id=run_id)
+        if proof is not None:
             # A valid reference authenticates the typed fact, never arbitrary
             # model prose (e.g. a SQL-injection title attached to a host fact).
             declared = dict(record, verification_status="hypothesis", verified=False)
