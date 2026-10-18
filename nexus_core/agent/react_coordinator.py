@@ -1552,7 +1552,10 @@ class ReActCoordinator:
                 reason="unknown_tool",
             )
             if not _keep_going_after_failures(
-                self.subagent, self.unavailable_tools, self.consecutive_failures
+                self.subagent,
+                self.unavailable_tools,
+                self.consecutive_failures,
+                self.catalog,
             ):
                 self.status = STATUS_FAILED
                 self.final_summary = f"aborted after {self.consecutive_failures} consecutive tool failures (last: unknown tool '{self.action.tool_id}'; no usable tools remain for subagent '{self.subagent.id}')"
@@ -1587,7 +1590,10 @@ class ReActCoordinator:
                 reason="subagent_tool_denied",
             )
             if not _keep_going_after_failures(
-                self.subagent, self.unavailable_tools, self.consecutive_failures
+                self.subagent,
+                self.unavailable_tools,
+                self.consecutive_failures,
+                self.catalog,
             ):
                 self.status = STATUS_FAILED
                 self.final_summary = f"aborted after {self.consecutive_failures} consecutive tool failures (last: '{self.action.tool_id}' outside subagent '{self.subagent.id}'; no usable tools remain)"
@@ -2008,7 +2014,10 @@ class ReActCoordinator:
             error=self.observation.get("error"),
         )
         if not _keep_going_after_failures(
-            self.subagent, self.unavailable_tools, self.consecutive_failures
+            self.subagent,
+            self.unavailable_tools,
+            self.consecutive_failures,
+            self.catalog,
         ):
             self.status = STATUS_FAILED
             self.final_summary = f"aborted after {self.consecutive_failures} consecutive tool failures (no usable tools remain for subagent '{self.subagent.id}')"

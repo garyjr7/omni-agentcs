@@ -291,27 +291,56 @@ def react_max_tokens() -> int:
         return int(REACT_DEFAULT_MAX_TOKENS)
 
 
-def _usable_tool_count(subagent: Any, unavailable: set[str]) -> int:
+def _usable_tool_count(
+    subagent: Any, unavailable: set[str], catalog: Any = None
+) -> int:
     """How many of the profile's tools are still usable."""
-    return len(_remaining_tools(subagent, unavailable))
+    return len(_remaining_tools(subagent, unavailable, catalog))
 
 
 def _keep_going_after_failures(
-    subagent: Any, unavailable: set[str], consecutive_failures: int
+    subagent: Any,
+    unavailable: set[str],
+    consecutive_failures: int,
+    catalog: Any = None,
 ) -> bool:
     """Whether the loop continues instead of aborting after failures (B3).
 
     Fatal only when the failure threshold is reached *and* the active profile
     has no usable tool left; otherwise the run pivots to another route.
+
+    ``catalog`` is the durable catalog the loop is running with. It is what
+    makes the rule true for the default ``omni`` profile, whose authority is
+    the whole catalog instead of a ``tools`` list (see :func:`_profile_tools`).
     """
     if consecutive_failures < MAX_CONSECUTIVE_TOOL_FAILURES:
         return True
-    return _usable_tool_count(subagent, unavailable) > 0
+    return _usable_tool_count(subagent, unavailable, catalog) > 0
 
 
-def _remaining_tools(subagent: Any, unavailable: set[str]) -> list[str]:
+def _profile_tools(subagent: Any, catalog: Any = None) -> list[str]:
+    """Ids the active profile may invoke (its subset, or the whole catalog).
+
+    ``OMNI_PROFILE`` is ``unrestricted=True`` with an **empty** ``tools``
+    frozenset: its authority is the catalog, not a list. Reading
+    ``subagent.tools`` there answered "no tool is usable" and the run closed as
+    ``aborted after 3 consecutive tool failures (no usable tools remain)`` with
+    all 72 tools available -measured in the Simple CTF runs of 2026-10-17
+    (19:36, 20:49 and 23:16 UTC): the last one was three turns from the flag it
+    already had the password for.
+    """
+    if getattr(subagent, "unrestricted", False):
+        return sorted(str(tool) for tool in (catalog or {}))
+    return sorted(str(tool) for tool in getattr(subagent, "tools", ()) or ())
+
+
+def _remaining_tools(
+    subagent: Any, unavailable: set[str], catalog: Any = None
+) -> list[str]:
     """Tools of the active profile that are still usable."""
-    return sorted(str(tool) for tool in subagent.tools if str(tool) not in unavailable)
+    return [
+        tool for tool in _profile_tools(subagent, catalog) if tool not in unavailable
+    ]
 
 
 def _run_messages(messages: list[dict[str, Any]], run_id: str) -> list[dict[str, Any]]:
@@ -352,6 +381,34 @@ def _citation_objections(evidence_stats: Mapping[str, Any] | None) -> list[str]:
         fact_type = str(cited.get("fact_type") or "(sin fact_type)")
         target = str(cited.get("target") or "(sin target)")
         reason = str(item.get("reason") or "stale_evidence")
+        objection = str(item.get("objection") or "")
+        if objection.startswith("value_conflict:"):
+            # The citation is real and the type/target match: what made the gate
+            # refuse is one declared value. Saying "no coincide con ninguna
+            # observación" here sent the model hunting for another invocation_id
+            # for four turns (Simple CTF, 2026-10-18) while both flags were
+            # already captured.
+            conflict = objection.split(":", 1)[1]
+            line = (
+                f"Hallazgo '{ref}' citó invocation_id={invocation} "
+                f"fact_type={fact_type} target={target}: la observación existe y "
+                "coincide, pero el campo `value` del hallazgo contradice el de la "
+                f"observación en: {conflict}. Omite esas clave(s) del hallazgo o "
+                "cópialas exactamente como las devolvió la tool, y reintenta."
+            )
+            lines.append(line)
+            continue
+        if objection == "root_claim_needs_privilege_fact":
+            line = (
+                f"Hallazgo '{ref}' citó invocation_id={invocation} "
+                f"fact_type={fact_type} target={target}, pero el texto del hallazgo "
+                "afirma root y solo un hecho `privilege` verificado de este run "
+                "puede sostenerlo. Cita con query_facts la observación de tipo "
+                "`privilege` (la escalada) o separa la captura de la flag en un "
+                "hallazgo propio que no afirme root."
+            )
+            lines.append(line)
+            continue
         line = (
             f"Hallazgo '{ref}' ({reason}) citó invocation_id={invocation} "
             f"fact_type={fact_type} target={target}, pero no coincide con ninguna "

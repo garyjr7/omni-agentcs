@@ -143,32 +143,88 @@ def evidence_corpus(
     return "\n".join(chunks)
 
 
-def is_grounded(finding, observations, *, run_id=None):
+#: A *claim* of root access in a finding's prose. A bare ``root`` is not one:
+#: measured in Simple CTF (2026-10-18), a loot finding titled with the file it
+#: captured (``root.txt``) cited the loot fact that proved it and the gate
+#: refused it as if it had claimed the escalation. Paths and file names are
+#: excluded, the words that describe the escalation are not.
+_ROOT_CLAIM_RE = re.compile(r"(?<![\w/])root(?![\w./])|uid=0|administrator", re.IGNORECASE)
+
+
+def _value_conflict(declared: Any, observed: Any) -> tuple[str, ...]:
+    """Keys the finding declares that **contradict** the observation's value.
+
+    Only a contradiction refuses a citation. The model habitually attaches its
+    own summary dict to an otherwise exact citation (``{"obtained_via": …}``,
+    ``{"flag": …}``), and demanding byte equality turned every real citation
+    into ``stale_evidence`` -measured in the Simple CTF run of 2026-10-18
+    (``run_fc39e6369d1c440e92a4d2e4e2db5250``): both flags captured, four
+    ``task_complete`` attempts, and every finding refused although its
+    ``invocation_id``, ``fact_type`` and ``target`` were identical to the
+    observation it cited. Fabrication is still impossible: a grounded finding
+    keeps the *observation's* value, never the model's.
+
+    Keys the observation does not carry are not a contradiction -the finding is
+    summarizing- and only keys present on both sides are compared.
+    """
+    if not isinstance(declared, Mapping):
+        return ()
+    if not isinstance(observed, Mapping):
+        return ()
+    return tuple(
+        str(key)
+        for key, value in declared.items()
+        if key in observed and str(value) != str(observed[key])
+    )
+
+
+def is_grounded(finding, observations, *, run_id=None, objections=None):
     """Require a trusted invocation, current run, exact target and semantic type.
 
     Token coincidence and server/model-authored verification flags carry no
-    authority. Observations must come from gateway verifier assertions.
+    authority. Observations must come from gateway verifier assertions. When
+    ``objections`` is a list, the reason the check failed is appended to it, so
+    the refusal can name it instead of only its bucket (V1-48).
     """
-    if not isinstance(finding, Mapping) or not finding.get("invocation_id") or not run_id:
+    def refuse(reason: str) -> bool:
+        if objections is not None:
+            objections.append(reason)
         return False
+
+    if not isinstance(finding, Mapping) or not finding.get("invocation_id") or not run_id:
+        return refuse("missing_citation_or_run")
+    # One invocation can carry several assertions (the measured run derived
+    # ``access`` and ``credential`` from the same call), so a candidate that does
+    # not fit yet never ends the search: the reasons are remembered and reported
+    # only when no observation fits.
+    claimed_root = False
+    conflicting: set[str] = set()
+    claims_root = bool(_ROOT_CLAIM_RE.search(finding_text(finding)))
     for observation in observations:
         if not isinstance(observation, Mapping):
             continue
-        if (observation.get("verified") is True
+        if not (observation.get("verified") is True
                 and observation.get("verification_method")
                 and observation.get("invocation_id") == finding["invocation_id"]
                 and observation.get("run_id") == run_id
                 and finding.get("target") and finding.get("target") == observation.get("target")
                 and finding.get("fact_type") and finding.get("fact_type") == observation.get("fact_type")):
-            # A reference to a host observation cannot substantiate a root claim.
-            text = finding_text(finding).lower()
-            if any(word in text for word in ("root", "uid=0", "administrator", "privilegio")):
-                if observation.get("fact_type") != "privilege":
-                    continue
-            if "value" in finding and finding["value"] != observation.get("value"):
-                continue
-            return True
-    return False
+            continue
+        # A reference to anything but a privilege assertion cannot substantiate a
+        # root claim.
+        if claims_root and observation.get("fact_type") != "privilege":
+            claimed_root = True
+            continue
+        conflict = _value_conflict(finding.get("value"), observation.get("value"))
+        if conflict:
+            conflicting.update(conflict)
+            continue
+        return True
+    if claimed_root:
+        return refuse("root_claim_needs_privilege_fact")
+    if conflicting:
+        return refuse("value_conflict:" + ",".join(sorted(conflicting)))
+    return refuse("no_matching_observation")
 
 
 #: Fields of a rejection that are echoed back to the model verbatim (V1-48).
@@ -278,9 +334,16 @@ def annotate_findings(findings, *, observations=(), corpus=None, run_id=None):
             record.update(evidence_source="stale_evidence", stale_evidence=True, verification_status="hypothesis")
             stale += 1
             cited = _cited_reference(record)
+            # ``reason`` stays the bucket the counters already use; ``objection``
+            # carries the precise cause when the citation was real (the model was
+            # told "no coincide con ninguna observación" for findings whose
+            # invocation/type/target matched the observation exactly).
+            objections: list[str] = []
+            is_grounded(record, materialized, run_id=run_id, objections=objections)
             rejected.append({
                 "finding_ref": _finding_ref(record, index),
                 "reason": "stale_evidence",
+                "objection": objections[0] if objections else "",
                 "cited": cited,
                 "found_in_corpus": _cited_in_corpus(cited, verified_corpus),
                 "closest_match": _closest_corpus_match(cited, verified_corpus),

@@ -16,7 +16,7 @@ Two invariants this module enforces on the facts it asserts (V1-29, V1-31):
   and the plan marked *Acceso inicial ✓* while no shell had ever existed.
 """
 import re
-from .blackboard import Blackboard
+from .blackboard import Blackboard, is_verified_fact
 
 #: Flag-shaped tokens (``flag{fake_flag}``, ``flag{fake_flag}``, ``flag{fake_flag}``) found in the
 #: output of a verified command execution. Keeping the prefixes explicit avoids
@@ -188,6 +188,34 @@ def _credential_handle(credential, *, kind="credential", tenant_id="system"):
     return _secret_handle((credential or {}).get("password"), kind=kind, tenant_id=tenant_id)
 
 
+def _proved_credential_handle(context, target, username):
+    """Existing handle of a proved ``cred:ssh:<user>@<host>`` fact, or ``""``.
+
+    The SSH channel is verified on *every* call, so without this lookup a long
+    run would store the same password in the vault once per command. The fact is
+    the registry: one handle per proved (user, host) pair, and the plaintext is
+    written only the first time.
+    """
+    store = getattr(context, "store", None)
+    engagement_id = str(getattr(context, "engagement_id", "") or "")
+    if store is None or not engagement_id:
+        return ""
+    wanted = f"cred:ssh:{username}@{target}"
+    try:
+        facts = Blackboard(store).list_facts(
+            getattr(context, "tenant_id", "system"), engagement_id, fact_type="credential"
+        )
+    except Exception:  # noqa: BLE001 - an unreadable board never breaks the run
+        return ""
+    for fact in facts:
+        if not isinstance(fact, dict) or not is_verified_fact(fact):
+            continue
+        if str(fact.get("key") or "") != wanted:
+            continue
+        return str((fact.get("value") or {}).get("secret_ref") or "")
+    return ""
+
+
 def _session_owner(record):
     """Account named by an MSF session descriptor, or ``""`` when it names none.
 
@@ -254,12 +282,40 @@ def derive_assertions(tool_id, arguments, result, context):
             if probe.get('status_code'):
                 add('endpoint', probe.get('url'), probe)
     elif tool_id == 'nexus.recon.gobuster' and result.verification_method == 'gobuster_text_parsed':
+        # The parser names the HTTP code ``status`` (its ``to_dict``), not
+        # ``status_code``; reading the wrong key silently dropped every verified
+        # hit, so a directory scan could never close ``enumeration`` and the plan
+        # kept sending the run back to enumerate (measured in the Simple CTF run
+        # of 2026-10-17: 11 hits, 0 assertions, 27 turns on the same phase).
         for hit in output.get('hits', []):
-            if hit.get('status_code'):
+            if hit.get('status') or hit.get('status_code'):
                 add('endpoint', hit.get('url') or output.get('target'), hit, hit.get('path'))
     elif tool_id == 'nexus.post.ssh_exec' and result.verification_method in SSH_EXEC_CHANNEL_METHODS:
         target = output.get('target')
-        add('access', target, {'transport': 'ssh', 'username': arguments.get('username')})
+        username = arguments.get('username')
+        port = arguments.get('port')
+        port = port if isinstance(port, int) and 0 < port < 65536 else None
+        # The port rides with the access fact: it is the one an authenticated
+        # session really used, so the handlers can complete a later call from the
+        # board instead of falling back to 22 (Simple CTF runs on 2222).
+        add('access', target, {'transport': 'ssh', 'username': username, 'port': port})
+        # V1-29 continuity: the password that just authenticated goes to the
+        # vault and the fact carries only its handle, so the next turn -and the
+        # next tool- reuse it without the model retyping a secret. Measured in
+        # the Simple CTF run of 2026-10-17 (23:16 UTC): its last three turns went
+        # to retyping by hand a credential the board already proved, and the run
+        # closed as a failure with the flag one command away.
+        handle = _proved_credential_handle(context, target, username)
+        if not handle and username:
+            handle = _credential_handle(
+                {'password': arguments.get('password')},
+                kind='ssh',
+                tenant_id=str(getattr(context, 'tenant_id', 'system')),
+            )
+        if handle and username:
+            add('credential', target,
+                {'username': username, 'secret_ref': handle, 'service': 'ssh', 'port': port},
+                f'cred:ssh:{username}@{target}')
         command = output.get('command', '').strip()
         stdout = output.get('stdout', '').strip()
         if output.get('exit_status') == 0 and (

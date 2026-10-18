@@ -469,11 +469,21 @@ def _redact_credential_from_result(handler: Any) -> Any:
     capture (``stdout``/``stderr``) all pass through the same redactor. The
     upstream defences stay: the secret is not in the remote argv and the gateway
     keeps it out of the audit trail -this closes the *target's* echo.
+
+    It is also where the arguments are completed from the engagement board
+    (:func:`_resolve_transport`): the port and the credential the engagement
+    already proved are filled *before* the handler runs, so the redactor covers
+    the secret it just resolved as well.
     """
 
     @wraps(handler)
     async def invoke(arguments: dict, context: RunContext) -> ToolResult:
+        arguments, resolved = _resolve_transport(arguments or {}, context)
         result = await handler(arguments, context)
+        if resolved:
+            evidence = dict(result.evidence) if isinstance(result.evidence, dict) else {}
+            evidence["resolved_from_board"] = resolved
+            result = replace(result, evidence=evidence)
         secrets = _secret_values(arguments.get("password"))
         if not secrets:
             return result
@@ -510,7 +520,6 @@ def ssh_exec_definition(tenant_id: str = "system") -> ToolDefinition:
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 600},
             },
             "required": ["target", "username", "command"],
-            "anyOf": [{"required": ["password"]}, {"required": ["credential_ref"]}],
             "additionalProperties": False,
         },
         risk=RiskLevel.HIGH,
@@ -551,7 +560,6 @@ def enum_system_definition(tenant_id: str = "system") -> ToolDefinition:
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 900},
             },
             "required": ["target", "username"],
-            "anyOf": [{"required": ["password"]}, {"required": ["credential_ref"]}],
             "additionalProperties": False,
         },
         risk=RiskLevel.MEDIUM,
@@ -605,7 +613,6 @@ def ssh_upload_definition(tenant_id: str = "system") -> ToolDefinition:
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": SSH_MAX_TIMEOUT_SECONDS},
             },
             "required": ["target", "username", "local_path", "remote_path"],
-            "anyOf": [{"required": ["password"]}, {"required": ["credential_ref"]}],
             "additionalProperties": False,
         },
         risk=RiskLevel.MEDIUM,
@@ -692,20 +699,34 @@ SSH_CREDENTIAL_REF = {
     "pattern": "^vault:[a-f0-9]{32}$",
     "description": (
         "Handle of a stored credential (secret vault). Preferido sobre "
-        "`password`; el plaintext se resuelve dentro del proceso de la tool."
+        "`password`; el plaintext se resuelve dentro del proceso de la tool. "
+        "Puedes omitirlo: si el engagement ya probó una credencial SSH para "
+        "ese usuario y host, el motor la usa."
     ),
 }
 
 
 def _credential_schema(*, include_password: bool = True) -> dict[str, Any]:
-    """Properties plus the ``password``-or-``credential_ref`` constraint."""
+    """Credential properties; omitting both means "use the proved one".
+
+    The schema deliberately does **not** require ``password``/``credential_ref``
+    (the old ``anyOf`` rejected the call before the handler could look the
+    credential up on the board, and a rejected call still counted as a
+    consecutive failure -measured in the Simple CTF run of 2026-10-17, 23:16
+    UTC: iteration 27 was rejected for that reason and the run died five turns
+    later).
+    """
     properties: dict[str, Any] = {"credential_ref": dict(SSH_CREDENTIAL_REF)}
     if include_password:
         properties["password"] = {
             "type": "string",
             "minLength": 1,
             "maxLength": 256,
-            "description": "Contraseña en claro (uso manual).",
+            "description": (
+                "Contraseña en claro (uso manual). Omítela junto a "
+                "`credential_ref` y la tool usa la credencial que el "
+                "engagement ya validó para ese usuario/host."
+            ),
         }
     return properties
 
@@ -771,6 +792,125 @@ def _verified_ssh_access(context: RunContext, target: str, username: str) -> boo
         ):
             return True
     return False
+
+
+def _board_facts(context: RunContext, fact_type: str) -> list[dict[str, Any]]:
+    """Facts of ``fact_type`` on the engagement board (never raises)."""
+    store = getattr(context, "store", None)
+    engagement_id = str(getattr(context, "engagement_id", "") or "")
+    if store is None or not engagement_id:
+        return []
+    from nexus_core.kernel.blackboard import Blackboard
+
+    try:
+        facts = Blackboard(store).list_facts(
+            getattr(context, "tenant_id", "system"), engagement_id, fact_type=fact_type
+        )
+    except Exception:  # noqa: BLE001 - an unreadable board never breaks a tool
+        return []
+    return [fact for fact in facts if isinstance(fact, dict)]
+
+
+def _board_port(value: Any) -> int | None:
+    """One port out of a fact value, or ``None`` when it is not a port."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 0 < port < 65536 else None
+
+
+def _known_ssh_port(context: RunContext, target: str, username: str = "") -> int | None:
+    """SSH port the engagement already proved, or ``None`` (never a guess).
+
+    Two verified sources, strongest first: the ``access`` fact of the session
+    that really authenticated (it carries the port it used) and a ``service``
+    fact whose description names SSH on this host. Measured in Simple CTF
+    (2026-10-17): the target runs sshd on 2222, the model omitted ``port`` in
+    its last three turns, ``ssh_exec`` fell back to 22, spent 20 s timing out and
+    the run closed with three consecutive failures -the credential it needed was
+    already on the board.
+    """
+    for fact in _board_facts(context, "access"):
+        value = fact.get("value") or {}
+        if str(fact.get("key") or "") != target:
+            continue
+        if str(value.get("transport") or "") != "ssh":
+            continue
+        if username and str(value.get("username") or "") != username:
+            continue
+        port = _board_port(value.get("port"))
+        if port:
+            return port
+    for fact in _board_facts(context, "service"):
+        key = str(fact.get("key") or "")
+        if key and not key.startswith(f"{target}:"):
+            continue
+        value = fact.get("value") or {}
+        described = " ".join(
+            str(value.get(field) or "") for field in ("service", "product", "extra_info")
+        ).lower()
+        if "ssh" not in described:
+            continue
+        port = _board_port(value.get("port"))
+        if port:
+            return port
+    return None
+
+
+def _board_ssh_credential(context: RunContext, target: str, username: str) -> str:
+    """Plaintext of the SSH credential the board already proved, else ``""``.
+
+    Only a *verified* credential fact is reused (V1-29): ``cred:ssh:<user>@<host>``
+    carries the ``secret_ref`` handle and the plaintext stays in the vault, so a
+    guessed password is never replayed as if an authenticated session had proved
+    it. Without this, the password the model discovered in one turn had to be
+    retyped on every later turn -and the measured run retyped a *wrong* one.
+    """
+    from nexus_core.kernel.blackboard import is_verified_fact
+    from nexus_core.kernel.secret_store import default_secret_store, is_secret_ref
+
+    wanted = f"cred:ssh:{username}@{target}"
+    for fact in _board_facts(context, "credential"):
+        if not is_verified_fact(fact) or str(fact.get("key") or "") != wanted:
+            continue
+        ref = str((fact.get("value") or {}).get("secret_ref") or "")
+        if not is_secret_ref(ref):
+            continue
+        try:
+            return default_secret_store().get(
+                ref, tenant_id=getattr(context, "tenant_id", "system")
+            ).decode("utf-8")
+        except Exception:  # noqa: BLE001 - an unreadable handle is not a credential
+            return ""
+    return ""
+
+
+def _resolve_transport(arguments: dict, context: RunContext) -> tuple[dict, dict[str, Any]]:
+    """Complete ``arguments`` from the engagement board: port and credential.
+
+    Returns the completed copy plus what was resolved (for the evidence, so the
+    operator and the model can see that the engine -not the model- supplied it).
+    Both facts are *verified* board evidence: the SSH port of the target and the
+    credential an authenticated session already proved. The model still owns the
+    manual path: an explicit ``password``/``credential_ref``/``port`` is never
+    overridden.
+    """
+    resolved: dict[str, Any] = {}
+    target = str(arguments.get("target") or "")
+    username = str(arguments.get("username") or "")
+    filled = dict(arguments)
+    if target and not filled.get("port"):
+        port = _known_ssh_port(context, target, username)
+        if port:
+            filled["port"] = port
+            resolved["port"] = port
+    if target and username and not filled.get("password") and not filled.get("credential_ref"):
+        password = _board_ssh_credential(context, target, username)
+        if password:
+            filled["password"] = password
+            resolved["credential"] = f"vault:cred:ssh:{username}@{target}"
+    return filled, resolved
 
 
 def _sshpass_argv(*, host: str, port: int, username: str, command: str) -> list[str]:
@@ -919,7 +1059,16 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
     username = _validate_text(arguments.get("username"), "username", max_length=128)
     password = str(arguments.get("password") or "")
     if not password:
-        raise ValueError("password is required")
+        # Fail closed, but say the whole way out: the engine already looks the
+        # credential up on the board (V1-29 continuity), so this only fires when
+        # the engagement has no proved SSH credential for that user and host.
+        raise ValueError(
+            "no SSH credential for "
+            f"{username}@{target}: pass `password`, use the `credential_ref` "
+            "handle, or authenticate once so the engine records the credential "
+            "and can reuse it (enumerate with nexus.cred.bruteforce or a manual "
+            "`ssh_exec` with the password)."
+        )
     command = str(arguments.get("command") or "").strip()
     if not command:
         raise ValueError("command is required")
@@ -1125,7 +1274,16 @@ async def enum_system_handler(arguments: dict, context: RunContext) -> ToolResul
     username = _validate_text(arguments.get("username"), "username", max_length=128)
     password = str(arguments.get("password") or "")
     if not password:
-        raise ValueError("password is required")
+        # Fail closed, but say the whole way out: the engine already looks the
+        # credential up on the board (V1-29 continuity), so this only fires when
+        # the engagement has no proved SSH credential for that user and host.
+        raise ValueError(
+            "no SSH credential for "
+            f"{username}@{target}: pass `password`, use the `credential_ref` "
+            "handle, or authenticate once so the engine records the credential "
+            "and can reuse it (enumerate with nexus.cred.bruteforce or a manual "
+            "`ssh_exec` with the password)."
+        )
     port = int(arguments.get("port") or SSH_DEFAULT_PORT)
     requested_timeout = arguments.get("timeout_seconds")
     timeout_seconds = min(
@@ -1230,7 +1388,16 @@ async def ssh_upload_handler(arguments: dict, context: RunContext) -> ToolResult
     username = _validate_text(arguments.get("username"), "username", max_length=128)
     password = str(arguments.get("password") or "")
     if not password:
-        raise ValueError("password is required")
+        # Fail closed, but say the whole way out: the engine already looks the
+        # credential up on the board (V1-29 continuity), so this only fires when
+        # the engagement has no proved SSH credential for that user and host.
+        raise ValueError(
+            "no SSH credential for "
+            f"{username}@{target}: pass `password`, use the `credential_ref` "
+            "handle, or authenticate once so the engine records the credential "
+            "and can reuse it (enumerate with nexus.cred.bruteforce or a manual "
+            "`ssh_exec` with the password)."
+        )
     remote_path = _validate_remote_path(arguments.get("remote_path"))
     file_mode = _validate_file_mode(arguments.get("file_mode"))
     make_dirs = bool(arguments.get("make_dirs", False))

