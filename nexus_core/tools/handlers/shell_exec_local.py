@@ -40,6 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from nexus_core.kernel.artifacts import configured_artifact_store
 from nexus_core.kernel.audit import AuditWriter
+from nexus_core.kernel.fact_verification import sshpass_channels
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import OCISandbox, sandbox_for_environment
 from nexus_core.kernel.sessions import validate_session_scope
@@ -322,6 +323,12 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
         },
     )
     summary = summarize(result.stdout, result.stderr)
+    # An ``sshpass``-wrapped client is an authenticated channel, not an opaque
+    # local process: the same login ``nexus.post.ssh_exec`` makes, started by the
+    # generic shell. It is recorded here (target/user/port, never the secret) so
+    # the run's evidence says which host this command really reached; the facts
+    # are derived by ``kernel.fact_verification`` from the same parsed command.
+    channels = sshpass_channels(request.command)
     _audit(
         context, command=request.command, cwd=cwd_relative,
         exit_code=result.exit_code, duration_ms=duration_ms,
@@ -353,6 +360,10 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             "timed_out": result.timed_out,
             "sha256": artifact.get("sha256"),
             "artifact_ref": artifact.get("id"),
+            **(
+                {"ssh_channels": [channel.descriptor() for channel in channels]}
+                if channels else {}
+            ),
         },
         exit_code=result.exit_code,
         stdout=summary,

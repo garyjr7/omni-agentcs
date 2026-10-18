@@ -17,12 +17,15 @@ fallaba.
 El motor solo aprende lo que prueban sus tools: `nexus.post.ssh_exec` y
 `nexus.post.enum_system` derivan los hechos **verificados** (`access`,
 `privilege`, `loot`, `cred:ssh:<usuario>@<host>`) que cierran las fases, eximen
-el presupuesto y sostienen los hallazgos del reporte. Una sesión
-`sshpass … ssh …` lanzada con `nexus.shell.exec` devuelve la misma salida pero
-**no deja rastro en el tablero**. Medido en Simple CTF
-(`simplectf-20261018T002954Z-run1`): las dos flags se capturaron y el run igual
-murió en `budget_exceeded` con `objective_complete=false`, porque la escalada y
-la lectura de `root.txt` viajaron por `shell.exec`.
+el presupuesto y sostienen los hallazgos del reporte. Desde V1-49
+`nexus.shell.exec` también los deriva cuando el comando es un
+`sshpass … ssh …` en posición de comando y sale con 0 (una lectura de `root.txt`
+con `cat` y la línea `uid=0(root) gid=…` cuentan), pero lee solo el resumen de
+60 líneas y no resuelve puerto ni credencial desde el tablero: sigue siendo el
+plan B. Medido en Simple CTF (`simplectf-20261018T002954Z-run1`, **antes** de
+V1-49): las dos flags se capturaron y el run igual murió en `budget_exceeded`
+con `objective_complete=false`, porque la escalada y la lectura de `root.txt`
+viajaron por `shell.exec` y no derivaban nada.
 
 Orden preferido:
 

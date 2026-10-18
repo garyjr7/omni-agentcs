@@ -16,6 +16,9 @@ Two invariants this module enforces on the facts it asserts (V1-29, V1-31):
   and the plan marked *Acceso inicial ✓* while no shell had ever existed.
 """
 import re
+import shlex
+from typing import NamedTuple
+
 from .blackboard import Blackboard, is_verified_fact
 
 #: Flag-shaped tokens (``flag{fake_flag}``, ``flag{fake_flag}``, ``flag{fake_flag}``) found in the
@@ -44,6 +47,277 @@ _FLAG_FILE_NAME_RE = re.compile(
 #: Longest file content promoted as loot; a longer line is not a flag and
 #: truncating it would store a text that never existed on the target.
 FLAG_FILE_TEXT_MAX = 500
+
+#: ``verification_method`` of the facts a generic shell asserts when the command
+#: it ran was an authenticated ``ssh`` (``sshpass``). The channel is proven -the
+#: command really ran on the target- but by ``nexus.shell.exec`` rather than by
+#: ``nexus.post.ssh_exec``, so the board can tell the two apart.
+SHELLPASS_METHOD = "shell_sshpass_completed"
+
+#: ``verification_method`` of the ``nexus.shell.exec`` result these facts come
+#: from. ``shell_command_denied``/``shell_unavailable`` never get this far
+#: (``ToolResult.success`` is false), so the check only pins the contract.
+SHELL_RESULT_METHOD = "shell_exit_code"
+
+#: The canonical root identity line (``uid=0(root) gid=0(root) groups=0(root)``).
+#: It substantiates the claim on its own, whatever wrapper printed it: the same
+#: line ``ssh_exec`` accepts (V1-35) is the same proof over ``sshpass``.
+_ROOT_LINE_RE = re.compile(r"uid=0\(root\) gid=\d+")
+
+#: Programs a ``sshpass`` wrapper can start that *are* the authenticated channel
+#: of ``nexus.post.ssh_exec``; ``scp``/``rsync``/``sftp`` are not (they move files
+#: and print no command output), so they never derive an ``access`` fact.
+_SSH_PROGRAMS = frozenset({"ssh", "ssh.exe"})
+
+#: Native-client options that consume the next token; anything else that starts
+#: with ``-`` is a flag without a value (``-4``, ``-A``, ``-T``...).
+_SSH_OPTION_WITH_VALUE = frozenset(
+    "-B -b -c -D -E -e -F -I -i -J -L -m -O -o -Q -R -S -W -w".split()
+)
+
+#: Tokens a launcher can leave before the program it starts. A wrapper only at
+#: *command position* is a program really being run; ``command -v sshpass`` or a
+#: branch of ``if ...; then`` is not, and the shell's exit code then says nothing
+#: about whether a login ever happened.
+_COMMAND_POSITION_PRECEDERS = frozenset(
+    {";", "&&", "||", "|", "&", "(", "{", "!", "env", "timeout", "nice",
+     "nohup", "stdbuf", "xargs", "-oL", "-eL"}
+)
+
+#: ``VAR=value`` prefixing a command (``SSHPASS=x sshpass -e ssh ...``).
+_SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=\S*")
+
+#: A trailing redirection: the client's own (``... ssh host 'id' 2>&1``) or the
+#: remote command's (``cat ~/user.txt 2>/dev/null``). It decides where the text
+#: goes, not what was read, so it is not part of the command's shape.
+_TRAILING_REDIRECTION_RE = re.compile(r"\s+(?:\d?>>?[^\s]+|\d?>&\d)\s*$")
+
+
+def strip_redirections(command) -> str:
+    """A remote command without its trailing shell redirections."""
+    text = str(command or "").strip()
+    while True:
+        stripped = _TRAILING_REDIRECTION_RE.sub("", text).strip()
+        if stripped == text:
+            return text
+        if not stripped:
+            return ""
+        text = stripped
+
+
+def _at_command_position(tokens, index: int) -> bool:
+    """Whether ``tokens[index]`` is a program the shell would actually start."""
+    if index == 0:
+        return True
+    previous = tokens[index - 1]
+    if previous in _COMMAND_POSITION_PRECEDERS:
+        return True
+    # ``id; sshpass ...`` splits as ``['id;', 'sshpass', ...]``: the separator is
+    # glued to the previous word instead of standing alone.
+    if previous.rstrip(";&|") != previous:
+        return True
+    if previous.isdigit() and index >= 2 and tokens[index - 2] in ("timeout", "nice"):
+        return True
+    return bool(_SHELL_ASSIGNMENT_RE.fullmatch(previous))
+
+
+class SshChannel(NamedTuple):
+    """One ``sshpass``-wrapped native client found inside a shell command.
+
+    ``command`` is the remote command the client ran (``""`` when it opened an
+    interactive session); ``password`` is the ``sshpass -p`` value, kept only to
+    be stored in the vault -it never goes to the board (V1-29).
+    """
+
+    target: str
+    username: str
+    port: int | None
+    password: str
+    command: str
+
+    def descriptor(self) -> dict:
+        """Channel as recorded in a result's evidence (never the secret)."""
+        return {"target": self.target, "username": self.username or None,
+                "port": self.port, "command": self.command}
+
+
+def _program_name(token: str) -> str:
+    """Basename of an argv token, so ``/usr/bin/sshpass`` counts as ``sshpass``."""
+    return str(token).rsplit("/", 1)[-1].lower()
+
+
+def _sshpass_password(tokens, wrapper: int, client: int) -> str:
+    """Value of ``sshpass -p <password>`` (``""`` for ``-e``/``-f``/``-d``)."""
+    for position in range(wrapper + 1, client):
+        token = tokens[position]
+        if token == "-p" and position + 1 < client:
+            return tokens[position + 1]
+        if token.startswith("-p") and len(token) > 2:
+            return token[2:]
+    return ""
+
+
+def _ssh_destination(tokens, start: int):
+    """``(target, username, port, remote command)`` of an ``ssh`` argv.
+
+    Reads the native client's own options (``-p PORT``/``-pPORT``, ``-l USER``,
+    ``-o Port=PORT``) and stops at the first positional argument, which is the
+    ``[user@]host`` every ``ssh`` invocation must carry. Everything after it is
+    the remote command -``ssh`` hands the rest of the line to the target shell,
+    so it is *not* parsed as local argv.
+    """
+    username = ""
+    port: int | None = None
+    index = start
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in ("-p", "-l") and index + 1 < len(tokens):
+            value = tokens[index + 1]
+            if token == "-l":
+                username = value
+            else:
+                port = int(value) if value.isdigit() else None
+            index += 2
+            continue
+        if token.startswith("-p") and len(token) > 2 and token[2:].isdigit():
+            port = int(token[2:])
+            index += 1
+            continue
+        if token.startswith("-l") and len(token) > 2:
+            username = token[2:]
+            index += 1
+            continue
+        if token in _SSH_OPTION_WITH_VALUE and index + 1 < len(tokens):
+            value = tokens[index + 1]
+            if token == "-o" and value.lower().startswith("port="):
+                configured = value.split("=", 1)[1]
+                port = int(configured) if configured.isdigit() else None
+            index += 2
+            continue
+        if token.startswith("-") and token != "-":
+            index += 1
+            continue
+        break
+    if index >= len(tokens):
+        return "", username, port, ""
+    destination = tokens[index]
+    user, separator, host = destination.rpartition("@")
+    if not separator:
+        user, host = "", destination
+    if not host:
+        return "", username, port, ""
+    remote = strip_redirections(" ".join(tokens[index + 1:]))
+    return host, username or user, port, remote
+
+
+def sshpass_channels(command) -> tuple[SshChannel, ...]:
+    """Every ``sshpass ... ssh`` invocation inside *command*, in argv order.
+
+    ``nexus.shell.exec`` runs arbitrary argv, so the escalation of a CTF room is
+    routinely ``sshpass -p '<secret>' ssh -p 2222 user@host '<command>'``: a real
+    authenticated channel that used to derive **nothing** (measured in the last
+    Simple CTF run: 2/2 flags captured, ``objective_complete=false``, exit 1 on
+    ``budget_exceeded`` because the board never held the ``privilege``/``loot``
+    the run had already obtained). Detection is lexical on purpose: it claims
+    nothing about success, only that this command *is* a native ssh login -the
+    caller still requires exit code 0 before asserting a fact.
+
+    Only the wrappers at *command position* count (start of the line, after a
+    chain separator, behind ``timeout``/``env``/an assignment). An ``sshpass``
+    word inside ``command -v sshpass`` or a branch of ``if ...; then`` is not a
+    login, and the shell's exit code would then say nothing about the channel.
+    """
+    text = str(command or "")
+    try:
+        tokens = shlex.split(text, posix=True)
+    except ValueError:  # unbalanced quote: the shell would have refused it too
+        return ()
+    channels: list[SshChannel] = []
+    for index, token in enumerate(tokens):
+        if _program_name(token) != "sshpass" or not _at_command_position(tokens, index):
+            continue
+        client = next(
+            (position for position in range(index + 1, len(tokens))
+             if _program_name(tokens[position]) in _SSH_PROGRAMS),
+            None,
+        )
+        if client is None:
+            continue
+        target, username, port, remote = _ssh_destination(tokens, client + 1)
+        if not target:
+            continue
+        channels.append(SshChannel(
+            target=target, username=username, port=port,
+            password=_sshpass_password(tokens, index, client), command=remote,
+        ))
+    return tuple(channels)
+
+
+def shell_root_identity(command, stdout) -> bool:
+    """Whether the output of *command* states the invoking account is ``root``.
+
+    Same bar as the ``ssh_exec`` branch: the canonical ``uid=0(root) gid=<n>``
+    line, or the literal answer of ``whoami``/``id -u``. A ``sudo -l`` line that
+    merely grants ``(root) NOPASSWD:`` is a *capability*, not an identity, and is
+    deliberately not promoted.
+    """
+    text = str(stdout or "")
+    if _ROOT_LINE_RE.search(text):
+        return True
+    single = str(command or "").strip()
+    if single == "whoami" and text.strip() == "root":
+        return True
+    return single == "id -u" and text.strip() == "0"
+
+
+#: Lines the native client prints *around* the remote output. When the caller
+#: folds stderr into stdout (``... 2>&1``) these land in front of the flag, and
+#: the first line of a verified read would otherwise be a warning (measured in
+#: the Simple CTF run: ``sshpass … ssh … 'id; hostname; cat ~/user.txt' 2>&1``
+#: starts with ``Warning: Permanently added …``).
+_SSH_CLIENT_NOISE_RE = re.compile(
+    r"^(?:\*\* WARNING:|\*\* This session may|\*\* The server may|"
+    r"Warning: Permanently added|Warning: Identity file|Pseudo-terminal will)"
+)
+
+
+def _shell_output(output, result) -> str:
+    """Bounded stdout of a ``nexus.shell.exec`` result.
+
+    The handler keeps the full output as an artifact and returns a summary of
+    head+tail lines; the verifier reads exactly what the run itself saw, so a
+    fact can never be asserted from text the model was not shown.
+    """
+    for value in (output.get("summary"), output.get("stdout"), result.stdout):
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def shell_read_text(command, summary) -> str:
+    """Content printed by a single read of a flag file over the shell channel.
+
+    :func:`flag_file_text` takes the first line of the output, which is right for
+    ``ssh_exec`` (stdout reaches it clean). Here the summary is the *local* shell
+    output, so the client's own diagnostics are removed first and the read must
+    leave exactly one line -the shape a flag file has-, otherwise nothing is
+    attributed to the path.
+    """
+    if not flag_file_path(command):
+        return ""
+    stdout = str(summary or "").split("\n[stderr]", 1)[0]
+    lines = [line.strip() for line in stdout.splitlines()
+             if line.strip() and not _SSH_CLIENT_NOISE_RE.match(line.strip())]
+    if len(lines) != 1:
+        return ""
+    text = lines[0]
+    if len(text) > FLAG_FILE_TEXT_MAX or any(ord(ch) < 0x20 for ch in text):
+        return ""
+    return text
+
 
 #: ``verification_method`` of the facts an accepted MSF session asserts (V1-24).
 #: Distinct from the handler's ``session_established``: that one is the *result's*
@@ -352,6 +626,71 @@ def derive_assertions(tool_id, arguments, result, context):
                     {'content': text, 'flag': text, 'command': command,
                      'path': path, 'service': 'ssh'},
                     f"ssh:file:{path}")
+    elif (tool_id == 'nexus.shell.exec'
+          and result.verification_method == SHELL_RESULT_METHOD):
+        # WP1's generic shell can run the same authenticated client as
+        # ``nexus.post.ssh_exec``. Until this branch existed the engine was blind
+        # to that channel: the Simple CTF run of 2026-10-17 captured both flags,
+        # escalated through ``sshpass`` and still closed with
+        # ``objective_complete=false`` (no ``privilege``/``loot`` on the board), so
+        # the budget exemption never applied and the run exited 1 on
+        # ``budget_exceeded`` with the room already solved.
+        #
+        # Only exit 0 proves anything here (``derive_assertions`` already refuses
+        # a result that is not ``success``, which for this handler means exit 0
+        # and not timed out/cancelled); a wrong password exits 5 and derives
+        # nothing.
+        channels = sshpass_channels((arguments or {}).get('command'))
+        exit_code = output.get('exit_code', result.exit_code)
+        if channels and exit_code == 0:
+            first = channels[0]
+            tenant = str(getattr(context, 'tenant_id', 'system'))
+            add('access', first.target,
+                {'transport': 'ssh', 'username': first.username or None,
+                 'port': first.port, 'via': 'shell.exec'},
+                method=SHELLPASS_METHOD)
+            # V1-29 continuity: the password that authenticated goes to the vault
+            # and the fact carries only its handle, so the next turn -or the next
+            # tool- reuses it instead of retyping the secret.
+            handle = (_proved_credential_handle(context, first.target, first.username)
+                      if first.username else '')
+            if not handle and first.username:
+                handle = _credential_handle({'password': first.password}, kind='ssh',
+                                            tenant_id=tenant)
+            if handle and first.username:
+                add('credential', first.target,
+                    {'username': first.username, 'secret_ref': handle,
+                     'service': 'ssh', 'port': first.port},
+                    f'cred:ssh:{first.username}@{first.target}',
+                    method=SHELLPASS_METHOD)
+            # Privilege and loot are attributed to *one* host: with several
+            # different targets in the same command line the summary mixes their
+            # output, so only the channel itself (already added) is provable.
+            text = _shell_output(output, result)
+            if all(channel.target == first.target for channel in channels):
+                if shell_root_identity(first.command, text):
+                    add('privilege', first.target,
+                        {'uid': 0, 'user': 'root', 'via': 'shell.exec'},
+                        method=SHELLPASS_METHOD)
+                captured = FLAG_RE.findall(text)
+                for flag in captured:
+                    add('loot', flag,
+                        {'flag': flag, 'command': first.command,
+                         'service': 'ssh', 'via': 'shell.exec'}, flag,
+                        method=SHELLPASS_METHOD)
+                # A single read of a conventional flag file is loot on the path
+                # alone (Simple CTF's ``root.txt`` says "W3ll d0n3...", with no
+                # prefix). A *chain* is not: the summary then mixes several
+                # commands and nothing attributes a line to the file that was
+                # read, so only flag-shaped tokens promote there.
+                path = flag_file_path(first.command)
+                content = shell_read_text(first.command, text) if path else ''
+                if content and content not in captured:
+                    add('loot', content,
+                        {'content': content, 'flag': content,
+                         'command': first.command, 'path': path,
+                         'service': 'ssh', 'via': 'shell.exec'},
+                        f'ssh:file:{path}', method=SHELLPASS_METHOD)
     elif tool_id == 'nexus.pwn.ret2libc' and result.verification_method == 'ret2libc_root_command':
         target = output.get('target')
         add('privilege', target, {'uid': 0, 'user': 'root'})

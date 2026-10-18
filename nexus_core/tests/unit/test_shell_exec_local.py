@@ -109,6 +109,99 @@ def test_shell_exec_refuses_a_prohibited_command(context):
     assert denied and denied[-1]["decision"] == "deny"
 
 
+def test_shell_exec_records_the_sshpass_channel_it_was_asked_to_run(context):
+    """An ``sshpass`` login is a channel, not an opaque local process (V1-49).
+
+    The command cannot start ``sshpass`` (the assignment empties ``PATH``), so the
+    call is cheap and offline: the point is that the handler *reports* which host
+    the command was going to reach, never the password it carried.
+    """
+    result = _run(context, {
+        "command": "PATH=/nonexistent sshpass -p 'cyber' ssh -p 2222 "
+                   "mitch@10.10.10.5 'id'",
+    })
+
+    assert result.evidence["ssh_channels"] == [
+        {"target": "10.10.10.5", "username": "mitch", "port": 2222,
+         "command": "id"},
+    ]
+    assert "cyber" not in str(result.evidence)
+
+
+def test_shell_exec_without_sshpass_reports_no_channel(context):
+    result = _run(context, {"command": "echo hola"})
+    assert "ssh_channels" not in result.evidence
+
+
+class _FakeSandbox:
+    """A sandbox that answers with a canned ``SandboxResult`` (no process)."""
+
+    def __init__(self, result) -> None:
+        self.result = result
+        self.calls: list[list[str]] = []
+
+    async def run(self, argv, *, timeout_seconds: float = 30):
+        self.calls.append(list(argv))
+        return self.result
+
+
+def _with_sandbox(result):
+    from unittest import mock
+
+    import nexus_core.tools.handlers.shell_exec_local as shell_module
+
+    sandbox = _FakeSandbox(result)
+    return mock.patch.object(shell_module, "sandbox_for_environment", lambda *a, **k: sandbox)
+
+
+def test_an_sshpass_run_feeds_the_board_and_closes_the_objective(context, tmp_path, monkeypatch):
+    """The real handler output shape is what the verifier must read (V1-49).
+
+    Until this branch existed the run captured both flags over ``sshpass`` and
+    closed with ``objective_complete=false``; here the same two commands go
+    through the sandbox, the verifier and the blackboard, and the objective is
+    reported met.
+    """
+    from dataclasses import replace
+
+    from nexus_core.agent.planner import build_plan, objective_completion
+    from nexus_core.kernel.blackboard import Blackboard
+    from nexus_core.kernel.fact_verification import derive_assertions, persist_assertions
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    monkeypatch.setenv("NEXUS_VAULT_ROOT", str(tmp_path / "vault"))
+    runs = [
+        ("sshpass -p 'guessed' ssh -p 2222 mitch@10.10.10.5 'id'",
+         "uid=0(root) gid=0(root) groups=0(root)\n"),
+        ("sshpass -p 'guessed' ssh -p 2222 mitch@10.10.10.5 'sudo cat /root/root.txt'",
+         "W3ll d0n3. You made it!\n"),
+    ]
+    for index, (command, stdout) in enumerate(runs):
+        run_context = replace(context, invocation_id=f"inv-{index}")
+        with _with_sandbox(SandboxResult(0, stdout, "")):
+            result = asyncio.run(shell_exec_handler({"command": command}, run_context))
+        assert result.verified is True
+        # The gateway validates every result before deriving assertions.
+        result.to_dto()
+        persist_assertions(
+            derive_assertions("nexus.shell.exec", {"command": command}, result, run_context),
+            run_context, "nexus.shell.exec",
+        )
+
+    facts = Blackboard(context.store).list_facts("system", context.scope.engagement_id)
+    derived = {fact["fact_type"] for fact in facts
+               if fact.get("verification_method") == "shell_sshpass_completed"}
+    assert {"access", "credential", "privilege", "loot"} <= derived
+    assert {fact["source"] for fact in facts
+            if fact.get("verification_method") == "shell_sshpass_completed"} == {
+        "nexus.shell.exec"}
+
+    assert objective_completion(facts).complete is True
+    statuses = {phase.id: phase.status for phase in build_plan(facts=facts).phases}
+    assert statuses["exploitation"] == "done"
+    assert statuses["privilege_escalation"] == "done"
+
+
 def test_shell_exec_archives_full_stdout_and_stderr(context):
     result = _run(context, {"command": "printf 'hola\\nque tal\\n'; echo oops >&2"})
     reference = result.output["artifact_ref"]
