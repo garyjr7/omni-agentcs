@@ -365,6 +365,9 @@ def _run_headless(
         # No human at the terminal: approvals are denied unless trust mode asked
         # for the audited auto-approval of high-risk (never destructive) tools.
         on_approval_needed=_trust_approval(session),
+        # ``--resume-policy``: only a trust-mode run may replay an ``unknown``
+        # invocation without asking; anything else keeps the fail-closed block.
+        resume_policy=getattr(session, "effective_resume_policy", ""),
     )
 
     stop = threading.Event()

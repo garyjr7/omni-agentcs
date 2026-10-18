@@ -80,6 +80,14 @@ DEFAULT_MAX_ITERATIONS = 30
 #: and one call away from the flag. Only the bench raises it, and an explicit
 #: ``NEXUS_RUN_BUDGET_TOKENS`` from the operator still wins.
 BENCH_RUN_BUDGET_TOKENS = 400_000
+#: Policy of the run for an invocation the journal left ``unknown`` (a tool that
+#: timed out mid-effect). Measured in Simple CTF (2026-10-18 15:49 UTC): the
+#: agent's own retry of a timed-out ``enum_system`` met "unknown invocation
+#: requires human approval" and the whole run closed as ``blocked`` (exit 2) with
+#: the target still reachable. A bench has no human to ask, and it already hands
+#: the run ``--trust-mode``; ``approve`` records the durable, audited approval the
+#: gateway would otherwise demand. The engine ignores it without trust mode.
+BENCH_RESUME_POLICY = "approve"
 
 
 # --------------------------------------------------------------------- config
@@ -428,6 +436,10 @@ def run_once(
         "--objective", objective,
         "--stream-json", "--trust-mode", "--no-tui",
         "--max-iterations", str(room.get("max_iterations") or DEFAULT_MAX_ITERATIONS),
+        # Smart resume: a timed-out tool leaves its invocation ``unknown``; the
+        # bench auto-approves the retry instead of dying at exit 2 for a human
+        # that is not there (measured run 2026-10-18T154936Z).
+        "--resume-policy", BENCH_RESUME_POLICY,
     ]
     started = time.monotonic()
     exit_code: int | None = None

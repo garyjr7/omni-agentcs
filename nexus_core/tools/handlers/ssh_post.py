@@ -756,6 +756,32 @@ def _is_authentication_failure(detail: str) -> bool:
     return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
 
 
+#: Client diagnostics that mean the call ran out of time (a ``connect``/``exec``
+#: timeout raised by paramiko inside the sandboxed client). The client reports
+#: them as ``"<ExceptionType>: <message>"`` in the top-level ``error``.
+_SSH_TIMEOUT_MARKERS = ("timeouterror", "timed out", "timeout")
+
+
+def _client_timed_out(payload: dict[str, Any]) -> bool:
+    """Whether the SSH client itself reported a timeout (V1-54).
+
+    Measured in the Simple CTF run of 2026-10-18 15:49 UTC: ``enum_system``
+    returned ``{"error": "TimeoutError: timed out", "results": {}}`` and the
+    handler labelled it ``enum_system_failed``. That is not a broken
+    post-condition -the operation ran out of time- but the bare method made the
+    gateway raise, the journal keep the invocation ``unknown`` and the next
+    retry close the run as ``blocked`` waiting for a human approval nobody was
+    there to give.
+
+    Only the client's own ``error`` field is inspected: a command that merely
+    prints the word ``timeout`` in its stderr did connect and answer.
+    """
+    if payload.get("timed_out"):
+        return True
+    detail = str(payload.get("error") or "").lower()
+    return any(marker in detail for marker in _SSH_TIMEOUT_MARKERS)
+
+
 def _verified_ssh_access(context: RunContext, target: str, username: str) -> bool:
     """Whether the blackboard already proved this SSH credential works.
 
@@ -1299,6 +1325,26 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         "stderr": payload.get("stderr", ""),
         "exit_status": exit_status,
     }
+    if _client_timed_out(payload):
+        # V1-54: the client ran out of time (connect or command). Declaring the
+        # determinate ``timeout`` keeps the journal honest (the effect is *not*
+        # confirmed) and stops the gateway from turning it into a bare
+        # ``RuntimeError`` that leaves the next retry blocked on an approval.
+        if detail:
+            evidence["error_detail"] = detail
+        output["error"] = detail or "ssh command timed out"
+        return ToolResult(
+            output=output,
+            verified=False,
+            outcome="timeout",
+            timed_out=True,
+            verification_method="ssh_exec_timeout",
+            evidence=evidence,
+            exit_code=result.exit_code,
+            accepted_exit_codes=(0,),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
     if not connected:
         # The login itself failed: the credential (or the link) was refused, and
         # the invocation still decided something, so it is a determinate result
@@ -1459,6 +1505,25 @@ async def enum_system_handler(arguments: dict, context: RunContext) -> ToolResul
             verification_method="ssh_unavailable",
             evidence=evidence,
             exit_code=result.exit_code,
+        )
+    if _client_timed_out(payload):
+        # V1-54: ``TimeoutError: timed out`` from the client is a timeout, not a
+        # broken post-condition. The measured turn ended with the journal in
+        # ``unknown`` and the next retry blocked the whole run.
+        detail = _credential_detail(payload)
+        if detail:
+            evidence["error_detail"] = detail
+        return ToolResult(
+            output={"error": detail or "enumeration timed out", "target": target},
+            verified=False,
+            outcome="timeout",
+            timed_out=True,
+            verification_method="enum_system_timeout",
+            evidence=evidence,
+            exit_code=result.exit_code,
+            accepted_exit_codes=(0,),
+            stdout=result.stdout,
+            stderr=result.stderr,
         )
     results = payload.get("results") or {}
     sudo_output = (results.get(SSH_ENUM_MARKER) or {}).get("stdout", "")

@@ -97,8 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["approve", "skip", "fail"],
         default=None,
         help=(
-            "con --resume en headless: qué hacer con invocaciones en estado unknown "
-            "(approve=exige aprobación durable previa; skip=marca sin efecto; fail=falla)"
+            "qué hacer con invocaciones en estado unknown. En headless con --resume: "
+            "approve=exige aprobación durable previa; skip=marca sin efecto; fail=falla. "
+            "Durante el run y solo con --trust-mode: approve=auto-aprobación auditada "
+            "del reintento; skip=lo marca sin efecto; fail=bloquea"
         ),
     )
     parser.add_argument(
@@ -523,6 +525,9 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
         max_iterations=args.max_iterations,
         run_id=args.resume,
         trust_mode=args.trust_mode,
+        # V1-54: the retry policy of an ``unknown`` invocation. It only reaches
+        # the gateway while trust mode is on (``effective_resume_policy``).
+        resume_policy=str(args.resume_policy or ""),
         no_color=args.no_color,
         use_tui=False if args.no_tui or objective else None,
         engagement_names=[scope.name for scope in engagements],

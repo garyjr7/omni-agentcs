@@ -1721,6 +1721,9 @@ class ReActCoordinator:
             "session_id": self.conversation_id,
             "phase": getattr(self.plan, "current", "") or "",
             "objective": self.objective,
+            # V1-54: how a retry of an ``unknown`` invocation is resolved. The
+            # engine set it from ``--resume-policy`` (only under trust mode).
+            "resume_policy": str(getattr(self.config, "resume_policy", "") or ""),
         }
         from nexus_core.kernel.job_authority import JobAuthority
 

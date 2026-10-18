@@ -207,6 +207,12 @@ class ReActConfig:
     #: observation and continues (a human refusal is not a tool failure). Without
     #: a callback, the gateway fails the call with ``PermissionError`` as before.
     on_approval_needed: Callable[[str, dict[str, Any], Any], ApprovalDecision | None] | None = None
+    #: What a retry of an invocation the journal holds ``unknown`` may do in a
+    #: headless ``--trust-mode`` run (``approve``/``skip``/``fail``). The CLI
+    #: forwards ``--resume-policy`` only when trust mode is on; empty keeps the
+    #: fail-closed ``ApprovalRequired``. It reaches the gateway as engine data
+    #: (``RunContext.resume_policy``), never as a tool argument.
+    resume_policy: str = ""
     #: Live reasoning hook: receives the partial ``thought`` text as the model
     #: writes it, so the CLI can stream the cognitive loop. Only used when the
     #: client reports ``supports_streaming``; otherwise the loop calls

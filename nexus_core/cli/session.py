@@ -210,6 +210,7 @@ class OmniSession:
         export_dir: Any = None,
         run_id: str | None = None,
         trust_mode: bool = False,
+        resume_policy: str = "",
         no_color: bool = False,
         use_tui: bool | None = None,
         status_bar_enabled: bool = True,
@@ -238,6 +239,10 @@ class OmniSession:
         self.export_dir = Path(export_dir) if export_dir else None
         #: ``--trust-mode``: auto-authorize high-risk (never destructive) tools.
         self.trust_mode = bool(trust_mode)
+        #: ``--resume-policy``: what a retry of an invocation the journal holds
+        #: ``unknown`` may do without a human. Only trusted with ``--trust-mode``
+        #: (see :attr:`effective_resume_policy`); empty means fail closed.
+        self.resume_policy = str(resume_policy or "")
         #: ``--no-color``: the banner still renders, only plain ASCII.
         self.no_color = bool(no_color)
         #: ``--about``/``--banner``: show the big ASCII art instead of the
@@ -308,6 +313,17 @@ class OmniSession:
     @property
     def engagement_id(self) -> str | None:
         return getattr(self.engagement, "engagement_id", None)
+
+    @property
+    def effective_resume_policy(self) -> str:
+        """``--resume-policy`` when the run is trusted, else the fail-closed ``""``.
+
+        A headless bench acknowledges that an ``unknown`` invocation may be
+        replayed only because the operator handed the run ``--trust-mode``: the
+        engine never auto-approves a replay for a run that has no human at the
+        terminal *and* no trust delegation (V1-54).
+        """
+        return self.resume_policy if self.trust_mode else ""
 
     @property
     def _llm(self) -> Any:
@@ -1079,6 +1095,7 @@ class OmniSession:
             # P2-C3: opt-in automatic delegation on a family transition.
             "autospawn": bool(getattr(self, "autospawn", False)),
             "supervisor_budget": int(getattr(self, "supervisor_budget", 0) or 0),
+            "resume_policy": self.effective_resume_policy,
         }
         task = {
             "id": f"cli-{run_id}",
@@ -1093,6 +1110,7 @@ class OmniSession:
             on_approval_needed=make_approval_callback(
                 self, self.store, self.tenant_id, run_id, trust_mode=self.trust_mode
             ),
+            resume_policy=self.effective_resume_policy,
             # Stream the model's reasoning into the live overlay (TUI only).
             on_thought=self._tui.set_thought if self._tui.use_tui else None,
             on_thought_done=self._tui.end_thought if self._tui.use_tui else None,

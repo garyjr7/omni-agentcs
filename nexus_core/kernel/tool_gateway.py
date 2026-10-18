@@ -150,6 +150,90 @@ class ToolGateway:
         self._definitions: Dict[str, ToolDefinition] = {}
         self._handlers: Dict[str, ToolHandler] = {}
 
+    def _resolve_unknown_retry(
+        self,
+        action: str,
+        context: RunContext,
+        *,
+        tool_id: str,
+        invocation_id: str,
+        journal,
+    ) -> str | None:
+        """Apply the run's ``resume_policy`` to a retry the journal holds ``unknown``.
+
+        Measured in the Simple CTF run of 2026-10-18 15:49 UTC: ``enum_system``
+        timed out, the journal kept the invocation ``unknown`` and the model's own
+        retry met ``unknown invocation requires human approval``. A headless
+        ``--trust-mode`` run has nobody to ask, so the engine closed as
+        ``blocked`` (exit 2) with the target still reachable.
+
+        The policy is engine-set (``--resume-policy`` plus ``--trust-mode``),
+        never model-supplied:
+
+        * ``approve`` registers the durable approval the gateway would otherwise
+          demand and consumes it in the same call. The row still exists (requested
+          by the run, decided by the operator identity of the worker), so the
+          audit trail says *who* authorized the replay of an unconfirmed effect.
+        * ``skip`` records the operator's no-effect decision (``mark_failed``) and
+          returns ``None`` so the call proceeds as a fresh invocation.
+        * anything else keeps today's fail-closed behaviour.
+
+        Returns the invocation id to fence as ``retry_of`` (or ``None`` after a
+        skip); raises ``ApprovalRequired`` when no policy authorizes the replay.
+        """
+        policy = str(getattr(context, "resume_policy", "") or "")
+        if policy == "skip":
+            journal.mark_failed(
+                invocation_id, context.tenant_id,
+                reason="resume policy skip: operator asserts no effect",
+            )
+            self.audit.append(
+                tenant_id=context.tenant_id, trace_id=context.trace_id,
+                actor_id=context.identity.subject_id, action="invocation.retry_skipped",
+                resource_type="invocation", resource_id=invocation_id,
+                payload={"tool_id": tool_id, "run_id": context.run_id,
+                         "policy": policy,
+                         "operator": str(getattr(context, "worker_id", "") or "")},
+                decision="allow",
+            )
+            return None
+        if policy == "approve" and self.approvals is not None:
+            operator = str(getattr(context, "worker_id", "") or "") or "operator:trust_mode"
+            try:
+                approval = self.approvals.request(context, action)
+                self.approvals.decide(
+                    approval["id"], context.tenant_id, operator, True,
+                    f"resume policy approve for {tool_id}",
+                )
+            except Exception as exc:  # noqa: BLE001 - fail closed, but say why
+                self.audit.append(
+                    tenant_id=context.tenant_id, trace_id=context.trace_id,
+                    actor_id=context.identity.subject_id,
+                    action="invocation.retry_auto_approval_failed",
+                    resource_type="invocation", resource_id=invocation_id,
+                    payload={"tool_id": tool_id, "run_id": context.run_id,
+                             "error": _bounded(f"{type(exc).__name__}: {exc}")},
+                    decision="deny",
+                )
+                raise ApprovalRequired(
+                    "unknown invocation requires human approval: " + action
+                ) from exc
+            if not self.approvals.consume(approval["id"], context, action):
+                raise ApprovalRequired(
+                    "unknown invocation requires human approval: " + action
+                )
+            self.audit.append(
+                tenant_id=context.tenant_id, trace_id=context.trace_id,
+                actor_id=operator, action="invocation.retry_auto_approved",
+                resource_type="invocation", resource_id=invocation_id,
+                payload={"tool_id": tool_id, "run_id": context.run_id,
+                         "policy": policy, "approval_id": approval["id"],
+                         "trust_mode": True},
+                decision="allow",
+            )
+            return invocation_id
+        raise ApprovalRequired('unknown invocation requires human approval: ' + action)
+
     def register(self, definition: ToolDefinition, handler: ToolHandler) -> None:
         if definition.tool_id in self._definitions:
             raise ValueError(f"tool already registered: {definition.tool_id}")
@@ -357,8 +441,12 @@ class ToolGateway:
                     retry_action = f'retry:invocation:{retry_of}'
                     retry_id = retry_approval_id or (approval_id if not decision.requires_approval else None)
                     if not self.approvals or not retry_id or not self.approvals.consume(retry_id, context, retry_action):
-                        raise ApprovalRequired('unknown invocation requires human approval: ' + retry_action)
-                journal.claim_retry(retry_of, context.tenant_id)
+                        retry_of = self._resolve_unknown_retry(
+                            retry_action, context, tool_id=tool_id,
+                            invocation_id=previous['invocation_id'], journal=journal,
+                        )
+                if retry_of:
+                    journal.claim_retry(retry_of, context.tenant_id)
             target = arguments.get(definition.scope_target_field, '') if definition.scope_target_field else ''
             journal.prepare(context, tool_id, arguments, target, retry_of=retry_of,
                             step_key=step_key, lease_id=getattr(context, 'worker_id', '') or None)
@@ -407,7 +495,17 @@ class ToolGateway:
                 if not isinstance(result, ToolResult):
                     raise TypeError("tool handlers must return ToolResult with deterministic evidence")
                 result.to_dto()  # Validate before domain decisions or assertions.
-                if not result.completed and not handler_timed_out:
+                # V1-54: a handler that *declares* ``timeout`` is saying the same
+                # thing ``tool_timeout_result`` says -the call ran out of time-
+                # and is handled identically: determinate result for the loop, no
+                # assertion, journal kept ``unknown`` so the effect is never
+                # answered later as data this run did not obtain. Before this, an
+                # SSH client ``TimeoutError`` reached the branch below, was
+                # re-labelled ``unavailable``, finished as ``succeeded`` and the
+                # next retry was blocked on an approval (Simple CTF
+                # 2026-10-18 15:49 UTC).
+                declared_timeout = result.outcome == "timeout"
+                if not result.completed and not handler_timed_out and not declared_timeout:
                     # V0-22: a declared ``negative``/``denied``/``unsupported``
                     # result is an observation about the target and completes
                     # below. What is left is "could not look": a timeout, an
@@ -442,8 +540,9 @@ class ToolGateway:
                 # A call that timed out observed nothing about the target: it derives
                 # no assertion (V1-27), so a run that only collected timeouts can
                 # never advance a phase.
+                timed_out_call = handler_timed_out or declared_timeout
                 assertions = (
-                    [] if handler_timed_out
+                    [] if timed_out_call
                     else derive_assertions(tool_id, arguments, result, context)
                 )
                 result_value = result.to_dict()
@@ -475,7 +574,7 @@ class ToolGateway:
                     tool_id=tool_id, tenant_id=context.tenant_id,
                 )
                 persist_assertions(assertions, context, tool_id)
-                if handler_timed_out:
+                if timed_out_call:
                     # The effect of a timed-out call is *not* confirmed, so the journal
                     # keeps it ``unknown`` exactly like any other failed invocation: a
                     # repeat is never answered with data this run never obtained

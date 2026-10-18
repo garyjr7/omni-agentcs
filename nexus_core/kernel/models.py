@@ -468,6 +468,12 @@ class RunContext:
     # invocation journal.
     phase: str = ""
     objective: str = ""
+    #: ``--resume-policy`` of the run (``approve``/``skip``/``fail``), set by the
+    #: engine only under ``--trust-mode``. It decides what a retry of an
+    #: invocation the journal holds ``unknown`` may do without a human: an
+    #: audited durable approval, a no-effect skip, or the fail-closed block.
+    #: Never read from tool arguments.
+    resume_policy: str = ""
     # Set by ToolGateway from the authenticated invocation, never tool arguments.
     authorized_permissions: tuple[str, ...] = field(default=(), repr=False, compare=False)
 

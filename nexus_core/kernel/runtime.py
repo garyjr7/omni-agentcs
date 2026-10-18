@@ -148,6 +148,9 @@ def _build_run_context(payload: dict[str, Any], context: ExecutionContext) -> Ru
         project_root=str(outer.get('project_root') or ''),
         phase=str(payload.get('phase') or outer.get('phase') or ''),
         objective=str(payload.get('objective') or outer.get('objective') or ''),
+        # Engine-owned: how an ``unknown`` retry is resolved in this run. Empty
+        # outside ``--trust-mode``, so the journal keeps failing closed.
+        resume_policy=str(payload.get('resume_policy') or outer.get('resume_policy') or ''),
         tenant_id=context.tenant_id,
         identity=identity,
         run_id=context.run_id,
