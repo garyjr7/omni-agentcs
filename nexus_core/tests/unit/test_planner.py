@@ -5,12 +5,16 @@ from __future__ import annotations
 import pytest
 
 from nexus_core.agent.planner import (
+    ENUMERATION_ENDPOINT_CEILING,
     PHASE_IDS,
+    SMART_BUDGET_MIN_ITERATION,
     STATUS_CURRENT,
     STATUS_DONE,
     STATUS_PENDING,
     active_phase,
     build_plan,
+    endpoint_ceiling,
+    enumeration_budget_hint,
     normalize_counts,
     plan_from_summary,
 )
@@ -125,6 +129,51 @@ def test_plan_from_summary_uses_blackboard_summary():
     )
     assert plan.current == "exploitation"
     assert plan.facts_total == 4
+
+
+def test_the_endpoint_ceiling_closes_enumeration_by_decision():
+    """Five mapped endpoints are enough surface: pick one, stop enumerating.
+
+    Leads are counted because the rule is an explicit hand-off, not a claim of
+    evidence; a plan that still reports ``enumeration`` with that surface is the
+    shape the Simple CTF run of 2026-10-18 got stuck in.
+    """
+    plan = build_plan(counts={"host": 1, "service": 3}, leads={"endpoint": 5})
+    assert plan.current == "enumeration"
+
+    closed = endpoint_ceiling(plan)
+
+    assert closed is not None
+    assert closed.current == "exploitation"
+    statuses = {item.id: item.status for item in closed.phases}
+    assert statuses["enumeration"] == STATUS_DONE
+    # Below the ceiling nothing is forced.
+    assert endpoint_ceiling(build_plan(
+        counts={"host": 1, "service": 3}, leads={"endpoint": ENUMERATION_ENDPOINT_CEILING - 1}
+    )) is None
+    # A plan already past enumeration is untouched.
+    assert endpoint_ceiling(build_plan(counts={"service": 3, "endpoint": 5})) is None
+
+
+def test_the_smart_budget_hint_fires_only_after_ten_turns_with_a_wide_surface():
+    plan = build_plan(counts={"host": 1, "service": 3, "endpoint": 2})
+
+    hint = enumeration_budget_hint(plan, iteration=SMART_BUDGET_MIN_ITERATION + 1)
+
+    assert "demasiado presupuesto en enumeración" in hint
+    assert "3 servicios" in hint and "2 endpoints" in hint
+    # The contract is "more than 10 turns".
+    assert enumeration_budget_hint(plan, iteration=SMART_BUDGET_MIN_ITERATION) == ""
+    # A narrow surface, or something already usable, does not trigger it.
+    assert enumeration_budget_hint(
+        build_plan(counts={"service": 2, "endpoint": 2}), iteration=11
+    ) == ""
+    assert enumeration_budget_hint(
+        build_plan(counts={"service": 3, "endpoint": 2, "access": 1}), iteration=11
+    ) == ""
+    # It also fires on exploitation-with-no-access: in the measured run the plan
+    # had advanced at iteration 5 and the model kept enumerating anyway.
+    assert enumeration_budget_hint(plan, iteration=29) != ""
 
 
 def test_active_phase_matches_build_plan():

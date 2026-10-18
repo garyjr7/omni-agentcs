@@ -62,6 +62,7 @@ from .react_types import (
     BUDGET_SUBJECT_ID,
     SKILL_NUDGE_EVENT_TYPE,
     SKILL_NUDGE_TURNS,
+    SMART_BUDGET_EVENT_TYPE,
     TARGET_REACHED_EVENT_TYPE,
     TARGET_REACHED_FORCED_EVENT_TYPE,
     TARGET_REACHED_GRACE_TURNS,
@@ -104,6 +105,7 @@ from .planner import (
     CREDENTIAL_FOUND_REASON,
     flag_tokens,
     target_reached,
+    ENUMERATION_ENDPOINT_REASON,
     ENUMERATION_EXHAUSTED_REASON,
     SESSION_ESTABLISHED_REASON,
     CredentialHandover,
@@ -112,6 +114,8 @@ from .planner import (
     SessionHandover,
     apply_objective_completion,
     credential_handover,
+    endpoint_ceiling,
+    enumeration_budget_hint,
     enumeration_escalation,
     enumeration_still_open,
     escalate_credential,
@@ -216,6 +220,14 @@ class ReActCoordinator:
     #: cannot close its own phase); it is dropped as soon as the evidence moves
     #: the phase forward, so it never drags the plan backwards.
     credential_handed_over: bool
+    #: The endpoint-ceiling hand-over (Simple CTF 2026-10-18) is one-way while
+    #: the plan still computes ``enumeration``: once 5 endpoints are mapped the
+    #: phase is closed by decision and must not flap back on the next rebuild.
+    endpoint_ceiling_applied: bool
+    #: Smart-budget correction for the prompt of this turn ("" when the rule does
+    #: not apply) and whether its ``react.budget_hint`` event was already audited.
+    budget_hint: str
+    budget_hint_emitted: bool
     #: The board already proves the objective (verified top privilege + verified
     #: loot). Refreshed every turn from the facts; it adds the closure hint to the
     #: plan and exempts the active profile's token ceiling (V1-35, V1-38).
@@ -445,6 +457,9 @@ class ReActCoordinator:
         self.enumeration_escalated = False
         self.session_handed_over = False
         self.credential_handed_over = False
+        self.endpoint_ceiling_applied = False
+        self.budget_hint = ""
+        self.budget_hint_emitted = False
         self.objective_complete = False
         self.objective_complete_emitted = False
         self.budget_exempt = False
@@ -599,12 +614,18 @@ class ReActCoordinator:
             self._apply_enumeration_exhaustion()
             self._apply_credential_handover()
             self._apply_session_handover()
+        # The endpoint ceiling is a property of the board, not of the legacy
+        # profile gate: it applies to the default loop too.
+        self._apply_endpoint_ceiling()
         self._refresh_objective_complete()
         # WP5: the same board (plus the flags this run already saw in a tool
         # output) decides whether the objective's flags are in hand. It is read
         # every turn, so a flag captured after the previous turn is announced on
         # the very next prompt instead of when the budget runs out.
         self._refresh_target_reached()
+        # WP6: a wide surface after ten turns without access gets one explicit
+        # order to stop enumerating (see ``enumeration_budget_hint``).
+        self._refresh_budget_hint()
         self.last_plan = self.plan
         return Transition.READY
 
@@ -684,6 +705,60 @@ class ReActCoordinator:
         self.plan = escalate_credential(self.plan, handover)
         self.plan_reason = handover.reason
         self.credential_handed_over = True
+
+    def _apply_endpoint_ceiling(self) -> None:
+        """Force ``enumeration`` → ``exploitation`` once the surface is mapped.
+
+        The rule lives in the planner (deterministic, unit-tested); here it is
+        only *applied*. Measured in Simple CTF (2026-10-18 02:35 UTC): gobuster
+        put 17 endpoints on the board and the model kept enumerating routes, so
+        the run spent >150k tokens before reaching ``/simple/``. The ceiling
+        closes the phase by decision, keeping the statuses coherent, and the
+        change is audited with :data:`ENUMERATION_ENDPOINT_REASON`.
+
+        It is latched for the same reason as the other hand-overs: the plan is
+        rebuilt from the blackboard every turn, so a non-sticky rule would be
+        undone by the next rebuild while the same endpoints remain on the board.
+        """
+        if self.endpoint_ceiling_applied:
+            if str(getattr(self.plan, "current", "")) == "enumeration":
+                self.plan = endpoint_ceiling(self.plan) or self.plan
+                self.plan_reason = ENUMERATION_ENDPOINT_REASON
+            return
+        closed = endpoint_ceiling(self.plan)
+        if closed is None:
+            return
+        self.plan = closed
+        self.plan_reason = ENUMERATION_ENDPOINT_REASON
+        self.endpoint_ceiling_applied = True
+
+    def _refresh_budget_hint(self) -> None:
+        """Tell a run that keeps mapping routes to pick one and exploit it.
+
+        The rule lives in the planner (deterministic, unit-tested); the loop only
+        injects its text into this turn's prompt and audits it once. It never
+        stops the run, never changes the plan and never authorizes a tool: it is
+        the cheapest correction before the token budget does the deciding.
+        """
+        self.budget_hint = enumeration_budget_hint(self.plan, iteration=self.iteration)
+        if not self.budget_hint or self.budget_hint_emitted:
+            return
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            SMART_BUDGET_EVENT_TYPE,
+            {
+                "iteration": self.iteration,
+                "phase": str(getattr(self.plan, "current", "") or ""),
+                "services": int(self.plan.counts.get("service", 0)),
+                "endpoints": int(self.plan.counts.get("endpoint", 0)),
+                "endpoint_leads": int((getattr(self.plan, "leads", {}) or {}).get("endpoint", 0)),
+                "budget": self.budget,
+                "used": _budget_used(self.store, self.tenant_id, self.run_id) if self.budget else 0,
+                "hint": self.budget_hint,
+            },
+        )
+        self.budget_hint_emitted = True
 
     def _note_completed_turn(self) -> None:
         """Record that the phase of this turn has been *current* once more (V1-46).
@@ -1094,6 +1169,7 @@ class ReActCoordinator:
             same_tool_no_progress=self.same_tool_no_progress,
             target_reached=self.target_reached,
             iteration=self.iteration,
+            budget_hint=self.budget_hint,
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)

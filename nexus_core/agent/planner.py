@@ -601,6 +601,38 @@ SMB_SERVICE_MARKERS: tuple[str, ...] = (
 )
 
 
+#: Endpoints the engagement has *mapped* before enumeration is closed by
+#: decision instead of by waiting for the model. Measured in the Simple CTF run
+#: of 2026-10-18 02:35 UTC (``run_c034eeeb…``): gobuster put 17 endpoints on the
+#: board, the model kept analysing irrelevant routes and the run spent >150k
+#: tokens before it reached ``/simple/``. Verified endpoints already close the
+#: phase at one (``Phase.evidence`` below), so this rule is the deterministic
+#: *ceiling* for a plan that still reports ``enumeration`` -the case where the
+#: endpoints exist as agent-recorded leads (a manual gobuster through
+#: ``shell.exec``) or the phase is pinned by an earlier hand-over- and the one
+#: that keeps the close explicit and auditable instead of model-dependent.
+ENUMERATION_ENDPOINT_CEILING = 5
+#: Reason recorded when the endpoint ceiling forces the hand-over.
+ENUMERATION_ENDPOINT_REASON = "endpoint_ceiling_to_exploit"
+
+#: Smart-budget rule (Simple CTF 2026-10-18 02:35 UTC). From this turn on, a run
+#: that already mapped a wide surface but still has no access is told to stop
+#: enumerating and pick one endpoint. ``> 10`` is the product contract.
+SMART_BUDGET_MIN_ITERATION = 10
+#: Services on the board before the hint is worth spending tokens on.
+SMART_BUDGET_MIN_SERVICES = 3
+#: Endpoints on the board (verified or a lead) before the hint fires.
+SMART_BUDGET_MIN_ENDPOINTS = 1
+#: The exact correction injected into the system prompt. It names the waste, the
+#: decision and the next action, so it is an order and not another status line.
+SMART_BUDGET_PROMPT = (
+    "PRESUPUESTO DE ENUMERACIÓN: llevas {iteration} turnos y el tablero ya "
+    "tiene {services} servicios y {endpoints} endpoints. Estás gastando "
+    "demasiado presupuesto en enumeración. Elige UN endpoint prometedor y pasa "
+    "a explotación; no enumeres más rutas."
+)
+
+
 @dataclass(frozen=True)
 class EnumerationEscalation:
     """Deterministic proposal: leave ``enumeration`` for initial access."""
@@ -703,6 +735,73 @@ def escalate_enumeration(plan: Plan, escalation: EnumerationEscalation) -> Plan:
     (V1-18).
     """
     return hand_over_phase(plan, phase=escalation.phase)
+
+
+def endpoint_ceiling(
+    plan: Plan, *, min_endpoints: int = ENUMERATION_ENDPOINT_CEILING
+) -> Plan | None:
+    """Close ``enumeration`` deterministically once enough endpoints are mapped.
+
+    The request is the decision: a plan that is still on ``enumeration`` with
+    ``min_endpoints`` endpoints already mapped has enough surface to attack, and
+    more gobuster/ffuf runs only spend tokens. The hand-over closes the phase it
+    leaves (``hand_over_phase``) so the completion gate stays coherent and the
+    change is audited with :data:`ENUMERATION_ENDPOINT_REASON`.
+
+    Endpoints count whether the verifier proved them or the agent recorded them
+    as leads: this is an explicit hand-off, not a claim about evidence (which is
+    why the status changes only through ``hand_over_phase``). Verified endpoints
+    already close the phase by themselves at one, so in a normal run this rule
+    is a ceiling/guard rather than the usual path.
+    """
+    if str(getattr(plan, "current", "") or "") != "enumeration":
+        return None
+    counts = normalize_counts(counts=getattr(plan, "counts", None))
+    leads = normalize_counts(counts=getattr(plan, "leads", None))
+    mapped = max(counts.get("endpoint", 0), leads.get("endpoint", 0))
+    if mapped < int(min_endpoints):
+        return None
+    return hand_over_phase(plan, phase="exploitation")
+
+
+def enumeration_budget_hint(
+    plan: Plan,
+    *,
+    iteration: int,
+    min_iteration: int = SMART_BUDGET_MIN_ITERATION,
+) -> str:
+    """The smart-budget correction for a run that keeps enumerating (or "").
+
+    Fires when the loop has already spent more than ``min_iteration`` turns, the
+    board carries a wide-but-unexploited surface (:data:`SMART_BUDGET_MIN_SERVICES`
+    services and at least :data:`SMART_BUDGET_MIN_ENDPOINTS` endpoints) and there
+    is still **no access, session, privilege, loot or credential** to act on.
+
+    The phase test accepts ``exploitation`` as well as ``enumeration`` on
+    purpose: in the measured run the plan had already advanced to exploitation
+    at iteration 5 (verified endpoints close enumeration at one) while the model
+    went on enumerating routes. Gating on the literal label would have made the
+    rule unreachable in exactly the run it was written for; the real signal is
+    "pre-access and still mapping".
+    """
+    if int(iteration or 0) <= int(min_iteration):
+        return ""
+    if str(getattr(plan, "current", "") or "") not in {"enumeration", "exploitation"}:
+        return ""
+    counts = normalize_counts(counts=getattr(plan, "counts", None))
+    leads = normalize_counts(counts=getattr(plan, "leads", None))
+    endpoints = max(counts.get("endpoint", 0), leads.get("endpoint", 0))
+    if counts.get("service", 0) < SMART_BUDGET_MIN_SERVICES:
+        return ""
+    if endpoints < SMART_BUDGET_MIN_ENDPOINTS:
+        return ""
+    # Anything the engagement can already *use* ends the enumeration problem:
+    # the next action is validating that credential / using that access.
+    if any(counts.get(kind, 0) for kind in (*ACCESS_TYPES, "credential")):
+        return ""
+    return SMART_BUDGET_PROMPT.format(
+        iteration=int(iteration), services=counts.get("service", 0), endpoints=endpoints
+    )
 
 
 #: Reason recorded when an established session hands the engagement over to
@@ -1257,9 +1356,15 @@ __all__ = [
     "SSH_ACCESS_METHOD",
     "TOP_PRIVILEGE_ACCOUNTS",
     "CREDENTIAL_HANDOVER_SUBAGENTS",
+    "ENUMERATION_ENDPOINT_CEILING",
+    "ENUMERATION_ENDPOINT_REASON",
     "ENUMERATION_EXHAUSTED_NO_PROGRESS",
     "ENUMERATION_EXHAUSTED_REASON",
     "ENUMERATION_EXHAUSTED_SUBAGENTS",
+    "SMART_BUDGET_MIN_ENDPOINTS",
+    "SMART_BUDGET_MIN_ITERATION",
+    "SMART_BUDGET_MIN_SERVICES",
+    "SMART_BUDGET_PROMPT",
     "MARKERS",
     "PHASES",
     "SESSION_ESTABLISHED_REASON",
@@ -1272,6 +1377,8 @@ __all__ = [
     "SessionHandover",
     "apply_objective_completion",
     "credential_handover",
+    "endpoint_ceiling",
+    "enumeration_budget_hint",
     "enumeration_escalation",
     "enumeration_still_open",
     "loot_is_evidence",

@@ -60,6 +60,11 @@ SKILL_NUDGE_PROMPT = (
     "que se adapte a tu problema (ej. methodology-senior si te falta "
     "enumeración o web-upload-webshell si el vector es una subida)."
 )
+#: Emitted once when the smart-budget rule fires: the run has spent more than
+#: ``SMART_BUDGET_MIN_ITERATION`` turns mapping a wide surface without any access
+#: (Simple CTF 2026-10-18, ``run_c034eeeb…``: 17 endpoints and >150k tokens)
+#: before it reaches the endpoint it should attack.
+SMART_BUDGET_EVENT_TYPE = "react.budget_hint"
 #: Emitted once when the board (or the successful output of this run) proves the
 #: flags the objective asked for were captured. From that turn on the prompt
 #: carries :data:`TARGET_REACHED_PROMPT` and the loop counts the tool calls the

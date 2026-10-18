@@ -858,32 +858,159 @@ def _known_ssh_port(context: RunContext, target: str, username: str = "") -> int
     return None
 
 
-def _board_ssh_credential(context: RunContext, target: str, username: str) -> str:
-    """Plaintext of the SSH credential the board already proved, else ``""``.
+def _key_names_target(key: str, target: str) -> bool:
+    """Whether a fact key names exactly ``target`` (not a longer address)."""
+    if not key or not target:
+        return False
+    if key == target:
+        return True
+    boundary = rf"(?<![0-9A-Za-z.]){re.escape(target)}(?![0-9A-Za-z.])"
+    return re.search(boundary, key) is not None
 
-    Only a *verified* credential fact is reused (V1-29): ``cred:ssh:<user>@<host>``
-    carries the ``secret_ref`` handle and the plaintext stays in the vault, so a
-    guessed password is never replayed as if an authenticated session had proved
-    it. Without this, the password the model discovered in one turn had to be
-    retyped on every later turn -and the measured run retyped a *wrong* one.
+
+def _key_names_user(key: str, username: str) -> bool:
+    """Whether a fact key carries ``username`` as its user part."""
+    if not key or not username:
+        return False
+    if key == username:
+        return True
+    return re.search(rf"(?:^|[:/@]){re.escape(username)}(?=[@:/]|$)", key) is not None
+
+
+def _vault_reference(value: Any) -> str:
+    """The vault handle a ``credential``/``access`` fact carries, or ``""``.
+
+    The plaintext is never on the board (``blackboard`` redacts secret keys by
+    design); the usable shape is a ``vault:<hex>`` reference under any of the
+    fields the handlers and the verifier have used over time.
+    """
+    from nexus_core.kernel.secret_store import is_secret_ref
+
+    if not isinstance(value, dict):
+        return ""
+    for name in ("secret_ref", "credential_ref", "vault_ref", "password", "secret"):
+        candidate = value.get(name)
+        if isinstance(candidate, str) and is_secret_ref(candidate.strip()):
+            return candidate.strip()
+    return ""
+
+
+def _fact_matches_identity(fact: dict[str, Any], target: str, username: str) -> bool:
+    """Whether *fact* describes ``username@target`` (structural, not key-exact).
+
+    Measured in the Simple CTF run of 2026-10-18 02:35 UTC (iteration 29): the
+    model called ``ssh_exec`` with only ``target``/``username`` and the old
+    lookup only accepted the literal key ``cred:ssh:<user>@<host>``. The board
+    kept the same credential under other shapes (``<user>@<host>``, the user and
+    host inside the value, an ``access`` fact), and every mismatch cost a turn.
+    """
+    value = fact.get("value") if isinstance(fact, dict) else None
+    if not isinstance(value, dict):
+        return False
+    key = str(fact.get("key") or "")
+    named_target = str(
+        value.get("target") or value.get("host") or value.get("address") or ""
+    ).strip()
+    if named_target:
+        if named_target != target:
+            return False
+    elif not _key_names_target(key, target):
+        return False
+    named_user = str(value.get("username") or value.get("user") or "").strip()
+    if named_user:
+        return named_user == username
+    return _key_names_user(key, username)
+
+
+def _board_ssh_credential(
+    context: RunContext, target: str, username: str
+) -> tuple[str, str]:
+    """``(plaintext, vault ref)`` of the SSH credential on the board, else empty.
+
+    Looks at **both** ``credential`` and ``access`` facts (the board has two
+    shapes for "this credential works here") and matches them structurally, so
+    the handle is found even when the key was written by another producer.
+
+    Verified facts are preferred, and an unverified one is still used when it
+    carries a vault handle: the engine stored that secret itself, so replaying it
+    is not replaying a password the model guessed. A fact without a handle (the
+    hash a model copied, a redacted plaintext) is never used -and the caller's
+    error says so, which is what the measured turn needed.
     """
     from nexus_core.kernel.blackboard import is_verified_fact
-    from nexus_core.kernel.secret_store import default_secret_store, is_secret_ref
+    from nexus_core.kernel.secret_store import default_secret_store
 
-    wanted = f"cred:ssh:{username}@{target}"
-    for fact in _board_facts(context, "credential"):
-        if not is_verified_fact(fact) or str(fact.get("key") or "") != wanted:
-            continue
-        ref = str((fact.get("value") or {}).get("secret_ref") or "")
-        if not is_secret_ref(ref):
-            continue
+    candidates: list[tuple[bool, str]] = []
+    for fact_type in ("credential", "access"):
+        for fact in _board_facts(context, fact_type):
+            if not _fact_matches_identity(fact, target, username):
+                continue
+            ref = _vault_reference(fact.get("value"))
+            if not ref:
+                continue
+            candidates.append((not is_verified_fact(fact), ref))
+    # Verified first; the list order is the board's (newest first), so within one
+    # provenance the most recent handle wins.
+    candidates.sort(key=lambda item: item[0])
+    tenant_id = getattr(context, "tenant_id", "system")
+    for _unverified, ref in candidates:
         try:
-            return default_secret_store().get(
-                ref, tenant_id=getattr(context, "tenant_id", "system")
-            ).decode("utf-8")
+            plaintext = default_secret_store().get(ref, tenant_id=tenant_id).decode("utf-8")
         except Exception:  # noqa: BLE001 - an unreadable handle is not a credential
-            return ""
+            continue
+        if plaintext:
+            return plaintext, ref
+    return "", ""
+
+
+def _credential_lead_hint(context: RunContext, target: str, username: str) -> str:
+    """Why a credential-looking fact is not usable, or ``""`` when none exists.
+
+    The measured iteration 29 had a ``credential`` fact for ``mitch`` on the
+    board -the CMS hash the model had just extracted- but no vault handle, so
+    there was nothing the engine could inject. Saying that is actionable (crack
+    it or pass a password); the old generic "no SSH credential" made the model
+    retry the same call.
+    """
+    for fact_type in ("credential", "access"):
+        for fact in _board_facts(context, fact_type):
+            value = fact.get("value") if isinstance(fact, dict) else None
+            if not isinstance(value, dict):
+                continue
+            # Softer than the reuse match on purpose: the measured fact (a CMS
+            # hash) was keyed without the host, so binding it to this target would
+            # have to be guessed -acceptable for an explanatory line, never for
+            # injecting a secret.
+            named_target = str(
+                value.get("target") or value.get("host") or value.get("address") or ""
+            ).strip()
+            if named_target and named_target != target:
+                continue
+            named_user = str(value.get("username") or value.get("user") or "").strip()
+            matched = named_user == username if named_user else _key_names_user(
+                str(fact.get("key") or ""), username
+            )
+            if not matched:
+                continue
+            if _vault_reference(value):
+                continue
+            return (
+                f" El tablero ya tiene un hecho {fact_type} para "
+                f"{username}@{target} pero sin un `secret_ref` utilizable "
+                "(p. ej. un hash sin crackear): no es una contraseña."
+            )
     return ""
+
+
+def _missing_credential_message(context: RunContext, target: str, username: str) -> str:
+    """Fail-closed error that names the board state, not only the missing field."""
+    return (
+        f"no SSH credential for {username}@{target}: pass `password`, use the "
+        "`credential_ref` handle, or authenticate once so the engine records the "
+        "credential and can reuse it (enumerate with nexus.cred.bruteforce or a "
+        "manual `ssh_exec` with the password)."
+        + _credential_lead_hint(context, target, username)
+    )
 
 
 def _resolve_transport(arguments: dict, context: RunContext) -> tuple[dict, dict[str, Any]]:
@@ -891,10 +1018,10 @@ def _resolve_transport(arguments: dict, context: RunContext) -> tuple[dict, dict
 
     Returns the completed copy plus what was resolved (for the evidence, so the
     operator and the model can see that the engine -not the model- supplied it).
-    Both facts are *verified* board evidence: the SSH port of the target and the
-    credential an authenticated session already proved. The model still owns the
-    manual path: an explicit ``password``/``credential_ref``/``port`` is never
-    overridden.
+    The port and the credential come from board evidence; the credential is
+    resolved from its vault handle in-process, so the plaintext never reaches the
+    model. The model still owns the manual path: an explicit
+    ``password``/``credential_ref``/``port`` is never overridden.
     """
     resolved: dict[str, Any] = {}
     target = str(arguments.get("target") or "")
@@ -906,10 +1033,12 @@ def _resolve_transport(arguments: dict, context: RunContext) -> tuple[dict, dict
             filled["port"] = port
             resolved["port"] = port
     if target and username and not filled.get("password") and not filled.get("credential_ref"):
-        password = _board_ssh_credential(context, target, username)
+        password, ref = _board_ssh_credential(context, target, username)
         if password:
             filled["password"] = password
-            resolved["credential"] = f"vault:cred:ssh:{username}@{target}"
+            # The real handle, not a synthesized one: the operator can audit
+            # exactly which vault entry the engine supplied.
+            resolved["credential"] = ref
     return filled, resolved
 
 
@@ -1059,16 +1188,12 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
     username = _validate_text(arguments.get("username"), "username", max_length=128)
     password = str(arguments.get("password") or "")
     if not password:
-        # Fail closed, but say the whole way out: the engine already looks the
-        # credential up on the board (V1-29 continuity), so this only fires when
-        # the engagement has no proved SSH credential for that user and host.
-        raise ValueError(
-            "no SSH credential for "
-            f"{username}@{target}: pass `password`, use the `credential_ref` "
-            "handle, or authenticate once so the engine records the credential "
-            "and can reuse it (enumerate with nexus.cred.bruteforce or a manual "
-            "`ssh_exec` with the password)."
-        )
+        # Fail closed, but say the whole way out. The engine already resolves the
+        # credential from the board (any ``credential``/``access`` fact with a
+        # vault handle that names this user and host), so this only fires when
+        # there is nothing usable to inject -and it names why when the board has
+        # a credential-shaped fact without a handle (the measured hash).
+        raise ValueError(_missing_credential_message(context, target, username))
     command = str(arguments.get("command") or "").strip()
     if not command:
         raise ValueError("command is required")
@@ -1274,16 +1399,12 @@ async def enum_system_handler(arguments: dict, context: RunContext) -> ToolResul
     username = _validate_text(arguments.get("username"), "username", max_length=128)
     password = str(arguments.get("password") or "")
     if not password:
-        # Fail closed, but say the whole way out: the engine already looks the
-        # credential up on the board (V1-29 continuity), so this only fires when
-        # the engagement has no proved SSH credential for that user and host.
-        raise ValueError(
-            "no SSH credential for "
-            f"{username}@{target}: pass `password`, use the `credential_ref` "
-            "handle, or authenticate once so the engine records the credential "
-            "and can reuse it (enumerate with nexus.cred.bruteforce or a manual "
-            "`ssh_exec` with the password)."
-        )
+        # Fail closed, but say the whole way out. The engine already resolves the
+        # credential from the board (any ``credential``/``access`` fact with a
+        # vault handle that names this user and host), so this only fires when
+        # there is nothing usable to inject -and it names why when the board has
+        # a credential-shaped fact without a handle (the measured hash).
+        raise ValueError(_missing_credential_message(context, target, username))
     port = int(arguments.get("port") or SSH_DEFAULT_PORT)
     requested_timeout = arguments.get("timeout_seconds")
     timeout_seconds = min(
@@ -1388,16 +1509,12 @@ async def ssh_upload_handler(arguments: dict, context: RunContext) -> ToolResult
     username = _validate_text(arguments.get("username"), "username", max_length=128)
     password = str(arguments.get("password") or "")
     if not password:
-        # Fail closed, but say the whole way out: the engine already looks the
-        # credential up on the board (V1-29 continuity), so this only fires when
-        # the engagement has no proved SSH credential for that user and host.
-        raise ValueError(
-            "no SSH credential for "
-            f"{username}@{target}: pass `password`, use the `credential_ref` "
-            "handle, or authenticate once so the engine records the credential "
-            "and can reuse it (enumerate with nexus.cred.bruteforce or a manual "
-            "`ssh_exec` with the password)."
-        )
+        # Fail closed, but say the whole way out. The engine already resolves the
+        # credential from the board (any ``credential``/``access`` fact with a
+        # vault handle that names this user and host), so this only fires when
+        # there is nothing usable to inject -and it names why when the board has
+        # a credential-shaped fact without a handle (the measured hash).
+        raise ValueError(_missing_credential_message(context, target, username))
     remote_path = _validate_remote_path(arguments.get("remote_path"))
     file_mode = _validate_file_mode(arguments.get("file_mode"))
     make_dirs = bool(arguments.get("make_dirs", False))

@@ -277,6 +277,7 @@ class ContextBuilder:
         same_tool_no_progress: int = 0,
         target_reached: bool = False,
         iteration: int = 0,
+        budget_hint: str = "",
     ) -> list[LLMMessage]:
         full_catalog = self.full_catalog_for(iteration=iteration, subagent=subagent)
         history_summary, plan, facts_text = (
@@ -315,6 +316,11 @@ class ContextBuilder:
         # needs the way out (the index) and the recipe behind it.
         if same_tool_no_progress >= SKILL_NUDGE_TURNS:
             system_prompt = f"{system_prompt}\n\n{SKILL_NUDGE_PROMPT}"
+        # Smart budget (Simple CTF 2026-10-18): a wide, still-unexploited surface
+        # after ten turns is the measured token sink. The rule lives in the
+        # planner (deterministic, unit-tested); the loop only injects its text.
+        if budget_hint:
+            system_prompt = f"{system_prompt}\n\n{budget_hint}"
         # WP5: the objective's flags are in hand. The model still decides how to
         # close -the loop only forbids more exploration and orders the closure-;
         # if it ignores the order for the whole margin, the loop closes itself.

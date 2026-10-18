@@ -73,6 +73,13 @@ KILL_GRACE_SECONDS = 5
 #: with the wrong schema before it could fall back to ``nexus.shell.exec`` +
 #: hydra; 30 leaves room for that plan B.
 DEFAULT_MAX_ITERATIONS = 30
+#: Per-run token budget handed to ``omni`` by the bench. The CLI keeps its own
+#: documented default (250k in ``react_support.DEFAULT_RUN_BUDGET_TOKENS``); a CTF
+#: room needs margin for a real enumeration *and* the exploit chain. Measured in
+#: Simple CTF (2026-10-18 02:35 UTC): 255,744 tokens spent -over the 250k ceiling
+#: and one call away from the flag. Only the bench raises it, and an explicit
+#: ``NEXUS_RUN_BUDGET_TOKENS`` from the operator still wins.
+BENCH_RUN_BUDGET_TOKENS = 400_000
 
 
 # --------------------------------------------------------------------- config
@@ -279,6 +286,7 @@ def run_environment(run_dir: Path, workspace: Path) -> dict[str, str]:
     env["NEXUS_WORKSPACE_ROOT"] = str(workspace)
     env["XDG_DATA_HOME"] = str(data_home)
     env["NEXUS_DB_PATH"] = str(data_home / "omni" / "control.db")
+    env.setdefault("NEXUS_RUN_BUDGET_TOKENS", str(BENCH_RUN_BUDGET_TOKENS))
     if env.get("DATABASE_URL", "").startswith("sqlite:///"):
         del env["DATABASE_URL"]
     return env

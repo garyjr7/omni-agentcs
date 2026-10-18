@@ -221,7 +221,7 @@ def _proved_credential(store: ControlStore) -> str:
 def test_a_credential_the_engagement_proved_is_reused_and_redacted(tmp_path):
     """The model omits the secret; the engine supplies the proved one (V1-29)."""
     store = _store(tmp_path)
-    _proved_credential(store)
+    ref = _proved_credential(store)
 
     result, sandbox = _invoke(
         ssh_exec_handler,
@@ -231,9 +231,9 @@ def test_a_credential_the_engagement_proved_is_reused_and_redacted(tmp_path):
 
     assert sandbox.calls[0][7] == PASSWORD
     assert result.verified is True
-    assert result.evidence["resolved_from_board"] == {
-        "credential": f"vault:cred:ssh:mitch@{TARGET}"
-    }
+    # The evidence names the real handle the engine resolved, not a synthesized
+    # key that an operator cannot look up in the vault.
+    assert result.evidence["resolved_from_board"] == {"credential": ref}
     # The boundary redactor still covers the secret the engine resolved itself.
     assert PASSWORD not in json.dumps(result.output)
     assert PASSWORD not in json.dumps(result.evidence)
@@ -250,7 +250,9 @@ def test_the_credential_is_reused_by_enum_system_too(tmp_path):
                                                  _context(store)))
 
     assert sandbox.calls[0][7] == PASSWORD
-    assert result.evidence["resolved_from_board"]["credential"].startswith("vault:cred:ssh:")
+    from nexus_core.kernel.secret_store import is_secret_ref
+
+    assert is_secret_ref(result.evidence["resolved_from_board"]["credential"])
     assert result.verified is True
 
 
@@ -265,3 +267,103 @@ def test_a_call_without_any_proved_credential_says_how_to_get_one(tmp_path):
     message = str(excinfo.value)
     assert "password" in message and "credential_ref" in message
     assert f"mitch@{TARGET}" in message
+
+
+def _put_secret() -> str:
+    from nexus_core.kernel.secret_store import default_secret_store
+
+    return default_secret_store().put(PASSWORD.encode("utf-8"), kind="ssh", tenant_id=TENANT)
+
+
+def test_the_credential_is_found_under_another_key_shape(tmp_path):
+    """The lookup is structural: ``<user>@<host>`` is the same credential.
+
+    Measured in Simple CTF (2026-10-18 02:35 UTC, iteration 29): the model called
+    ``ssh_exec`` with only ``target`` and ``username``; the engine only accepted
+    the literal ``cred:ssh:<user>@<host>`` key, so the board's credential was
+    "missing" and the turn was lost.
+    """
+    store = _store(tmp_path)
+    ref = _put_secret()
+    _record(store, "credential", f"mitch@{TARGET}",
+            {"username": "mitch", "secret_ref": ref, "service": "ssh"})
+
+    result, sandbox = _invoke(
+        ssh_exec_handler,
+        {"target": TARGET, "username": "mitch", "command": "id"},
+        store,
+    )
+
+    assert sandbox.calls[0][7] == PASSWORD
+    assert result.evidence["resolved_from_board"] == {"credential": ref}
+
+
+def test_an_access_fact_with_a_vault_handle_is_used_too(tmp_path):
+    """The board's other credential shape (``access``) is consulted as well."""
+    store = _store(tmp_path)
+    ref = _put_secret()
+    _record(store, "access", TARGET,
+            {"transport": "ssh", "username": "mitch", "port": 2222,
+             "secret_ref": ref})
+
+    result, sandbox = _invoke(
+        ssh_exec_handler,
+        {"target": TARGET, "username": "mitch", "command": "id"},
+        store,
+    )
+
+    assert sandbox.calls[0][7] == PASSWORD
+    assert result.evidence["resolved_from_board"] == {"port": 2222, "credential": ref}
+    # The port of the same fact is used as well.
+    assert sandbox.calls[0][5] == "2222"
+
+
+def test_an_unverified_credential_with_a_handle_is_reusable(tmp_path):
+    """A vault handle is a stored secret, not a guess the model typed."""
+    store = _store(tmp_path)
+    ref = _put_secret()
+    _record(store, "credential", f"mitch@{TARGET}",
+            {"username": "mitch", "secret_ref": ref, "service": "ssh"},
+            source="agent", created_by="agent", verified=False,
+            asserted_by="agent", verification_method="", invocation_id="")
+
+    result, sandbox = _invoke(
+        ssh_exec_handler,
+        {"target": TARGET, "username": "mitch", "command": "id"},
+        store,
+    )
+
+    assert sandbox.calls[0][7] == PASSWORD
+    assert result.evidence["resolved_from_board"] == {"credential": ref}
+
+
+def test_a_hash_without_a_handle_is_not_used_and_the_error_says_why(tmp_path):
+    """The measured iteration 29: a credential fact that is not a password."""
+    store = _store(tmp_path)
+    _record(store, "credential", "cmsms_mitch_hash",
+            {"username": "mitch", "hash": "[REDACTED]", "salt": "1dac0d92",
+             "source": "CVE-2019-9053 SQLi"},
+            source="agent", created_by="agent", verified=False,
+            asserted_by="agent", verification_method="", invocation_id="")
+
+    with pytest.raises(ValueError) as excinfo:
+        _invoke(ssh_exec_handler, {"target": TARGET, "username": "mitch", "command": "id"},
+                store)
+
+    message = str(excinfo.value)
+    assert "sin un `secret_ref` utilizable" in message
+    assert "hash" in message
+
+
+def test_a_credential_for_another_user_is_never_reused(tmp_path):
+    """The handle is bound to the user it was proved for."""
+    store = _store(tmp_path)
+    ref = _put_secret()
+    _record(store, "credential", f"cred:ssh:lin@{TARGET}",
+            {"username": "lin", "secret_ref": ref, "service": "ssh"})
+
+    with pytest.raises(ValueError) as excinfo:
+        _invoke(ssh_exec_handler, {"target": TARGET, "username": "mitch", "command": "id"},
+                store)
+
+    assert "no SSH credential for mitch@" in str(excinfo.value)
