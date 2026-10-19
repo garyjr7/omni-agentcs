@@ -1995,6 +1995,7 @@ class ReActCoordinator:
         if repeated_tool is not None:
             return self._correct_repeated_action(repeated_tool)
         tool_started = time.perf_counter()
+        scope_aborted = False
         try:
             invocation, cancelled_now = await self.tool_execution.execute(
                 self.tool_payload,
@@ -2175,10 +2176,10 @@ class ReActCoordinator:
                     self._note_tool_failure(str(self.action.tool_id))
             self.consecutive_failures += 1
         else:
-            # The model tried something other than the denied target: the
-            # insistence streak is broken, whatever the outcome of this call.
-            self.scope_denial_target = None
-            self.scope_denial_streak = 0
+            # The insistence streak is decided below: a successful turn or a
+            # failure that is not a scope denial breaks it, while a handler that
+            # returned ``scope_denied`` (``nexus.shell.exec`` validating the
+            # destination of a ``curl``) extends it like the gateway's exception.
             if cancelled_now:
                 self.telemetry.flag(FrictionFlag.CANCELLED)
                 self.status = STATUS_CANCELLED
@@ -2199,11 +2200,67 @@ class ReActCoordinator:
                 success=bool(self.observation.get("success")),
             )
             if self.observation.get("success"):
+                self.scope_denial_target = None
+                self.scope_denial_streak = 0
                 self.consecutive_failures = 0
+                # A successful turn breaks every per-tool failure streak: the
+                # retirement below is about *consecutive* failures, never about
+                # the accumulated count of a long run. Measured in
+                # blackbox-10.67.183.218 (2026-10-19): ``shell.exec`` failed on
+                # turns 12, 31 and 48 with 17 successful shell calls in between
+                # and was retired anyway, so the agent lost the only tool that
+                # could extract the credentials it had already located.
+                self.tool_failures.clear()
                 self.run_evidence.extend(self.observation.get("assertions") or [])
                 del self.run_evidence[:-RUN_EVIDENCE_MAX_OBSERVATIONS]
             else:
                 failure_outcome = str(self.observation.get("outcome") or "")
+                if failure_outcome == "scope_denied":
+                    # Same rule as the gateway path above, for the channels that
+                    # report the refusal as a result instead of raising: three
+                    # consecutive denials of the same target close the run.
+                    # ``_observation_payload`` keeps the handler's own output
+                    # nested, so the target and the message are read from there.
+                    handler_output = self.observation.get("output")
+                    if not isinstance(handler_output, dict):
+                        handler_output = {}
+                    target = str(
+                        self.observation.get("target")
+                        or handler_output.get("target")
+                        or ""
+                    ).strip()
+                    if handler_output.get("error") and not self.observation.get("error"):
+                        self.observation["error"] = handler_output["error"]
+                    if handler_output.get("guidance"):
+                        self.observation["guidance"] = handler_output["guidance"]
+                    streak = self._note_scope_denial(target)
+                    self.observation["scope_denial_streak"] = streak
+                    scope_aborted = streak >= MAX_CONSECUTIVE_SCOPE_DENIALS
+                    if scope_aborted:
+                        self.status = STATUS_SCOPE_VIOLATION
+                        self.final_summary = (
+                            "scope violation aborted the loop: the model insisted "
+                            f"{streak} times on {target or 'the requested target'}"
+                        )
+                        self.observation["aborted"] = True
+                    self.store.append_run_event(
+                        self.tenant_id,
+                        self.run_id,
+                        "react.scope_violation",
+                        {
+                            "iteration": self.iteration,
+                            "tool_id": self.action.tool_id,
+                            "error": str(self.observation.get("error") or "")[:500],
+                            "target": target,
+                            "streak": streak,
+                            "aborted": scope_aborted,
+                        },
+                    )
+                else:
+                    # The model tried something other than the denied target:
+                    # the insistence streak is broken, whatever the outcome.
+                    self.scope_denial_target = None
+                    self.scope_denial_streak = 0
                 if failure_outcome == "command_failed":
                     # The tool worked: the channel reached the target and the
                     # command ran. A non-zero exit is about the command, so it is
@@ -2276,10 +2333,17 @@ class ReActCoordinator:
             return Transition.STOP
         if self.consecutive_failures >= MAX_CONSECUTIVE_TOOL_FAILURES:
             self.consecutive_failures = 0
-        return Transition.READY
+        return Transition.STOP if scope_aborted else Transition.READY
 
     def _note_tool_failure(self, tool_id: str) -> int:
-        """Count one *tool* failure and retire the tool once it is exhausted (B3).
+        """Count one *consecutive* tool failure and retire it once exhausted (B3).
+
+        The counter is a streak, not a tally: any successful turn clears it
+        (``_execute_tool``), so only three failures in a row retire a tool. The
+        accumulated reading was measured in blackbox-10.67.183.218 (2026-10-19):
+        ``shell.exec`` failed on turns 12, 31 and 48 with successful shell calls
+        in between, was retired at turn 48, and the agent lost the tool that was
+        one command away from the credentials.
 
         A retired tool leaves the phase's catalog (``_advance_phase``), so the
         next prompt offers the remaining routes and the refusal path names what

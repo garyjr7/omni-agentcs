@@ -13,9 +13,11 @@ se perdió; el mismo resultado estaba en las herramientas que ya trae Kali.
 
 ## Regla
 
-**No instales paquetes.** El sandbox no es root y `apt` solo produce
-`Permission denied`. Si el binario no está, usa una alternativa local. `steghide`
-solo se ejecuta si `command -v steghide` lo encuentra; nunca lo instales.
+**No instales paquetes con `apt-get install` ni `sudo`.** El sandbox no es root
+y `apt` solo produce `Permission denied`. Usa primero lo que ya trae Kali; si de
+verdad necesitas `steghide`, la ruta sin root (`apt-get download` + `dpkg -x`)
+está en `linux/steganography`. `steghide` solo se ejecuta si
+`command -v steghide` lo encuentra.
 
 ## 1. Identifica el archivo antes de tocarlo
 
@@ -81,4 +83,6 @@ siguen siendo locales y suficientes para una pista.
   ruta exacta; el verificador solo acredita lo que aparece en la salida.
 - Si el archivo no da nada, vuelve a la enumeración: la pista suele estar en el
   servicio (FTP, SMB, web), no dentro de la imagen.
-- **Nunca** propongas `apt-get install`/`apt install` como siguiente paso.
+- **Nunca** propongas `apt-get install`/`apt install` ni `sudo` como siguiente
+  paso; si el binario es imprescindible, `linux/steganography` tiene la ruta que
+  no pide privilegios.

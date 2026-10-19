@@ -21,10 +21,12 @@ from nexus_core.agent.react import (
     REACT_DEFAULT_MAX_TOKENS,
     STATUS_COMPLETED,
     STATUS_MAX_ITERATIONS,
+    STATUS_SCOPE_VIOLATION,
     _failure_kind,
     react_max_tokens,
     run_react_loop,
 )
+from nexus_core.agent.react_coordinator import MAX_CONSECUTIVE_SCOPE_DENIALS
 from nexus_core.kernel import runtime as runtime_module
 from nexus_core.kernel.control_store import ControlStore
 from nexus_core.kernel.runtime import ExecutionContext
@@ -201,6 +203,138 @@ async def test_agent_pivots_after_a_broken_tool_is_retired(harness):
     assert len(retired) == 1
     assert retired[0]["payload"]["tool_id"] == "nexus.recon.httpx"
     assert retired[0]["payload"]["failures"] == MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE
+
+
+class _FlakySpy:
+    """Fails the given 1-based calls of one tool; succeeds everything else."""
+
+    def __init__(self, fail_tool: str, fail_calls: set[int]):
+        self.fail_tool = fail_tool
+        self.fail_calls = fail_calls
+        self.payloads: list[dict] = []
+
+    async def __call__(self, payload, context):
+        self.payloads.append(payload)
+        if payload["tool_id"] == self.fail_tool:
+            call = sum(p["tool_id"] == self.fail_tool for p in self.payloads)
+            if call in self.fail_calls:
+                raise RuntimeError("post-condition was not verified")
+        result = copy.deepcopy(FTP_SUCCESS)
+        result["tool_id"] = payload["tool_id"]
+        return result
+
+
+async def test_only_consecutive_failures_retire_a_tool(harness):
+    """Measured in blackbox-10.67.183.218 (2026-10-19): ``shell.exec`` failed on
+    turns 12, 31 and 48 with successful shell calls in between and was retired
+    anyway, so the agent lost the only tool that could extract the credentials
+    it had already located. A tool that keeps working between isolated failures
+    is not broken and must not leave the catalog.
+    """
+    store, context = harness
+    llm = ScriptedLLM(
+        [
+            _tool_call("nexus.recon.httpx", targets=["http://10.0.0.5/a"]),
+            _tool_call("nexus.recon.httpx", targets=["http://10.0.0.5/b"]),
+            _tool_call("nexus.recon.httpx", targets=["http://10.0.0.5/c"]),
+            _tool_call("nexus.recon.httpx", targets=["http://10.0.0.5/d"]),
+            _tool_call("nexus.recon.httpx", targets=["http://10.0.0.5/e"]),
+            _task_complete(),
+        ]
+    )
+    # fail, fail, success, fail, fail: never three in a row.
+    spy = _FlakySpy("nexus.recon.httpx", fail_calls={1, 2, 4, 5})
+
+    with mock.patch.object(runtime_module, "execute_tool", spy):
+        result = await run_react_loop(
+            context=context,
+            objective="comprometer 10.0.0.5",
+            engagement_id="eng-1",
+            llm_client=llm,
+            config=_loop_config(max_iterations=10),
+        )
+
+    assert result.status == STATUS_COMPLETED
+    # Every turn really ran: no repeat guard interfered and the tool stayed alive.
+    assert [p["arguments"]["targets"][0] for p in spy.payloads] == [
+        "http://10.0.0.5/a",
+        "http://10.0.0.5/b",
+        "http://10.0.0.5/c",
+        "http://10.0.0.5/d",
+        "http://10.0.0.5/e",
+    ]
+    assert _events(store, context.run_id, "react.tool_unavailable") == []
+    assert not any(
+        (action.get("tool_result") or {}).get("tool_retired")
+        for action in result.actions
+    )
+
+
+class _ScopeDeniedSpy:
+    """Answers every call with the same ``scope_denied`` handler result."""
+
+    def __init__(self, payload: dict):
+        self.payload = payload
+        self.payloads: list[dict] = []
+
+    async def __call__(self, payload, context):
+        self.payloads.append(payload)
+        return copy.deepcopy(self.payload)
+
+
+async def test_three_shell_scope_denials_close_the_run(harness):
+    """``shell.exec`` denies like ``web.request``: three insistences end it.
+
+    The handler reports the refusal as ``outcome="scope_denied"`` instead of
+    raising, so the loop counts the streak itself. Without this, a model could
+    retry an out-of-scope ``curl`` until the iteration budget, one token-burning
+    turn at a time.
+    """
+    store, context = harness
+    target = "https://bit.ly/2TvYQ2S"
+    llm = ScriptedLLM(
+        [
+            _tool_call("nexus.shell.exec", command=f"curl -s {target}"),
+            _tool_call("nexus.shell.exec", command=f"curl -sI {target}"),
+            _tool_call("nexus.shell.exec", command=f"wget -qO- {target}"),
+            _task_complete(),
+        ]
+    )
+    spy = _ScopeDeniedSpy(
+        {
+            "tool_id": "nexus.shell.exec",
+            "output": {
+                "success": False,
+                "outcome": "scope_denied",
+                # The handler's own payload, exactly where ``to_dto`` puts it.
+                "output": {
+                    "target": target,
+                    "error": (
+                        f"ScopeViolation({target}): domain is outside the "
+                        "engagement scope"
+                    ),
+                    "guidance": "El objetivo está fuera del alcance firmado.",
+                },
+                "assertions": [],
+            },
+        }
+    )
+
+    with mock.patch.object(runtime_module, "execute_tool", spy):
+        result = await run_react_loop(
+            context=context,
+            objective="comprometer 10.0.0.5",
+            engagement_id="eng-1",
+            llm_client=llm,
+            config=_loop_config(max_iterations=10),
+        )
+
+    assert result.status == STATUS_SCOPE_VIOLATION
+    assert len(spy.payloads) == MAX_CONSECUTIVE_SCOPE_DENIALS
+    violations = _events(store, context.run_id, "react.scope_violation")
+    assert [event["payload"]["streak"] for event in violations] == [1, 2, 3]
+    assert violations[-1]["payload"]["aborted"] is True
+    assert all(event["payload"]["target"] == target for event in violations)
 
 
 async def test_invalid_input_does_not_retire_the_tool(harness):

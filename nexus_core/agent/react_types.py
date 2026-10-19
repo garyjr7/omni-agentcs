@@ -21,9 +21,10 @@ INVALID_JSON_CORRECTION = (
     "con la acción (tool_call, task_complete o request_clarification)."
 )
 CANCEL_EVENT_TYPE = "react.cancel_requested"
-#: A tool that fails this many times *as a tool* (not as invalid input) is
-#: marked unavailable for the rest of the run, so the agent pivots instead of
-#: the whole engagement dying (B3).
+#: A tool that fails this many times **in a row** *as a tool* (not as invalid
+#: input) is marked unavailable for the rest of the run, so the agent pivots
+#: instead of the whole engagement dying (B3). Any successful turn clears the
+#: streak: an isolated failure between successful calls is not a broken tool.
 MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE = 3
 TOOL_UNAVAILABLE_EVENT_TYPE = "react.tool_unavailable"
 PHASE_TIMEOUT_EVENT_TYPE = "react.phase_timeout"

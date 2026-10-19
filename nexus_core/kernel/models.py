@@ -195,6 +195,12 @@ OUTCOME_TAXONOMY = frozenset({
     #: The channel worked and the command ran, but it exited non-zero: the
     #: *command* failed, not the credential nor the connection.
     "command_failed",
+    #: The address the call named is outside the signed engagement scope, so it
+    #: was refused before anything ran. ``nexus.web.request`` raises it at the
+    #: gateway; ``nexus.shell.exec`` returns it for the destination of a
+    #: ``curl``/``wget``/``nc``. Same outcome name in both channels, so the model
+    #: reads one rule instead of two.
+    "scope_denied",
     #: Anything else, including an unparsed or corrupt answer.
     "error",
 })

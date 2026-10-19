@@ -27,6 +27,7 @@ from nexus_core.scope import EngagementStore
 from nexus_core.tools.handlers.report_generate import default_artifact_root
 from nexus_core.tools.handlers.shell_exec_local import (
     ShellExecRequest,
+    fetch_targets,
     is_background_command,
     shell_exec_definition,
     shell_exec_handler,
@@ -114,6 +115,136 @@ def test_shell_exec_refuses_a_prohibited_command(context):
     events = AuditWriter(context.store).export(context.tenant_id, trace_id=context.trace_id)
     denied = [event for event in events if event["action"] == "shell.exec"]
     assert denied and denied[-1]["decision"] == "deny"
+
+
+# --------------------------------------------------- scope of fetch destinations
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("curl -s http://10.0.0.5/a", ["http://10.0.0.5/a"]),
+        ("curl -o header.jpg http://10.0.0.5/a", ["http://10.0.0.5/a"]),
+        ("VAR=1 /usr/bin/curl --url=https://bit.ly/x", ["https://bit.ly/x"]),
+        ("echo curl http://evil.example/x", []),
+        ("grep curl /var/log/x", []),
+        ("nc -lvnp 4444", []),
+        ("nc -zv 10.0.0.5 4444", ["10.0.0.5"]),
+        (
+            "wget -qO- http://10.0.0.5/a && curl 10.0.0.6:8080",
+            ["http://10.0.0.5/a", "10.0.0.6"],
+        ),
+        ("curl -s 'http://10.0.0.5/a?b=1&c=2'", ["http://10.0.0.5/a?b=1&c=2"]),
+        # curl/wget accept a URL without a scheme: omitting it must not bypass
+        # the scope check.
+        ("curl -sS bit.ly/2TvYQ2S", ["bit.ly"]),
+        ("curl bit.ly", ["bit.ly"]),
+        ("wget -qO- bit.ly/x", ["bit.ly"]),
+        ("curl -o header.jpg bit.ly/x", ["bit.ly"]),
+        ("curl --url bit.ly/x", ["bit.ly"]),
+        ("curl -d 'a=1' 10.0.0.5:8080/x", ["10.0.0.5"]),
+        ("curl -s 10.10.10.5/", ["10.10.10.5"]),
+        ("curl /tmp/local.html", []),
+    ],
+)
+def test_fetch_targets_reads_only_real_clients(command, expected):
+    """The extractor names destinations, never file names or option values."""
+    assert fetch_targets(command) == expected
+
+
+def test_a_curl_to_an_out_of_scope_url_is_denied_before_it_runs(context):
+    """Measured in blackbox-10.67.183.218: ``web.request`` blocked ``bit.ly``
+    while the same URL through ``shell.exec`` ran unchecked. Both channels now
+    answer with the same validator and the same ``scope_denied`` outcome.
+    """
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "no deberia ejecutarse", "")):
+        result = _run(context, {"command": "curl -s https://bit.ly/2TvYQ2S"})
+
+    assert result.verified is False
+    assert result.success is False
+    assert result.outcome == "scope_denied"
+    assert result.verification_method == "shell_scope_denied"
+    assert "bit.ly/2TvYQ2S" in result.output["error"]
+    assert "fuera del alcance firmado" in result.output["guidance"]
+    events = AuditWriter(context.store).export(context.tenant_id, trace_id=context.trace_id)
+    audited = [event for event in events if event["action"] == "shell.exec"]
+    assert audited[-1]["decision"] == "deny"
+    assert audited[-1]["payload"]["reason"] == "shell_scope_denied"
+
+
+def test_a_schemeless_url_is_still_validated(context):
+    """``curl bit.ly/x`` is a URL; dropping the scheme must not skip the check."""
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "no deberia ejecutarse", "")):
+        result = _run(context, {"command": "curl -sS bit.ly/2TvYQ2S"})
+
+    assert result.outcome == "scope_denied"
+    assert result.output["target"] == "bit.ly"
+
+
+def test_a_fetch_after_another_command_is_still_validated(context):
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "hola", "")):
+        result = _run(
+            context, {"command": "echo hola; curl -s https://bit.ly/2TvYQ2S"}
+        )
+
+    assert result.outcome == "scope_denied"
+    assert result.output["target"] == "https://bit.ly/2TvYQ2S"
+
+
+def test_a_wget_to_an_out_of_scope_domain_is_denied(context):
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "", "")):
+        result = _run(context, {"command": "wget -qO- http://evil.example/x"})
+
+    assert result.outcome == "scope_denied"
+    assert "evil.example" in result.output["error"]
+
+
+def test_nc_to_an_out_of_scope_host_is_denied(context):
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "open", "")):
+        result = _run(context, {"command": "nc -zv 203.0.113.9 4444"})
+
+    assert result.outcome == "scope_denied"
+    assert result.output["target"] == "203.0.113.9"
+
+
+def test_a_fetch_inside_the_scope_still_runs(context):
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "abierto", "")):
+        result = _run(context, {"command": "curl -s http://10.10.10.5/"})
+
+    assert result.verified is True
+    assert result.verification_method == "shell_exit_code"
+
+
+def test_an_nc_listener_is_not_a_scope_target(context):
+    """``nc -lvnp 4444`` has no destination: the port is not a host."""
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "listening", "")):
+        result = _run(context, {"command": "nc -lvnp 4444"})
+
+    assert result.verification_method == "shell_exit_code"
+
+
+def test_a_local_callback_is_not_a_scope_violation(context):
+    """Loopback never leaves the machine: denying it would break local tooling."""
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "ok", "")):
+        result = _run(context, {"command": "curl -s http://127.0.0.1:8080/health"})
+
+    assert result.verification_method == "shell_exit_code"
 
 
 def test_an_apt_install_denied_by_permissions_is_unavailable_with_guidance(context):

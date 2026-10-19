@@ -27,13 +27,22 @@ What it guarantees (and what it does not)
 * **A lexical deny list** (``NEXUS_SHELL_DENY`` can extend it) blocks the
   obviously destructive local commands. It is a guard-rail, not a security
   boundary: an arbitrary argv cannot be validated against the engagement
-  scope, which is the documented trade-off of WP1. The compensating controls
-  are the signed engagement, the confined workspace and the audit chain.
+  scope. The compensating controls are the signed engagement, the confined
+  workspace and the audit chain.
+* **Fetch destinations are validated against the signed scope.** An arbitrary
+  argv cannot be validated, but the destination of ``curl``/``wget``/``nc``
+  can: the command is split into simple commands and the first argument of each
+  client is checked with the same :class:`ScopeValidator` ``nexus.web.request``
+  uses. Before this, ``curl https://bit.ly/...`` ran unchecked while the same
+  URL through ``web.request`` aborted the run (measured in
+  blackbox-10.67.183.218, 2026-10-19); the policy depended on which tool the
+  model happened to pick.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import re
 import shlex
@@ -41,6 +50,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -49,7 +59,9 @@ from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.fact_verification import sshpass_channels
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import OCISandbox, sandbox_for_environment
+from nexus_core.kernel.scope_loader import scope_signing_secret
 from nexus_core.kernel.sessions import validate_session_scope
+from nexus_core.scope import ScopeValidator, ScopeViolation
 from ._exec import run_in_sandbox
 from .report_generate import default_artifact_root
 from .workspace import workspace_root
@@ -289,6 +301,293 @@ def apt_install_permission_denied(
         return False
     output = f"{stdout or ''}\n{stderr or ''}".lower()
     return "permission denied" in output
+
+
+#: Clients whose destination is extractable from the command line. The shell
+#: runs an arbitrary argv, so this is the only egress boundary that can be
+#: enforced without turning the universal shell into a parser of every tool.
+_SCOPE_CLIENTS: frozenset[str] = frozenset({"curl", "wget", "nc", "ncat", "netcat"})
+
+#: Shell list separators: the end of one simple command.
+_SIMPLE_COMMAND_SEPARATORS = ";&|\n"
+
+_URL_TARGET_RE = re.compile(r"^https?://", re.IGNORECASE)
+_IPV4_TARGET_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_HOST_PORT_TARGET_RE = re.compile(r"^(?P<host>[A-Za-z0-9][A-Za-z0-9._-]*):(?P<port>\d{1,5})$")
+_BARE_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+#: Short options of ``curl``/``wget`` that consume the next token, so a file
+#: name or a header never becomes a destination.
+_CURL_VALUE_OPTIONS: frozenset[str] = frozenset(
+    {
+        "-o", "-H", "-d", "-X", "-u", "-A", "-e", "-b", "-c", "-F", "-T",
+        "-x", "-m", "-w", "-r", "-K", "-E", "-Q", "-Y", "-y", "-z", "-C",
+        "-D", "-U", "-P", "-t",
+    }
+)
+_WGET_VALUE_OPTIONS: frozenset[str] = frozenset(
+    {
+        "-O", "-o", "-a", "-P", "-e", "-t", "-T", "-w", "-U", "-Q", "-l",
+        "-A", "-R", "-D", "-I", "-X", "-B",
+    }
+)
+
+#: Long options that consume the next token (``--opt=value`` is one token).
+_FETCH_LONG_VALUE_OPTIONS: frozenset[str] = frozenset(
+    {
+        "--output", "--output-document", "--directory-prefix",
+        "--append-output", "--header", "--data", "--data-raw",
+        "--data-binary", "--request", "--user", "--user-agent", "--referer",
+        "--cookie", "--cookie-jar", "--form", "--upload-file", "--proxy",
+        "--max-time", "--connect-timeout", "--retry", "--config",
+        "--write-out", "--resolve", "--cacert", "--cert", "--key",
+        "--limit-rate", "--range", "--execute", "--tries", "--timeout",
+        "--wait", "--post-data", "--method", "--ca-certificate",
+        "--password",
+    }
+)
+
+#: ``nc`` options that consume the next token as their value.
+_NC_VALUE_OPTIONS: frozenset[str] = frozenset(
+    {
+        "-p", "-s", "-w", "-i", "-e", "-c", "-x", "-X", "-P", "-q",
+        "-I", "-O", "-T", "-V", "-m", "-o", "-b", "-D", "-L", "-S",
+        "-g", "-G",
+    }
+)
+
+#: What the model reads when the command was aimed outside the engagement.
+SHELL_SCOPE_DENIED_GUIDANCE = (
+    "El objetivo {target} está fuera del alcance firmado. Ignora esa URL y "
+    "busca otra ruta dentro del engagement; el comando no se ha ejecutado."
+)
+
+
+def _command_segments(command: str) -> list[str]:
+    """Split *command* into simple commands, honouring quotes and escapes.
+
+    ``echo 'a; b'`` is one command, ``curl x; nc y z`` is two. Only the first
+    word of a segment is considered a client, so ``grep curl log`` is never
+    mistaken for a ``curl`` call.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escaped = False
+    for char in str(command or ""):
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            current.append(char)
+            escaped = True
+            continue
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "\"'":
+            quote = char
+            current.append(char)
+            continue
+        if char in _SIMPLE_COMMAND_SEPARATORS:
+            segments.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    segments.append("".join(current))
+    return [segment for segment in (part.strip() for part in segments) if segment]
+
+
+def _segment_tokens(segment: str) -> list[str]:
+    """Tokens of one simple command; a quoting error falls back to ``split``."""
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        return segment.split()
+
+
+def _positional_arguments(client: str, arguments: list[str]) -> list[str]:
+    """Positional arguments of a ``curl``/``wget`` call.
+
+    Options and the token they consume are skipped, so ``-o header.jpg`` or
+    ``-H 'Host: x'`` never lands here. ``--url`` is the exception: its value
+    *is* the destination.
+    """
+    value_options = _CURL_VALUE_OPTIONS if client == "curl" else _WGET_VALUE_OPTIONS
+    positionals: list[str] = []
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "--":
+            positionals.extend(arguments[index + 1 :])
+            break
+        if token.startswith("--"):
+            if token.startswith("--url="):
+                positionals.append(token[len("--url="):])
+                index += 1
+            elif token == "--url":
+                if index + 1 < len(arguments):
+                    positionals.append(arguments[index + 1])
+                index += 2
+            elif "=" in token:
+                index += 1
+            else:
+                index += 2 if token in _FETCH_LONG_VALUE_OPTIONS else 1
+            continue
+        if token.startswith("-") and len(token) > 1:
+            index += 2 if token in value_options else 1
+            continue
+        positionals.append(token)
+        index += 1
+    return positionals
+
+
+def _fetch_argument_target(argument: str) -> str | None:
+    """Destination named by one positional ``curl``/``wget`` argument.
+
+    ``curl`` and ``wget`` treat a positional argument as a URL with or without
+    a scheme, so ``bit.ly/x`` is as much a destination as ``https://bit.ly/x``.
+    A local path (``/tmp/x``), stdin (``-``) or a bare word without a dot
+    (``stdin``, a port number) is not.
+    """
+    value = str(argument or "").strip()
+    if not value or value == "-":
+        return None
+    if value.startswith(("/", "./", "../", "~")):
+        return None
+    if _URL_TARGET_RE.match(value):
+        return value
+    if _IPV4_TARGET_RE.match(value):
+        return value
+    authority = re.split(r"[/?#]", value, maxsplit=1)[0]
+    if "@" in authority:
+        authority = authority.rsplit("@", 1)[1]
+    match = _HOST_PORT_TARGET_RE.match(authority)
+    if match:
+        return match.group("host")
+    if _BARE_HOST_RE.match(authority) and (
+        "." in authority or authority.lower() == "localhost"
+    ):
+        return authority
+    return None
+
+
+def _nc_target(arguments: list[str]) -> str | None:
+    """Host ``nc``/``ncat`` connects to (``None`` for a listener or a bare port).
+
+    ``nc -lvnp 4444`` is a listener: the number is its port, not a host. The
+    first positional token is the destination, which may be a hostname.
+    """
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "--":
+            index += 1
+            break
+        if token.startswith("-") and len(token) > 1:
+            index += 2 if token in _NC_VALUE_OPTIONS else 1
+            continue
+        break
+    if index >= len(arguments):
+        return None
+    host = arguments[index].strip()
+    if not host or host.isdigit():
+        return None
+    if _URL_TARGET_RE.match(host):
+        return host
+    match = _HOST_PORT_TARGET_RE.match(host)
+    if match:
+        return match.group("host")
+    if _BARE_HOST_RE.match(host):
+        return host
+    return None
+
+
+def fetch_targets(command: str) -> list[str]:
+    """Destinations a ``curl``/``wget``/``nc`` command in *command* reaches.
+
+    Reads the command the way the shell will: one simple command per segment,
+    ``VAR=value`` assignments skipped, and the client may be an absolute path
+    (``/usr/bin/curl``). Returns them in order, without duplicates.
+    """
+    targets: list[str] = []
+    for segment in _command_segments(command):
+        tokens = _segment_tokens(segment)
+        while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+            tokens.pop(0)
+        if not tokens:
+            continue
+        client = os.path.basename(tokens[0]).lower()
+        if client not in _SCOPE_CLIENTS:
+            continue
+        arguments = tokens[1:]
+        if client in {"curl", "wget"}:
+            for argument in _positional_arguments(client, arguments):
+                target = _fetch_argument_target(argument)
+                if target and target not in targets:
+                    targets.append(target)
+        else:
+            target = _nc_target(arguments)
+            if target and target not in targets:
+                targets.append(target)
+    return targets
+
+
+def _target_host(target: str) -> str:
+    """Host part of a target (URL or bare host), lowercase, no brackets."""
+    text = str(target or "").strip()
+    if _URL_TARGET_RE.match(text):
+        try:
+            return str(urlsplit(text).hostname or "").strip("[]")
+        except ValueError:
+            return ""
+    return text.strip("[]")
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Whether *host* never leaves the machine.
+
+    Loopback is not an engagement target: a local callback the agent started
+    itself (``curl http://127.0.0.1:8080``) must not be reported as a scope
+    violation, or the guard would break local tooling without protecting
+    anything.
+    """
+    text = str(host or "").strip().strip("[]").split("%", 1)[0].lower()
+    if not text:
+        return False
+    if text in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
+
+
+def out_of_scope_fetch_target(command: str, scope: Any) -> ScopeViolation | None:
+    """First fetch destination *command* names that the signed scope rejects.
+
+    ``None`` means "nothing to check or everything in scope". The validator is
+    the same one ``nexus.web.request`` uses, so both channels now answer the
+    same question with the same rules (measured in blackbox-10.67.183.218:
+    ``web.request`` blocked ``bit.ly`` and ``shell.exec`` did not).
+    """
+    if scope is None:
+        return None
+    targets = fetch_targets(command)
+    if not targets:
+        return None
+    validator = ScopeValidator(scope, signing_secret=scope_signing_secret())
+    for target in targets:
+        if _is_loopback_host(_target_host(target)):
+            continue
+        try:
+            validator.validate(target)
+        except ScopeViolation as exc:
+            return exc
+    return None
 
 
 def resolve_cwd(root: str | Path, cwd: str) -> tuple[str, str]:
@@ -555,6 +854,29 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             evidence={"cwd": cwd_relative, "deny_rule": reason},
         )
 
+    violation = out_of_scope_fetch_target(request.command, context.scope)
+    if violation is not None:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        _audit(
+            context, command=request.command, cwd=cwd_relative,
+            exit_code=None, duration_ms=duration_ms, bytes_written=0,
+            timed_out=False, decision="deny", reason="shell_scope_denied",
+        )
+        return ToolResult(
+            output={
+                "error": f"ScopeViolation({violation.target}): {violation.reason}",
+                "command": request.command,
+                "target": violation.target,
+                "guidance": SHELL_SCOPE_DENIED_GUIDANCE.format(
+                    target=violation.target
+                ),
+            },
+            verified=False,
+            outcome="scope_denied",
+            verification_method="shell_scope_denied",
+            evidence={"cwd": cwd_relative, "target": violation.target},
+        )
+
     stdin_data = request.stdin.encode("utf-8") if request.stdin is not None else None
     if stdin_data is not None and len(stdin_data) > SHELL_MAX_STDIN_BYTES:
         raise ValueError("stdin exceeds the local shell limit")
@@ -704,6 +1026,7 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
 __all__ = [
     "APT_INSTALL_DENIED_GUIDANCE",
     "BACKGROUND_LOG_DIRNAME",
+    "SHELL_SCOPE_DENIED_GUIDANCE",
     "SHELL_ALLOWED_PROGRAMS",
     "SHELL_MAX_OUTPUT_BYTES",
     "SHELL_MAX_STDIN_BYTES",
@@ -715,8 +1038,10 @@ __all__ = [
     "background_body",
     "background_log_path",
     "background_script",
+    "fetch_targets",
     "has_background_operator",
     "is_background_command",
+    "out_of_scope_fetch_target",
     "prohibited_reason",
     "resolve_cwd",
     "shell_code",
