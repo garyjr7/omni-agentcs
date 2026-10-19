@@ -7,12 +7,10 @@
 #
 # Los targets son DHCP en TryHackMe y cambian en cada sesion, asi que se leen
 # del entorno (`target_env`) o de `--target sala=IP`. No se versiona una IP
-# caducada: cada sala declara el patron (`flag_regex`) o, si sus flags no
-# llevan prefijo flag{fake_flag}, la lista de cadenas exactas (`flags_literal`). Cuando
-# estan las dos, manda `flags_literal`. Una sala de caza de flags puede omitir
-# ambas: el runner busca entonces un token con prefijo, un hash de 32 caracteres
-# (el `user.txt` de Vulnversity es un MD5) o la primera linea de un `user.txt`,
-# `root.txt`, `local.txt` o `proof.txt` encontrado en los artefactos del run.
+# caducada. El criterio de flags es el motor: el runner lee `control.db` y
+# cuenta los hechos `loot`/`flag` que el verificador registro, sin interpretar
+# el formato. Opcionalmente una sala lo estrecha con `flags_literal` (cadenas
+# exactas) o `flag_regex`; si declara ambas, manda `flags_literal`.
 version: 1
 
 defaults:
@@ -100,3 +98,16 @@ rooms:
       Reconoce los servicios, enumera la web, explota el vector de inyección
       para conseguir ejecución remota, escala a root, comprueba la persistencia
       alcanzable y documenta todos los vectores de ataque encontrados.
+
+  vulnversity:
+    name: Vulnversity
+    target_env: THM_VULNVERSITY_IP
+    # user.txt + root.txt: hashes MD5, no flag{fake_flag}. Sin declaracion, cuenta el hecho
+    # `loot` verificado que deja la lectura del fichero (formato irrelevante).
+    expected_flags: 2
+    timeout_seconds: 2400
+    max_iterations: 40
+    objective: >-
+      Compromete el sistema en {target}. Encuentra el vector de subida de archivos,
+      obtén una reverse shell, escala privilegios y enumera la red interna
+      (interfaces, rutas, hosts) para documentar el impacto real.

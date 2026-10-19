@@ -632,6 +632,42 @@ SMART_BUDGET_PROMPT = (
     "a explotación; no enumeres más rutas."
 )
 
+#: Turns spent pushing *build/pack work* through a one-command-per-request
+#: channel before the loop names the exit. Measured in Vulnversity (2026-10-19):
+#: the agent already had a working ``shell.phtml`` RCE and burned **35 turns**
+#: compiling ``pwnkit`` locally and shipping it in base64 chunks through
+#: ``curl`` -no TTY, no stdin, no state- instead of opening a reverse shell.
+WEBSHELL_STALL_TURNS = 10
+#: Tools that execute a command on the target through a shell channel. The
+#: webshell itself is reached with ``curl`` inside ``nexus.shell.exec``; both
+#: share this tool id, so the command text is what classifies the turn.
+WEBSHELL_SHELL_TOOLS: frozenset[str] = frozenset({"nexus.shell.exec"})
+#: Command markers of work a webshell cannot carry well: compiling a binary or
+#: packing/decoding one to move it. Plain ``curl`` recon is **not** here: a hint
+#: that says "webshell" must be about a build/transfer loop.
+WEBSHELL_BUILD_MARKERS: tuple[str, ...] = (
+    "gcc",
+    "g++",
+    "clang",
+    "musl-gcc",
+    "cc -",
+    "make ",
+    "base64 -d",
+    "base64 -w0",
+    "base64 -w 0",
+    "tar ",
+    "chmod +x",
+)
+#: The exact correction injected into the system prompt. It names the stall, the
+#: two governed ways out and the payloads, so it is an order and not a status.
+WEBSHELL_STALL_PROMPT = (
+    "Estás atascado en un webshell: llevas {turns} turnos compilando o moviendo "
+    "archivos pesados por `shell.exec`/`curl` sin avanzar. Usa "
+    "`nexus.session.pty` o `nexus.post.listener` para estabilizar una shell "
+    "interactiva y ejecuta una reverse shell (bash, nc, python). No compiles "
+    "nada a través del webshell."
+)
+
 
 @dataclass(frozen=True)
 class EnumerationEscalation:
@@ -802,6 +838,52 @@ def enumeration_budget_hint(
     return SMART_BUDGET_PROMPT.format(
         iteration=int(iteration), services=counts.get("service", 0), endpoints=endpoints
     )
+
+
+def _webshell_build_turn(action: Any) -> bool:
+    """Whether one action is build/pack work pushed through a shell channel."""
+    if not isinstance(action, Mapping):
+        return False
+    if str(action.get("tool_id") or "") not in WEBSHELL_SHELL_TOOLS:
+        return False
+    arguments = action.get("arguments")
+    if isinstance(arguments, Mapping):
+        command = str(arguments.get("command") or arguments.get("cmd") or "")
+    else:
+        command = str(arguments or "")
+    text = command.casefold()
+    return any(marker in text for marker in WEBSHELL_BUILD_MARKERS)
+
+
+def webshell_stall_hint(
+    actions: Iterable[Any] | None = None,
+    *,
+    no_progress: int,
+    threshold: int = WEBSHELL_STALL_TURNS,
+) -> str:
+    """The correction for a run stuck building through a webshell (or "").
+
+    Fires only when both halves of the measured stall hold: ``no_progress``
+    consecutive turns without a new verified fact (the loop already tracks the
+    counter) **and** at least ``threshold`` recent turns of compile/pack work
+    sent through a shell channel. The latest action must still be one of them,
+    so a run that already pivoted is not told to pivot.
+
+    The hint never stops the run, changes the plan or authorizes a tool: it is
+    the cheapest correction before the budget decides, and the deterministic
+    rule lives here so it is unit-testable without an LLM.
+    """
+    limit = int(threshold or 0)
+    if limit <= 0 or int(no_progress or 0) < limit:
+        return ""
+    history = [action for action in actions or () if isinstance(action, Mapping)]
+    recent = history[-limit * 2:]
+    heavy = [action for action in recent if _webshell_build_turn(action)]
+    if len(heavy) < limit:
+        return ""
+    if not recent or not _webshell_build_turn(recent[-1]):
+        return ""
+    return WEBSHELL_STALL_PROMPT.format(turns=len(heavy))
 
 
 #: Reason recorded when an established session hands the engagement over to
@@ -1398,6 +1480,10 @@ __all__ = [
     "SMART_BUDGET_MIN_ITERATION",
     "SMART_BUDGET_MIN_SERVICES",
     "SMART_BUDGET_PROMPT",
+    "WEBSHELL_BUILD_MARKERS",
+    "WEBSHELL_SHELL_TOOLS",
+    "WEBSHELL_STALL_PROMPT",
+    "WEBSHELL_STALL_TURNS",
     "MARKERS",
     "PHASES",
     "SESSION_ESTABLISHED_REASON",
@@ -1427,6 +1513,7 @@ __all__ = [
     "escalate_session",
     "established_msf_session",
     "session_handover",
+    "webshell_stall_hint",
     "verified_credential",
     "smb_surface",
     "PHASE_IDS",

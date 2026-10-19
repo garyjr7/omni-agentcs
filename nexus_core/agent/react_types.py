@@ -65,6 +65,12 @@ SKILL_NUDGE_PROMPT = (
 #: (Simple CTF 2026-10-18, ``run_c034eeeb…``: 17 endpoints and >150k tokens)
 #: before it reaches the endpoint it should attack.
 SMART_BUDGET_EVENT_TYPE = "react.budget_hint"
+#: Emitted once when the run has spent ``WEBSHELL_STALL_TURNS`` turns building or
+#: moving files through a webshell without a new fact. Measured in Vulnversity
+#: (2026-10-19): 35 turns compiling ``pwnkit`` and shipping it in base64 chunks
+#: through ``curl`` while a reverse shell was one turn away. From that turn the
+#: prompt orders the interactive channel (``session.pty`` / ``listener``).
+WEBSHELL_STALL_EVENT_TYPE = "react.webshell_stall"
 #: Emitted once when the board (or the successful output of this run) proves the
 #: flags the objective asked for were captured. From that turn on the prompt
 #: carries :data:`TARGET_REACHED_PROMPT` and the loop counts the tool calls the

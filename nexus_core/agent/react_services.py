@@ -278,6 +278,7 @@ class ContextBuilder:
         target_reached: bool = False,
         iteration: int = 0,
         budget_hint: str = "",
+        webshell_hint: str = "",
     ) -> list[LLMMessage]:
         full_catalog = self.full_catalog_for(iteration=iteration, subagent=subagent)
         history_summary, plan, facts_text = (
@@ -321,6 +322,11 @@ class ContextBuilder:
         # planner (deterministic, unit-tested); the loop only injects its text.
         if budget_hint:
             system_prompt = f"{system_prompt}\n\n{budget_hint}"
+        # A build/transfer loop pushed through a webshell is the measured
+        # Vulnversity stall (35 turns compiling `pwnkit` via curl): the rule lives
+        # in the planner and the prompt carries the interactive way out.
+        if webshell_hint:
+            system_prompt = f"{system_prompt}\n\n{webshell_hint}"
         # WP5: the objective's flags are in hand. The model still decides how to
         # close -the loop only forbids more exploration and orders the closure-;
         # if it ignores the order for the whole margin, the loop closes itself.

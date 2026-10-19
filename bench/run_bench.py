@@ -13,17 +13,25 @@ Por cada intento:
 2. crea un engagement firmado (``--new-engagement``) para el target del run;
 3. lanza ``omni --engagement <id> --objective ... --stream-json --trust-mode``;
 4. espera a que termine (o mata el grupo al vencer el timeout);
-5. busca las flags en el NDJSON **y** en los artefactos del workspace;
+5. lee las flags de la base de datos del run (``control.db``), no del NDJSON;
 6. escribe ``bench/results/<sala>-<timestamp>-runN.json``.
 
-Una sala declara sus flags de una de dos formas: ``flag_regex`` (el patron
-``flag{fake_flag}`` de la mayoria de salas) o ``flags_literal`` (la lista de cadenas
-exactas, para salas como Simple CTF cuyo ``user.txt`` no lleva prefijo). Si
-estan las dos, manda ``flags_literal``: el valor literal es el criterio, no una
-aproximacion por forma. Si no declara ninguna y su objetivo pide capturar
-flags, se usa el criterio por defecto (:data:`DEFAULT_FLAG_PATTERN`): un hash de
-32 caracteres (el ``user.txt`` de Vulnversity es un MD5, no un ``flag{fake_flag}``) o
-la primera linea de un fichero de flag convencional encontrado en el run.
+La fuente de verdad es **el motor**: se leen las filas de
+``kernel_knowledge_documents`` y se cuentan los hechos ``fact_type="loot"`` o
+``fact_type="flag"`` que el verificador registro. Un hecho ``loot`` es la
+afirmacion de que el motor probo la captura (por ejemplo la lectura de
+``user.txt`` por un canal autenticado), asi que el formato del texto es
+irrelevante: un MD5, un ``flag{fake_flag}`` o una frase cuentan igual. El escaneo por
+regex del NDJSON se elimino porque contaba IDs de sesion y hashes de git (1520
+"flags" falsas en el run de Vulnversity de 2026-10-19); un hecho registrado por
+el modelo (``asserted_by="agent"``, ``verified=false``) tampoco cuenta: la nota
+del agente no es evidencia.
+
+Una sala puede estrechar el criterio con ``flags_literal`` (la lista de cadenas
+exactas, para salas como Simple CTF cuyo ``user.txt`` no lleva prefijo) o con
+``flag_regex``. Si declara ambos, manda ``flags_literal``. Sin declaracion, se
+acepta cualquier loot verificado del motor: el criterio sigue siendo agnostico
+al formato por defecto.
 
 Creacion y ejecucion comparten **un solo entorno** (:func:`run_environment`):
 una DB de control dentro del directorio del run. Si el creador y el agente
@@ -48,6 +56,7 @@ import os
 import re
 import shlex
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -91,23 +100,18 @@ BENCH_RUN_BUDGET_TOKENS = 400_000
 #: the run ``--trust-mode``; ``approve`` records the durable, audited approval the
 #: gateway would otherwise demand. The engine ignores it without trust mode.
 BENCH_RESUME_POLICY = "approve"
-#: Formas de flag de una sala que no declara patron: un token con prefijo o un
-#: hash de 32 caracteres (el ``user.txt`` de Vulnversity es un MD5). Los
-#: lookarounds sobre digitos hexadecimales -no ``\b``, que se pierde cuando el
-#: hash viene escapado dentro de un JSON- evitan recortar un SHA-1/SHA-256 a sus
-#: primeros 32 caracteres.
-DEFAULT_FLAG_PATTERN = (
-    r"(?:THM|HTB|FLAG|flag|CTF|ctf)\{[^}\s]{4,200}\}"
-    r"|(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])"
-)
-#: Nombres de fichero que la propia sala usa para sus flags. Con el criterio por
-#: defecto tambien cuenta la primera linea no vacia de uno de ellos: es el mismo
-#: hecho que promueve el motor, asi que bench y motor coinciden en que es captura.
-DEFAULT_FLAG_FILES = ("user.txt", "root.txt", "local.txt", "proof.txt")
-#: Texto maximo que se acepta como contenido de un fichero de flag.
-DEFAULT_FLAG_TEXT_MAX = 200
-#: Palabras de un objetivo que lo declaran una caceria de flags. Casefolded.
-FLAG_OBJECTIVE_TOKENS = ("flag", "bandera", "ctf")
+#: Tipos de hecho con los que el motor declara una captura. ``loot`` es el que
+#: escriben las ramas de verificacion (ssh, shell con sshpass, winrm); ``flag`` se
+#: acepta porque es el nombre obvio para un escritor futuro y la peticion lo pide
+#: explicitamente.
+FLAG_FACT_TYPES = ("loot", "flag")
+#: Claves del ``value`` de un hecho que pueden llevar el texto capturado, en
+#: orden de preferencia. Un hecho del motor escribe ``flag``/``content``; el resto
+#: cubre escritores equivalentes sin re-interpretar el formato.
+FLAG_VALUE_KEYS = ("flag", "content", "text", "value", "excerpt", "proof")
+#: The only source the bench scores from. Written into every result record so an
+#: old JSON that still lists hundreds of matches is identifiable at a glance.
+FLAG_SOURCE = "control.db:verified-loot"
 
 
 # --------------------------------------------------------------------- config
@@ -123,16 +127,10 @@ def load_config(path: Path = DEFAULT_ROOMS) -> dict[str, Any]:
         missing = {"target_env", "expected_flags", "objective"} - set(room)
         if missing:
             raise ValueError(f"rooms.yaml: room {room_id!r} lacks {sorted(missing)}")
+        # A room may omit every declaration: the default criterion is the engine
+        # itself (verified ``loot``/``flag`` facts), which reads any run without
+        # guessing a format from arbitrary text.
         literals = room.get("flags_literal")
-        if literals is None and "flag_regex" not in room:
-            # A room may omit the declaration only when its objective is a flag
-            # hunt: then the default criterion (flag shape, 32-char hash or the
-            # content of a flag file) measures it. Anything else fails closed,
-            # because the bench would be scoring a run it cannot read.
-            if not objective_asks_for_flags(str(room.get("objective") or "")):
-                raise ValueError(
-                    f"rooms.yaml: room {room_id!r} needs flag_regex or flags_literal"
-                )
         if literals is not None:
             if (
                 not isinstance(literals, list)
@@ -151,14 +149,6 @@ def load_config(path: Path = DEFAULT_ROOMS) -> dict[str, Any]:
             raise ValueError(f"rooms.yaml: {room_id!r} expects no flags")
     data.setdefault("defaults", {})
     return data
-
-
-def objective_asks_for_flags(objective: Any) -> bool:
-    """Whether the room objective states a flag hunt (deterministic, no LLM)."""
-    text = str(objective or "").casefold()
-    return any(token in text for token in FLAG_OBJECTIVE_TOKENS) or any(
-        name in text for name in DEFAULT_FLAG_FILES
-    )
 
 
 def room_settings(config: dict[str, Any], room_id: str) -> dict[str, Any]:
@@ -211,94 +201,115 @@ def _text(path: Path) -> str:
     return ""
 
 
-def extract_flags(paths: list[Path], pattern: str) -> list[str]:
-    """Every unique flag matching ``pattern`` under ``paths`` (files or dirs).
+def flag_facts(
+    db_path: Path | str,
+    *,
+    tenant: str = "system",
+    engagement_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Engine facts of type ``loot``/``flag`` recorded in ``control.db``.
 
-    Order is discovery order, so the JSON shows *what* was found first. The
-    dedupe is what makes ``len(found) >= expected_flags`` a real count instead
-    of the same match repeated in the NDJSON, the report and the artifact.
+    The run's own database is the source of truth: a row is a *capture* when the
+    engine wrote ``fact_type`` ``loot`` or ``flag``. A fact the model registered
+    (``verified=false`` / ``asserted_by="agent"``) is dropped, because scoring it
+    would let the agent grade its own homework.
+
+    The file is opened read-only (``mode=ro``) so scanning a finished or a
+    still-running run never creates or mutates it; a missing/unreadable DB is
+    simply no facts (the run scores zero instead of inventing flags).
     """
-    matcher = re.compile(pattern)
+    path = Path(db_path)
+    if not path.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT source_uri, content FROM kernel_knowledge_documents
+               WHERE tenant_id=? ORDER BY created_at""",
+            (tenant,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    facts: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            fact = json.loads(row["content"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(fact, dict):
+            continue
+        if str(fact.get("fact_type") or "") not in FLAG_FACT_TYPES:
+            continue
+        if engagement_id:
+            source_uri = str(row["source_uri"] or "")
+            owner = str(fact.get("engagement_id") or "")
+            if owner != engagement_id and not source_uri.startswith(
+                f"blackboard/{engagement_id}/"
+            ):
+                continue
+        if fact.get("verified") is False or str(fact.get("asserted_by") or "") == "agent":
+            continue
+        facts.append(fact)
+    return facts
+
+
+def _flag_text(fact: dict[str, Any]) -> str:
+    """Captured text of a fact, without interpreting its format (or ``""``)."""
+    value = fact.get("value")
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in FLAG_VALUE_KEYS:
+            text = str(value.get(key) or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def db_flags(
+    db_path: Path | str,
+    *,
+    tenant: str = "system",
+    engagement_id: str | None = None,
+) -> list[str]:
+    """Distinct captured texts the engine recorded for the run (input order)."""
     found: list[str] = []
-    for start in paths:
-        if not start.exists():
-            continue
-        candidates = [start] if start.is_file() else sorted(start.rglob("*"))
-        for path in candidates:
-            if not path.is_file():
-                continue
-            text = _text(path)
-            if not text:
-                continue
-            for match in matcher.finditer(text):
-                value = match.group(0)
-                if value and value not in found:
-                    found.append(value)
+    for fact in flag_facts(db_path, tenant=tenant, engagement_id=engagement_id):
+        text = _flag_text(fact)
+        if text and text not in found:
+            found.append(text)
     return found
 
 
-def extract_literal_flags(paths: list[Path], literals: list[str]) -> list[str]:
-    """Every literal flag that appears verbatim under ``paths``.
+def room_flags(
+    db_path: Path | str,
+    room: dict[str, Any],
+    *,
+    tenant: str = "system",
+    engagement_id: str | None = None,
+) -> list[str]:
+    """Flags captured for *room*, read from the run's control database.
 
-    A room whose flags carry no ``flag{fake_flag}`` shape (Simple CTF's
-    ``G00d j0b, keep up!``) declares the exact strings instead of a regex: a
-    pattern written to match one sentence would count any lookalike text, and
-    would still miss the trailing punctuation. Same discovery order and dedupe
-    as :func:`extract_flags`, so ``len(found) >= expected_flags`` keeps meaning
-    "distinct flags captured".
+    Precedence: a declared ``flags_literal`` is the criterion and must match the
+    engine's text exactly; ``flag_regex`` narrows the same way; with neither, any
+    verified ``loot``/``flag`` fact counts, whatever its format. In all three
+    cases the count is distinct texts, which is what ``expected_flags`` means.
     """
-    found: list[str] = []
-    for start in paths:
-        if not start.exists():
-            continue
-        candidates = [start] if start.is_file() else sorted(start.rglob("*"))
-        for path in candidates:
-            if not path.is_file():
-                continue
-            text = _text(path)
-            if not text:
-                continue
-            for literal in literals:
-                if literal in text and literal not in found:
-                    found.append(literal)
-    return found
-
-
-def extract_default_flags(paths: list[Path]) -> list[str]:
-    """Flags of a room that declared no pattern.
-
-    Two deterministic criteria, the same the engine uses: a flag-shaped token or
-    a 32-character hash anywhere in the run, and the first non-empty line of a
-    file named like a flag file (``user.txt``...). The second is what counts a
-    room whose ``user.txt`` holds arbitrary text, and it never reads more than
-    :data:`DEFAULT_FLAG_TEXT_MAX` characters from one line.
-    """
-    found = extract_flags(paths, DEFAULT_FLAG_PATTERN)
-    for start in paths:
-        if not start.exists():
-            continue
-        candidates = [start] if start.is_file() else sorted(start.rglob("*"))
-        for path in candidates:
-            if not path.is_file() or path.name.casefold() not in DEFAULT_FLAG_FILES:
-                continue
-            for line in _text(path).splitlines():
-                value = line.strip()
-                if not value:
-                    continue
-                if len(value) <= DEFAULT_FLAG_TEXT_MAX and value not in found:
-                    found.append(value)
-                break
-    return found
-
-
-def room_flags(paths: list[Path], room: dict[str, Any]) -> list[str]:
-    """Flags captured for *room*: literal, declared regex, else the default."""
-    literals = room.get("flags_literal") or []
+    flags = db_flags(db_path, tenant=tenant, engagement_id=engagement_id)
+    literals = [str(value).strip() for value in room.get("flags_literal") or []]
     if literals:
-        return extract_literal_flags(paths, [str(value) for value in literals])
-    if room.get("flag_regex"):
-        return extract_flags(paths, str(room["flag_regex"]))
-    return extract_default_flags(paths)
+        return [flag for flag in flags if flag in literals]
+    pattern = room.get("flag_regex")
+    if pattern:
+        matcher = re.compile(str(pattern))
+        return [flag for flag in flags if matcher.search(flag)]
+    return flags
 
 
 def tokens_from_ndjson(path: Path) -> int:
@@ -484,7 +495,8 @@ def run_once(
             "room": room_id, "name": room.get("name"), "run": run_number,
             "timestamp": stamp, "target": target, "objective": objective,
             "pass": False, "error": "engagement_creation_failed",
-            "detail": creation_log, "flags_found": [], "flags_expected": int(room["expected_flags"]),
+            "detail": creation_log, "flags_found": [], "flags_source": FLAG_SOURCE,
+            "flags_expected": int(room["expected_flags"]),
             "tokens_used": 0, "duration_seconds": 0.0, "exit_code": None,
             "timed_out": False, "reset_error": reset_error,
             "db_path": env["NEXUS_DB_PATH"],
@@ -519,7 +531,9 @@ def run_once(
             exit_code = process.wait(timeout=KILL_GRACE_SECONDS)
     duration = round(time.monotonic() - started, 2)
 
-    flags = room_flags([ndjson, workspace, run_dir / "data"], room)
+    flags = room_flags(
+        env["NEXUS_DB_PATH"], room, engagement_id=engagement_id
+    )
     expected = int(room["expected_flags"])
     result = {
         "room": room_id,
@@ -531,6 +545,7 @@ def run_once(
         "engagement_id": engagement_id,
         "pass": len(flags) >= expected,
         "flags_found": flags,
+        "flags_source": FLAG_SOURCE,
         "flags_expected": expected,
         "flags_missing": max(0, expected - len(flags)),
         "tokens_used": tokens_from_ndjson(ndjson),
@@ -622,6 +637,7 @@ def main(argv: list[str] | None = None) -> int:
                 "flag_regex": room.get("flag_regex"),
                 "flags_literal": room.get("flags_literal"),
                 "flags_default": not room.get("flags_literal") and not room.get("flag_regex"),
+                "flags_source": FLAG_SOURCE,
                 "expected_flags": int(room["expected_flags"]),
                 "timeout_seconds": int(room["timeout_seconds"]),
                 "max_iterations": int(room["max_iterations"]),

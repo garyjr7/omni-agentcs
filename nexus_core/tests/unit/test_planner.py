@@ -9,6 +9,7 @@ from nexus_core.agent.planner import (
     PHASE_IDS,
     SMART_BUDGET_MIN_ITERATION,
     STATUS_CURRENT,
+    WEBSHELL_STALL_TURNS,
     STATUS_DONE,
     STATUS_PENDING,
     active_phase,
@@ -17,6 +18,7 @@ from nexus_core.agent.planner import (
     enumeration_budget_hint,
     normalize_counts,
     plan_from_summary,
+    webshell_stall_hint,
 )
 
 pytestmark = pytest.mark.unit
@@ -174,6 +176,50 @@ def test_the_smart_budget_hint_fires_only_after_ten_turns_with_a_wide_surface():
     # It also fires on exploitation-with-no-access: in the measured run the plan
     # had advanced at iteration 5 and the model kept enumerating anyway.
     assert enumeration_budget_hint(plan, iteration=29) != ""
+
+
+def test_the_webshell_stall_hint_fires_after_ten_build_turns_without_progress():
+    """Measured in Vulnversity: 35 turns compiling pwnkit through ``curl``."""
+    build = {
+        "tool_id": "nexus.shell.exec",
+        "arguments": {
+            "command": (
+                "cd /tmp/pwnkit && gcc -static -o pwnkit pwnkit.c && "
+                "base64 -w0 pwnkit | curl -s -G \"$U\" --data-urlencode cmd=@-"
+            )
+        },
+    }
+    actions = [build] * WEBSHELL_STALL_TURNS
+
+    hint = webshell_stall_hint(actions, no_progress=WEBSHELL_STALL_TURNS)
+
+    assert "Estás atascado en un webshell" in hint
+    assert "nexus.session.pty" in hint and "nexus.post.listener" in hint
+    assert "reverse shell" in hint and "bash, nc, python" in hint
+    # Nine build turns (or nine barren turns) are not the measured stall.
+    assert webshell_stall_hint(actions[:-1], no_progress=9) == ""
+    assert webshell_stall_hint(actions, no_progress=9) == ""
+    # A run that is still learning something is not stuck.
+    assert webshell_stall_hint(actions, no_progress=0) == ""
+
+
+def test_the_webshell_stall_hint_ignores_light_and_non_shell_work():
+    light = {"tool_id": "nexus.shell.exec", "arguments": {"command": "ls -la /var/www"}}
+    recon = {
+        "tool_id": "nexus.shell.exec",
+        "arguments": {"command": "curl -s -o /dev/null -w '%{http_code}' http://10.0.0.5/"},
+    }
+    other_tool = {"tool_id": "nexus.recon.nmap", "arguments": {"command": "gcc -o x x.c"}}
+    build = {"tool_id": "nexus.shell.exec", "arguments": {"command": "chmod +x /tmp/rev"}}
+    limit = WEBSHELL_STALL_TURNS
+
+    # Plain recon, a light command and another tool are not a build loop.
+    for action in (light, recon, other_tool):
+        assert webshell_stall_hint([action] * limit, no_progress=limit) == ""
+    # A run that already pivoted keeps its last word: no stale hint.
+    assert webshell_stall_hint([build] * (limit - 1) + [light], no_progress=limit) == ""
+    # The same build turn in the shell channel does fire.
+    assert webshell_stall_hint([build] * limit, no_progress=limit) != ""
 
 
 def test_active_phase_matches_build_plan():
