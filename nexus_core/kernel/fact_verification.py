@@ -26,27 +26,38 @@ from .blackboard import Blackboard, is_verified_fact
 #: turning any brace-wrapped text into "loot".
 FLAG_RE = re.compile(r"(?:THM|HTB|FLAG|flag|CTF|ctf)\{[^}\s\x00]{4,200}\}")
 
-#: A single read of one file (``cat``, optionally behind ``sudo``). Only this
-#: shape attributes the output to the file it came from: a pipe or a loop could
-#: print anything, so it is not evidence about a path.
+#: A read of **one** file that ends the command (``cat``/``type``, optionally
+#: behind ``sudo``, or the PowerShell ``Get-Content``/``gc``). The read may follow
+#: other commands (``id; hostname; cat /home/x/user.txt`` is a shape a real run
+#: produced), but nothing may run *after* it: a pipe, a loop or a later statement
+#: mixes outputs, and then no line can be attributed to the file. Matching only
+#: the *text* of the command is what lets the same rule serve ``ssh_exec``,
+#: ``shell.exec`` and ``winrm_exec`` without pinning one exact command line.
 _FLAG_FILE_READ_RE = re.compile(
-    r"^\s*(?:sudo\s+(?:-[A-Za-z]+\s+)*)?(?:cat|tac|less|more|type)\s+"
-    r"(?P<path>\"[^\"]+\"|'[^']+'|[^\s|;&<>]+)\s*$",
+    r"(?:^|[;&|\n])\s*"
+    r"(?:sudo\s+(?:-[A-Za-z]+\s+)*)?"
+    r"(?:cat|tac|less|more|type|get-content|gc)\s+"
+    r"(?P<path>\"[^\"]+\"|'[^']+'|[^\s|;&<>]+)"
+    r"(?:\s+2>>?\s*(?:/dev/null|&1))?"
+    r"\s*$",
     re.IGNORECASE,
 )
 
 #: Conventional CTF flag files (``user.txt``, ``root.txt``, ``flag.txt``,
 #: ``flag1.txt``...). The *name* is what makes a verified read loot; Simple CTF
 #: stores ``G00d j0b, keep up!`` in ``user.txt``, with no ``flag{fake_flag}`` shape, and
-#: the engine used to record nothing because of it.
+#: the engine used to record nothing because of it. Both separators count: the
+#: PowerShell branch reads ``C:\\Users\\tom\\Desktop\\user.txt``.
 _FLAG_FILE_NAME_RE = re.compile(
-    r"(?:^|/)(?:user|root|flag|proof|local|system)(?:[._-]?\d+)?\.txt$",
+    r"(?:^|[/\\])(?:user|root|flag|proof|local|system)(?:[._-]?\d+)?\.txt$",
     re.IGNORECASE,
 )
 
 #: Longest file content promoted as loot; a longer line is not a flag and
-#: truncating it would store a text that never existed on the target.
-FLAG_FILE_TEXT_MAX = 500
+#: truncating it would store a text that never existed on the target. The format
+#: is never guessed (Vulnversity's ``user.txt`` holds an MD5, ``8bd7992f...``),
+#: so the only thing that bounds "this is the capture" is that it is short.
+FLAG_FILE_TEXT_MAX = 200
 
 #: ``verification_method`` of the facts a generic shell asserts when the command
 #: it ran was an authenticated ``ssh`` (``sshpass``). The channel is proven -the
@@ -298,22 +309,23 @@ def _shell_output(output, result) -> str:
 
 
 def shell_read_text(command, summary) -> str:
-    """Content printed by a single read of a flag file over the shell channel.
+    """Content printed by a read of a flag file over the shell channel.
 
-    :func:`flag_file_text` takes the first line of the output, which is right for
-    ``ssh_exec`` (stdout reaches it clean). Here the summary is the *local* shell
-    output, so the client's own diagnostics are removed first and the read must
-    leave exactly one line -the shape a flag file has-, otherwise nothing is
-    attributed to the path.
+    The summary is the *local* shell output, so the client's own diagnostics are
+    removed first. The same rule as :func:`flag_file_text` applies: a plain read
+    must leave exactly one line, and a read that closes a chain of commands
+    (``id; hostname; cat user.txt``) takes the last one, because everything
+    before it belongs to the earlier commands.
     """
-    if not flag_file_path(command):
+    path, chained = flag_file_read(command)
+    if not path:
         return ""
     stdout = str(summary or "").split("\n[stderr]", 1)[0]
     lines = [line.strip() for line in stdout.splitlines()
              if line.strip() and not _SSH_CLIENT_NOISE_RE.match(line.strip())]
-    if len(lines) != 1:
+    if not lines or (not chained and len(lines) != 1):
         return ""
-    text = lines[0]
+    text = lines[-1]
     if len(text) > FLAG_FILE_TEXT_MAX or any(ord(ch) < 0x20 for ch in text):
         return ""
     return text
@@ -380,31 +392,53 @@ _WIN_READ_RE = re.compile(
 )
 
 
-def flag_file_path(command):
-    """Path a command reads, when that command is a single read of a flag file."""
-    match = _FLAG_FILE_READ_RE.match(str(command or ""))
+def flag_file_read(command):
+    """``(path, chained)`` of the flag-file read that ends *command*.
+
+    ``path`` is empty when the command does not end in a read of a conventional
+    flag file. ``chained`` says other commands ran before the read (``id;
+    hostname; cat user.txt``), so only the *last* line of the output belongs to
+    the file; a command that is exactly one read must print exactly one line,
+    because anything else is not the content of a one-line flag file.
+    """
+    text = str(command or "")
+    match = _FLAG_FILE_READ_RE.search(text)
     if not match:
-        return ""
+        return "", False
     path = match.group("path").strip("\"'")
-    return path if _FLAG_FILE_NAME_RE.search(path) else ""
+    if not _FLAG_FILE_NAME_RE.search(path):
+        return "", False
+    return path, bool(text[: match.start()].strip())
+
+
+def flag_file_path(command):
+    """Path a command reads, when that command ends in a read of a flag file."""
+    return flag_file_read(command)[0]
 
 
 def flag_file_text(command, stdout):
     """Content of the flag file a verified read printed, or ``""``.
 
-    One line, because that is what these files hold; a multi-line answer is a
-    hint, an error or someone else's output, not a flag.
+    The format is not interpreted: whatever short text the file holds *is* the
+    flag (Vulnversity's ``user.txt`` is an MD5). ``chained`` reads take the last
+    line -the only one the trailing read produced- and a plain read must leave
+    exactly one, so a multi-line answer (a hint, an error, someone else's
+    output) is never stored as the file's content.
     """
-    if not flag_file_path(command):
+    path, chained = flag_file_read(command)
+    if not path:
         return ""
-    for line in str(stdout or "").splitlines():
-        text = line.strip()
-        if not text:
-            continue
-        if len(text) > FLAG_FILE_TEXT_MAX or any(ord(ch) < 0x20 for ch in text):
-            return ""
-        return text
-    return ""
+    lines = [
+        line.strip()
+        for line in str(stdout or "").splitlines()
+        if line.strip() and not _SSH_CLIENT_NOISE_RE.match(line.strip())
+    ]
+    if not lines or (not chained and len(lines) != 1):
+        return ""
+    text = lines[-1]
+    if len(text) > FLAG_FILE_TEXT_MAX or any(ord(ch) < 0x20 for ch in text):
+        return ""
+    return text
 
 
 def _net_group_members(text):
@@ -617,8 +651,11 @@ def derive_assertions(tool_id, arguments, result, context):
             # A verified read of a conventional flag file is loot on its own
             # evidence: the SSH channel is proven (exit 0) and the path says what
             # the text is, so a room whose flags carry no prefix still registers
-            # the capture. Measured in Simple CTF: `cat ~/user.txt` printed the
-            # flag, nothing derived it, and the agent could not see it had won.
+            # the capture. The *content* is never interpreted: Vulnversity's
+            # ``user.txt`` holds an MD5 (``8bd7992f...``), and any short text the
+            # file printed counts. The read may close a chain of commands
+            # (``id; hostname; cat user.txt``), which is the shape a measured run
+            # produced; only the trailing read's own line is attributed.
             path = flag_file_path(command)
             text = flag_file_text(command, stdout)
             if text and text not in captured:
@@ -807,6 +844,16 @@ def derive_assertions(tool_id, arguments, result, context):
             for flag in FLAG_RE.findall(stdout):
                 add('loot', flag, {'flag': flag, 'path': path, 'command': command,
                                    'service': 'winrm'}, path)
+            # The file name is the proof, not the format: ``Get-Content
+            # user.txt``/``type user.txt`` printing one short line of any text is
+            # the capture (Vulnversity's ``user.txt`` is an MD5). The channel is
+            # already proven above, and ``flag_file_text`` refuses a multi-line
+            # answer, so a wrapped/loud read promotes nothing.
+            content = flag_file_text(command, stdout)
+            if content and not any(row['value'].get('flag') == content for row in rows):
+                add('loot', content,
+                    {'content': content, 'flag': content, 'path': path,
+                     'command': command, 'service': 'winrm'}, path)
     elif tool_id == 'nexus.post.dpapi' and result.verification_method == 'dpapi_unwrapped':
         # The blob's own signature was verified before the material was released, so
         # the recovered key material is a proven fact (never the AP itself: only its

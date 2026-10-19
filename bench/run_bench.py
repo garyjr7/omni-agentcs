@@ -20,7 +20,10 @@ Una sala declara sus flags de una de dos formas: ``flag_regex`` (el patron
 ``flag{fake_flag}`` de la mayoria de salas) o ``flags_literal`` (la lista de cadenas
 exactas, para salas como Simple CTF cuyo ``user.txt`` no lleva prefijo). Si
 estan las dos, manda ``flags_literal``: el valor literal es el criterio, no una
-aproximacion por forma.
+aproximacion por forma. Si no declara ninguna y su objetivo pide capturar
+flags, se usa el criterio por defecto (:data:`DEFAULT_FLAG_PATTERN`): un hash de
+32 caracteres (el ``user.txt`` de Vulnversity es un MD5, no un ``flag{fake_flag}``) o
+la primera linea de un fichero de flag convencional encontrado en el run.
 
 Creacion y ejecucion comparten **un solo entorno** (:func:`run_environment`):
 una DB de control dentro del directorio del run. Si el creador y el agente
@@ -88,6 +91,23 @@ BENCH_RUN_BUDGET_TOKENS = 400_000
 #: the run ``--trust-mode``; ``approve`` records the durable, audited approval the
 #: gateway would otherwise demand. The engine ignores it without trust mode.
 BENCH_RESUME_POLICY = "approve"
+#: Formas de flag de una sala que no declara patron: un token con prefijo o un
+#: hash de 32 caracteres (el ``user.txt`` de Vulnversity es un MD5). Los
+#: lookarounds sobre digitos hexadecimales -no ``\b``, que se pierde cuando el
+#: hash viene escapado dentro de un JSON- evitan recortar un SHA-1/SHA-256 a sus
+#: primeros 32 caracteres.
+DEFAULT_FLAG_PATTERN = (
+    r"(?:THM|HTB|FLAG|flag|CTF|ctf)\{[^}\s]{4,200}\}"
+    r"|(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])"
+)
+#: Nombres de fichero que la propia sala usa para sus flags. Con el criterio por
+#: defecto tambien cuenta la primera linea no vacia de uno de ellos: es el mismo
+#: hecho que promueve el motor, asi que bench y motor coinciden en que es captura.
+DEFAULT_FLAG_FILES = ("user.txt", "root.txt", "local.txt", "proof.txt")
+#: Texto maximo que se acepta como contenido de un fichero de flag.
+DEFAULT_FLAG_TEXT_MAX = 200
+#: Palabras de un objetivo que lo declaran una caceria de flags. Casefolded.
+FLAG_OBJECTIVE_TOKENS = ("flag", "bandera", "ctf")
 
 
 # --------------------------------------------------------------------- config
@@ -105,9 +125,14 @@ def load_config(path: Path = DEFAULT_ROOMS) -> dict[str, Any]:
             raise ValueError(f"rooms.yaml: room {room_id!r} lacks {sorted(missing)}")
         literals = room.get("flags_literal")
         if literals is None and "flag_regex" not in room:
-            raise ValueError(
-                f"rooms.yaml: room {room_id!r} needs flag_regex or flags_literal"
-            )
+            # A room may omit the declaration only when its objective is a flag
+            # hunt: then the default criterion (flag shape, 32-char hash or the
+            # content of a flag file) measures it. Anything else fails closed,
+            # because the bench would be scoring a run it cannot read.
+            if not objective_asks_for_flags(str(room.get("objective") or "")):
+                raise ValueError(
+                    f"rooms.yaml: room {room_id!r} needs flag_regex or flags_literal"
+                )
         if literals is not None:
             if (
                 not isinstance(literals, list)
@@ -126,6 +151,14 @@ def load_config(path: Path = DEFAULT_ROOMS) -> dict[str, Any]:
             raise ValueError(f"rooms.yaml: {room_id!r} expects no flags")
     data.setdefault("defaults", {})
     return data
+
+
+def objective_asks_for_flags(objective: Any) -> bool:
+    """Whether the room objective states a flag hunt (deterministic, no LLM)."""
+    text = str(objective or "").casefold()
+    return any(token in text for token in FLAG_OBJECTIVE_TOKENS) or any(
+        name in text for name in DEFAULT_FLAG_FILES
+    )
 
 
 def room_settings(config: dict[str, Any], room_id: str) -> dict[str, Any]:
@@ -231,12 +264,41 @@ def extract_literal_flags(paths: list[Path], literals: list[str]) -> list[str]:
     return found
 
 
+def extract_default_flags(paths: list[Path]) -> list[str]:
+    """Flags of a room that declared no pattern.
+
+    Two deterministic criteria, the same the engine uses: a flag-shaped token or
+    a 32-character hash anywhere in the run, and the first non-empty line of a
+    file named like a flag file (``user.txt``...). The second is what counts a
+    room whose ``user.txt`` holds arbitrary text, and it never reads more than
+    :data:`DEFAULT_FLAG_TEXT_MAX` characters from one line.
+    """
+    found = extract_flags(paths, DEFAULT_FLAG_PATTERN)
+    for start in paths:
+        if not start.exists():
+            continue
+        candidates = [start] if start.is_file() else sorted(start.rglob("*"))
+        for path in candidates:
+            if not path.is_file() or path.name.casefold() not in DEFAULT_FLAG_FILES:
+                continue
+            for line in _text(path).splitlines():
+                value = line.strip()
+                if not value:
+                    continue
+                if len(value) <= DEFAULT_FLAG_TEXT_MAX and value not in found:
+                    found.append(value)
+                break
+    return found
+
+
 def room_flags(paths: list[Path], room: dict[str, Any]) -> list[str]:
-    """Flags captured for *room*: literal strings when declared, else the regex."""
+    """Flags captured for *room*: literal, declared regex, else the default."""
     literals = room.get("flags_literal") or []
     if literals:
         return extract_literal_flags(paths, [str(value) for value in literals])
-    return extract_flags(paths, str(room["flag_regex"]))
+    if room.get("flag_regex"):
+        return extract_flags(paths, str(room["flag_regex"]))
+    return extract_default_flags(paths)
 
 
 def tokens_from_ndjson(path: Path) -> int:
@@ -559,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
                 "target_env": room.get("target_env"),
                 "flag_regex": room.get("flag_regex"),
                 "flags_literal": room.get("flags_literal"),
+                "flags_default": not room.get("flags_literal") and not room.get("flag_regex"),
                 "expected_flags": int(room["expected_flags"]),
                 "timeout_seconds": int(room["timeout_seconds"]),
                 "max_iterations": int(room["max_iterations"]),

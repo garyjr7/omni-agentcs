@@ -9,7 +9,10 @@
 # del entorno (`target_env`) o de `--target sala=IP`. No se versiona una IP
 # caducada: cada sala declara el patron (`flag_regex`) o, si sus flags no
 # llevan prefijo flag{fake_flag}, la lista de cadenas exactas (`flags_literal`). Cuando
-# estan las dos, manda `flags_literal`.
+# estan las dos, manda `flags_literal`. Una sala de caza de flags puede omitir
+# ambas: el runner busca entonces un token con prefijo, un hash de 32 caracteres
+# (el `user.txt` de Vulnversity es un MD5) o la primera linea de un `user.txt`,
+# `root.txt`, `local.txt` o `proof.txt` encontrado en los artefactos del run.
 version: 1
 
 defaults:

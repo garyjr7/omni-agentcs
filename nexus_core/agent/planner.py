@@ -1028,6 +1028,9 @@ class ObjectiveCompletion:
 
 
 _FLAG_SHAPED = re.compile(r"(?:THM|HTB|FLAG|flag|CTF|ctf)\{[^}\s]{4,200}\}")
+#: A content digest (MD5/SHA) held by a loot value: Vulnversity's ``user.txt`` is
+#: an MD5, so an all-digit shape is a legitimate capture even without letters.
+_HASH_SHAPED = re.compile(r"^[0-9a-fA-F]{32,128}$")
 #: Depth ceiling of :func:`flag_tokens`: a tool output is arbitrary JSON, and a
 #: cyclic/hostile value must not turn the closure check into a crash.
 FLAG_MAX_DEPTH = 12
@@ -1070,6 +1073,28 @@ def flag_tokens(value: Any) -> tuple[str, ...]:
 
     walk(value, 0)
     return tuple(found)
+
+
+def flag_file_capture(fact: Any) -> str:
+    """Text of a verified ``loot`` fact whose *key* names a flag file.
+
+    The format is never guessed: a ``user.txt``/``root.txt``/``local.txt``/
+    ``proof.txt`` capture may be an ``MD5``, a sentence or anything else short
+    enough to be a flag (Vulnversity's ``user.txt`` is
+    ``8bd7992fbe8a6ad22a63361004cfcedb``). The key is the path the engine proved
+    it read, so the fact is the capture whatever the value looks like.
+    """
+    if not isinstance(fact, Mapping):
+        return ""
+    key = str(fact.get("key") or "")
+    if not any(name in key.casefold() for name in FLAG_FILE_TARGETS):
+        return ""
+    value = _fact_value(fact)
+    for name in ("content", "flag", "value", "excerpt", "sha256"):
+        text = str(value.get(name) or "").strip()
+        if text:
+            return text
+    return key
 
 
 def objective_asks_for_flags(objective: Any) -> bool:
@@ -1133,7 +1158,10 @@ def target_reached(
 
     A flag counts when it comes from one of two deterministic sources:
 
-    * a **verified** ``loot`` fact on the board (the verifier attested it);
+    * a **verified** ``loot`` fact on the board (the verifier attested it). The
+      value counts when it is flag-shaped, **or** when the fact's key names a
+      conventional flag file (:func:`flag_file_capture`): Vulnversity's
+      ``user.txt`` holds an MD5, not ``flag{fake_flag}``, and the read is the evidence;
     * a flag-shaped token in the output of a successful tool call of this run
       (``observed_flags``), which is how a webshell/curl branch reports it: the
       RootMe run captured both flags through command output and never derived a
@@ -1156,6 +1184,9 @@ def target_reached(
             continue
         key = str(fact.get("key") or "")
         tokens = flag_tokens(_fact_value(fact)) or flag_tokens(key)
+        if not tokens:
+            captured = flag_file_capture(fact)
+            tokens = (captured,) if captured else ()
         for token in tokens:
             if token in seen:
                 continue
@@ -1213,15 +1244,17 @@ def _fact_value(fact: Any) -> Mapping[str, Any]:
 def loot_is_evidence(value: Mapping[str, Any] | None) -> bool:
     """Whether a ``loot`` value is a *captured artifact* rather than a note.
 
-    Two shapes count: a content digest (``sha256``, what ``sliver_loot`` records)
-    or a flag-shaped token (``flag{fake_flag}``, what every command-execution branch
-    records). A loot fact whose value carries neither is a note, not loot.
+    Two shapes count: a content digest (``sha256``/MD5, what ``sliver_loot`` and
+    a flag-file read record) or a flag-shaped token (``flag{fake_flag}``, what every
+    command-execution branch records). A loot fact whose value carries neither
+    is a note, not loot.
     """
     value = value or {}
     if str(value.get("sha256") or "").strip():
         return True
     for name in ("flag", "value", "content", "excerpt"):
-        if _FLAG_SHAPED.search(str(value.get(name) or "")):
+        text = str(value.get(name) or "").strip()
+        if _FLAG_SHAPED.search(text) or _HASH_SHAPED.match(text):
             return True
     key_flag = str(value.get("flag") or "").strip()
     return bool(key_flag and key_flag.upper() != key_flag.lower())
