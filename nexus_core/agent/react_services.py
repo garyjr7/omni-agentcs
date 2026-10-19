@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypeVar
 from collections.abc import Awaitable, Mapping
 from nexus_core.kernel.control_store import ControlStore
@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from nexus_core.hooks import HookRunner
+from .coverage import Coverage, load_coverage, render_coverage
 from .planner import Plan
 from .subagents import SubAgentDefinition
 from .project_context import ProjectInstruction
@@ -190,6 +191,11 @@ class ContextSnapshot:
     plan: Plan
     facts_text: str
     run_id: str = ""
+    #: Deterministic ledger of the discovered services (``coverage.py``). It is
+    #: carried with the snapshot so the prompt and the loop's pivot rule read
+    #: the *same* board image of this turn, and so a caller without a store (a
+    #: test, the CLI) gets an empty ledger instead of an error.
+    coverage: Coverage = field(default_factory=Coverage)
 
 
 class ContextBuilder:
@@ -257,7 +263,14 @@ class ContextBuilder:
         plan, facts_text = _blackboard_view(
             store, tenant_id, engagement_id, phase_turns=phase_turns
         )
-        return ContextSnapshot(run_history, history_summary, plan, facts_text, run_id)
+        return ContextSnapshot(
+            run_history,
+            history_summary,
+            plan,
+            facts_text,
+            run_id,
+            coverage=load_coverage(store, tenant_id, engagement_id),
+        )
 
     def render(
         self,
@@ -279,6 +292,7 @@ class ContextBuilder:
         iteration: int = 0,
         budget_hint: str = "",
         webshell_hint: str = "",
+        coverage_hint: str = "",
     ) -> list[LLMMessage]:
         full_catalog = self.full_catalog_for(iteration=iteration, subagent=subagent)
         history_summary, plan, facts_text = (
@@ -295,6 +309,7 @@ class ContextBuilder:
             history_summary=history_summary or "(sin historial previo)",
             facts_summary=facts_text,
             plan_summary=plan.render(),
+            coverage_summary=render_coverage(snapshot.coverage),
             subagent_summary=subagent.describe(),
             project_summary=render_project_instruction(project_instruction),
             skills_summary=render_skills(active_skills),
@@ -327,6 +342,12 @@ class ContextBuilder:
         # in the planner and the prompt carries the interactive way out.
         if webshell_hint:
             system_prompt = f"{system_prompt}\n\n{webshell_hint}"
+        # The surface ledger's correction: a run that keeps attacking a service
+        # already documented as a dead end, or that burns turns while another
+        # service is still unexplored, gets one explicit order to switch branch
+        # (``coverage.pivot_hint``, deterministic and unit-tested).
+        if coverage_hint:
+            system_prompt = f"{system_prompt}\n\n{coverage_hint}"
         # WP5: the objective's flags are in hand. The model still decides how to
         # close -the loop only forbids more exploration and orders the closure-;
         # if it ignores the order for the whole margin, the loop closes itself.

@@ -64,6 +64,7 @@ from .react_types import (
     SKILL_NUDGE_TURNS,
     SMART_BUDGET_EVENT_TYPE,
     WEBSHELL_STALL_EVENT_TYPE,
+    COVERAGE_PIVOT_EVENT_TYPE,
     TARGET_REACHED_EVENT_TYPE,
     TARGET_REACHED_FORCED_EVENT_TYPE,
     TARGET_REACHED_GRACE_TURNS,
@@ -241,6 +242,12 @@ class ReActCoordinator:
     #: not apply) and whether its ``react.budget_hint`` event was already audited.
     budget_hint: str
     budget_hint_emitted: bool
+    #: Surface-ledger correction for the prompt of this turn ("" when the rule
+    #: does not apply) and whether its ``react.coverage_pivot`` event was already
+    #: audited. It orders the next branch when the run is attacking a documented
+    #: dead end or stalling while another service is unexplored.
+    coverage_hint: str
+    coverage_hint_emitted: bool
     #: The board already proves the objective (verified top privilege + verified
     #: loot). Refreshed every turn from the facts; it adds the closure hint to the
     #: plan and exempts the active profile's token ceiling (V1-35, V1-38).
@@ -477,6 +484,8 @@ class ReActCoordinator:
         self.budget_hint_emitted = False
         self.webshell_hint = ""
         self.webshell_hint_emitted = False
+        self.coverage_hint = ""
+        self.coverage_hint_emitted = False
         self.objective_complete = False
         self.objective_complete_emitted = False
         self.budget_exempt = False
@@ -646,6 +655,9 @@ class ReActCoordinator:
         # The Vulnversity stall: build/pack work pushed through a webshell for
         # ten turns without a new fact gets one explicit order to stabilize.
         self._refresh_webshell_hint()
+        # The surface ledger: a service already documented as a dead end, or a
+        # branch held while another port is unexplored, gets one order to move.
+        self._refresh_coverage_hint()
         self.last_plan = self.plan
         return Transition.READY
 
@@ -813,6 +825,56 @@ class ReActCoordinator:
             },
         )
         self.webshell_hint_emitted = True
+
+    def _refresh_coverage_hint(self) -> None:
+        """Stop a run from insisting on a branch the ledger already closed.
+
+        The rule lives in :mod:`nexus_core.agent.coverage` (deterministic and
+        unit-tested); the loop only injects its text and audits it once. It has
+        two triggers, both measured as real stalls: the turn's action aims at a
+        service a ``barrier`` fact already closed (the Blackbox run kept probing
+        the patched service instead of documenting it and moving on), or the
+        run reached the stuck threshold while the ledger still has open work.
+
+        It never changes the plan, never stops the run and never authorizes a
+        tool: the model still chooses the branch and the gateway still governs
+        it.
+        """
+        from nexus_core.agent.coverage import focus_entry, pivot_hint
+
+        coverage = getattr(self.snapshot, "coverage", None)
+        arguments = getattr(getattr(self, "action", None), "arguments", None)
+        focus = focus_entry(coverage, arguments if isinstance(arguments, dict) else None)
+        self.coverage_hint = pivot_hint(
+            coverage,
+            no_progress=self.consecutive_no_progress,
+            threshold=self.stuck_threshold,
+            focus=focus,
+        )
+        if not self.coverage_hint or self.coverage_hint_emitted:
+            return
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            COVERAGE_PIVOT_EVENT_TYPE,
+            {
+                "iteration": self.iteration,
+                "phase": str(getattr(self.plan, "current", "") or ""),
+                "no_progress": self.consecutive_no_progress,
+                "focus": focus.ref if focus is not None else None,
+                "focus_status": focus.status if focus is not None else None,
+                "counts": dict(getattr(coverage, "counts", {}) or {}),
+                "open_work": [item.ref for item in getattr(coverage, "open_work", ())][:12],
+                "hint": self.coverage_hint,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="coverage_pivot",
+            decision="degrade",
+            focus=focus.ref if focus is not None else None,
+        )
+        self.coverage_hint_emitted = True
 
     def _note_completed_turn(self) -> None:
         """Record that the phase of this turn has been *current* once more (V1-46).
@@ -1225,6 +1287,7 @@ class ReActCoordinator:
             iteration=self.iteration,
             budget_hint=self.budget_hint,
             webshell_hint=self.webshell_hint,
+            coverage_hint=self.coverage_hint,
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)

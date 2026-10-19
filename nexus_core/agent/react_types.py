@@ -72,6 +72,13 @@ SMART_BUDGET_EVENT_TYPE = "react.budget_hint"
 #: through ``curl`` while a reverse shell was one turn away. From that turn the
 #: prompt orders the interactive channel (``session.pty`` / ``listener``).
 WEBSHELL_STALL_EVENT_TYPE = "react.webshell_stall"
+#: Emitted once when the surface ledger's correction fires: the run is aimed at
+#: a service already documented as ``descartado`` (a ``barrier`` fact) or it has
+#: spent the stuck threshold on one branch while another service is unexplored.
+#: Measured in the Blackbox run (2026-10-19): the agent kept probing the patched
+#: service while the internal web target was still pending. The hint orders the
+#: next branch; it never changes the plan nor authorizes a tool.
+COVERAGE_PIVOT_EVENT_TYPE = "react.coverage_pivot"
 #: Emitted once when the board (or the successful output of this run) proves the
 #: flags the objective asked for were captured. From that turn on the prompt
 #: carries :data:`TARGET_REACHED_PROMPT` and the loop counts the tool calls the

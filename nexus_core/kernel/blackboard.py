@@ -35,6 +35,12 @@ FACT_TYPES = (
     "access",
     "privilege",
     "vulnerability",
+    #: A route the agent *closed* with a reason (patched version, no exposed
+    #: vector, blocked prerequisite...). It is not evidence of progress -it never
+    #: advances a phase- but it is the memory that stops a run from attacking a
+    #: documented dead end again. The coverage ledger reads it to mark a service
+    #: ``descartado`` and to order the next pending branch.
+    "barrier",
     "session",
     "artifact",
     "loot",

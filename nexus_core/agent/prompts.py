@@ -137,6 +137,7 @@ OBJETIVO DEL USUARIO:
 
 PLAN VIGENTE:
 {plan_summary}
+{coverage_summary}
 
 SUBAGENTE ACTIVO:
 {subagent_summary}
@@ -423,6 +424,7 @@ def render_system_prompt(
     history_summary: str = "(sin historial previo)",
     facts_summary: str = "(sin hechos registrados)",
     plan_summary: str = "(sin plan)",
+    coverage_summary: str = "",
     subagent_summary: str = "(sin subagente)",
     project_summary: str = "(sin OMNI.md ni AGENTS.md en el proyecto)",
     skills_summary: str = "(sin skills activas)",
@@ -448,6 +450,7 @@ def render_system_prompt(
         history_summary=history_summary,
         facts_summary=facts_summary or "(sin hechos registrados)",
         plan_summary=plan_summary or "(sin plan)",
+        coverage_summary=coverage_summary,
         subagent_summary=subagent_summary or "(sin subagente)",
         project_summary=project_summary or "(sin OMNI.md ni AGENTS.md en el proyecto)",
         skills_summary=skills_summary or "(sin skills activas)",

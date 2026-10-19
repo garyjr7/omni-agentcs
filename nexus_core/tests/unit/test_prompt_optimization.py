@@ -97,7 +97,10 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # characters, measured at 23,006. WP4 adds the one-line skill index ("SKILLS
     # DISPONIBLES"): +106 characters on a prompt without skills, measured at
     # 23,374, plus the two catalog lines above. The ceiling moves to 23,700; the
-    # per-tool catalog bound (225) was not moved and still holds.
+    # per-tool catalog bound (225) was not moved and still holds. The coverage
+    # discipline does **not** earn room here: it travels inside the rendered
+    # ledger (``coverage.render_coverage``), which only exists on turns that
+    # have a discovered surface, so the static ceiling is unchanged.
     assert len(_prompt(catalog)) < 23_700
 
 
