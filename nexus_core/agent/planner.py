@@ -881,7 +881,12 @@ def webshell_stall_hint(
     heavy = [action for action in recent if _webshell_build_turn(action)]
     if len(heavy) < limit:
         return ""
-    if not recent or not _webshell_build_turn(recent[-1]):
+    # The stall interleaves builds with cheap inspection (``cat wc -c``, ``ls``).
+    # Requiring the very last action to be a build missed the measured run: it
+    # ended on ``cat /tmp/pwnkit/pwnkit.c`` after 35 barren turns, so the hint
+    # never fired. One inspection turn is part of the loop; two clean turns in a
+    # row mean the run already pivoted and the hint would be stale.
+    if not recent or not any(_webshell_build_turn(action) for action in recent[-2:]):
         return ""
     return WEBSHELL_STALL_PROMPT.format(turns=len(heavy))
 

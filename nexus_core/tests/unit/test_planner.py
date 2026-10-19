@@ -222,6 +222,21 @@ def test_the_webshell_stall_hint_ignores_light_and_non_shell_work():
     assert webshell_stall_hint([build] * limit, no_progress=limit) != ""
 
 
+def test_the_webshell_stall_hint_survives_an_inspection_turn():
+    """Measured in Vulnversity: the run ended on ``cat pwnkit.c`` after 35 stalls.
+
+    The build loop interleaves ``cat``/``ls``/``wc`` between transfers; requiring
+    the *very last* action to be a build turn made the hint unreachable in the
+    run it was written for. Two clean turns in a row still mean a real pivot.
+    """
+    limit = WEBSHELL_STALL_TURNS
+    build = {"tool_id": "nexus.shell.exec", "arguments": {"command": "chmod +x /tmp/pwnkit"}}
+    inspect = {"tool_id": "nexus.shell.exec", "arguments": {"command": "cat /tmp/pwnkit/pwnkit.c"}}
+
+    assert webshell_stall_hint([build] * limit + [inspect], no_progress=limit) != ""
+    assert webshell_stall_hint([build] * limit + [inspect, inspect], no_progress=limit) == ""
+
+
 def test_active_phase_matches_build_plan():
     counts = {"service": 1, "user": 1}
     assert active_phase(counts) == build_plan(counts=counts).current

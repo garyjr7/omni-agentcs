@@ -79,6 +79,9 @@ REGLAS:
   correlaciónalos con vectores de escalada conocidos, ordena los candidatos y
   demuestra la escalada con un comando determinista que imprima `uid=0`,
   ejecutado bajo aprobación humana. No persistas cambios sin pedirlo.
+- LOOT PRIMERO: en cuanto tengas ejecución (webshell, sesión, shell o SSH),
+  lee y registra los objetivos finales (user.txt, root.txt) ANTES de escalar o
+  de estabilizar la shell; una flag leída es la prueba del compromiso.
 - MEMORIA DEL ENGAGEMENT: registra cada hallazgo verificado como un hecho
   tipado con su procedencia y consúltalos antes de decidir el siguiente paso.
   No vuelvas a derivar lo que ya está registrado; un hecho solo cuenta si lo

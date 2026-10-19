@@ -18,6 +18,7 @@ Two invariants this module enforces on the facts it asserts (V1-29, V1-31):
 import re
 import shlex
 from typing import NamedTuple
+from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 from .blackboard import Blackboard, is_verified_fact
 
@@ -69,6 +70,27 @@ SHELLPASS_METHOD = "shell_sshpass_completed"
 #: from. ``shell_command_denied``/``shell_unavailable`` never get this far
 #: (``ToolResult.success`` is false), so the check only pins the contract.
 SHELL_RESULT_METHOD = "shell_exit_code"
+
+#: Query/form parameter names a webshell (or any command panel) uses to carry
+#: the command. Only these names let the verifier attribute an output to a
+#: command channel; a page that merely contains ``uid=`` proves nothing.
+WEB_COMMAND_PARAMS: tuple[str, ...] = ("c", "cmd", "command", "exec", "run", "shell")
+
+#: ``verification_method`` of the facts a command-driven web shell asserts. The
+#: channel is proven because the request carried a command and the response is
+#: its output (the canonical ``uid=<n>(<user>) gid=<n>`` line); it is written by
+#: ``nexus.web.request`` or by ``nexus.shell.exec`` running ``curl``.
+WEB_SHELL_METHOD = "web_command_completed"
+
+#: The identity line a command channel prints. Same canonical shape the SSH
+#: branch accepts: the channel is proven by the command that really ran.
+_WEB_IDENTITY_RE = re.compile(r"uid=(\d+)\(([^)\s]+)\)\s+gid=\d+")
+
+#: A webshell usually wraps the command output in HTML (``<pre>…</pre>``). The
+#: tags are markup, not the file: without stripping them the *last line* of a
+#: ``cat /root/root.txt`` was ``</pre>`` and the bench accepted it as the flag
+#: (measured in Vulnversity, 2026-10-19, second post-fix run).
+_MARKUP_TAG_RE = re.compile(r"<[^>\n]{1,200}>")
 
 #: The canonical root identity line (``uid=0(root) gid=0(root) groups=0(root)``).
 #: It substantiates the claim on its own, whatever wrapper printed it: the same
@@ -328,6 +350,8 @@ def shell_read_text(command, summary) -> str:
     text = lines[-1]
     if len(text) > FLAG_FILE_TEXT_MAX or any(ord(ch) < 0x20 for ch in text):
         return ""
+    if _FLAG_ERROR_RE.search(text):
+        return ""
     return text
 
 
@@ -416,6 +440,19 @@ def flag_file_path(command):
     return flag_file_read(command)[0]
 
 
+#: A command channel has no exit code of its own (a webshell answers 200 even
+#: when the remote command failed), so the *text* has to say it. Measured after
+#: the first web-channel fix (Vulnversity, 2026-10-19): ``cat /root/root.txt``
+#: as ``www-data`` returned ``cat: /root/root.txt: Permission denied`` and the
+#: bench counted that line as the second flag. An error is not a capture.
+_FLAG_ERROR_RE = re.compile(
+    r"permission denied|operation not permitted|no such file|not found|"
+    r"cannot open|cannot read|is a directory|command not found|"
+    r"^\s*(?:cat|grep|ls|find|sh|bash|/bin/sh|/bin/bash|python[0-9.]*|perl|curl|wget):\s",
+    re.IGNORECASE,
+)
+
+
 def flag_file_text(command, stdout):
     """Content of the flag file a verified read printed, or ``""``.
 
@@ -438,7 +475,95 @@ def flag_file_text(command, stdout):
     text = lines[-1]
     if len(text) > FLAG_FILE_TEXT_MAX or any(ord(ch) < 0x20 for ch in text):
         return ""
+    if _FLAG_ERROR_RE.search(text):
+        return ""
     return text
+
+
+def web_command_from_url(url) -> str:
+    """Remote command carried by *url* (``?c=id``, ``?cmd=cat+user.txt``), or "".
+
+    ``parse_qs`` decodes the value, so ``+`` and ``%20`` become spaces before
+    :func:`flag_file_read` sees it. An empty value is not a command.
+    """
+    try:
+        parts = urlsplit(str(url or ""))
+    except ValueError:
+        return ""
+    for name, values in parse_qs(parts.query, keep_blank_values=False).items():
+        if name.casefold() in WEB_COMMAND_PARAMS and values:
+            return str(values[0])
+    return ""
+
+
+def web_command_from_curl(command) -> tuple[str, str]:
+    """``(url, remote command)`` of a ``curl``/``wget`` call, or ``("", "")``.
+
+    A webshell is driven with either ``curl 'http://host/shell.phtml?c=id'`` or
+    ``curl -G http://host/shell.phtml --data-urlencode 'c=cat user.txt'``. Both
+    shapes are read here so the generic shell can be verified as the HTTP
+    channel it really is, without trusting a note the model wrote.
+    """
+    text = str(command or "")
+    try:
+        tokens = shlex.split(text, posix=True)
+    except ValueError:  # unbalanced quote: the shell would have refused it too
+        return "", ""
+    if not any(_program_name(token) in {"curl", "wget"} for token in tokens):
+        return "", ""
+    url = next(
+        (token for token in tokens if token.startswith(("http://", "https://"))), ""
+    )
+    if not url:
+        return "", ""
+    remote = web_command_from_url(url)
+    if remote:
+        return url, remote
+    for index, token in enumerate(tokens):
+        if token in {"--data-urlencode", "-d", "--data", "--data-raw"} and index + 1 < len(tokens):
+            name, _, value = tokens[index + 1].partition("=")
+            if name.casefold() in WEB_COMMAND_PARAMS:
+                return url, unquote_plus(value)
+    return url, ""
+
+
+def http_channel_assertions(add, *, target: str, command: str, body: str, method: str) -> None:
+    """Promote a proven web command channel to ``access``/``privilege``/``loot``.
+
+    The caller has already established that the request carried a command
+    (:func:`web_command_from_url` / :func:`web_command_from_curl`); this function
+    only reads what the response proves. A canonical identity line is the
+    channel. A command that ends in ``cat`` of a conventional flag file (or a
+    flag-shaped token in its output) is the capture, with the same narrow rules
+    the SSH branch uses: the format is never guessed and a multi-line answer is
+    never attributed to one file.
+    """
+    text = _MARKUP_TAG_RE.sub("", str(body or ""))
+    identity = _WEB_IDENTITY_RE.search(text)
+    if identity:
+        uid, user = int(identity.group(1)), identity.group(2)
+        add("access", target,
+            {"transport": "http", "uid": uid, "user": user,
+             "command": command, "via": "web"},
+            method=method)
+        if uid == 0:
+            add("privilege", target, {"uid": 0, "user": "root", "via": "web"},
+                method=method)
+    remote = str(command or "").strip()
+    if not remote:
+        return
+    captured = FLAG_RE.findall(text)
+    for flag in captured:
+        add("loot", flag,
+            {"flag": flag, "command": remote, "service": "http", "via": "web"},
+            flag, method=method)
+    path = flag_file_path(remote)
+    content = flag_file_text(remote, text) if path else ""
+    if content and content not in captured:
+        add("loot", content,
+            {"content": content, "flag": content, "command": remote,
+             "path": path, "service": "http", "via": "web"},
+            f"http:file:{path}", method=method)
 
 
 def _net_group_members(text):
@@ -679,6 +804,16 @@ def derive_assertions(tool_id, arguments, result, context):
         # nothing.
         channels = sshpass_channels((arguments or {}).get('command'))
         exit_code = output.get('exit_code', result.exit_code)
+        if not channels and exit_code == 0:
+            # The webshell driven with curl is the same kind of channel: the
+            # command rides in the URL/body and the response is its output.
+            url, remote = web_command_from_curl((arguments or {}).get('command'))
+            host = urlsplit(url).hostname or ''
+            if host and remote:
+                http_channel_assertions(
+                    add, target=host, command=remote,
+                    body=_shell_output(output, result), method=WEB_SHELL_METHOD,
+                )
         if channels and exit_code == 0:
             first = channels[0]
             tenant = str(getattr(context, 'tenant_id', 'system'))
@@ -728,6 +863,23 @@ def derive_assertions(tool_id, arguments, result, context):
                          'command': first.command, 'path': path,
                          'service': 'ssh', 'via': 'shell.exec'},
                         f'ssh:file:{path}', method=SHELLPASS_METHOD)
+    elif tool_id == 'nexus.web.request' and result.verification_method == 'http_response_received':
+        # A webshell is a real command channel, and until this branch existed
+        # the verifier was blind to it: Vulnversity's run (2026-10-19) got
+        # ``uid=33(www-data)`` through an uploaded ``.phtml`` and recorded
+        # ``access`` as a *hypothesis*, so ``exploitation`` could never close
+        # and the plan kept pushing the model back to initial access while the
+        # command channel was already open. Only a request that carries the
+        # command is attributed; a page that happens to print ``uid=`` is not.
+        url = str((arguments or {}).get('url') or output.get('url') or '')
+        remote = web_command_from_url(url)
+        host = urlsplit(url).hostname or ''
+        if host and remote:
+            http_channel_assertions(
+                add, target=host, command=remote,
+                body=str(output.get('body_preview') or ''),
+                method=WEB_SHELL_METHOD,
+            )
     elif tool_id == 'nexus.pwn.ret2libc' and result.verification_method == 'ret2libc_root_command':
         target = output.get('target')
         add('privilege', target, {'uid': 0, 'user': 'root'})

