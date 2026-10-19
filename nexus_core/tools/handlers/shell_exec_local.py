@@ -258,6 +258,39 @@ def prohibited_reason(command: str) -> str | None:
     return None
 
 
+#: The package-manager call the agent reaches for when a tool is missing. The
+#: sandbox is unprivileged on purpose, so the call can only fail; the handler
+#: turns that failure into a usable observation instead of a dead end.
+_APT_INSTALL_RE = re.compile(
+    r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:apt-get|apt)\s+(?:-\S+\s+)*install\b",
+    re.IGNORECASE,
+)
+
+#: Guidance the model gets when the package manager was refused by permissions.
+APT_INSTALL_DENIED_GUIDANCE = (
+    "No puedo instalar paquetes. Usa el binario si ya está, o busca una "
+    "alternativa (ej. strings, exiftool, python3)."
+)
+
+
+def apt_install_permission_denied(
+    command: str, stdout: str, stderr: str, exit_code: int | None
+) -> bool:
+    """Whether *command* was an ``apt`` install the OS refused for permissions.
+
+    Only the measured shape triggers: the command starts with ``apt-get install``
+    or ``apt install``, it exited non-zero, and the output carries the package
+    manager's ``Permission denied``. A successful install, or any other command
+    whose output happens to mention that phrase, keeps its normal outcome.
+    """
+    if exit_code is None or exit_code == 0:
+        return False
+    if not _APT_INSTALL_RE.match(str(command or "")):
+        return False
+    output = f"{stdout or ''}\n{stderr or ''}".lower()
+    return "permission denied" in output
+
+
 def resolve_cwd(root: str | Path, cwd: str) -> tuple[str, str]:
     """Resolve the model's relative ``cwd`` inside the workspace.
 
@@ -580,6 +613,45 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
         },
     )
     summary = summarize(result.stdout, result.stderr)
+    if apt_install_permission_denied(
+        request.command, result.stdout, result.stderr, result.exit_code
+    ):
+        # The tool exists, the command ran, and the OS refused the installation.
+        # Reporting it as ``unavailable`` retires the route without pretending the
+        # shell is broken, and the guidance names the local binaries that replace
+        # the missing package (measured in blackbox-10.67.183.218: three failed
+        # ``apt-get install steghide`` calls burned the turn budget).
+        _audit(
+            context, command=request.command, cwd=cwd_relative,
+            exit_code=result.exit_code, duration_ms=duration_ms,
+            bytes_written=len(content), timed_out=result.timed_out,
+            reason="apt_install_permission_denied",
+        )
+        return ToolResult(
+            output={
+                "error": "no permission to install packages",
+                "command": request.command,
+                "guidance": APT_INSTALL_DENIED_GUIDANCE,
+                "summary": summary,
+                "artifact": artifact,
+                "artifact_ref": artifact.get("id"),
+                "sha256": artifact.get("sha256"),
+                "exit_code": result.exit_code,
+                "cwd": cwd_relative,
+            },
+            verified=False,
+            outcome="unavailable",
+            verification_method="apt_install_permission_denied",
+            evidence={
+                "cwd": cwd_relative,
+                "exit_code": result.exit_code,
+                "artifact_ref": artifact.get("id"),
+            },
+            exit_code=result.exit_code,
+            stdout=summary,
+            stderr="",
+            timed_out=False,
+        )
     # An ``sshpass``-wrapped client is an authenticated channel, not an opaque
     # local process: the same login ``nexus.post.ssh_exec`` makes, started by the
     # generic shell. It is recorded here (target/user/port, never the secret) so
@@ -630,21 +702,24 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
 
 
 __all__ = [
+    "APT_INSTALL_DENIED_GUIDANCE",
+    "BACKGROUND_LOG_DIRNAME",
     "SHELL_ALLOWED_PROGRAMS",
     "SHELL_MAX_OUTPUT_BYTES",
     "SHELL_MAX_STDIN_BYTES",
     "SHELL_MAX_TIMEOUT_SECONDS",
     "SHELL_MIN_TIMEOUT_SECONDS",
-    "SHELL_SUMMARY_LINES",        "BACKGROUND_LOG_DIRNAME",
-        "ShellExecRequest",
-        "background_body",
-        "background_log_path",
-        "background_script",
-        "has_background_operator",
-        "is_background_command",
-        "prohibited_reason",
-        "shell_code",
+    "SHELL_SUMMARY_LINES",
+    "ShellExecRequest",
+    "apt_install_permission_denied",
+    "background_body",
+    "background_log_path",
+    "background_script",
+    "has_background_operator",
+    "is_background_command",
+    "prohibited_reason",
     "resolve_cwd",
+    "shell_code",
     "shell_exec_definition",
     "shell_exec_handler",
     "summarize",

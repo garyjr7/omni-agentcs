@@ -345,10 +345,63 @@ async def test_loop_audits_each_step(harness):
     assert events[1]["decision"] == "allow"
 
 
-async def test_loop_aborts_on_scope_violation_immediately(harness):
+class _ScopeOnceSpy(ToolSpy):
+    """Refuses the first call with a ``ScopeViolation`` and then works."""
+
+    async def __call__(self, payload, context):
+        if not self.payloads:
+            self.payloads.append(payload)
+            raise ScopeViolation(
+                "https://bit.ly/2TvYQ2S", "domain is outside the engagement scope", "eng-1"
+            )
+        return await super().__call__(payload, context)
+
+
+async def test_scope_violation_is_an_observation_not_an_abort(harness):
+    """Measured in blackbox-10.67.183.218: one out-of-scope URL ended the run.
+
+    The gateway still refuses the call and the audit still records the denial,
+    but the model receives the refusal as a ``scope_denied`` observation with a
+    correction and keeps its turn budget: the next call works and the run closes.
+    """
+    store, context = harness
+    llm = ScriptedLLM([tool_call(), task_complete("fin")])
+    spy = _ScopeOnceSpy()
+
+    with mock.patch.object(runtime_module, "execute_tool", spy):
+        result = await run_react_loop(
+            context=context,
+            objective="objetivo",
+            engagement_id="eng-1",
+            llm_client=llm,
+            config=_loop_config(max_iterations=10),
+        )
+
+    assert result.status == STATUS_COMPLETED
+    assert result.iterations == 2
+    assert len(llm.calls) == 2
+    refused = result.actions[0]["tool_result"]
+    assert refused["scope_violation"] is True
+    assert refused["outcome"] == "scope_denied"
+    assert refused["verified"] is False
+    assert "fuera del alcance firmado" in refused["guidance"]
+    assert "https://bit.ly/2TvYQ2S" in refused["guidance"]
+
+    events = [event for event in AuditWriter(store).export("system") if event["action"] == "react.step"]
+    assert events[0]["decision"] == "deny"
+    assert events[0]["payload"]["reason"] == "scope_violation"
+    assert events[1]["decision"] == "allow"
+
+
+async def test_three_consecutive_denials_of_the_same_target_abort(harness):
+    """Insisting on the same out-of-scope URL is the only case that closes."""
     store, context = harness
     llm = ScriptedLLM([tool_call()])
-    spy = ToolSpy(error=ScopeViolation("203.0.113.9", "ip is outside the engagement scope", "eng-1"))
+    spy = ToolSpy(
+        error=ScopeViolation(
+            "https://bit.ly/2TvYQ2S", "domain is outside the engagement scope", "eng-1"
+        )
+    )
 
     with mock.patch.object(runtime_module, "execute_tool", spy):
         result = await run_react_loop(
@@ -360,13 +413,49 @@ async def test_loop_aborts_on_scope_violation_immediately(harness):
         )
 
     assert result.status == STATUS_SCOPE_VIOLATION
-    assert result.iterations == 1
+    assert result.iterations == 3
+    # Only the first call reached the gateway; the identical repeats are counted
+    # by the V1-26 guard, which must not hide the scope insistence.
     assert len(spy.payloads) == 1
-    assert len(llm.calls) == 1
-    assert result.actions[-1]["tool_result"]["scope_violation"] is True
-    events = [event for event in AuditWriter(store).export("system") if event["action"] == "react.step"]
-    assert events[-1]["decision"] == "deny"
-    assert events[-1]["payload"]["reason"] == "scope_violation"
+    assert [action["tool_result"]["scope_denial_streak"] for action in result.actions] == [1, 2, 3]
+    assert result.actions[-1]["tool_result"]["aborted"] is True
+    events = [
+        event for event in store.list_run_events("system", context.run_id)
+        if event["event_type"] == "react.scope_violation"
+    ]
+    assert [event["payload"]["aborted"] for event in events] == [False, False, True]
+
+
+class _PerTargetScopeSpy(ToolSpy):
+    """Refuses every call with the target named in its own arguments."""
+
+    async def __call__(self, payload, context):
+        self.payloads.append(payload)
+        target = str((payload.get("arguments") or {}).get("target") or "")
+        raise ScopeViolation(target, "ip is outside the engagement scope", "eng-1")
+
+
+async def test_denials_of_different_targets_do_not_add_up(harness):
+    """The counter is per target: a new URL starts at one, never at four."""
+    store, context = harness
+    targets = ["10.0.0.5", "10.0.0.6", "10.0.0.5", "10.0.0.6"]
+    llm = ScriptedLLM([tool_call(target=target) for target in targets])
+    spy = _PerTargetScopeSpy()
+
+    with mock.patch.object(runtime_module, "execute_tool", spy):
+        result = await run_react_loop(
+            context=context,
+            objective="objetivo",
+            engagement_id="eng-1",
+            llm_client=llm,
+            config=_loop_config(max_iterations=4),
+        )
+
+    assert result.status == STATUS_MAX_ITERATIONS
+    assert result.iterations == 4
+    assert [
+        action["tool_result"]["scope_denial_streak"] for action in result.actions
+    ] == [1, 1, 1, 1]
 
 
 async def test_loop_handles_llm_json_parse_error_gracefully(harness):

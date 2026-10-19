@@ -116,6 +116,54 @@ def test_shell_exec_refuses_a_prohibited_command(context):
     assert denied and denied[-1]["decision"] == "deny"
 
 
+def test_an_apt_install_denied_by_permissions_is_unavailable_with_guidance(context):
+    """Measured in blackbox-10.67.183.218: three failed ``apt-get install`` calls.
+
+    The sandbox cannot install packages. The handler says so as an ``unavailable``
+    observation -not an opaque non-zero exit- and names the local alternatives so
+    the model does not spend three turns repeating the same refusal.
+    """
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(
+        SandboxResult(
+            100,
+            "",
+            "E: Could not open lock file /var/lib/dpkg/lock-frontend - open "
+            "(13: Permission denied)\nE: Unable to acquire the dpkg frontend lock\n",
+        )
+    ):
+        result = _run(context, {"command": "apt-get install -y steghide"})
+
+    assert result.verified is False
+    assert result.outcome == "unavailable"
+    assert result.verification_method == "apt_install_permission_denied"
+    assert "No puedo instalar paquetes" in result.output["guidance"]
+    assert "strings" in result.output["guidance"]
+    assert result.output["artifact_ref"].startswith("artifact_")
+
+
+def test_a_non_apt_permission_failure_keeps_its_normal_outcome(context):
+    """The fallback is keyed to the command, not to the phrase in the output."""
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(1, "", "bash: foo: Permission denied")):
+        result = _run(context, {"command": "foo"})
+
+    assert result.verification_method == "shell_exit_code"
+    assert result.outcome == ""
+
+
+def test_an_apt_install_that_succeeds_is_not_marked_unavailable(context):
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "Setting up steghide...", "")):
+        result = _run(context, {"command": "apt-get install -y steghide"})
+
+    assert result.verified is True
+    assert result.verification_method == "shell_exit_code"
+
+
 def test_shell_exec_records_the_sshpass_channel_it_was_asked_to_run(context):
     """An ``sshpass`` login is a channel, not an opaque local process (V1-49).
 

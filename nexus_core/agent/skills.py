@@ -86,13 +86,38 @@ def skills_root(root: str | Path | None = None) -> Path:
     return base / SKILLS_DIRNAME
 
 
+#: A skill name is either ``<name>`` or one namespace plus the name
+#: (``linux/forensics-basics``). Deeper nesting is refused so the mapping from a
+#: name to a directory stays trivial to audit.
+MAX_SKILL_NAME_PARTS = 2
+
+
+def skill_name_parts(name: str) -> tuple[str, ...] | None:
+    """Split a skill name into safe path components, or ``None``.
+
+    Only plain components are accepted: no absolute paths, no ``.``/``..``, no
+    backslashes and at most :data:`MAX_SKILL_NAME_PARTS` levels. This is what
+    keeps ``nexus.skill.load`` from reading arbitrary files through its name.
+    """
+    text = str(name or "").strip()
+    if not text or "\\" in text:
+        return None
+    parts = tuple(text.split("/"))
+    if not 1 <= len(parts) <= MAX_SKILL_NAME_PARTS:
+        return None
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    return parts
+
+
 def load_skill(
     name: str, root: str | Path | None = None, *, secret: str | None = None
 ) -> Skill | None:
     """Load one skill by name (``None`` when it does not exist or is unreadable)."""
-    if not name or "/" in str(name) or "\\" in str(name) or ".." in str(name):
+    parts = skill_name_parts(str(name))
+    if parts is None:
         return None
-    directory = skills_root(root) / str(name)
+    directory = skills_root(root).joinpath(*parts)
     body = directory / SKILL_FILENAME
     if not body.is_file():
         return None
@@ -141,6 +166,16 @@ def discover_skills(
         skill = load_skill(entry.name, root, secret=secret)
         if skill is not None:
             found[entry.name] = skill
+            continue
+        # A directory without its own SKILL.md is a namespace
+        # (``linux/forensics-basics``): publish its children, never the folder.
+        for child in sorted(entry.iterdir()):
+            if not child.is_dir():
+                continue
+            nested_name = f"{entry.name}/{child.name}"
+            nested = load_skill(nested_name, root, secret=secret)
+            if nested is not None:
+                found[nested_name] = nested
     return found
 
 
@@ -250,6 +285,7 @@ def render_skills(skills: list[Skill]) -> str:
 
 
 __all__ = [
+    "MAX_SKILL_NAME_PARTS",
     "SIGNATURE_SUFFIX",
     "SKILLS_DIRNAME",
     "SKILL_FILENAME",
@@ -262,8 +298,9 @@ __all__ = [
     "load_skill",
     "render_skill_index",
     "render_skills",
-    "skill_description",
     "sign_skill",
+    "skill_description",
+    "skill_name_parts",
     "skills_root",
     "verify_skill_signature",
 ]

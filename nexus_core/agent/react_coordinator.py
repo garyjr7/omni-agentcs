@@ -154,6 +154,13 @@ class Transition(str, Enum):
     STOP = "stop"
 
 
+#: A tool that names an out-of-scope target is refused as an observation, not as
+#: the end of the engagement (measured in blackbox-10.67.183.218: a single
+#: ``https://bit.ly/...`` lookup aborted the run with exit code 4). Only a model
+#: that insists on the *same* target this many turns in a row closes the run.
+MAX_CONSECUTIVE_SCOPE_DENIALS = 3
+
+
 class ReActCoordinator:
     """One run's state and explicit transitions; services own boundary logic."""
 
@@ -196,6 +203,10 @@ class ReActCoordinator:
     evidence_stats: dict[str, int] | None
     premature_rejections: int
     completion_objections: list[str]
+    #: Target of the current run of consecutive ``ScopeViolation`` refusals and
+    #: how many times in a row the model named it. Any other tool call resets it.
+    scope_denial_target: str | None
+    scope_denial_streak: int
     #: Turns in a row without a new verified fact (Fase 3 fixes). Drives the
     #: ``react.stuck_detected`` signal and the enumeration→exploit hand-over.
     consecutive_no_progress: int
@@ -413,6 +424,8 @@ class ReActCoordinator:
         self.findings = []
         self.question = None
         self.consecutive_failures = 0
+        self.scope_denial_target = None
+        self.scope_denial_streak = 0
         self.invalid_json_turns = 0
         self.last_phase = None
         self.last_plan = None
@@ -1839,6 +1852,90 @@ class ReActCoordinator:
             return None
         return str(self.action.tool_id)
 
+    def _note_scope_denial(self, target: str) -> int:
+        """Count one refusal of *target* and return the current insistence streak.
+
+        A different target starts a new streak; the streak is reset by any tool
+        call that is not a scope denial (``_execute_tool`` does it on the result
+        path), so only *consecutive* insistence on the same target can close.
+        """
+        if target and target == self.scope_denial_target:
+            self.scope_denial_streak += 1
+        else:
+            self.scope_denial_target = target or None
+            self.scope_denial_streak = 1
+        return self.scope_denial_streak
+
+    def _repeat_scope_denial(self, tool_id: str, previous: dict[str, Any]) -> Transition:
+        """Count a byte-identical repeat of an already-denied target (V1-26).
+
+        The repeat never reaches the gateway -the invocation journal would ask
+        for an approval a trust-mode run cannot grant- so without this branch the
+        insistence would be answered as a generic ``repeated_action`` and the
+        scope streak would never grow. It counts as one more refusal of the same
+        target: two corrections, the third closes the run.
+        """
+        target = str(previous.get("target") or "").strip()
+        streak = self._note_scope_denial(target)
+        aborted = streak >= MAX_CONSECUTIVE_SCOPE_DENIALS
+        named = target or "el objetivo solicitado"
+        self.telemetry.flag(FrictionFlag.SCOPE_VIOLATION)
+        self.observation = {
+            "success": False,
+            "outcome": "scope_denied",
+            "verified": False,
+            "scope_violation": True,
+            "target": target,
+            "scope_denial_streak": streak,
+            "repeated_action": True,
+            "guidance": (
+                f"El objetivo {named} está fuera del alcance firmado. "
+                "Ignora esa URL y busca otra ruta."
+            ),
+            "available_tools": sorted(self.allowed_catalog),
+        }
+        if aborted:
+            self.status = STATUS_SCOPE_VIOLATION
+            self.final_summary = (
+                "scope violation aborted the loop: the model insisted "
+                f"{streak} times on {named}"
+            )
+            self.observation["aborted"] = True
+        self.entry["tool_result"] = self.observation
+        self.actions.append(self.entry)
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            self.action,
+            self.observation,
+            subagent_id=self.active_subagent_id,
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.scope_violation",
+            {
+                "iteration": self.iteration,
+                "tool_id": tool_id,
+                "target": target,
+                "streak": streak,
+                "aborted": aborted,
+                "repeated": True,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=self.action.action,
+            decision="deny",
+            tool_id=tool_id,
+            reason="scope_violation",
+            error_type="ScopeViolation",
+        )
+        return Transition.STOP if aborted else Transition.NEXT_TURN
+
     def _correct_repeated_action(self, tool_id: str) -> Transition:
         """Answer an identical repeat of a failed action with a correction (V1-26).
 
@@ -1850,6 +1947,9 @@ class ReActCoordinator:
         ``blocked``. So no approval is requested or consumed and the run continues:
         the model gets text telling it what to do next, never a silent refusal.
         """
+        previous_result = self.actions[-1].get("tool_result") if self.actions else None
+        if isinstance(previous_result, dict) and previous_result.get("outcome") == "scope_denied":
+            return self._repeat_scope_denial(tool_id, previous_result)
         self.telemetry.flag(FrictionFlag.REPEATED_ACTION)
         correction = repeated_action_correction(tool_id)
         self.observation = {
@@ -1909,14 +2009,34 @@ class ReActCoordinator:
                 error_type=type(exc).__name__,
             )
             self.telemetry.flag(FrictionFlag.SCOPE_VIOLATION)
-            self.status = STATUS_SCOPE_VIOLATION
-            self.final_summary = f"scope violation aborted the loop: {exc}"
+            target = str(getattr(exc, "target", "") or "").strip()
+            streak = self._note_scope_denial(target)
+            aborted = streak >= MAX_CONSECUTIVE_SCOPE_DENIALS
+            named = target or "el objetivo solicitado"
             self.observation = {
                 "success": False,
+                "outcome": "scope_denied",
+                "verified": False,
                 "error_type": type(exc).__name__,
                 "error": str(exc)[:500],
                 "scope_violation": True,
+                "target": target,
+                "scope_denial_streak": streak,
+                "guidance": (
+                    f"El objetivo {named} está fuera del alcance firmado. "
+                    "Ignora esa URL y busca otra ruta."
+                ),
+                "available_tools": sorted(self.allowed_catalog),
             }
+            if aborted:
+                # The model spent the grace turns insisting on the same target:
+                # the refusal is now the loop's verdict, not a correction.
+                self.status = STATUS_SCOPE_VIOLATION
+                self.final_summary = (
+                    "scope violation aborted the loop: the model insisted "
+                    f"{self.scope_denial_streak} times on {named}: {exc}"
+                )
+                self.observation["aborted"] = True
             self.entry["tool_result"] = self.observation
             self.actions.append(self.entry)
             _inject_observation(
@@ -1937,6 +2057,9 @@ class ReActCoordinator:
                     "iteration": self.iteration,
                     "tool_id": self.action.tool_id,
                     "error": str(exc)[:500],
+                    "target": target,
+                    "streak": self.scope_denial_streak,
+                    "aborted": aborted,
                 },
             )
             self.audit_step(
@@ -1947,7 +2070,9 @@ class ReActCoordinator:
                 reason="scope_violation",
                 error_type=type(exc).__name__,
             )
-            return Transition.STOP
+            # A refusal is an observation: the loop continues unless the model
+            # insists on the same target ``MAX_CONSECUTIVE_SCOPE_DENIALS`` times.
+            return Transition.STOP if aborted else Transition.READY
         except Exception as exc:
             self.telemetry.note_tool(
                 duration_ms=_elapsed_ms(tool_started),
@@ -2038,6 +2163,8 @@ class ReActCoordinator:
                 return Transition.STOP
             else:
                 kind = _failure_kind(exc)
+                self.scope_denial_target = None
+                self.scope_denial_streak = 0
                 self.observation = {
                     "success": False,
                     "error_type": type(exc).__name__,
@@ -2048,6 +2175,10 @@ class ReActCoordinator:
                     self._note_tool_failure(str(self.action.tool_id))
             self.consecutive_failures += 1
         else:
+            # The model tried something other than the denied target: the
+            # insistence streak is broken, whatever the outcome of this call.
+            self.scope_denial_target = None
+            self.scope_denial_streak = 0
             if cancelled_now:
                 self.telemetry.flag(FrictionFlag.CANCELLED)
                 self.status = STATUS_CANCELLED

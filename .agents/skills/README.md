@@ -1,6 +1,7 @@
 # Skills de OmniAgentCS
 
-Una *skill* es un procedimiento curado en `.agents/skills/<nombre>/SKILL.md`. El
+Una *skill* es un procedimiento curado en `.agents/skills/<nombre>/SKILL.md` (o
+en un namespace, `.agents/skills/linux/<nombre>/SKILL.md`). El
 operador puede activarlas (`/skills use`, `--skill`), y desde WP4 el agente
 también puede consultarlas y cargarlas por su cuenta con las tools de solo
 lectura `nexus.skill.list` y `nexus.skill.load`: el prompt lleva un índice de una
@@ -19,6 +20,7 @@ siendo **datos no confiables**, con su estado de firma y sus señales.
 | `methodology-senior` | Enumerar antes de atacar: mapa completo de puertos y de la web (directorios, CMS, searchsploit) y FTP anónimo solo como pista con credenciales cruzadas (medido en Simple CTF). |
 | `shell-stabilization` | Estabilizar un RCE de webshell en una shell interactiva (listener + reverse shell) antes de compilar o escalar; regla medida en Vulnversity, donde compilar `pwnkit` por `curl` costó 35 turnos. |
 | `privesc-suid` | Escalar a root por SUID/GTFOBins (`systemctl`, `find`, `vim`, `python`); receta medida en Vulnversity, donde `/bin/systemctl` SUID era root en dos comandos y el run murió compilando PwnKit. |
+| `linux/forensics-basics` | Sacar pistas de imágenes y archivos con `strings`, `file`, `exiftool` y `binwalk`; usada tras el run blackbox, donde `apt-get install steghide` falló tres veces por permisos. |
 
 ## Estados de confianza
 

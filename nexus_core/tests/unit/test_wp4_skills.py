@@ -108,6 +108,29 @@ def test_methodology_skill_orders_enumeration_before_attack() -> None:
     assert "enumeración" in line
 
 
+def test_forensics_skill_is_namespaced_and_offers_install_free_alternatives() -> None:
+    """The measured dead end: ``apt-get install steghide`` three times.
+
+    The recipe lives under the ``linux/`` namespace and tells the model to use
+    what the box already has. It must reach the prompt index under its full name.
+    """
+    skill = load_skill("linux/forensics-basics", REPO_ROOT)
+    assert skill is not None and skill.usable
+    flat = " ".join(skill.content.split())
+    for tool in ("strings", "file", "exiftool", "binwalk", "steghide"):
+        assert tool in flat
+    assert "No instales paquetes" in flat
+    assert "command -v steghide" in flat
+
+    index = render_skill_index(discover_skills(REPO_ROOT))
+    assert "- linux/forensics-basics:" in index
+
+
+def test_skill_names_cannot_escape_the_skills_root() -> None:
+    for name in ("../example", "linux/../example", "/etc/passwd", "a/b/c", ""):
+        assert load_skill(name, REPO_ROOT) is None
+
+
 def test_shell_stabilization_skill_stops_the_webshell_compile_loop() -> None:
     """The recipe the model lacked in Vulnversity: 35 turns compiling by curl.
 
