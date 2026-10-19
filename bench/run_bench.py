@@ -109,9 +109,19 @@ FLAG_FACT_TYPES = ("loot", "flag")
 #: orden de preferencia. Un hecho del motor escribe ``flag``/``content``; el resto
 #: cubre escritores equivalentes sin re-interpretar el formato.
 FLAG_VALUE_KEYS = ("flag", "content", "text", "value", "excerpt", "proof")
-#: The only source the bench scores from. Written into every result record so an
-#: old JSON that still lists hundreds of matches is identifiable at a glance.
+#: Source of the verified facts. Written into every result record so an old JSON
+#: that still lists hundreds of matches is identifiable at a glance.
 FLAG_SOURCE = "control.db:verified-loot"
+#: Second source: the room's **declared literals** found verbatim in the run's
+#: tool-output artifacts. This is the same criterion FreeBuff is judged by (the
+#: flag appeared in the output of the run) and removes the bias that only
+#: channels the verifier parsed could ever score. A regex is not ground truth -
+#: it would accept any ``flag{fake_flag}`` the agent echoed- so only literals promote.
+ARTIFACT_FLAG_SOURCE = "artifacts:declared-literal"
+#: Ceiling of the artifact corpus read for one run. Output is already bounded per
+#: tool (10 MB); a run with dozens of large artifacts must not turn scoring into
+#: an unbounded disk read.
+MAX_ARTIFACT_CORPUS_BYTES = 25_000_000
 
 
 # --------------------------------------------------------------------- config
@@ -287,28 +297,87 @@ def db_flags(
     return found
 
 
+def artifact_text(root: Path | str) -> str:
+    """Concatenated text of a run's tool-output artifacts (bounded, never raises).
+
+    ``control.db`` only records what a *parser* understood. A flag read through a
+    webshell, an MSF session or a journalctl line lives in the artifact of that
+    tool call; this corpus is what turns it into a score without teaching the
+    verifier one parser per channel.
+    """
+    directory = Path(root)
+    if not directory.is_dir():
+        return ""
+    parts: list[str] = []
+    remaining = MAX_ARTIFACT_CORPUS_BYTES
+    for path in sorted(directory.rglob("*")):
+        if remaining <= 0:
+            break
+        try:
+            if not path.is_file():
+                continue
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size <= 0 or size > MAX_SCAN_BYTES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")[:remaining]
+        except OSError:
+            continue
+        parts.append(text)
+        remaining -= len(text)
+    return "\n".join(parts)
+
+
+def artifact_flags(root: Path | str, room: dict[str, Any]) -> list[str]:
+    """Declared ground-truth flags of *room* present in the run's artifacts.
+
+    Only a ``flags_literal`` list is searched: it is the operator's ground truth
+    and cannot be guessed by the model. A ``flag_regex`` is deliberately not
+    searched here -the agent could echo a plausible ``flag{fake_flag}`` and pass- and
+    a room with neither has no artifact criterion at all (the same lesson as the
+    1520 session ids of the first scorer).
+    """
+    literals = [str(value).strip() for value in room.get("flags_literal") or []]
+    if not literals:
+        return []
+    text = artifact_text(root)
+    if not text:
+        return []
+    return [value for value in literals if value in text]
+
+
 def room_flags(
     db_path: Path | str,
     room: dict[str, Any],
     *,
     tenant: str = "system",
     engagement_id: str | None = None,
+    artifacts_dir: Path | str | None = None,
 ) -> list[str]:
-    """Flags captured for *room*, read from the run's control database.
+    """Flags captured for *room*, from verified facts and from the artifacts.
 
     Precedence: a declared ``flags_literal`` is the criterion and must match the
-    engine's text exactly; ``flag_regex`` narrows the same way; with neither, any
-    verified ``loot``/``flag`` fact counts, whatever its format. In all three
-    cases the count is distinct texts, which is what ``expected_flags`` means.
+    engine's text or appear verbatim in the run's artifacts; ``flag_regex``
+    narrows the same way; with neither, only verified ``loot``/``flag`` facts
+    count. In all three cases the count is distinct texts, which is what
+    ``expected_flags`` means.
     """
     flags = db_flags(db_path, tenant=tenant, engagement_id=engagement_id)
+    captured = artifact_flags(artifacts_dir, room) if artifacts_dir else []
     literals = [str(value).strip() for value in room.get("flags_literal") or []]
     if literals:
-        return [flag for flag in flags if flag in literals]
+        present = set(flags) | set(captured)
+        return [value for value in literals if value in present]
     pattern = room.get("flag_regex")
     if pattern:
         matcher = re.compile(str(pattern))
-        return [flag for flag in flags if matcher.search(flag)]
+        found: list[str] = []
+        for flag in [*flags, *captured]:
+            if flag not in found and matcher.search(flag):
+                found.append(flag)
+        return found
     return flags
 
 
@@ -531,9 +600,13 @@ def run_once(
             exit_code = process.wait(timeout=KILL_GRACE_SECONDS)
     duration = round(time.monotonic() - started, 2)
 
+    artifacts_dir = run_dir / "data" / "omni" / "artifacts"
     flags = room_flags(
-        env["NEXUS_DB_PATH"], room, engagement_id=engagement_id
+        env["NEXUS_DB_PATH"], room, engagement_id=engagement_id,
+        artifacts_dir=artifacts_dir,
     )
+    from_artifacts = artifact_flags(artifacts_dir, room)
+    sources = [FLAG_SOURCE] + ([ARTIFACT_FLAG_SOURCE] if from_artifacts else [])
     expected = int(room["expected_flags"])
     result = {
         "room": room_id,
@@ -545,7 +618,12 @@ def run_once(
         "engagement_id": engagement_id,
         "pass": len(flags) >= expected,
         "flags_found": flags,
-        "flags_source": FLAG_SOURCE,
+        # ``flags_source`` keeps its historical meaning for old consumers; the
+        # list is the exact provenance of this run's score.
+        "flags_source": "+".join(sources) if len(sources) > 1 else FLAG_SOURCE,
+        "flags_sources": sources,
+        "flags_artifact_source": ARTIFACT_FLAG_SOURCE,
+        "flags_from_artifacts": from_artifacts,
         "flags_expected": expected,
         "flags_missing": max(0, expected - len(flags)),
         "tokens_used": tokens_from_ndjson(ndjson),

@@ -107,6 +107,12 @@ rooms:
   vulnversity:
     name: Vulnversity
     target_env: THM_VULNVERSITY_IP
+    # Las flags son MD5: se declaran como ground truth para que el bench pueda
+    # acreditarlas si aparecen en un artefacto del run (webshell, systemctl,
+    # journalctl), aunque el verificador no reconozca el canal que las produjo.
+    flags_literal:
+      - "8bd7992fbe8a6ad22a63361004cfcedb"  # /home/bill/user.txt
+      - "a58ff8579f0a9270368d33a9966c7fd5"  # /root/root.txt
     expected_flags: 2
     timeout_seconds: 2400
     max_iterations: 40
