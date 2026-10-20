@@ -214,6 +214,35 @@ class InvocationJournal:
             )
         return len(ids)
 
+    def fail_before_effect(self, invocation_id: str, tenant_id: str,
+                           reason: str = 'input rejected') -> bool:
+        """Settle a ``running`` invocation whose effect provably never started.
+
+        Only for a failure the handler declared as pre-execution (a
+        ``ToolInputError``): nothing was spawned, so there is no effect to be
+        unsure about and the corrected retry must not need an operator. Any
+        other failure stays ``unknown`` because it may have started.
+
+        Best effort: the caller is already handling an exception, and a
+        reconciliation that lost the race must not replace that error. Returns
+        whether this call settled the row.
+        """
+        with self.store.connect() as conn:
+            updated = conn.execute(
+                "UPDATE kernel_invocations SET state='failed',ended_at=? "
+                "WHERE invocation_id=? AND tenant_id=? AND state='running'",
+                (utc_now(), invocation_id, tenant_id),
+            ).rowcount
+        if updated != 1:
+            return False
+        AuditWriter(self.store).append(
+            tenant_id=tenant_id, trace_id=invocation_id, actor_id='operator',
+            action='invocation.rejected', resource_type='invocation',
+            resource_id=invocation_id, payload={'reason': str(reason)[:500]},
+            decision='deny',
+        )
+        return True
+
     def mark_failed(self, invocation_id: str, tenant_id: str, reason: str = 'operator_skip') -> None:
         """Operator decided an ``unknown`` invocation had no effect; no replay."""
         with self.store.connect() as conn:

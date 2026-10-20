@@ -5,6 +5,28 @@ class ApprovalRequired(PermissionError):
     """Execution is paused until a durable human decision exists."""
 
 
+class ToolInputError(ValueError):
+    """The tool refused its own arguments before anything ran.
+
+    It is a ``ValueError`` so the handlers and their callers keep the old
+    contract, and a distinct type so the gateway can tell *"this call never
+    started"* from *"this call may have had an effect"*. The difference decides
+    the journal state: ``failed`` (retry freely) versus ``unknown`` (a replay
+    needs an operator).
+
+    Measured in Brute It v6 (2026-10-20, iterations 11-17): ``_resolve_wordlist``
+    rejected a path before hydra was spawned, the gateway journaled the
+    invocation ``unknown``, and the model's own retry of the *same step* was
+    answered with ``unknown invocation requires human approval`` -the run closed
+    as ``blocked`` (exit 2) over a path that never touched the target.
+
+    Only raise it when the failure is provably before the effect: argument
+    parsing, schema/spec building, resolving a local path. A handler that has
+    already spawned its process must keep raising ``ValueError``, because there
+    the outcome really is unknown.
+    """
+
+
 #: Kinds a :class:`ProviderFailure` may declare (Fase 3b).
 PROVIDER_FAILURE_KINDS = frozenset({"unavailable", "fatal"})
 

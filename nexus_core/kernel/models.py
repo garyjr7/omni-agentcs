@@ -201,6 +201,13 @@ OUTCOME_TAXONOMY = frozenset({
     #: ``curl``/``wget``/``nc``. Same outcome name in both channels, so the model
     #: reads one rule instead of two.
     "scope_denied",
+    #: The caller's own input cannot answer the question it asks: hydra's
+    #: ``failure_string`` is present in both branches of the login, so a sweep
+    #: with it can never report the credential it walks past (Brute It v6,
+    #: iteration 8: 600 s with ``F=LOGIN`` against a panel whose button says
+    #: ``Login``). Determinate *before* the sweep, so it completes instead of
+    #: raising: the model gets the reason and one more turn to fix the marker.
+    "invalid_failure_string",
     #: Anything else, including an unparsed or corrupt answer.
     "error",
 })
@@ -221,7 +228,13 @@ OUTCOME_TAXONOMY = frozenset({
 #: exit status is a determinate observation about it. Raising instead turned
 #: every failed `sudo` command into a broken post-condition, and the model read
 #: the resulting message as a bad credential (measured in Simple CTF).
-COMPLETED_OUTCOMES = frozenset({"negative", "denied", "unsupported", "unavailable", "command_failed"})
+COMPLETED_OUTCOMES = frozenset({
+    "negative", "denied", "unsupported", "unavailable", "command_failed",
+    # A refusal of the *arguments* that ends the call before it starts. Raising
+    # instead would journal an ``unknown`` effect for something that never ran
+    # and block the corrected retry (Brute It v6, iterations 11-17).
+    "invalid_failure_string",
+})
 
 #: ``verification_method`` suffixes that mean "the backend this tool talks to did
 #: not serve the call" -MSF RPC down, missing RPC credentials, absent binary,

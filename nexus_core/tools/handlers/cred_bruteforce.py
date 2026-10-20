@@ -38,12 +38,15 @@ from __future__ import annotations
 import os
 import tempfile
 import re
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from nexus_core.kernel.errors import ToolInputError
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import sandbox_for_environment
 from nexus_core.kernel.secret_store import DEFAULT_SECRET_KIND, default_secret_store
+from nexus_core.tools import wordlists as shared_wordlists
 
 from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id
 
@@ -79,8 +82,18 @@ CRED_SWEEP_TIMEOUT_SECONDS = CRED_TOOL_TIMEOUT_SECONDS - CRED_TIMEOUT_MARGIN_SEC
 #: (2026-10-19), where ``/usr/share/wordlists/rockyou.txt`` was rejected twice
 #: and the credential branch -the only one left once the SQLi was closed- died
 #: there. ``NEXUS_WORDLIST_ROOTS`` (``os.pathsep``-separated) extends the list.
+#: A root that is not installed on this host is ignored by the resolver instead
+#: of being advertised: Brute It v6 (2026-10-20) asked twice for a
+#: ``/usr/share/seclists`` path that does not exist on the operator's Kali.
 WORDLIST_ROOTS_ENV = "NEXUS_WORDLIST_ROOTS"
 DEFAULT_WORDLIST_ROOTS = ("/usr/share/wordlists", "/usr/share/seclists", "/opt/seclists")
+
+#: One known-bad credential, used to learn what a *failed* login looks like
+#: before spending the wordlist on it.
+CRED_PROBE_USER_FALLBACK = "admin"
+CRED_PROBE_PASSWORD = "invalid_probe_12345"
+#: Budget of the probe: two requests, no sweep.
+CRED_PROBE_TIMEOUT_SECONDS = 20
 #: Concurrent hydra tasks. Kept low to avoid tripping service rate limits.
 CRED_TASKS = 4
 
@@ -122,6 +135,10 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                 "form_url": {"type": "string", "minLength": 1, "maxLength": 512},
                 "form_params": {"type": "string", "minLength": 1, "maxLength": 512},
                 "failure_string": {"type": "string", "minLength": 1, "maxLength": 200},
+                # One known-bad login before the sweep. It stops the run from
+                # spending its budget on a marker that cannot identify a failure
+                # (Brute It v6, iteration 8: 600 s with ``F=LOGIN``).
+                "probe": {"type": "boolean"},
                 "password_file": {"type": "string", "minLength": 1, "maxLength": 1024},
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                 # No ``maximum``: an auditor with a 14M-word list is entitled to
@@ -170,54 +187,51 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
 def _validate_text(value: Any, field: str, *, max_length: int) -> str:
     text = str(value or "").strip()
     if not text:
-        raise ValueError(f"{field} is required")
+        raise ToolInputError(f"{field} is required")
     if len(text) > max_length:
-        raise ValueError(f"{field} is too long")
+        raise ToolInputError(f"{field} is too long")
     if any(ord(ch) < 0x20 for ch in text):
-        raise ValueError(f"{field} contains control characters")
+        raise ToolInputError(f"{field} contains control characters")
     return text
 
 
 def _wordlist_roots(workspace_root: str) -> list[str]:
-    """Roots a wordlist may be read from: the workspace plus the system ones."""
+    """Roots a wordlist may be read from: the workspace plus the installed ones."""
     roots = [os.path.realpath(workspace_root)]
     configured = [
         item.strip()
         for item in os.getenv(WORDLIST_ROOTS_ENV, "").split(os.pathsep)
         if item.strip()
     ]
-    for root in configured or DEFAULT_WORDLIST_ROOTS:
-        resolved = os.path.realpath(root)
-        if resolved not in roots:
-            roots.append(resolved)
-    return roots
+    roots.extend(shared_wordlists.existing_roots(configured or DEFAULT_WORDLIST_ROOTS))
+    return [root for index, root in enumerate(roots) if root not in roots[:index]]
 
 
 def _resolve_wordlist(workspace_root: str, source: str) -> str:
-    """Resolve ``source`` under an allowed wordlist root or raise ``ValueError``.
+    """Resolve ``source`` under an allowed wordlist root or raise ``ToolInputError``.
 
-    An absolute path is accepted only when it resolves inside an allowed root; a
-    relative one is looked up in the workspace first and then in the system
-    roots, so ``rockyou.txt`` finds ``/usr/share/wordlists/rockyou.txt`` without
-    the model having to guess where the operator installed it.
+    The containment rules live in :mod:`nexus_core.tools.wordlists`, shared with
+    ``ffuf``/``gobuster``: an absolute path is accepted when it is inside the
+    workspace or a system root (Kali installs 12 of its 13 wordlists as
+    symlinks pointing outside ``/usr/share/wordlists``, and only root can plant
+    one there), and a relative name is looked up in the workspace first and then
+    in the system roots.
+
+    The two failures are named separately because they need two reactions:
+    ``file does not exist`` (pick another list) and ``forbidden path`` (that one
+    may not be read). Brute It v6 got one generic message for both and retried
+    the missing one until the run was blocked.
     """
-    text = str(source).strip()
+    text = str(source or "").strip()
     roots = _wordlist_roots(workspace_root)
-    candidates = [
-        os.path.realpath(text if os.path.isabs(text) else os.path.join(roots[0], text))
-    ]
-    if not os.path.isabs(text):
-        candidates.extend(os.path.realpath(os.path.join(root, text)) for root in roots[1:])
-    for candidate in candidates:
-        if not any(candidate == root or candidate.startswith(root + os.sep) for root in roots):
-            continue
-        if os.path.isfile(candidate):
-            return candidate
-    raise ValueError(
-        "password_file must be inside the engagement workspace or a standard "
-        f"wordlist root ({', '.join(DEFAULT_WORDLIST_ROOTS)}); extend with "
-        f"{WORDLIST_ROOTS_ENV}"
-    )
+    try:
+        return shared_wordlists.resolve_wordlist(
+            workspace_root, text, system_roots=roots[1:], label="password_file"
+        )
+    except shared_wordlists.WordlistNotFound as exc:
+        raise ToolInputError(f"file does not exist: {exc.path}") from exc
+    except shared_wordlists.WordlistForbidden as exc:
+        raise ToolInputError(f"forbidden path: {exc.path}") from exc
 
 
 def _truncate_wordlist(source: str, dest: str, max_attempts: int | None) -> int:
@@ -236,7 +250,7 @@ def _truncate_wordlist(source: str, dest: str, max_attempts: int | None) -> int:
     ) as writer:
         while line := reader.readline(4097):
             if len(line) > 4096:
-                raise ValueError("wordlist entry exceeds 4096 characters")
+                raise ToolInputError("wordlist entry exceeds 4096 characters")
             token = line.rstrip("\r\n")
             if not token:
                 continue
@@ -363,12 +377,12 @@ def _normalize_form_url(value: Any) -> tuple[str, str, int | None, bool]:
     if "://" in text:
         scheme = text.partition("://")[0].strip().lower()
         if scheme not in _FORM_URL_SCHEMES:
-            raise ValueError(
+            raise ToolInputError(
                 "form_url must be the login path ('/admin/') or an http/https URL"
             )
         parts = urlsplit(text)
         if parts.query:
-            raise ValueError(
+            raise ToolInputError(
                 "form_url must not carry a query string; pass the form fields in "
                 "form_params"
             )
@@ -376,7 +390,7 @@ def _normalize_form_url(value: Any) -> tuple[str, str, int | None, bool]:
         try:
             port = parts.port
         except ValueError as exc:  # ``http://host:notaport/``
-            raise ValueError("form_url carries an invalid port") from exc
+            raise ToolInputError("form_url carries an invalid port") from exc
         secure = scheme == "https"
         path = parts.path or "/"
     else:
@@ -399,23 +413,211 @@ def _form_spec(form_url: Any, form_params: Any, failure_string: Any) -> str:
     """
     path = _validate_text(form_url, "form_url", max_length=512)
     if not path.startswith("/"):
-        raise ValueError("form_url must be the login path, starting with '/'")
+        raise ToolInputError("form_url must be the login path, starting with '/'")
     if ":" in path or any(char.isspace() for char in path):
-        raise ValueError("form_url must not contain ':' or whitespace")
+        raise ToolInputError("form_url must not contain ':' or whitespace")
     params = _validate_text(form_params, "form_params", max_length=512)
     if "^USER^" not in params or "^PASS^" not in params:
-        raise ValueError(
+        raise ToolInputError(
             "form_params must carry hydra's placeholders, e.g. "
             "'user=^USER^&pass=^PASS^&submit=Login'"
         )
     if ":" in params or any(char.isspace() for char in params):
-        raise ValueError("form_params must not contain ':' or whitespace")
+        raise ToolInputError("form_params must not contain ':' or whitespace")
     failure = _validate_text(failure_string, "failure_string", max_length=200)
     if ":" in failure:
-        raise ValueError(
+        raise ToolInputError(
             "failure_string must not contain ':' (it separates hydra's conditions)"
         )
     return f"{path}:{params}:F={failure}"
+
+
+#: The probe hydra cannot do: hydra only knows "the failure string is here or it
+#: is not", so it cannot tell that the string it was given also appears on the
+#: login page itself. This client makes the two observations the verdict needs -
+#: the page as an anonymous visitor (`baseline`) and the page after one known-bad
+#: POST (`failure`)- and reports whether the needle is in each.
+#:
+#: Measured in Brute It v6 (2026-10-20, iteration 8): ``failure_string="LOGIN"``
+#: against a panel whose button already says ``Login`` burned the whole 600 s
+#: tool budget and could not have reported a hit, because the marker was present
+#: in both branches. The run never learned what a failed login looks like, so the
+#: next turns guessed (SSH, SQLi) instead of sweeping again.
+CRED_PROBE_SCRIPT = r'''
+import json, sys, urllib.error, urllib.request
+
+def fetch(url, method, body, timeout):
+    data = body.encode("utf-8") if body else None
+    request = urllib.request.Request(url, data=data, method=method)
+    request.add_header("User-Agent", "nexus-cred-probe/1")
+    if data is not None:
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.getcode(), response.read(200000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(200000).decode("utf-8", "replace")
+
+def main():
+    baseline_url, method, action_url, body, needle, timeout = sys.argv[1:7]
+    limit = float(timeout)
+    baseline_status, baseline = fetch(baseline_url, "GET", "", limit)
+    failure_status, failure = fetch(action_url, method, body, limit)
+    print(json.dumps({
+        "ok": True,
+        "baseline_status": baseline_status,
+        "failure_status": failure_status,
+        "in_baseline": needle in baseline,
+        "in_failure": needle in failure,
+        "baseline_len": len(baseline),
+        "failure_len": len(failure),
+    }))
+
+try:
+    main()
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": type(exc).__name__ + ": " + str(exc)[:200]}))
+'''
+
+
+@dataclass(frozen=True)
+class _ProbeVerdict:
+    """What the one-shot login taught us, and why it matters.
+
+    ``status`` is ``ok`` (the needle discriminates), ``invalid`` (it does not, so
+    a sweep with it proves nothing), ``skipped`` (the probe could not run) or
+    ``disabled`` (the caller turned it off). A probe that cannot run never blocks
+    a sweep: it is infrastructure, not a verdict about the target.
+    """
+
+    status: str
+    reason: str = ""
+    detail: dict[str, Any] = field(default_factory=dict)
+
+
+def _probe_url(target: str, port: int, secure: bool, path: str) -> str:
+    scheme = "https" if secure else "http"
+    return f"{scheme}://{target}:{port}{path}"
+
+
+def _probe_body(form_params: str, username: str) -> str:
+    """Fill hydra's placeholders with the real user and the known-bad password."""
+    return form_params.replace("^USER^", username).replace("^PASS^", CRED_PROBE_PASSWORD)
+
+
+def _probe_verdict(payload: dict[str, Any]) -> _ProbeVerdict:
+    """Turn the probe's two observations into the verdict the handler acts on."""
+    detail = {key: payload.get(key) for key in (
+        "baseline_status", "failure_status", "in_baseline", "in_failure",
+    )}
+    if not payload.get("in_failure"):
+        # Not in the response to a wrong credential: hydra would read every
+        # attempt as a success and stop on the first one with a false positive.
+        return _ProbeVerdict("invalid", "missing_in_failure_response", detail)
+    if payload.get("in_baseline"):
+        # Present before any credential was sent: the panel's own markup (the
+        # button says "Login") carries it, so it cannot separate the branches.
+        return _ProbeVerdict("invalid", "present_in_baseline", detail)
+    return _ProbeVerdict("ok", "discriminating", detail)
+
+
+async def _probe_form_login(
+    *, target: str, port: int, secure: bool, path: str, form_params: str,
+    failure_string: str, username: str, service: str, workspace_root: str,
+) -> _ProbeVerdict:
+    """Make one known-bad login and say whether ``failure_string`` separates it.
+
+    Runs in the same sandbox as hydra (so OCI mode keeps working) and fails open:
+    a probe that cannot run is ``skipped``, never a reason to refuse the sweep.
+    """
+    from .http_request import _parse_last_json
+
+    body = _probe_body(form_params, username or CRED_PROBE_USER_FALLBACK)
+    baseline_url = _probe_url(target, port, secure, path)
+    if service == "http-get-form":
+        method, action_url, payload = "GET", f"{baseline_url}?{body}", ""
+    else:
+        method, action_url, payload = "POST", baseline_url, body
+    sandbox = sandbox_for_environment(workspace_root, allowed_programs=CRED_ALLOWED_PROGRAMS)
+    result = await run_in_sandbox(
+        sandbox,
+        ["python3", "-c", CRED_PROBE_SCRIPT, baseline_url, method, action_url,
+         payload, failure_string, str(CRED_PROBE_TIMEOUT_SECONDS)],
+        timeout_seconds=CRED_PROBE_TIMEOUT_SECONDS + 5,
+        image_env="NEXUS_HTTP_IMAGE",
+        default_image="python:3.12-alpine",
+    )
+    if not (result.stdout or "").strip():
+        return _ProbeVerdict("skipped", "probe_did_not_run")
+    try:
+        payload_json = _parse_last_json(result.stdout or "")
+    except ValueError:
+        return _ProbeVerdict("skipped", "probe_returned_no_verdict")
+    if not payload_json.get("ok"):
+        return _ProbeVerdict(
+            "skipped", str(payload_json.get("error") or "probe_failed")[:200]
+        )
+    return _probe_verdict(payload_json)
+
+
+def _invalid_failure_string_result(
+    *, target: str, service: str, port: int, form_path: str,
+    failure_string: str, probe: _ProbeVerdict,
+) -> ToolResult:
+    """Answer ``invalid_failure_string``: the marker cannot report a hit.
+
+    This is a determinate result about the *argument*, not about the target, and
+    it costs two requests instead of a full sweep: hydra would have run the whole
+    wordlist and, with a marker present in both branches, could never have
+    reported the credential it walked past (Brute It v6, iteration 8: 600 s and
+    zero information).
+    """
+    if probe.reason == "present_in_baseline":
+        why = (
+            "el texto indicado aparece ya en la propia página de login, sin "
+            "enviar credenciales (por ejemplo el botón dice 'Login'), así que no "
+            "distingue un login fallido de uno correcto"
+        )
+    else:
+        why = (
+            "el texto indicado no aparece en la respuesta a una credencial "
+            "incorrecta, así que Hydra leería cualquier intento como acierto"
+        )
+    message = (
+        f"failure_string no discrimina el login de {form_path}: {why}. NO se "
+        "lanzó el barrido (no se ha gastado presupuesto). Solución: inspecciona "
+        "el HTML con nexus.web.request (GET a la página y POST con "
+        "user=<usuario>&pass=<cualquiera>) y copia el texto que aparece SOLO "
+        "cuando la credencial falla; después repite la llamada con ese "
+        "failure_string. Pasa probe=false para saltar esta comprobación."
+    )
+    return ToolResult(
+        output={
+            "error": "failure_string does not identify a failed login",
+            "reason": probe.reason,
+            "message": message,
+            "failure_string": failure_string,
+            "form_url": form_path,
+            "probe": probe.detail,
+            "target": target,
+            "service": service,
+            "port": port,
+            "sweep_attempted": False,
+        },
+        verified=False,
+        outcome="invalid_failure_string",
+        verification_method="cred_bruteforce_failure_string_invalid",
+        evidence={
+            "service": service,
+            "port": port,
+            "form_url": form_path,
+            "failure_string": failure_string,
+            "failure_string_probe": probe.status,
+            "failure_string_probe_reason": probe.reason,
+            "probe": probe.detail,
+            "attempts": 0,
+        },
+    )
 
 
 def _record_brute_barrier(
@@ -465,7 +667,7 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     target = _validate_text(arguments.get("target"), "target", max_length=255)
     service = str(arguments.get("service") or "").strip().lower()
     if service not in CRED_SERVICES:
-        raise ValueError(f"unsupported service: {service!r}")
+        raise ToolInputError(f"unsupported service: {service!r}")
     username = (
         _validate_text(arguments.get("username"), "username", max_length=128)
         if service in {"ssh", "ftp", *CRED_FORM_SERVICES} or arguments.get("username")
@@ -478,13 +680,15 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     form_port: int | None = None
     secure = False
     form_spec = ""
+    failure_string = ""
+    form_params = ""
     if service in CRED_FORM_SERVICES:
         form_path, form_host, form_port, secure = _normalize_form_url(
             arguments.get("form_url")
         )
-        form_spec = _form_spec(
-            form_path, arguments.get("form_params"), arguments.get("failure_string")
-        )
+        form_params = str(arguments.get("form_params") or "")
+        failure_string = str(arguments.get("failure_string") or "").strip()
+        form_spec = _form_spec(form_path, form_params, failure_string)
 
     # ``form_url`` may repeat the host and the port the call already carries. hydra
     # always connects to ``target`` -the scope-gated field-, so a URL naming another
@@ -502,7 +706,7 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     else:
         port = CRED_DEFAULT_PORTS.get(service, 0)
     if not 1 <= port <= 65535:
-        raise ValueError("port out of range")
+        raise ToolInputError("port out of range")
     secure = (secure and same_host) or port in CRED_SSL_PORTS
     # No cap of the handler's own: ``max_attempts`` cuts the list only when the
     # caller asks for it, and ``timeout_seconds`` is the caller's or the budget the
@@ -519,24 +723,41 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     timeout_seconds = int(requested_timeout) if requested_timeout else default_timeout
 
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
+    # The probe goes first: two requests either prove the failure marker
+    # discriminates or stop a sweep that could not have found anything. It runs
+    # before the wordlist is copied, so a bad marker costs 2 requests, not the
+    # copy of a 14M-line dictionary.
+    probe = _ProbeVerdict("disabled", "not_a_form_service")
+    if form_spec and bool(arguments.get("probe", True)):
+        probe = await _probe_form_login(
+            target=target, port=port, secure=secure, path=form_path,
+            form_params=form_params, failure_string=failure_string,
+            username=username, service=service, workspace_root=workspace_root,
+        )
+    if probe.status == "invalid":
+        return _invalid_failure_string_result(
+            target=target, service=service, port=port, form_path=form_path,
+            failure_string=failure_string, probe=probe,
+        )
+
     source_path = _resolve_wordlist(workspace_root, password_file)
     run_dir = tempfile.mkdtemp(prefix=f"cred_{safe_run_id(context)}_", dir=workspace_root)
     wordlist_path = os.path.join(run_dir, "wordlist.txt")
     outfile_path = os.path.join(run_dir, "hydra.txt")
     attempts = _truncate_wordlist(source_path, wordlist_path, max_attempts)
     if attempts == 0:
-        raise ValueError("password_file has no usable entries")
+        raise ToolInputError("password_file has no usable entries")
 
     if service in {"tcp", "telnet"}:
         from ._tcp_credentials import TCP_CREDENTIAL_SCRIPT
         from .http_request import _parse_last_json
         if not 1 <= port <= 65535:
-            raise ValueError("TCP requires an explicit valid port")
+            raise ToolInputError("TCP requires an explicit valid port")
         success = _validate_text(arguments.get("success_marker"), "success_marker", max_length=128)
         password_prompt = _validate_text(arguments.get("password_prompt", "Password:"), "password_prompt", max_length=128)
         login_prompt = str(arguments.get("login_prompt") or "")
         if login_prompt and not username:
-            raise ValueError("login_prompt requires username")
+            raise ToolInputError("login_prompt requires username")
         sandbox = sandbox_for_environment(workspace_root, allowed_programs=CRED_ALLOWED_PROGRAMS)
         result = await run_in_sandbox(
             sandbox, ["python3", "-c", TCP_CREDENTIAL_SCRIPT, target, str(port), username,
@@ -623,6 +844,11 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         # passwords only as hydra placeholders, but the path is what the board
         # needs to tie the attempt to the endpoint.
         evidence["form_url"] = form_path
+        # ``ok`` means the marker was probed and separates a failed login from
+        # the page itself; ``skipped`` is infrastructure, not a verdict.
+        evidence["failure_string_probe"] = probe.status
+        if probe.reason:
+            evidence["failure_string_probe_reason"] = probe.reason
 
     # V1-29: the plaintext is stored, never forwarded. What the loop, the
     # blackboard and the prompt see is the handle.

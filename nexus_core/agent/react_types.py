@@ -250,7 +250,18 @@ class ReActConfig:
     """Tunables of one ReAct run."""
 
     max_iterations: int = 12
-    timeout_per_tool_seconds: int = 600
+    #: Ceiling of one tool call. It must be *strictly greater* than the largest
+    #: ``timeout_seconds`` a tool contract publishes -``cred.bruteforce`` announces
+    #: 900- plus the handler's own reporting grace, because this ceiling is
+    #: enforced by cancelling the coroutine: whoever fires first wins, and if the
+    #: loop fires it also throws away the handler's answer. Measured in Brute It
+    #: v6 (2026-10-20, iteration 8): the 600 s cap cancelled a 900 s sweep, the
+    #: gateway saw ``CancelledError``, journaled the invocation ``unknown`` and the
+    #: model never learned that hydra had run for ten minutes without a hit. With
+    #: this value the handler's own budget (:data:`CRED_TIMEOUT_MARGIN_SECONDS`
+    #: below the contract) always answers first, so the result carries
+    #: ``outcome="timeout"`` and the ``attempts`` that were actually made.
+    timeout_per_tool_seconds: int = 960
     enable_summarization: bool = True
     max_history_messages: int = 40
     #: Enforce the completion gates (B8.2.2/B8.2.3): refuse a ``task_complete``

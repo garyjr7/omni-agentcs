@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import SANDBOX_HOME_DIRNAME, sandbox_for_environment
+from nexus_core.tools import wordlists as shared_wordlists
 from nexus_core.tools.parsers.ffuf import parse_ffuf_output
 
 from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox
@@ -210,26 +211,33 @@ def resolve_wordlist(workspace_root: str | Path, wordlist: str) -> str:
     directory (:func:`system_wordlist_dirs`); never anywhere else. The ephemeral
     sandbox HOME lives inside the workspace but is sandbox plumbing, so it is
     off-limits too.
+
+    The containment rules (lexical first, symlinks of Kali's wordlist install,
+    missing-vs-forbidden) are shared with ``nexus.cred.bruteforce`` through
+    :mod:`nexus_core.tools.wordlists`; this wrapper only keeps ffuf's wording so
+    a model reading the error knows which tool refused.
     """
     root = Path(workspace_root).resolve()
-    candidate = Path(str(wordlist).strip())
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    candidate = candidate.resolve()
-    in_workspace = _inside(candidate, root)
-    in_system = any(_inside(candidate, directory) for directory in system_wordlist_dirs())
-    if not in_workspace and not in_system:
+    try:
+        candidate = Path(
+            shared_wordlists.resolve_wordlist(
+                str(root), str(wordlist),
+                system_roots=[str(directory) for directory in system_wordlist_dirs()],
+                label="ffuf wordlist",
+            )
+        )
+    except shared_wordlists.WordlistNotFound as exc:
+        raise ValueError(f"ffuf wordlist does not exist: {exc.path}") from exc
+    except shared_wordlists.WordlistForbidden as exc:
         allowed = ", ".join(str(directory) for directory in system_wordlist_dirs())
         raise ValueError(
             "ffuf wordlist must live inside the workspace or a configured "
             f"system wordlist dir ({allowed})"
-        )
-    if in_workspace:
+        ) from exc
+    if _inside(candidate, root):
         sandbox_home = root / SANDBOX_HOME_DIRNAME
         if candidate == sandbox_home or sandbox_home in candidate.parents:
             raise ValueError("ffuf wordlist must not live in the sandbox HOME")
-    if not candidate.is_file():
-        raise ValueError(f"ffuf wordlist does not exist: {candidate}")
     return str(candidate)
 
 

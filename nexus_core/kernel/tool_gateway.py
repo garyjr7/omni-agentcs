@@ -12,7 +12,7 @@ from uuid import uuid4
 from typing import Any, Awaitable, Callable, Dict
 
 from .approvals import ApprovalService
-from .errors import ApprovalRequired
+from .errors import ApprovalRequired, ToolInputError
 from .audit import AuditWriter
 from .models import (
     PROVIDER_UNAVAILABLE_SUFFIXES,
@@ -432,6 +432,15 @@ class ToolGateway:
                              'verification_method': ALREADY_INVOKED_METHOD}, decision='allow')
                 reused = journal.result_of(
                     previous, artifact_store=journal_artifacts)
+                if reused is None:
+                    # The journal says this step succeeded, but its artifact is
+                    # gone: the effect *did* happen, so neither re-running it
+                    # nor answering with an empty payload is right. Fail with
+                    # the fact instead of an ``AttributeError`` on ``None``.
+                    raise RuntimeError(
+                        "journal holds a succeeded invocation "
+                        f"{previous['invocation_id']} whose result could not be read"
+                    )
                 return _already_invoked(reused, previous)
             if previous and previous['state'] in {'running', 'prepared'}:
                 raise PermissionError('invocation is already running or prepared; reconcile before retry')
@@ -586,14 +595,33 @@ class ToolGateway:
                 await hooks.emit('post_tool_use', tool_id=tool_id, result=result_value)
                 return result_value
             except BaseException as exc:
-                journal.unknown(context.invocation_id, context.tenant_id)
+                # A ``ToolInputError`` is the handler refusing its own arguments
+                # *before* the effect starts (schema/spec/path), so there is
+                # nothing to be unsure about: the invocation settles as
+                # ``failed`` and the corrected retry runs without an operator.
+                # Every other failure keeps ``unknown`` -the effect may have
+                # begun, and a replay needs a durable human decision. Measured
+                # in Brute It v6 (2026-10-20): a wordlist path was rejected, the
+                # row read ``unknown``, and the model's retry of the same step
+                # closed the run as ``blocked`` (exit 2) over a call that never
+                # touched the target.
+                input_rejected = isinstance(exc, ToolInputError)
+                if input_rejected:
+                    journal.fail_before_effect(
+                        context.invocation_id, context.tenant_id,
+                        reason=_bounded(str(exc)),
+                    )
+                else:
+                    journal.unknown(context.invocation_id, context.tenant_id)
                 self.audit.append(
                     tenant_id=context.tenant_id, trace_id=context.trace_id,
-                    actor_id=context.identity.subject_id, action="tool.failed",
+                    actor_id=context.identity.subject_id,
+                    action="tool.rejected" if input_rejected else "tool.failed",
                     resource_type="tool", resource_id=tool_id,
                     payload={"error_type": type(exc).__name__, "run_id": context.run_id,
+                             "input_rejected": input_rejected,
                              "error": _bounded(str(exc))},
-                    decision="error",
+                    decision="deny" if input_rejected else "error",
                 )
                 metrics.increment(
                     "nexus_tool_calls_total", tool_id=tool_id, status="error",
