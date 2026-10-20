@@ -990,6 +990,18 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
         bytes_written=len(content), timed_out=result.timed_out,
     )
     verified = result.exit_code == 0 and not result.timed_out and not result.cancelled
+    # A shell is a terminal, not a predicate: ``grep`` with no match exits 1,
+    # ``test -f`` exits 1, a pipeline reports its last command. A non-zero exit
+    # says the *command* failed, never that the tool is broken, so it is
+    # reported as the determinate ``command_failed`` outcome with the real
+    # output attached instead of raising "post-condition was not verified".
+    # Measured in run_7661dda481784eebb17a76e037c5722b (2026-10-20): six
+    # ``curl ... | grep`` probes that had answered correctly were discarded as
+    # tool failures and the run died without ever seeing its own output.
+    command_failed = (
+        not verified and not result.timed_out and not result.cancelled
+        and result.exit_code is not None
+    )
     return ToolResult(
         output={
             "summary": summary,
@@ -1011,7 +1023,11 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             "workspace": str(root),
         },
         verified=verified,
-        outcome="timeout" if result.timed_out else "",
+        outcome=(
+            "timeout" if result.timed_out
+            else "command_failed" if command_failed
+            else ""
+        ),
         verification_method="shell_exit_code",
         evidence={
             "cwd": cwd_relative,
@@ -1027,6 +1043,9 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             ),
         },
         exit_code=result.exit_code,
+        # The exit code travels in ``output`` and the capture in the artifact, so
+        # the model reads what the command answered before deciding the next
+        # step even when that answer was an error.
         stdout=summary,
         stderr="",
         timed_out=result.timed_out,

@@ -409,6 +409,49 @@ async def test_no_progress_counter_resets_when_a_fact_arrives(tmp_path: Path) ->
     assert _events(store, context, STUCK_EVENT_TYPE) == []
 
 
+async def test_an_agent_recorded_fact_breaks_the_no_progress_streak(tmp_path: Path) -> None:
+    """Only the verifier can mark a fact verified, so leads must count too.
+
+    Measured in ``run_7661dda481784eebb17a76e037c5722b`` (2026-10-20): the run
+    read the DB version, the table prefix and the ``jonah`` hash through
+    ``nexus.knowledge.record_fact`` and still logged 35 barren turns in a row,
+    because ``summary()["counts"]`` only counts proven facts. A registration the
+    board did not already hold is learning and must reset the streak.
+    """
+    store, context = _harness(tmp_path)
+    llm = ScriptedLLM([tool_call()])
+    board = Blackboard(store)
+    calls = {"count": 0}
+
+    async def fake_tool(payload: dict[str, Any], run_context: ExecutionContext) -> dict[str, Any]:
+        calls["count"] += 1
+        if calls["count"] == 3:
+            board.record(
+                tenant_id=TENANT,
+                engagement_id=ENGAGEMENT,
+                fact_type="vulnerability",
+                key=f"{TARGET}:80:sqli",
+                value={"cve": "CVE-2017-8917"},
+                source="nexus.web.request",
+                created_by="agent",
+            )
+        return dict(TOOL_SUCCESS)
+
+    with mock.patch.object(runtime_module, "execute_tool", fake_tool):
+        result = await run_react_loop(
+            context=context,
+            objective="Explota el SQLi",
+            engagement_id=ENGAGEMENT,
+            llm_client=llm,
+            config=_loop_config(max_iterations=4),
+        )
+
+    assert [turn["blackboard_delta"] for turn in result.turns] == [0, 0, 1, 0]
+    assert [turn["consecutive_no_progress"] for turn in result.turns] == [1, 2, 0, 1]
+    assert result.turns[2]["blackboard_added"] == ["vulnerability"]
+    assert _events(store, context, STUCK_EVENT_TYPE) == []
+
+
 # --------------------------------------------------------------------------- #
 # Problema 3 - an exhausted SMB enumeration hands over to initial access
 # --------------------------------------------------------------------------- #

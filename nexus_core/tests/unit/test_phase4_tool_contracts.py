@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nexus_core.kernel.models import Identity, RunContext, ToolResult
+from nexus_core.kernel.models import Identity, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.output_capture import StreamManifest
 from nexus_core.kernel.sandbox import SandboxResult
 from nexus_core.provisioner.binaries import BINARY_IDENTITIES_BY_NAME, check_binary_identity
@@ -170,6 +170,39 @@ def test_concurrent_capture_isolation_and_incomplete_results() -> None:
         records = result.evidence["execution_capture"]["executions"]
         assert len(records) == 1
         assert records[0]["stdout"]["retained_sha256"] == hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_a_url_target_is_percent_encoded_instead_of_rejected() -> None:
+    """A space in a URL is a modelling slip, not a second argv token.
+
+    Measured in ``run_3d90f7f388144557ae97466b0a19ce55`` (2026-10-20): a working
+    SQLi payload was rejected for its spaces twice per hash block.
+    """
+    seen: list[dict[str, Any]] = []
+
+    async def handler(arguments: dict[str, Any], ctx: RunContext) -> ToolResult:
+        seen.append(dict(arguments))
+        return ToolResult(verified=True, outcome="negative")
+
+    definition = ToolDefinition(
+        name="web probe",
+        tenant_id="system",
+        tool_id="probe.web",
+        scope_target_field="url",
+        scope_required=True,
+        input_schema={
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+        },
+    )
+    invoke = with_execution_contract(definition, handler)
+    asyncio.run(invoke({"url": "http://10.10.10.5/?id=1 union select 2"}, context()))
+    # The handler (and the journal) see the target that actually ran.
+    assert seen[0]["url"] == "http://10.10.10.5/?id=1%20union%20select%202"
+    # Anything that is not a URL keeps the strict argv rule.
+    with pytest.raises(ValueError, match="single token"):
+        asyncio.run(invoke({"url": "10.10.10.5 -oN out"}, context()))
 
 
 @pytest.mark.parametrize(

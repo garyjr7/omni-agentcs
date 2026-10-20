@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from contextvars import ContextVar
 from dataclasses import asdict, replace
 from functools import wraps
@@ -34,17 +35,31 @@ def record_capture(result: SandboxResult, *, source: str = "process") -> None:
     )
 
 
+#: A value that is an absolute URL, not an argv token. A raw space is a
+#: modelling slip there, never a second token: every HTTP client encodes it.
+_URL_PREFIX = re.compile(r"^https?://", re.IGNORECASE)
+
+
 def validate_target(value: object) -> str:
-    """Reject argv-option and control-character injection without resolving DNS."""
+    """Reject argv-option and control-character injection without resolving DNS.
+
+    A URL is the one accepted target shape where whitespace is unambiguous: it
+    is percent-encoded (``%20``) instead of rejected, because that is exactly
+    what the server would receive from a browser. Measured in
+    ``run_3d90f7f388144557ae97466b0a19ce55`` (2026-10-20): the model built a
+    working ``extractvalue(... substr(password,33,32) ...)`` payload, got
+    "target must be a single token" for the space, and burned two turns per
+    block of the hash it was already able to read.
+    """
     if not isinstance(value, str) or not value.strip():
         raise ValueError("target must be a nonempty string")
     target = value.strip()
     if target.startswith("-") or any(ord(char) < 32 or ord(char) == 127 for char in value):
         raise ValueError("target contains an option or control character")
     if any(char.isspace() for char in target):
-        # The target is an argv token: a raw space is rejected, not split. Name the
-        # fix so a URL with a payload does not cost an extra round trip
-        # (run_1052d63f9bba4838902b3aa21bd27d21, 2026-10-19).
+        if _URL_PREFIX.match(target):
+            return target.replace(" ", "%20")
+        # Anything else is an argv token: a raw space is rejected, not split.
         raise ValueError(
             "target must be a single token (URL-encode spaces as %20; "
             "use nexus.web.sqlmap/--data for a payload with spaces)"
@@ -65,8 +80,13 @@ def with_execution_contract(definition: ToolDefinition, handler: Handler) -> Han
         field = definition.scope_target_field
         if field and field in arguments:
             value = arguments[field]
-            for target in value if isinstance(value, list) else [value]:
-                validate_target(target)
+            # Normalised in place: the handler, the journal and the evidence must
+            # all see the target that actually ran (a URL with ``%20`` and not
+            # the raw space that motivated the normalisation).
+            if isinstance(value, list):
+                arguments[field] = [validate_target(item) for item in value]
+            else:
+                arguments[field] = validate_target(value)
         captures: list[dict[str, Any]] = []
         token = _captures.set(captures)
         try:

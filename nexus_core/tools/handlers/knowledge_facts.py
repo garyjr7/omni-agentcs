@@ -98,7 +98,14 @@ async def record_fact_handler(arguments: dict, context: RunContext) -> ToolResul
     raw_value = arguments.get("value")
     # Bind once: calling ``get`` twice in a conditional defeats static narrowing.
     value: dict[str, Any] = raw_value if isinstance(raw_value, dict) else {}
+    # Neither ``source`` nor ``verified`` is the model's to grant: both are
+    # provenance the engine owns, and a model that could write
+    # ``source="deterministic-verifier"`` would be promoting its own guess. The
+    # value it sent is not used, but it is answered explicitly below instead of
+    # being dropped in silence.
+    requested_source = str(arguments.get("source") or "agent").strip()[:128]
     source = "agent"
+    requested_verified = bool(arguments.get("verified"))
     verified = False
     created_by = getattr(getattr(context, "identity", None), "subject_id", "agent")
 
@@ -116,7 +123,15 @@ async def record_fact_handler(arguments: dict, context: RunContext) -> ToolResul
         created_by=created_by,
         verified=verified,
     )
-    output: dict[str, Any] = {"recorded": record}
+    output: dict[str, Any] = {"recorded": record, "verified": False}
+    if requested_verified or requested_source not in ("", "agent"):
+        # The fact is stored either way; the model has to know it is a lead, not
+        # evidence, so it does not stop looking for a deterministic proof.
+        output["warning"] = (
+            "la procedencia y la verificación las otorga el motor, no el agente: "
+            "el hecho queda registrado como pista (source=agent, verified=false) "
+            "y no cuenta como evidencia de fase"
+        )
     if existing_verified is not None:
         # The registration is persisted but the verified fact stays intact; say
         # so instead of letting the model believe it just replaced it.

@@ -2507,6 +2507,16 @@ class ReActCoordinator:
         The plan snapshot the loop renders was built before the tool ran, so the
         per-turn telemetry reads the board again: the whole point of the signal
         is what the turn actually learned.
+
+        Both proven facts *and* the agent's own registrations count. Only the
+        verifier can mark a fact ``verified``, so counting proven facts alone
+        made every turn that recorded a finding read as barren: measured in
+        ``run_7661dda481784eebb17a76e037c5722b`` (2026-10-20), where the run
+        extracted the DB version, the table prefix and the complete ``jonah``
+        hash through ``nexus.knowledge.record_fact`` and still accumulated 35
+        ``consecutive_no_progress`` turns, three ``stuck_detected`` and a budget
+        death. A repeated registration does not grow a count, so the streak can
+        only be reset by a fact the board did not already hold.
         """
         if not self.engagement_id or not getattr(self, "store", None):
             return None
@@ -2514,12 +2524,17 @@ class ReActCoordinator:
             from nexus_core.kernel.blackboard import Blackboard
 
             summary = Blackboard(self.store).summary(self.tenant_id, self.engagement_id)
-            counts = summary.get("counts") if isinstance(summary, dict) else None
-            if isinstance(counts, dict):
-                return {str(key): int(value or 0) for key, value in counts.items()}
+            if not isinstance(summary, dict):
+                return None
+            counts: dict[str, int] = {}
+            for bucket in (summary.get("counts"), summary.get("leads")):
+                if not isinstance(bucket, dict):
+                    continue
+                for key, value in bucket.items():
+                    counts[str(key)] = counts.get(str(key), 0) + int(value or 0)
+            return counts
         except Exception:  # noqa: BLE001 - telemetry must never abort a run
             return None
-        return None
 
     def _track_no_progress(self) -> None:
         """Count turns without a new verified fact and signal a stuck loop.

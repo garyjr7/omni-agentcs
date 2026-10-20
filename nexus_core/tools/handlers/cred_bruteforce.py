@@ -95,6 +95,16 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                 },
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 900},
             },
+            # ``username`` is required by the ssh/ftp branch at runtime, and the
+            # schema is the contract the model reads: reject it there instead of
+            # spending a turn on ``username is required`` (measured twice in
+            # run_7661dda481784eebb17a76e037c5722b).
+            "allOf": [
+                {
+                    "if": {"properties": {"service": {"enum": ["ssh", "ftp"]}}},
+                    "then": {"required": ["username"]},
+                }
+            ],
             "required": ["target", "service", "password_file"],
             "additionalProperties": False,
         },
@@ -161,10 +171,17 @@ def _resolve_wordlist(workspace_root: str, source: str) -> str:
 
 
 def _truncate_wordlist(source: str, dest: str, max_attempts: int) -> int:
-    """Copy at most ``max_attempts`` non-empty lines into ``dest``; return count."""
+    """Copy at most ``max_attempts`` non-empty lines into ``dest``; return count.
+
+    The list is streamed and cut at ``max_attempts``, so its total size is
+    irrelevant to the work done: the old 16 MB ceiling only rejected the one
+    list an operator always has. Measured in
+    ``run_7661dda481784eebb17a76e037c5722b`` (2026-10-20): ``rockyou.txt``
+    (134 MB) was refused with "wordlist exceeds 16 MB", the model could not
+    slice it into a usable path either (the write into ``/usr/share/wordlists``
+    was denied), and the credential branch died with the hash already in hand.
+    """
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    if os.path.getsize(source) > 16_000_000:
-        raise ValueError("wordlist exceeds 16 MB")
     count = 0
     with open(source, encoding="utf-8", errors="replace") as reader, open(
         dest, "w", encoding="utf-8"

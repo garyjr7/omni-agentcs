@@ -282,6 +282,23 @@ def test_a_non_apt_permission_failure_keeps_its_normal_outcome(context):
         result = _run(context, {"command": "foo"})
 
     assert result.verification_method == "shell_exit_code"
+    # The fallback is keyed to the command: a plain command that exits non-zero
+    # is ``command_failed``, not the apt-install ``unavailable`` route.
+    assert result.outcome == "command_failed"
+    # The gateway only raises when ``completed`` is false. A command that exited
+    # non-zero ran: its output must reach the model instead of a "post-condition
+    # was not verified" blob.
+    assert result.completed is True and result.success is False
+    assert result.output["artifact_ref"].startswith("artifact_")
+
+
+def test_a_zero_exit_keeps_the_plain_verified_outcome(context):
+    from nexus_core.kernel.sandbox import SandboxResult
+
+    with _with_sandbox(SandboxResult(0, "ok\n", "")):
+        result = _run(context, {"command": "echo ok"})
+
+    assert result.verified is True and result.success is True
     assert result.outcome == ""
 
 

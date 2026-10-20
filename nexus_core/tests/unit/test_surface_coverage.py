@@ -63,7 +63,14 @@ def service(port: int, name: str, *, product: str = "", version: str = "", host:
     }
 
 
-def fact(fact_type: str, key: str, value: dict, *, verified: bool = False):
+def fact(
+    fact_type: str,
+    key: str,
+    value: dict,
+    *,
+    verified: bool = False,
+    recorded_at: str = "",
+):
     return {
         "fact_type": fact_type,
         "key": key,
@@ -72,6 +79,7 @@ def fact(fact_type: str, key: str, value: dict, *, verified: bool = False):
         "asserted_by": "verifier" if verified else "agent",
         "verification_method": "test" if verified else "",
         "invocation_id": "inv-1" if verified else "",
+        "recorded_at": recorded_at,
     }
 
 
@@ -190,6 +198,87 @@ def test_a_barrier_closes_the_service_with_its_reason_and_survives_a_rescan():
     assert closed.label in rendered
     assert "→ descartado: vsftpd 3.0.3 parcheado para CVE-2011-2523" in rendered
     assert "Siguiente rama:" in rendered and f"{TARGET}:22" in rendered
+
+
+# --------------------------------------------------------------------------- #
+# The newest verdict wins (measured in run_3d90f7f388144557ae97466b0a19ce55)
+# --------------------------------------------------------------------------- #
+def test_a_newer_vulnerability_reopens_a_service_an_older_barrier_closed():
+    """The ledger cannot order the model to abandon a vector it just proved.
+
+    Measured on 2026-10-20: the agent recorded the CVE-2017-8917 barrier at
+    23:34, then proved error-based SQLi on the same :80 at 00:23 and recorded
+    it; ``pivot_hint`` kept answering "RAMAL CERRADO" -its own text promises a
+    new vector reopens the branch- and the run abandoned the only working one.
+    """
+    coverage = build_coverage(
+        [
+            service(80, "http", product="Apache httpd", version="2.4.6"),
+            fact(
+                "barrier",
+                f"{TARGET}:80:sqli_union",
+                {"reason": "sqlmap UNION no logra inyección estable"},
+                recorded_at="2026-10-19T23:34:21.911216+00:00",
+            ),
+            fact(
+                "vulnerability",
+                f"{TARGET}:80:sqli_error_based_confirmed",
+                {"endpoint": "http://10.10.10.5/index.php?list[fullordering]="},
+                recorded_at="2026-10-20T00:23:42.662846+00:00",
+            ),
+        ]
+    )
+    reopened = coverage.find(f"{TARGET}:80")
+    assert reopened is not None and reopened.status == STATUS_PROBED
+    assert coverage.find(f"{TARGET}:80").verdict == ""
+    # The correction follows the ledger: no "RAMAL CERRADO" for a live branch.
+    focus = focus_entry(coverage, {"url": f"http://{TARGET}/index.php"})
+    assert focus is not None and focus.status == STATUS_PROBED
+    assert pivot_hint(coverage, no_progress=0, threshold=5, focus=focus) == ""
+
+
+def test_a_barrier_recorded_after_the_vector_closes_it_again():
+    """The model changed its mind: the later verdict is the current one."""
+    coverage = build_coverage(
+        [
+            service(80, "http"),
+            fact(
+                "vulnerability",
+                f"{TARGET}:80:cve-x",
+                {"cve": "CVE-X"},
+                recorded_at="2026-10-20T00:00:00.000000+00:00",
+            ),
+            fact(
+                "barrier",
+                f"{TARGET}:80",
+                {"reason": "el parche del vendor lo cubre"},
+                recorded_at="2026-10-20T01:00:00.000000+00:00",
+            ),
+        ]
+    )
+    closed = coverage.find(f"{TARGET}:80")
+    assert closed is not None and closed.status == STATUS_CLOSED
+    assert "parche del vendor" in closed.verdict
+
+
+def test_verified_access_outranks_any_barrier():
+    """A service already reached is comprometido, never "descartado"."""
+    coverage = build_coverage(
+        [
+            service(22, "ssh"),
+            fact(
+                "access", f"ssh://lin@{TARGET}", {"port": 22}, verified=True,
+                recorded_at="2026-10-20T00:00:00.000000+00:00",
+            ),
+            fact(
+                "barrier",
+                f"{TARGET}:22",
+                {"reason": "sin vector de escalada"},
+                recorded_at="2026-10-20T01:00:00.000000+00:00",
+            ),
+        ]
+    )
+    assert coverage.find(f"{TARGET}:22").status == STATUS_OWNED
 
 
 def test_barrier_without_a_reason_still_reads_as_a_closed_branch():
@@ -587,6 +676,60 @@ def test_the_ledger_reads_a_real_blackboard_and_a_barrier_closes_the_entry(tmp_p
     coverage = load_coverage(store, TENANT, ENGAGEMENT)
     assert coverage.find(f"{TARGET}:21").status == STATUS_CLOSED
     assert "parchado" in render_coverage(coverage)
+
+
+def test_the_real_board_reopens_a_barrier_with_a_newer_vulnerability(tmp_path):
+    """Same sequence as the measured run, over the real store and clock.
+
+    ``service`` → ``barrier`` → ``vulnerability``: the duplicate merge in
+    ``Blackboard.list_facts`` must not drop ``recorded_at``, or the ledger could
+    not tell which verdict came last.
+    """
+    from nexus_core.kernel.blackboard import Blackboard
+
+    store = ControlStore(tmp_path / "reopen.db")
+    store.initialize()
+    board = Blackboard(store)
+    board.record(
+        tenant_id=TENANT,
+        engagement_id=ENGAGEMENT,
+        fact_type="service",
+        key=f"{TARGET}:80:tcp",
+        value={"port": 80, "protocol": "tcp", "service": "http"},
+        source="nexus.recon.nmap",
+        created_by="verifier",
+        verified=True,
+        asserted_by="verifier",
+        verification_method="nmap_xml_parsed",
+        invocation_id="inv-nmap",
+    )
+    board.record(
+        tenant_id=TENANT,
+        engagement_id=ENGAGEMENT,
+        fact_type="barrier",
+        key=f"{TARGET}:80:sqli_union",
+        value={"reason": "sqlmap UNION no logra inyección estable"},
+        source="agent",
+        created_by="agent",
+    )
+    closed = load_coverage(store, TENANT, ENGAGEMENT)
+    assert closed.find(f"{TARGET}:80").status == STATUS_CLOSED
+
+    board.record(
+        tenant_id=TENANT,
+        engagement_id=ENGAGEMENT,
+        fact_type="vulnerability",
+        key=f"{TARGET}:80:sqli_error_based_confirmed",
+        value={"note": "extractvalue devuelve el nombre de la base"},
+        source="agent",
+        created_by="agent",
+    )
+    reopened = load_coverage(store, TENANT, ENGAGEMENT)
+    assert reopened.find(f"{TARGET}:80").status == STATUS_PROBED
+    entry_lines = [
+        line for line in render_coverage(reopened).splitlines() if line.startswith("- ")
+    ]
+    assert entry_lines == [f"- {TARGET}:80/tcp http → sondeado (2 hechos)"]
 
 
 def test_load_coverage_degrades_to_empty_without_a_board():

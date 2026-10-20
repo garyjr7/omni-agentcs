@@ -271,6 +271,30 @@ def _same_ref(fact: Mapping[str, Any], entry: SurfaceEntry) -> bool:
     return key in wanted
 
 
+def _recorded_at(fact: Mapping[str, Any]) -> str:
+    """When the fact was written (``""`` for a fact that carries no stamp).
+
+    ``Blackboard.record`` always stores ``recorded_at`` as an ISO-8601 UTC
+    string, so a plain lexicographic comparison orders two facts correctly.
+    """
+    return str(fact.get("recorded_at") or "").strip()
+
+
+def _newest(facts: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The most recent of ``facts``, or ``None`` when recency is unknowable.
+
+    Without a stamp on every candidate there is no way to say which verdict
+    came last, so the caller falls back to the historical rule (the barrier
+    wins) instead of guessing.
+    """
+    if not facts:
+        return None
+    stamps = [_recorded_at(fact) for fact in facts]
+    if not all(stamps):
+        return None
+    return max(zip(stamps, facts), key=lambda pair: pair[0])[1]
+
+
 def _barrier_reason(fact: Mapping[str, Any]) -> str:
     """Human-readable reason of a barrier fact (always something usable)."""
     raw_value = fact.get("value")
@@ -286,9 +310,12 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
     """Build the ledger of one engagement from its blackboard facts.
 
     Only ``service`` facts *create* entries (recon is what discovers a port);
-    every other fact can only give an existing entry a status. A barrier
-    outranks ownership and probing: the agent's decision to stop attacking a
-    route is deliberate and must survive a later scan that rediscovers the port.
+    every other fact can only give an existing entry a status. Ownership
+    outranks everything: once the service is reached it is not "closed". A
+    barrier closes an unowned service and survives a later scan that
+    rediscovers the port -and an older barrier wins over nothing-, but a
+    *newer* vulnerability reopens it: the ledger's newest verdict is the one
+    that counts, which is exactly what ``pivot_hint`` tells the model.
     """
     records = [fact for fact in (facts or ()) if isinstance(fact, Mapping)]
     entries: list[SurfaceEntry] = []
@@ -313,26 +340,53 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
 
     resolved: list[SurfaceEntry] = []
     for entry in entries:
-        status = STATUS_PENDING
-        verdict = ""
         evidence = 0
+        owned = False
+        barriers: list[Mapping[str, Any]] = []
+        vectors: list[Mapping[str, Any]] = []
         for fact, blob in related:
             fact_type = str(fact.get("fact_type") or "")
-            if fact_type == "barrier" and (_same_ref(fact, entry) or _mentions(blob, entry)):
-                # An explicit dead end wins over everything else.
-                status = STATUS_CLOSED
-                verdict = _barrier_reason(fact)
-                evidence += 1
+            if fact_type == "barrier":
+                if not (_same_ref(fact, entry) or _mentions(blob, entry)):
+                    continue
+                barriers.append(fact)
+            elif not _mentions(blob, entry):
                 continue
-            if not _mentions(blob, entry):
-                continue
+            elif fact_type in OWNERSHIP_TYPES and fact.get("verified") is True:
+                owned = True
+            elif fact_type == "vulnerability":
+                vectors.append(fact)
             evidence += 1
-            if status == STATUS_CLOSED:
-                continue
-            if fact_type in OWNERSHIP_TYPES and fact.get("verified") is True:
-                status = STATUS_OWNED
-            elif status == STATUS_PENDING:
+
+        status = STATUS_PENDING
+        verdict = ""
+        if owned:
+            # Access, a validated credential, a session, a privilege or loot
+            # proves the service was reached: a later barrier cannot hide it.
+            status = STATUS_OWNED
+        elif barriers:
+            # The *newest* verdict wins. A barrier is the agent's decision to
+            # stop on this route, but it is not infallible: a vulnerability
+            # found afterwards reopens the branch. Measured in
+            # ``run_3d90f7f388144557ae97466b0a19ce55`` (2026-10-20), where the
+            # agent proved CVE-2017-8917 error-based on :80 while the ledger
+            # kept ordering it to abandon the only working vector because
+            # ``pivot_hint`` promises "si aparece un vector nuevo, regístralo
+            # como hecho antes de retomarlo" and nothing honoured it.
+            chosen = _newest(barriers)
+            latest_vector = _newest(vectors)
+            reopened = (
+                chosen is not None
+                and latest_vector is not None
+                and _recorded_at(latest_vector) > _recorded_at(chosen)
+            )
+            if reopened:
                 status = STATUS_PROBED
+            else:
+                status = STATUS_CLOSED
+                verdict = _barrier_reason(chosen if chosen is not None else barriers[0])
+        elif evidence:
+            status = STATUS_PROBED
         resolved.append(
             SurfaceEntry(
                 host=entry.host,

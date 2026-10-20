@@ -303,7 +303,13 @@ class TurnTelemetryRecorder:
         self.run_id = run_id
         self.emit = emit
         self._draft: _TurnDraft | None = None
+        #: Counts at the end of the last published turn. It is the delta's only
+        #: baseline: ``begin_turn`` must not overwrite it with the plan snapshot,
+        #: because the plan and the post-tool read do not count the same base
+        #: (the plan counts proven facts; the board read also counts the agent's
+        #: leads), and mixing them reported a fact added on every single turn.
         self._previous_counts: Mapping[str, int] = {}
+        self._started = False
         self._previous_action: tuple[str | None, str] | None = None
         self.turns: list[TurnTelemetry] = []
         self.dropped_events = 0
@@ -327,7 +333,12 @@ class TurnTelemetryRecorder:
         """Open a new turn, publishing the previous one if it was left open."""
         if self._draft is not None:  # defensive: never lose an open turn
             self.finish(outcome="abandoned")
-        self._previous_counts = dict(counts or {})
+        if not self._started:
+            # The very first turn has no published predecessor: the snapshot it
+            # was rendered with is the baseline. Later turns inherit the counts
+            # ``finish`` recorded, so a delta always compares like with like.
+            self._previous_counts = dict(counts or {})
+            self._started = True
         self._draft = _TurnDraft(
             iteration=iteration,
             phase=phase,
