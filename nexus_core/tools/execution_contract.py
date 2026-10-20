@@ -42,7 +42,13 @@ def validate_target(value: object) -> str:
     if target.startswith("-") or any(ord(char) < 32 or ord(char) == 127 for char in value):
         raise ValueError("target contains an option or control character")
     if any(char.isspace() for char in target):
-        raise ValueError("target must be a single token")
+        # The target is an argv token: a raw space is rejected, not split. Name the
+        # fix so a URL with a payload does not cost an extra round trip
+        # (run_1052d63f9bba4838902b3aa21bd27d21, 2026-10-19).
+        raise ValueError(
+            "target must be a single token (URL-encode spaces as %20; "
+            "use nexus.web.sqlmap/--data for a payload with spaces)"
+        )
     return target
 
 

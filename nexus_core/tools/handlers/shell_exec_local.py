@@ -237,7 +237,11 @@ def shell_exec_definition(tenant_id: str = "system") -> ToolDefinition:
         tool_id="nexus.shell.exec",
         tenant_id=tenant_id,
         name="Universal shell",
-        description="Ejecuta comandos shell en el sandbox y archiva la salida.",
+        description=(
+            "Ejecuta comandos shell en el sandbox y archiva la salida. El comando "
+            "corre en el workspace del engagement: escribe archivos con rutas "
+            "relativas (p. ej. workspace o ./loot.txt), no con rutas absolutas del host."
+        ),
         input_schema=ShellExecRequest.model_json_schema(),
         risk=RiskLevel.HIGH,
         effect="execution",
@@ -1000,12 +1004,18 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             "stdout_lines": result.stdout.count("\n") + (1 if result.stdout else 0),
             "stderr_lines": result.stderr.count("\n") + (1 if result.stderr else 0),
             "cwd": cwd_relative,
+            # Absolute sandbox root: the model can never guess it, and a guessed
+            # absolute path (``/home/<user>/omni-agentcs/workspace/pass.txt`` in
+            # run_1052d63f9bba4838902b3aa21bd27d21) made a write fail with a
+            # cryptic exit-code post-condition error instead of "write here".
+            "workspace": str(root),
         },
         verified=verified,
         outcome="timeout" if result.timed_out else "",
         verification_method="shell_exit_code",
         evidence={
             "cwd": cwd_relative,
+            "workspace": str(root),
             "exit_code": result.exit_code,
             "duration_ms": duration_ms,
             "timed_out": result.timed_out,

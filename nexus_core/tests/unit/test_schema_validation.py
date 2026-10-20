@@ -207,6 +207,26 @@ def test_every_catalog_schema_is_a_valid_draft_2020_12_contract(catalog) -> None
         check_schema(definition.input_schema)
 
 
+def test_an_unknown_property_lists_what_the_contract_accepts() -> None:
+    """A rejection has to be actionable, not just correct.
+
+    Measured in run_1052d63f9bba4838902b3aa21bd27d21 (2026-10-19): the model sent
+    ``options`` to the sqlmap handler, read "Additional properties are not
+    allowed ('options' was unexpected)", and had no way to know the accepted
+    keys; its next attempt ran for 500 s without the intended flag.
+    """
+    schema = {
+        "type": "object",
+        "properties": {"url": {"type": "string"}, "level": {"type": "integer"}},
+        "additionalProperties": False,
+    }
+    with pytest.raises(SchemaValidationError) as excinfo:
+        validate({"url": "http://x/?id=1", "options": {}}, schema)
+    message = str(excinfo.value)
+    assert "'options' was unexpected" in message
+    assert "allowed: level, url" in message
+
+
 def test_malformed_schema_is_rejected_at_registration() -> None:
     with pytest.raises(SchemaValidationError):
         ToolDefinition(

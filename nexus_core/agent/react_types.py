@@ -51,6 +51,13 @@ STUCK_PROMPT_LINE = (
 #: ``web.upload`` never uploaded the webshell and the run died at
 #: ``stuck_detected``; a recipe the model can load is the cheapest way out.
 SKILL_NUDGE_TURNS = 3
+#: Seconds a tool call has to take before an identical, fact-free repeat of it is
+#: intercepted. Nothing fast is worth a dedicated guard -the gateway's dedup and
+#: the ``repeated_action`` correction already cover failures-; the target is the
+#: measured 500 s sqlmap probe that the model relaunched byte-identically in
+#: run_1052d63f9bba4838902b3aa21bd27d21 (2026-10-19), which cost 9 of the run's
+#: 25 minutes and returned the same empty result.
+BARREN_REPEAT_MIN_SECONDS = 30
 #: Emitted once when the repeated-tool streak reaches :data:`SKILL_NUDGE_TURNS`.
 SKILL_NUDGE_EVENT_TYPE = "react.skill_nudge"
 #: Appended to the next prompt when the repeated-tool streak is reached. The

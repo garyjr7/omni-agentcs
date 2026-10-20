@@ -220,6 +220,27 @@ def repeated_action_correction(tool_id: Any) -> str:
     )
 
 
+def barren_repeat_correction(tool_id: Any, elapsed_seconds: int) -> str:
+    """Correction for a slow, identical repeat that added no fact.
+
+    Distinct from :func:`repeated_action_correction`: the previous call did not
+    fail, so there is no journal/approval problem to avoid. The problem is that
+    the loop is paying for the same answer twice. Measured on the Joomla room
+    (run_1052d63f9bba4838902b3aa21bd27d21, 2026-10-19): a 500 s sqlmap probe ran
+    a second time with the same URL while the ledger had other open branches;
+    the run then exhausted its budget with zero findings.
+    """
+    return (
+        f"Repetiste la invocación de '{tool_id}' con los mismos argumentos que el "
+        f"turno anterior: tardó ~{elapsed_seconds}s y no aportó ningún hecho nuevo "
+        "al tablero. No la relances igual. Cambia los argumentos (perfil más "
+        "acotado, otra ruta, otra wordlist, otro parámetro) o pivota a otra rama "
+        "abierta del ledger; si la vía está agotada, regístrala con "
+        "nexus.knowledge.record_fact (fact_type=\"barrier\") y sigue con la "
+        "siguiente."
+    )
+
+
 def _invocation_signature(tool_id: Any, arguments: Any) -> str:
     """Canonical signature of one tool call (tool id + redacted arguments).
 

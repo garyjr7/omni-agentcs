@@ -105,4 +105,14 @@ def validate(instance: Any, schema: Dict[str, Any], path: str = "$") -> None:
     error = next(validator.iter_errors(instance), None)
     if error is None:
         return
-    raise SchemaValidationError(f"{_location(path, error)}: {error.message}") from None
+    message = error.message
+    if error.validator == "additionalProperties" and isinstance(error.schema, dict):
+        # The raw message says what was rejected but not what the contract does
+        # accept, so the model has to guess and burns a turn (run
+        # 1052d63f9bba4838902b3aa21bd27d21: an ``options`` key met sqlmap's
+        # schema, the rejection was opaque, and the next attempt spent 500 s).
+        properties = error.schema.get("properties")
+        allowed = sorted(str(key) for key in properties) if isinstance(properties, dict) else []
+        if allowed:
+            message += f" (allowed: {', '.join(allowed)})"
+    raise SchemaValidationError(f"{_location(path, error)}: {message}") from None

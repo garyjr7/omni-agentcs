@@ -8,7 +8,10 @@ decides when to call it and with which inputs.
 
 Safety rails:
 
-* the wordlist must live inside the workspace (path traversal is rejected);
+* the wordlist must live inside the workspace or inside a standard read-only
+  wordlist root (``/usr/share/wordlists``, ``/usr/share/seclists``,
+  ``/opt/seclists``; extend with ``NEXUS_WORDLIST_ROOTS``). Anything else is
+  rejected as path traversal;
 * attempts are capped by truncating the list to ``max_attempts`` lines;
 * hydra runs ``-f`` (stop at the first hit) and ``-I`` (ignore restore files),
   with a fixed low task count to be gentle on services;
@@ -38,6 +41,15 @@ CRED_SERVICES = ("ssh", "ftp", "telnet", "tcp")
 CRED_DEFAULT_PORTS = {"ssh": 22, "ftp": 21, "telnet": 23}
 CRED_DEFAULT_TIMEOUT_SECONDS = 300
 CRED_MAX_TIMEOUT_SECONDS = 900
+
+#: Read-only roots a wordlist may also live in. The rail exists to stop path
+#: traversal into arbitrary files, not to force every engagement to copy
+#: rockyou into its workspace: measured in run_1052d63f9bba4838902b3aa21bd27d21
+#: (2026-10-19), where ``/usr/share/wordlists/rockyou.txt`` was rejected twice
+#: and the credential branch -the only one left once the SQLi was closed- died
+#: there. ``NEXUS_WORDLIST_ROOTS`` (``os.pathsep``-separated) extends the list.
+WORDLIST_ROOTS_ENV = "NEXUS_WORDLIST_ROOTS"
+DEFAULT_WORDLIST_ROOTS = ("/usr/share/wordlists", "/usr/share/seclists", "/opt/seclists")
 CRED_DEFAULT_MAX_ATTEMPTS = 200
 CRED_MAX_ATTEMPTS = 5000
 #: Concurrent hydra tasks. Kept low to avoid tripping service rate limits.
@@ -61,7 +73,9 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
         tenant_id=tenant_id,
         description=(
             "Prueba un usuario contra una wordlist en un servicio (ssh/ftp) y "
-            "devuelve la credencial válida. Wordlist confinada al workspace."
+            "devuelve la credencial válida. La wordlist debe estar en el "
+            "workspace del engagement o en una ruta estándar "
+            "(/usr/share/wordlists, /usr/share/seclists)."
         ),
         input_schema={
             "type": "object",
@@ -104,15 +118,46 @@ def _validate_text(value: Any, field: str, *, max_length: int) -> str:
     return text
 
 
-def _resolve_in_workspace(workspace_root: str, relative: str) -> str:
-    """Resolve ``relative`` under ``workspace_root`` or raise ``ValueError``."""
-    root = os.path.realpath(workspace_root)
-    candidate = os.path.realpath(os.path.join(root, relative))
-    if candidate != root and not candidate.startswith(root + os.sep):
-        raise ValueError("password_file escapes the workspace")
-    if not os.path.isfile(candidate):
-        raise ValueError("password_file does not exist in the workspace")
-    return candidate
+def _wordlist_roots(workspace_root: str) -> list[str]:
+    """Roots a wordlist may be read from: the workspace plus the system ones."""
+    roots = [os.path.realpath(workspace_root)]
+    configured = [
+        item.strip()
+        for item in os.getenv(WORDLIST_ROOTS_ENV, "").split(os.pathsep)
+        if item.strip()
+    ]
+    for root in configured or DEFAULT_WORDLIST_ROOTS:
+        resolved = os.path.realpath(root)
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _resolve_wordlist(workspace_root: str, source: str) -> str:
+    """Resolve ``source`` under an allowed wordlist root or raise ``ValueError``.
+
+    An absolute path is accepted only when it resolves inside an allowed root; a
+    relative one is looked up in the workspace first and then in the system
+    roots, so ``rockyou.txt`` finds ``/usr/share/wordlists/rockyou.txt`` without
+    the model having to guess where the operator installed it.
+    """
+    text = str(source).strip()
+    roots = _wordlist_roots(workspace_root)
+    candidates = [
+        os.path.realpath(text if os.path.isabs(text) else os.path.join(roots[0], text))
+    ]
+    if not os.path.isabs(text):
+        candidates.extend(os.path.realpath(os.path.join(root, text)) for root in roots[1:])
+    for candidate in candidates:
+        if not any(candidate == root or candidate.startswith(root + os.sep) for root in roots):
+            continue
+        if os.path.isfile(candidate):
+            return candidate
+    raise ValueError(
+        "password_file must be inside the engagement workspace or a standard "
+        f"wordlist root ({', '.join(DEFAULT_WORDLIST_ROOTS)}); extend with "
+        f"{WORDLIST_ROOTS_ENV}"
+    )
 
 
 def _truncate_wordlist(source: str, dest: str, max_attempts: int) -> int:
@@ -214,7 +259,7 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     )
 
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
-    source_path = _resolve_in_workspace(workspace_root, password_file)
+    source_path = _resolve_wordlist(workspace_root, password_file)
     run_dir = tempfile.mkdtemp(prefix=f"cred_{safe_run_id(context)}_", dir=workspace_root)
     wordlist_path = os.path.join(run_dir, "wordlist.txt")
     outfile_path = os.path.join(run_dir, "hydra.txt")

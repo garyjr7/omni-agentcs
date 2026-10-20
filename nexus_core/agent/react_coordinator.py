@@ -62,6 +62,7 @@ from .react_types import (
     BUDGET_SUBJECT_ID,
     SKILL_NUDGE_EVENT_TYPE,
     SKILL_NUDGE_TURNS,
+    BARREN_REPEAT_MIN_SECONDS,
     SMART_BUDGET_EVENT_TYPE,
     WEBSHELL_STALL_EVENT_TYPE,
     COVERAGE_PIVOT_EVENT_TYPE,
@@ -92,6 +93,7 @@ from .react_support import (
     timeout_guidance,
     command_failed_guidance,
     repeated_action_correction,
+    barren_repeat_correction,
     _invocation_signature,
     _budget_tokens,
     _budget_used,
@@ -475,6 +477,10 @@ class ReActCoordinator:
         self.stuck_threshold = stuck_threshold()
         self.same_tool_no_progress = 0
         self.last_turn_tool = None
+        #: Wall time of the previous *executed* tool call, used to tell a slow,
+        #: fact-free repeat from a fast idempotent one (see
+        #: ``_repeated_barren_action``).
+        self.last_tool_elapsed_ms = 0
         self.plan_reason = None
         self.enumeration_escalated = False
         self.session_handed_over = False
@@ -1999,8 +2005,12 @@ class ReActCoordinator:
         )
         return Transition.STOP if aborted else Transition.NEXT_TURN
 
-    def _correct_repeated_action(self, tool_id: str) -> Transition:
-        """Answer an identical repeat of a failed action with a correction (V1-26).
+    def _correct_repeated_action(self, tool_id: str, *, barren: bool = False) -> Transition:
+        """Answer an identical repeat of a failed or fact-free action with a correction.
+
+        ``barren=True`` is the slow-but-successful variant: the previous call did
+        not fail, it simply returned nothing new after burning seconds of the
+        run's wall clock (see ``_repeated_barren_action``).
 
         The turn is a normal turn of the loop -it consumes the iteration and the
         tokens of the active subagent- and it never reaches the gateway. The policy
@@ -2014,7 +2024,11 @@ class ReActCoordinator:
         if isinstance(previous_result, dict) and previous_result.get("outcome") == "scope_denied":
             return self._repeat_scope_denial(tool_id, previous_result)
         self.telemetry.flag(FrictionFlag.REPEATED_ACTION)
-        correction = repeated_action_correction(tool_id)
+        correction = (
+            barren_repeat_correction(tool_id, max(1, self.last_tool_elapsed_ms // 1000))
+            if barren
+            else repeated_action_correction(tool_id)
+        )
         self.observation = {
             "success": False,
             "outcome": "repeated_action",
@@ -2049,14 +2063,53 @@ class ReActCoordinator:
             action=self.action.action,
             decision="deny",
             tool_id=tool_id,
-            reason="repeated_failed_action",
+            reason="repeated_barren_action" if barren else "repeated_failed_action",
         )
         return Transition.NEXT_TURN
+
+    def _repeated_barren_action(self) -> str | None:
+        """Tool id when this turn repeats, adjacently, a slow call that learned nothing.
+
+        The V1-26 guard above only intercepts a repeat of a *failed* call; the
+        gateway's dedup (V1-14) lets a repeat of a successful one through. Neither
+        helps the measured failure of 2026-10-19
+        (``run_1052d63f9bba4838902b3aa21bd27d21``): the agent ran the same sqlmap
+        probe twice, 500 s each, with ``blackboard_delta = 0`` both times, while
+        the coverage ledger still had two open branches, and burned its budget
+        without a finding.
+
+        The trigger is deliberately narrow: same ``tool_id``, same canonical
+        arguments, the *immediately preceding* turn, that call succeeded, the run
+        has not seen a new verified fact since, and it took at least
+        ``BARREN_REPEAT_MIN_SECONDS``. Fast idempotent repeats keep their existing
+        governance (dedup), and a first retry after a fact-producing turn is
+        untouched.
+        """
+        previous = self.actions[-1] if self.actions else None
+        if not previous or not isinstance(self.action, ToolCall):
+            return None
+        if self.consecutive_no_progress <= 0:
+            return None
+        if self.last_tool_elapsed_ms < BARREN_REPEAT_MIN_SECONDS * 1000:
+            return None
+        signature = previous.get("invocation_signature")
+        if not signature:
+            return None
+        result = previous.get("tool_result")
+        if not isinstance(result, dict) or not result.get("success"):
+            return None
+        if signature != _invocation_signature(self.action.tool_id, self.action.arguments):
+            return None
+        return str(self.action.tool_id)
 
     async def _execute_tool(self) -> Transition:
         repeated_tool = self._repeated_failed_action()
         if repeated_tool is not None:
             return self._correct_repeated_action(repeated_tool)
+        barren_tool = self._repeated_barren_action()
+        if barren_tool is not None:
+            return self._correct_repeated_action(barren_tool, barren=True)
+        self.last_tool_elapsed_ms = 0
         tool_started = time.perf_counter()
         scope_aborted = False
         try:
@@ -2396,6 +2449,7 @@ class ReActCoordinator:
             return Transition.STOP
         if self.consecutive_failures >= MAX_CONSECUTIVE_TOOL_FAILURES:
             self.consecutive_failures = 0
+        self.last_tool_elapsed_ms = _elapsed_ms(tool_started)
         return Transition.STOP if scope_aborted else Transition.READY
 
     def _note_tool_failure(self, tool_id: str) -> int:
