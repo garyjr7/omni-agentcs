@@ -12,9 +12,16 @@ Safety rails:
   wordlist root (``/usr/share/wordlists``, ``/usr/share/seclists``,
   ``/opt/seclists``; extend with ``NEXUS_WORDLIST_ROOTS``). Anything else is
   rejected as path traversal;
-* attempts are capped by truncating the list to ``max_attempts`` lines;
+* ``http-post-form``/``http-get-form`` are first-class: hydra takes
+  ``<form_url>:<form_params>:F=<failure_string>``, so a login page is testable
+  without downloading hydra's own example files;
+* attempts are capped by truncating the list to ``max_attempts`` lines *and* by
+  killing hydra at :data:`CRED_BRUTE_DEFAULT_SECONDS` (both caps, whichever
+  comes first: a sweep that found nothing is a dead end, not a pending verdict);
 * hydra runs ``-f`` (stop at the first hit) and ``-I`` (ignore restore files),
-  with a fixed low task count to be gentle on services;
+  with a fixed low task count to be gentle on services; when either cap ends the
+  sweep without a hit the handler records the ``barrier`` fact itself, so the
+  ledger closes the branch instead of letting the next turn repeat the sweep;
 * ``MEDIUM`` risk, scope-gated on ``target`` and executed through the sandbox.
 * A validated password is **never returned**: it goes into the secret vault and
   the result carries ``secret_ref`` (V1-29). hydra prints the plaintext on stdout,
@@ -37,10 +44,28 @@ from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id
 
 CRED_ALLOWED_PROGRAMS = (*RECON_ALLOWED_PROGRAMS, "hydra")
 
-CRED_SERVICES = ("ssh", "ftp", "telnet", "tcp")
-CRED_DEFAULT_PORTS = {"ssh": 22, "ftp": 21, "telnet": 23}
+#: Services hydra drives directly and the two web-form modules, which are the
+#: measured hole: Brute It (2026-10-20) is an HTTP login, so the only brute-force
+#: the run could do was SSH -three rockyou sweeps that were never the vector-.
+CRED_SERVICES = ("ssh", "ftp", "telnet", "tcp", "http-post-form", "http-get-form")
+#: hydra module names of the form services (the argv token, not our label).
+CRED_FORM_SERVICES = ("http-post-form", "http-get-form")
+CRED_DEFAULT_PORTS = {"ssh": 22, "ftp": 21, "telnet": 23,
+                      "http-post-form": 80, "http-get-form": 80}
+#: Turns an HTTP form login into hydra when the operator did not ask for SSL.
+CRED_SSL_PORTS = (443, 8443)
 CRED_DEFAULT_TIMEOUT_SECONDS = 300
 CRED_MAX_TIMEOUT_SECONDS = 900
+#: A brute force that has found nothing after this many attempts, or after this
+#: many seconds, is a dead end, not a pending verdict. Measured in
+#: ``/tmp/bruteit-run-v2.ndjson`` (2026-10-20): two rockyou sweeps of 200
+#: attempts each cost 144 s and 136 s (≈0.72 s/attempt on SSH), i.e. a 500-line
+#: slice would have held the turn for six minutes while the run's only real
+#: vector -the web login- was never tried. Both caps travel in the argv: the
+#: wordlist is cut at the attempt cap and hydra is killed at the time cap.
+CRED_BRUTE_MAX_ATTEMPTS = 500
+CRED_BRUTE_DEFAULT_MAX_ATTEMPTS = 500
+CRED_BRUTE_DEFAULT_SECONDS = 60
 
 #: Read-only roots a wordlist may also live in. The rail exists to stop path
 #: traversal into arbitrary files, not to force every engagement to copy
@@ -50,8 +75,8 @@ CRED_MAX_TIMEOUT_SECONDS = 900
 #: there. ``NEXUS_WORDLIST_ROOTS`` (``os.pathsep``-separated) extends the list.
 WORDLIST_ROOTS_ENV = "NEXUS_WORDLIST_ROOTS"
 DEFAULT_WORDLIST_ROOTS = ("/usr/share/wordlists", "/usr/share/seclists", "/opt/seclists")
-CRED_DEFAULT_MAX_ATTEMPTS = 200
-CRED_MAX_ATTEMPTS = 5000
+CRED_DEFAULT_MAX_ATTEMPTS = CRED_BRUTE_DEFAULT_MAX_ATTEMPTS
+CRED_MAX_ATTEMPTS = CRED_BRUTE_MAX_ATTEMPTS
 #: Concurrent hydra tasks. Kept low to avoid tripping service rate limits.
 CRED_TASKS = 4
 
@@ -72,10 +97,11 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
         name="Credential testing",
         tenant_id=tenant_id,
         description=(
-            "Prueba un usuario contra una wordlist en un servicio (ssh/ftp) y "
-            "devuelve la credencial válida. La wordlist debe estar en el "
-            "workspace del engagement o en una ruta estándar "
-            "(/usr/share/wordlists, /usr/share/seclists)."
+            "Prueba un usuario contra una wordlist en un servicio (ssh/ftp) o "
+            "contra un formulario web (http-post-form/http-get-form) y devuelve "
+            "la credencial válida. La wordlist debe estar en el workspace del "
+            "engagement o en una ruta estándar (/usr/share/wordlists, "
+            "/usr/share/seclists)."
         ),
         input_schema={
             "type": "object",
@@ -86,6 +112,12 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                 "password_prompt": {"type": "string", "minLength": 1, "maxLength": 128},
                 "login_prompt": {"type": "string", "minLength": 1, "maxLength": 128},
                 "success_marker": {"type": "string", "minLength": 1, "maxLength": 128},
+                # The three fields of hydra's form modules: the path of the
+                # handler, the body template with ``^USER^``/``^PASS^`` and the
+                # text that marks a failed login.
+                "form_url": {"type": "string", "minLength": 1, "maxLength": 512},
+                "form_params": {"type": "string", "minLength": 1, "maxLength": 512},
+                "failure_string": {"type": "string", "minLength": 1, "maxLength": 200},
                 "password_file": {"type": "string", "minLength": 1, "maxLength": 1024},
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                 "max_attempts": {
@@ -103,7 +135,18 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                 {
                     "if": {"properties": {"service": {"enum": ["ssh", "ftp"]}}},
                     "then": {"required": ["username"]},
-                }
+                },
+                {
+                    "if": {"properties": {"service": {"enum": list(CRED_FORM_SERVICES)}}},
+                    "then": {
+                        "required": [
+                            "username",
+                            "form_url",
+                            "form_params",
+                            "failure_string",
+                        ]
+                    },
+                },
             ],
             "required": ["target", "service", "password_file"],
             "additionalProperties": False,
@@ -248,6 +291,76 @@ def parse_hydra_credentials(text: str) -> list[dict[str, str]]:
     return found
 
 
+def _form_spec(form_url: Any, form_params: Any, failure_string: Any) -> str:
+    """Build hydra's ``<path>:<params>:F=<failure>`` spec from validated parts.
+
+    hydra splits that one argv token on ``:``, so a value carrying one would
+    silently become a fourth condition (``C=``, ``H=``, ``S=``): the model could
+    smuggle a header or a command through the login form. Every part is therefore
+    rejected if it contains ``:``, and the placeholders are required because a
+    body without ``^USER^``/``^PASS^`` tests the same request N times and calls
+    the resulting silence a negative verdict.
+    """
+    path = _validate_text(form_url, "form_url", max_length=512)
+    if not path.startswith("/"):
+        raise ValueError("form_url must be the login path, starting with '/'")
+    if ":" in path or any(char.isspace() for char in path):
+        raise ValueError("form_url must not contain ':' or whitespace")
+    params = _validate_text(form_params, "form_params", max_length=512)
+    if "^USER^" not in params or "^PASS^" not in params:
+        raise ValueError(
+            "form_params must carry hydra's placeholders, e.g. "
+            "'user=^USER^&pass=^PASS^&submit=Login'"
+        )
+    if ":" in params or any(char.isspace() for char in params):
+        raise ValueError("form_params must not contain ':' or whitespace")
+    failure = _validate_text(failure_string, "failure_string", max_length=200)
+    if ":" in failure:
+        raise ValueError(
+            "failure_string must not contain ':' (it separates hydra's conditions)"
+        )
+    return f"{path}:{params}:F={failure}"
+
+
+def _record_brute_barrier(
+    context: RunContext,
+    *,
+    target: str,
+    port: int,
+    reason: str,
+    detail: dict[str, Any] | None = None,
+) -> bool:
+    """Write the ``barrier`` that closes a brute-forced branch (never raises).
+
+    The loop closes stalled branches on its own, but only after the stuck
+    threshold; a sweep that already spent its whole attempt/time cap on this
+    service has a *deterministic* verdict, so recording it here keeps the next
+    turn from repeating the sweep -the exact reflex that burned three turns and
+    four minutes in ``/tmp/bruteit-run-v2.ndjson``. The fact is unverified and
+    its ``source`` names the tool, so it never reads as proof of anything.
+    """
+    store = getattr(context, "store", None)
+    engagement_id = str(getattr(context, "engagement_id", "") or "")
+    if store is None or not engagement_id:
+        return False
+    from nexus_core.kernel.blackboard import Blackboard
+
+    try:
+        Blackboard(store).record(
+            tenant_id=getattr(context, "tenant_id", "system"),
+            engagement_id=engagement_id,
+            fact_type="barrier",
+            key=f"{target}:{port}",
+            value={"reason": reason, **(detail or {})},
+            source="nexus.cred.bruteforce",
+            created_by="nexus.cred.bruteforce",
+            verified=False,
+        )
+    except Exception:  # noqa: BLE001 - memory must never break a tool
+        return False
+    return True
+
+
 async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     """Test a username/wordlist against a service through the sandbox."""
     from nexus_core.kernel.schema_validation import validate
@@ -257,11 +370,21 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     service = str(arguments.get("service") or "").strip().lower()
     if service not in CRED_SERVICES:
         raise ValueError(f"unsupported service: {service!r}")
-    username = (_validate_text(arguments.get("username"), "username", max_length=128)
-                if service in {"ssh", "ftp"} or arguments.get("username") else "")
+    username = (
+        _validate_text(arguments.get("username"), "username", max_length=128)
+        if service in {"ssh", "ftp", *CRED_FORM_SERVICES} or arguments.get("username")
+        else ""
+    )
     password_file = _validate_text(
         arguments.get("password_file"), "password_file", max_length=1024
     )
+    form_spec = ""
+    if service in CRED_FORM_SERVICES:
+        form_spec = _form_spec(
+            arguments.get("form_url"),
+            arguments.get("form_params"),
+            arguments.get("failure_string"),
+        )
 
     port = int(arguments.get("port") or CRED_DEFAULT_PORTS.get(service, 0))
     if not 1 <= port <= 65535:
@@ -270,9 +393,18 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         CRED_MAX_ATTEMPTS, max(1, int(arguments.get("max_attempts") or CRED_DEFAULT_MAX_ATTEMPTS))
     )
     requested_timeout = arguments.get("timeout_seconds")
+    # The time cap of a hydra sweep is the measured cost control: SSH answers in
+    # ~0.72 s per attempt, so the old 300 s default bought ~400 attempts per turn
+    # and three turns of it closed the credential branch of Brute It while the
+    # web login was the actual vector. The TCP script keeps its own budget.
+    default_timeout = (
+        CRED_DEFAULT_TIMEOUT_SECONDS
+        if service in {"tcp", "telnet"}
+        else CRED_BRUTE_DEFAULT_SECONDS
+    )
     timeout_seconds = min(
         CRED_MAX_TIMEOUT_SECONDS,
-        max(10, int(requested_timeout) if requested_timeout else CRED_DEFAULT_TIMEOUT_SECONDS),
+        max(10, int(requested_timeout) if requested_timeout else default_timeout),
     )
 
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
@@ -322,6 +454,10 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
             stderr=_scrub_plaintext(result.stderr or "", payload.get("valid_credentials") or []),
         )
 
+    # ``service://host`` is the *direct* module spelling (ssh/ftp/telnet); the
+    # two form modules take ``host module "spec"``. ``-S`` is hydra's SSL
+    # switch: without it a 443 login is tested in cleartext and every attempt
+    # "fails", which reads as a negative verdict instead of a bug.
     argv = [
         "hydra",
         "-l",
@@ -336,8 +472,13 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         "-I",
         "-o",
         outfile_path,
-        f"{service}://{target}",
     ]
+    if service in CRED_FORM_SERVICES and port in CRED_SSL_PORTS:
+        argv.append("-S")
+    if form_spec:
+        argv.extend([target, service, form_spec])
+    else:
+        argv.append(f"{service}://{target}")
     sandbox = sandbox_for_environment(workspace_root, allowed_programs=CRED_ALLOWED_PROGRAMS)
     result = await run_in_sandbox(
         sandbox,
@@ -366,6 +507,11 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         "noise_level": "medium",
         "timeout_seconds": timeout_seconds,
     }
+    if form_spec:
+        # The route, never the template: the form params carry the operator's
+        # passwords only as hydra placeholders, but the path is what the board
+        # needs to tie the attempt to the endpoint.
+        evidence["form_url"] = str(arguments.get("form_url") or "")
 
     # V1-29: the plaintext is stored, never forwarded. What the loop, the
     # blackboard and the prompt see is the handle.
@@ -374,10 +520,40 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     stdout = _scrub_plaintext(result.stdout or "", credentials)
     stderr = _scrub_plaintext(result.stderr or "", credentials)
 
-    if result.timed_out:
+    if result.timed_out and not stored:
+        # The cap *is* the verdict: a sweep that already held the turn for the
+        # whole budget without a hit is closed here, not retried by the next
+        # one. ``outcome="timeout"`` keeps the gateway reading it as a declared
+        # budget of this tool (determinate, retirable) instead of labelling the
+        # backend unavailable or failing the run closed.
+        reason = (
+            f"fuerza bruta {service} sobre {target}:{port} abortada a los "
+            f"{timeout_seconds}s sin credencial válida ({attempts} intentos "
+            "preparados); sin pista de contraseña débil"
+        )
+        evidence["barrier_recorded"] = _record_brute_barrier(
+            context,
+            target=target,
+            port=port,
+            reason=reason,
+            detail={
+                "service": service,
+                "timeout_seconds": timeout_seconds,
+                "attempts": attempts,
+            },
+        )
         return ToolResult(
-            output={"error": "credential testing timed out", "target": target, "service": service},
+            output={
+                "error": "credential testing timed out",
+                "aborted": "time_cap",
+                "target": target,
+                "service": service,
+                "port": port,
+                "attempts": attempts,
+                "timeout_seconds": timeout_seconds,
+            },
             verified=False,
+            outcome="timeout",
             verification_method="cred_bruteforce_timeout",
             evidence=evidence,
             exit_code=result.exit_code,
@@ -387,7 +563,25 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
             timed_out=True,
         )
 
-    verified = result.exit_code == 0
+    verified = bool(stored)
+    # A sweep that ran to the end and found nothing is an *observation* about the
+    # target (V0-22), not a tool defect: it completes with ``negative`` and the
+    # branch is closed with a barrier so the next turn pivots instead of repeating
+    # the same wordlist. An unclear exit (no credentials and a non-zero code) is
+    # still a failure and keeps failing closed.
+    negative = not stored and not result.timed_out and result.exit_code == 0
+    if negative:
+        reason = (
+            f"fuerza bruta {service} sobre {target}:{port} sin credencial válida "
+            f"tras {attempts} intentos ({timeout_seconds}s de presupuesto)"
+        )
+        evidence["barrier_recorded"] = _record_brute_barrier(
+            context,
+            target=target,
+            port=port,
+            reason=reason,
+            detail={"service": service, "attempts": attempts},
+        )
     return ToolResult(
         output={
             "target": target,
@@ -398,6 +592,7 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
             "valid_credentials": stored,
         },
         verified=verified,
+        outcome="" if verified else ("negative" if negative else ""),
         verification_method="cred_bruteforce_completed",
         evidence=evidence,
         exit_code=result.exit_code,

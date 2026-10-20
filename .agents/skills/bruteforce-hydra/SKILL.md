@@ -1,30 +1,28 @@
 ---
 name: bruteforce-hydra
-description: Crackea una credencial con hydra cuando la tool de credenciales rechaza una wordlist grande (rockyou.txt) o se queda sin presupuesto.
+description: Prueba credenciales con hydra (SSH, FTP y formularios web http-post-form/http-get-form) para las variantes que la tool de credenciales no cubre: varios usuarios, máscaras, cookies o CSRF.
 ---
 
 # Fuerza bruta con hydra
 
-Receta para cuando hay un servicio con login (SSH, FTP) y una wordlist grande.
-Medida en Simple CTF: `nexus.cred.bruteforce` falló con
-`wordlist exceeds 16 MB` al pasarle `rockyou.txt` (133 MB), y copiar el fichero
-al workspace falló igual porque el límite es del **handler**, no de la ruta. El
-run consumió sus iteraciones reintentando antes de poder lanzar hydra a mano.
+Receta para cuando hay un login (SSH, FTP o un formulario web) y una wordlist.
+La tool `nexus.cred.bruteforce` ya cubre `ssh`, `ftp`, `telnet`,
+`http-post-form` y `http-get-form`, descuenta `rockyou.txt` sin copiarla y deja
+la contraseña en la bóveda; esta skill es para lo que la tool **no** expone.
 
 ## 1. Cuándo usar esta receta
 
-Usa `nexus.shell.exec` con hydra directamente si se cumple cualquiera de estas:
+Usa `nexus.cred.bruteforce` primero. Pasa a `nexus.shell.exec` con hydra solo si:
 
-- `nexus.cred.bruteforce` devuelve `wordlist exceeds 16 MB` (rockyou.txt,
-  `darkc0de.lst`, cualquier lista de sistema);
-- la wordlist es grande pero < 16 MB y el handler solo prueba
-  `max_attempts` (200 por defecto, 5000 como máximo), así que se queda corto;
-- el handler se queda sin tiempo (900 s) a mitad de la lista;
-- necesitas variantes que el handler no expone: `-L` (varios usuarios), `-e nsr`
-  (usuario=contraseña, vacía, inversa), `-x` (máscara).
+- necesitas variantes que la tool no expone: `-L` (varios usuarios), `-e nsr`
+  (usuario=contraseña, vacía, inversa), `-x` (máscara), `-M` (lista de hosts);
+- el formulario necesita cookies de sesión, un token CSRF o `:H=` (cabeceras);
+- el barrido se cortó por el tope de la tool (500 intentos o 60 s) y tienes una
+  pista **concreta** de que la contraseña está más adelante en la lista.
 
-No lo uses para probar 3 credenciales sueltas: ahí `nexus.cred.bruteforce` es más
-barato y deja la contraseña en la bóveda (`secret_ref`) sin exponerla.
+No lo uses para probar 3 credenciales sueltas ni para repetir el barrido que la
+tool ya cerró con un `barrier`: ahí `nexus.cred.bruteforce` es más barato y no
+expone la contraseña en el prompt.
 
 ## 2. Prepara la entrada
 
@@ -43,7 +41,8 @@ printf '%s\n' mitch lin > users.txt
 ```
 
 No metas `rockyou.txt` en el workspace: 133 MB no aportan nada y el engagement
-se llena de basura.
+se llena de basura. `nexus.cred.bruteforce` la lee de `/usr/share/wordlists` y
+corta solo las líneas que va a probar.
 
 ## 3. Lanza hydra
 
@@ -76,6 +75,36 @@ Para FTP:
 
 ```bash
 hydra -l anonymous -P /usr/share/wordlists/rockyou.txt -s 21 -t 4 -f -I ftp://<target> | tee hydra.txt
+```
+
+Para un formulario web, la tool ya lo hace con su spec de hydra:
+
+```
+nexus.cred.bruteforce(
+    target="<ip>", service="http-post-form", port=80,
+    username="admin", password_file="/usr/share/wordlists/rockyou.txt",
+    form_url="/admin/index.php",
+    form_params="user=^USER^&pass=^PASS^&submit=Login",
+    failure_string="Invalid username or password",
+)
+```
+
+- `form_url` es la **ruta** que procesa el POST (mírala en el `action=` del
+  HTML), no la página del formulario si son distintas;
+- `form_params` son los `name=` reales de los campos, con `^USER^` y `^PASS^`
+  donde van la credencial;
+- `failure_string` es el texto que aparece **solo cuando falla** ("Incorrect",
+  "Invalid credentials", "Login failed"). Sin él hydra no puede distinguir un
+  login bueno de uno malo y reporta todo como fallo;
+- si es HTTPS, el puerto 443/8443 activa `-S` solo;
+- si el login exige una cookie o un token, no insistas con la tool: usa
+  `nexus.shell.exec` con `hydra ... http-post-form "<path>:<params>:F=<fallo>:H=Cookie\\: <valor>"`.
+
+A mano sería:
+
+```bash
+hydra -l admin -P /usr/share/wordlists/rockyou.txt -s 80 -t 4 -f -I \
+  <target> http-post-form "/admin/index.php:user=^USER^&pass=^PASS^&submit=Login:F=Invalid username or password"
 ```
 
 ## 4. Comprueba el acierto
@@ -112,8 +141,11 @@ Con acceso confirmado:
 
 ## 6. Errores comunes
 
-- **`wordlist exceeds 16 MB`**: es el límite de `nexus.cred.bruteforce`; no lo
-  arregles copiando el fichero al workspace. Cambia a `nexus.shell.exec`.
+- **El barrido se corta a los 500 intentos o a los 60 s**: es el tope de
+  `nexus.cred.bruteforce` (y es deliberado: Brute It gastó 144 s por barrido de
+  200 intentos contra SSH sin que fuera el vector). Solo continúa a mano si
+  tienes una pista de que la contraseña está más adelante; si no, acepta el
+  `barrier` y cambia de rama.
 - **Hydra acaba en segundos sin hit**: puerto equivocado (falta `-s`), servicio
   equivocado (`ssh://` contra un FTP) o el usuario no existe. Confirma el banner
   con `nmap -sV -p<port>` antes de repetir.

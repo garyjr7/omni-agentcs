@@ -65,8 +65,30 @@ nexus.web.request(url="http://<host>/.well-known/security.txt")
 
 - `robots.txt` con `Disallow:` es un índice de rutas que el dueño no quería
   publicar. Cada entrada `Disallow` es una ruta que hay que visitar.
-- `sitemap.xml` lista páginas que no aparecen en el menú.
+- `sitemap.xml` lista páginas que no aparecen en el menú (cada `<loc>`).
 - `security.txt` da contacto, política y a veces URL internas.
+
+**Regla de oro (no negociable): leer el índice no es seguirlo.** En cuanto
+obtengas un `robots.txt` o un `sitemap.xml`, extrae **TODAS** las rutas
+(`Disallow:`, `Allow:` y cada `<loc>`) y haz un `GET` a cada una **inmediatamente**,
+antes de cerrar la rama o cambiar de servicio:
+
+```
+nexus.web.request(url="http://<host>/<ruta-del-indice>")
+nexus.web.request(url="http://<host>/backup.zip", save_path="recon/backup.zip")
+nexus.workspace.read(path="recon/backup.zip")
+```
+
+- Si la ruta es un backup, un `.zip`, un `.tar.gz`, un `.env`, un `.txt` o una
+  clave: descárgala con `save_path` y **léela** con `nexus.workspace.read`
+  (`nexus.workspace.search` para buscar `password`, `key`, `BEGIN`).
+- Cada ruta visitada se registra con `nexus.knowledge.record_fact`
+  (`fact_type="endpoint"`), sobre todo las que devuelven un backup o una clave.
+- Un índice leído y no seguido es un fallo de metodología, no un callejón sin
+  salida: está medido (`/tmp/bruteit-run-v2.ndjson`, 2026-10-20) que el agente
+  pidió `robots.txt`, no visitó ninguna de sus rutas y cerró la rama con un
+  `barrier` en el turno siguiente. El bucle inyecta esta orden mientras queden
+  rutas del índice sin visitar (`react.robots_paths`).
 
 Prueba también las variantes que delatan un CMS o un framework: `/wp-login.php`,
 `/administrator/`, `/.env`, `/config.php.bak`, `/swagger.json`, `/api/`,
@@ -173,6 +195,8 @@ o `nexus.post.ssh_exec`; la wordlist es el último escalón, no el primero.
 
 - Llevas 3+ llamadas a la misma tool sin hechos nuevos → para y vuelve al paso 1.
 - Estás probando contraseñas y todavía no has pedido `/robots.txt`.
+- Has leído `robots.txt`/`sitemap.xml` y no has visitado las rutas que lista:
+  cierra esa deuda antes de documentar cualquier `barrier`.
 - Estás atacando un panel de login sin haber mirado su HTML (a veces el propio
   formulario dice qué usuario existe o qué motor usa).
 - Estás barriendo `rockyou.txt` contra un servicio que no has enumerado.

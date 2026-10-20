@@ -68,6 +68,7 @@ from .react_types import (
     SMART_BUDGET_EVENT_TYPE,
     WEBSHELL_STALL_EVENT_TYPE,
     COVERAGE_PIVOT_EVENT_TYPE,
+    ROBOTS_HINT_EVENT_TYPE,
     LOOP_BARRIER_EVENT_TYPE,
     STALL_BARRIER_MULTIPLIER,
     STALLED_BRANCH_WINDOW,
@@ -132,6 +133,7 @@ from .planner import (
     escalate_session,
     established_msf_session,
     objective_completion,
+    robots_paths_hint,
     session_handover,
     verified_credential,
     webshell_stall_hint,
@@ -255,6 +257,12 @@ class ReActCoordinator:
     #: dead end or stalling while another service is unexplored.
     coverage_hint: str
     coverage_hint_emitted: bool
+    #: Index-file correction for the prompt of this turn ("" when the rule does
+    #: not apply) and whether its ``react.robots_paths`` event was already
+    #: audited. It orders the GETs of the routes a ``robots.txt``/``sitemap.xml``
+    #: listed and this run never requested.
+    robots_hint: str
+    robots_hint_emitted: bool
     #: The board already proves the objective (verified top privilege + verified
     #: loot). Refreshed every turn from the facts; it adds the closure hint to the
     #: plan and exempts the active profile's token ceiling (V1-35, V1-38).
@@ -497,6 +505,8 @@ class ReActCoordinator:
         self.webshell_hint_emitted = False
         self.coverage_hint = ""
         self.coverage_hint_emitted = False
+        self.robots_hint = ""
+        self.robots_hint_emitted = False
         #: ``host:port`` refs the *loop* closed with a barrier fact this run (see
         #: ``_close_stalled_branch``). Two reasons to keep them: never write the
         #: same barrier twice, and never let the loop's own reflex read as
@@ -674,6 +684,9 @@ class ReActCoordinator:
         # The surface ledger: a service already documented as a dead end, or a
         # branch held while another port is unexplored, gets one order to move.
         self._refresh_coverage_hint()
+        # The index files: reading ``robots.txt``/``sitemap.xml`` is not
+        # following them; the routes it lists get one explicit order.
+        self._refresh_robots_hint()
         self.last_plan = self.plan
         return Transition.READY
 
@@ -891,6 +904,35 @@ class ReActCoordinator:
             focus=focus.ref if focus is not None else None,
         )
         self.coverage_hint_emitted = True
+
+    def _refresh_robots_hint(self) -> None:
+        """Order the GETs of an index file the run read but never followed.
+
+        The rule lives in the planner (``robots_paths_hint``, deterministic and
+        unit-tested over the persisted action history); the loop only injects
+        its text and audits it once. It never stops the run, never changes the
+        plan and never authorizes a tool.
+        """
+        self.robots_hint = robots_paths_hint(self.actions)
+        if not self.robots_hint or self.robots_hint_emitted:
+            return
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            ROBOTS_HINT_EVENT_TYPE,
+            {
+                "iteration": self.iteration,
+                "phase": str(getattr(self.plan, "current", "") or ""),
+                "last_tools": self._last_tools(),
+                "hint": self.robots_hint,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="robots_paths",
+            decision="degrade",
+        )
+        self.robots_hint_emitted = True
 
     def _stalled_branch(self, coverage: Any) -> Any | None:
         """The one service the recent actions were aimed at (``None`` if unclear).
@@ -1415,6 +1457,7 @@ class ReActCoordinator:
             budget_hint=self.budget_hint,
             webshell_hint=self.webshell_hint,
             coverage_hint=self.coverage_hint,
+            robots_hint=self.robots_hint,
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)

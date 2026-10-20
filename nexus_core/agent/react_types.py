@@ -98,6 +98,14 @@ WEBSHELL_STALL_EVENT_TYPE = "react.webshell_stall"
 #: service while the internal web target was still pending. The hint orders the
 #: next branch; it never changes the plan nor authorizes a tool.
 COVERAGE_PIVOT_EVENT_TYPE = "react.coverage_pivot"
+#: Emitted when the run read an index file (``robots.txt``/``sitemap.xml``) and
+#: moved on without requesting the routes it lists. Measured in
+#: ``/tmp/bruteit-run-v2.ndjson`` (Brute It, 2026-10-20): ``/robots.txt`` was
+#: fetched at iteration 22 and the branch was closed on the next turn, so the
+#: run asked the operator for a hint with the cheapest route still unvisited.
+#: The order is deterministic (``planner.robots_paths_hint``) and names the
+#: concrete URLs; it authorizes no tool.
+ROBOTS_HINT_EVENT_TYPE = "react.robots_paths"
 #: Emitted when the *loop*, not the model, closes a branch. The pivot above asks
 #: the model to record a ``barrier`` fact and move on; when it keeps hammering the
 #: same service instead, the ledger never moves and the run spends its remaining

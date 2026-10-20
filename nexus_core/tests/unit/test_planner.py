@@ -18,6 +18,7 @@ from nexus_core.agent.planner import (
     enumeration_budget_hint,
     normalize_counts,
     plan_from_summary,
+    robots_paths_hint,
     webshell_stall_hint,
 )
 
@@ -235,6 +236,60 @@ def test_the_webshell_stall_hint_survives_an_inspection_turn():
 
     assert webshell_stall_hint([build] * limit + [inspect], no_progress=limit) != ""
     assert webshell_stall_hint([build] * limit + [inspect, inspect], no_progress=limit) == ""
+
+
+def _http_action(url: str, body: str = "") -> dict:
+    """One persisted action the way the loop stores it (arguments + tool_result)."""
+    return {
+        "tool_id": "nexus.web.request",
+        "arguments": {"url": url},
+        "tool_result": {"output": {"body_preview": body}} if body else {},
+    }
+
+
+def test_the_robots_hint_orders_the_paths_the_index_lists():
+    """Measured in Brute It: ``/robots.txt`` read at 22, branch closed at 23."""
+    body = "User-agent: *\nDisallow: /secret/\nAllow: /pub/\n"
+    actions = [
+        _http_action("http://10.67.136.239/"),
+        _http_action("http://10.67.136.239/robots.txt", body),
+    ]
+
+    hint = robots_paths_hint(actions)
+
+    assert "robots.txt" in hint and "http://10.67.136.239/secret/" in hint
+    assert "http://10.67.136.239/pub/" in hint
+    assert "nexus.workspace.read" in hint and "nexus.knowledge.record_fact" in hint
+    # An index that is already followed has nothing to order.
+    visited = actions + [
+        _http_action("http://10.67.136.239/secret/"),
+        _http_action("http://10.67.136.239/pub/"),
+    ]
+    assert robots_paths_hint(visited) == ""
+    # ``/admin`` and ``/admin/`` are the same route.
+    assert robots_paths_hint(
+        actions + [_http_action("http://10.67.136.239/secret")]
+    ).count("/secret/") == 0
+
+
+def test_the_robots_hint_reads_a_sitemap_and_ignores_non_indexes():
+    sitemap = (
+        '<?xml version="1.0"?><urlset>'
+        "<url><loc>http://10.0.0.5/hidden/panel.php</loc></url>"
+        "<url><loc>http://10.0.0.5/</loc></url></urlset>"
+    )
+    actions = [_http_action("http://10.0.0.5/sitemap.xml", sitemap)]
+    hint = robots_paths_hint(actions)
+    assert "sitemap.xml" in hint
+    assert "http://10.0.0.5/hidden/panel.php" in hint
+
+    # A 404 page or any other route is not an index: no hint, no invented paths.
+    assert robots_paths_hint([_http_action("http://10.0.0.5/login.php", "<html>")]) == ""
+    # Wildcards are a fuzzing pattern, not routes the agent can request.
+    wildcard = _http_action("http://10.0.0.5/robots.txt", "Disallow: /*.php$\n")
+    assert robots_paths_hint([wildcard]) == ""
+    # No history at all is not a stall.
+    assert robots_paths_hint([]) == "" and robots_paths_hint(None) == ""
 
 
 def test_active_phase_matches_build_plan():

@@ -15,9 +15,10 @@ siendo **datos no confiables**, con su estado de firma y sus señales.
 | --- | --- |
 | `example` | Barrido de puertos y servicios (solo lectura). |
 | `web-upload-webshell` | Subir una webshell a un formulario, evadir el filtro de extensión y conseguir RCE (receta medida en RootMe). |
-| `bruteforce-hydra` | Lanzar hydra desde `nexus.shell.exec` cuando `nexus.cred.bruteforce` rechaza la wordlist (rockyou.txt, 133 MB) o se queda corto (receta medida en Simple CTF). |
+| `bruteforce-hydra` | Lanzar hydra desde `nexus.shell.exec` para las variantes que la tool de credenciales no cubre (varios usuarios, máscaras, cookies/CSRF) y probar formularios web `http-post-form` (medida en Simple CTF y Brute It). |
 | `privesc-sudo` | Escalar con sudo cuando `sudo -n -l` falla: contraseña por stdin (`sudo -S -l`), PTY con `ssh -tt`/tmux/pexpect y abuso de `sudo vim` (receta medida en Simple CTF). |
 | `methodology-senior` | Enumerar antes de atacar: mapa completo de puertos y de la web (directorios, CMS, searchsploit) y FTP anónimo solo como pista con credenciales cruzadas (medido en Simple CTF). |
+| `web-recon-master` | Checklist de enumeración web en cuanto aparece HTTP/HTTPS: código fuente de la raíz, robots.txt, gobuster con extensiones y `.git` expuesto antes de probar credenciales (medido en el run `run_4e8779f4…`, 29 turnos y 0 hallazgos). |
 | `shell-stabilization` | Estabilizar un RCE de webshell en una shell interactiva (listener + reverse shell) antes de compilar o escalar; regla medida en Vulnversity, donde compilar `pwnkit` por `curl` costó 35 turnos. |
 | `privesc-suid` | Escalar a root por SUID/GTFOBins (`systemctl`, `find`, `vim`, `python`); receta medida en Vulnversity, donde `/bin/systemctl` SUID era root en dos comandos y el run murió compilando PwnKit. |
 | `linux/forensics-basics` | Sacar pistas de imágenes y archivos con `strings`, `file`, `exiftool` y `binwalk`; usada tras el run blackbox, donde `apt-get install steghide` falló tres veces por permisos. |

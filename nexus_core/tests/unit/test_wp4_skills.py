@@ -466,7 +466,10 @@ def test_the_prompt_carries_the_skill_index_on_every_turn() -> None:
 
 def test_the_bruteforce_skill_ships_the_hydra_fallback() -> None:
     # Simple CTF: ``nexus.cred.bruteforce`` rejected rockyou.txt (133 MB) and the
-    # run died before falling back to hydra by hand. The recipe is the fallback.
+    # run died before falling back to hydra by hand. The recipe is the fallback,
+    # and Brute It (2026-10-20) added the two facts the skill was missing: the
+    # handler now streams that list but caps the sweep at 500 attempts / 60 s,
+    # and the room's login was an HTTP form the recipe did not cover.
     skill = load_skill("bruteforce-hydra", REPO_ROOT)
     assert skill is not None and skill.usable
     content = skill.content
@@ -475,8 +478,9 @@ def test_the_bruteforce_skill_ships_the_hydra_fallback() -> None:
         in content
     )
     assert "nexus.shell.exec" in content
-    assert "wordlist exceeds 16 MB" in content
     assert "/usr/share/wordlists/rockyou.txt" in content
+    assert "500 intentos" in content and "60 s" in content
+    assert "http-post-form" in content and "failure_string" in content
 
 
 def test_the_web_recon_skill_orders_enumeration_before_credentials() -> None:
@@ -505,6 +509,13 @@ def test_the_web_recon_skill_orders_enumeration_before_credentials() -> None:
 
     # Real arguments and real tools, not abstractions.
     assert 'extensions=["php", "html", "txt", "bak", "zip"]' in flat
+
+    # Reading the index is not following it (Brute It, 2026-10-20: the model
+    # fetched ``/robots.txt`` and closed the branch on the next turn). The rule
+    # has to name the GET, the download+read and the record step.
+    assert "Regla de oro" in flat
+    assert "extrae **TODAS** las rutas" in flat
+    assert "save_path" in flat and "nexus.workspace.read" in flat
     for tool_id in (
         "nexus.web.request",
         "nexus.recon.gobuster",

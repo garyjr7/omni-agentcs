@@ -293,6 +293,7 @@ class ContextBuilder:
         budget_hint: str = "",
         webshell_hint: str = "",
         coverage_hint: str = "",
+        robots_hint: str = "",
     ) -> list[LLMMessage]:
         full_catalog = self.full_catalog_for(iteration=iteration, subagent=subagent)
         history_summary, plan, facts_text = (
@@ -348,6 +349,12 @@ class ContextBuilder:
         # (``coverage.pivot_hint``, deterministic and unit-tested).
         if coverage_hint:
             system_prompt = f"{system_prompt}\n\n{coverage_hint}"
+        # Reading ``robots.txt``/``sitemap.xml`` is not following them. The rule
+        # lives in the planner (``robots_paths_hint``, deterministic and tested);
+        # the loop only injects the order naming the routes still unvisited, so
+        # the branch cannot be closed with the index half-read.
+        if robots_hint:
+            system_prompt = f"{system_prompt}\n\n{robots_hint}"
         # WP5: the objective's flags are in hand. The model still decides how to
         # close -the loop only forbids more exploration and orders the closure-;
         # if it ignores the order for the whole margin, the loop closes itself.

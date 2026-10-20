@@ -668,6 +668,31 @@ WEBSHELL_STALL_PROMPT = (
     "nada a través del webshell."
 )
 
+#: Files whose body is an *index of routes nobody linked*: reading one is not the
+#: same as following it. Measured in ``/tmp/bruteit-run-v2.ndjson`` (Brute It,
+#: 2026-10-20): the model did GET ``/robots.txt`` at iteration 22 and, on the
+#: next turn, closed the branch with a ``barrier`` -the paths it listed were
+#: never requested- so the run ended in ``request_clarification`` with the
+#: cheapest route of the room still unvisited.
+ROBOTS_INDEX_FILES: tuple[str, ...] = ("robots.txt", "sitemap.xml")
+#: Routes named in one hint. The line is an order, not a fuzzing run: past this
+#: many the prompt starts replacing the tool.
+ROBOTS_HINT_MAX_PATHS = 10
+#: ``Disallow: /admin`` / ``Allow: /pub`` rules (an empty value means "no rule").
+ROBOTS_RULE_RE = re.compile(r"^\s*(?:Disallow|Allow)\s*:\s*(\S+)\s*$", re.IGNORECASE)
+#: ``<loc>https://host/path</loc>`` entries of a sitemap.
+ROBOTS_LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.IGNORECASE)
+#: The order itself: name the file, name the routes, and require the two
+#: follow-ups the web checklist already asks for (download+read, record).
+ROBOTS_HINT_PROMPT = (
+    "ÍNDICE SIN SEGUIR: {source} nombra {count} ruta(s) que todavía no has "
+    "visitado: {paths}. Haz un GET a CADA una ahora con `nexus.web.request` "
+    "ANTES de cerrar la rama o cambiar de servicio; si alguna es un backup, una "
+    "clave o un fichero de configuración, descárgala con `save_path` y léela "
+    "con `nexus.workspace.read`. Registra lo que encuentres con "
+    "`nexus.knowledge.record_fact`."
+)
+
 
 @dataclass(frozen=True)
 class EnumerationEscalation:
@@ -889,6 +914,113 @@ def webshell_stall_hint(
     if not recent or not any(_webshell_build_turn(action) for action in recent[-2:]):
         return ""
     return WEBSHELL_STALL_PROMPT.format(turns=len(heavy))
+
+
+def _action_url(action: Mapping[str, Any]) -> str:
+    """The ``url`` an action aimed at ("" for any other tool)."""
+    arguments = action.get("arguments")
+    if isinstance(arguments, Mapping):
+        return str(arguments.get("url") or "").strip()
+    return ""
+
+
+def _url_path(url: str) -> str:
+    """Path of an absolute ``http(s)`` URL ("" when it is not one)."""
+    text = str(url or "").strip()
+    if "://" not in text:
+        return ""
+    rest = text.split("://", 1)[1]
+    slash = rest.find("/")
+    return rest[slash:] if slash >= 0 else "/"
+
+
+def _path_key(path: str) -> str:
+    """Comparison key of a route: ``/admin/`` and ``/admin`` are the same one."""
+    key = str(path or "").split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    return (key or "/").casefold()
+
+
+def _action_body_preview(action: Mapping[str, Any]) -> str:
+    """Body preview the tool returned for this action ("" when there is none)."""
+    result = action.get("tool_result")
+    if not isinstance(result, Mapping):
+        return ""
+    output = result.get("output")
+    if not isinstance(output, Mapping):
+        return ""
+    preview = output.get("body_preview")
+    return preview if isinstance(preview, str) else ""
+
+
+def _index_routes(body: str, name: str, base: str) -> list[str]:
+    """Routes an index file names, as URLs (empty list when it names none)."""
+    routes: list[str] = []
+    if name == "sitemap.xml":
+        for match in ROBOTS_LOC_RE.finditer(body or ""):
+            candidate = match.group(1).strip()
+            if candidate and _path_key(_url_path(candidate)) != "/":
+                routes.append(candidate)
+        return routes
+    for line in (body or "").splitlines():
+        rule = ROBOTS_RULE_RE.match(line)
+        if not rule:
+            continue
+        route = rule.group(1)
+        # Wildcards and regex suffixes are a fuzzing pattern, not a route.
+        if not route.startswith("/") or any(char in route for char in "*$"):
+            continue
+        routes.append(f"{base}{route}" if base else route)
+    return routes
+
+
+def robots_paths_hint(actions: Iterable[Any] | None = None) -> str:
+    """Order visiting the routes a read ``robots.txt``/``sitemap.xml`` lists.
+
+    Fires while an index file read by this run still names a path that no
+    ``http`` action has requested. The rule is deliberately *body-driven* and
+    deterministic: the loop already keeps every action's ``tool_result`` (which
+    carries the ``body_preview`` of the response), so no model call is needed to
+    know what the file said. A path is considered visited once any action in the
+    history requested it, in any order, which makes the rule idempotent and
+    keeps it from ordering the same GET twice.
+
+    It never stops the run, changes the plan nor authorizes a tool: it injects
+    one order naming the concrete URLs, exactly like the budget and webshell
+    corrections.
+    """
+    history = [action for action in actions or () if isinstance(action, Mapping)]
+    if not history:
+        return ""
+    visited: set[str] = set()
+    indexes: list[tuple[str, str, str]] = []  # (source, base, body)
+    for action in history:
+        url = _action_url(action)
+        path = _url_path(url)
+        if path:
+            visited.add(_path_key(path))
+        body = _action_body_preview(action)
+        if not body or not path:
+            continue
+        name = path.rstrip("/").rsplit("/", 1)[-1].casefold()
+        if name in ROBOTS_INDEX_FILES:
+            indexes.append((name, url[: len(url) - len(path)], body))
+    if not indexes:
+        return ""
+    pending: list[str] = []
+    for name, base, body in indexes:
+        for route in _index_routes(body, name, base):
+            if _path_key(_url_path(route)) in visited or route in pending:
+                continue
+            pending.append(route)
+    if not pending:
+        return ""
+    sources = {name for name, _, _ in indexes}
+    source = sources.pop() if len(sources) == 1 else "/".join(sorted(sources))
+    return ROBOTS_HINT_PROMPT.format(
+        source=source,
+        count=len(pending),
+        paths=", ".join(pending[:ROBOTS_HINT_MAX_PATHS]),
+    )
 
 
 #: Reason recorded when an established session hands the engagement over to
