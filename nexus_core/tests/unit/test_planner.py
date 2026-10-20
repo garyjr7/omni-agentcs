@@ -288,6 +288,44 @@ def test_a_relative_disallow_rule_becomes_an_absolute_url():
     assert "Disallow" not in hint  # the order carries URLs, not the raw rule
 
 
+def test_a_realistic_robots_file_is_parsed_line_by_line():
+    """TryHackMe-style file: comments, CRLF, indentation and no space after ':'.
+
+    The v4 run (``run_6fef3c1ba9384ee79acee2bd09e8890c``) never fired the hint.
+    Its ``/robots.txt`` was a 404, but the parser was the other half of the
+    gap: ``^(?:Disallow|Allow)\\s*:\\s*(\\S+)\\s*$`` rejected the shapes a real
+    file uses -``Disallow:/admin`` (no space), an indented rule, a trailing
+    inline comment- so a served index could name paths and still order none.
+    """
+    body = (
+        "# robots.txt de la sala\r\n"
+        "# Los comentarios no son reglas\r\n"
+        "\r\n"
+        "User-agent: *\r\n"
+        "Disallow: /admin/\r\n"
+        "Disallow:/backups\r\n"
+        "   Disallow: /secret/   \r\n"
+        "# Disallow: /commented-out\r\n"
+        "Allow: /pub/\r\n"
+        "Allow:\r\n"
+        "Disallow: /*.php$\r\n"
+        "Disallow: /admin/panel.php # el panel\r\n"
+    )
+    hint = robots_paths_hint([_http_action("http://10.67.149.76/robots.txt", body)])
+
+    for url in (
+        "http://10.67.149.76/admin/",
+        "http://10.67.149.76/backups",
+        "http://10.67.149.76/secret/",
+        "http://10.67.149.76/pub/",
+        "http://10.67.149.76/admin/panel.php",
+    ):
+        assert url in hint
+    # A commented rule is not a rule, and a wildcard is not a route.
+    assert "commented-out" not in hint
+    assert "*.php" not in hint and "el panel" not in hint
+
+
 def test_the_robots_hint_reads_a_sitemap_and_ignores_non_indexes():
     sitemap = (
         '<?xml version="1.0"?><urlset>'

@@ -157,9 +157,44 @@ temas antes de tocar el login.
 ### 6. Entiende cada endpoint con entrada antes de atacarlo
 
 - Un formulario de login: ¿qué parámetros? ¿hay CSRF? ¿responde distinto con
-  usuario inexistente que con contraseña mala (enumeración de usuarios)? Prueba
-  **una** inyección SQL por parámetro con `nexus.web.sqlmap(url=...,
-  data="user=admin&pass=x")`, no una batería a ciegas.
+  usuario inexistente que con contraseña mala (enumeración de usuarios)? Eso se
+  lee en una petición; atacarlo tiene una regla propia (abajo).
+
+#### Regla de login web (no negociable)
+
+Ante un **formulario de login** (`POST` con usuario y contraseña) tienes
+**prohibido** probar inyecciones SQL manuales con `nexus.web.request` —
+`admin' or '1'='1`, `' OR 1=1-- -`, etc.— como primer paso: es adivinar y quema
+los turnos que el login necesita. El primer intento es **siempre**
+`nexus.cred.bruteforce` con `service="http-post-form"` (o `http-get-form` si el
+formulario viaja por GET) y los tres campos que Hydra exige:
+
+```
+nexus.cred.bruteforce(
+    target="<host>",
+    service="http-post-form",
+    port=80,
+    username="admin",                    # el usuario del panel o el enumerado
+    password_file="locks.txt",           # la lista; rockyou.txt si no hay pista
+    form_url="/admin/index.php",         # la ruta del POST, no el host
+    form_params="user=^USER^&pass=^PASS^&submit=Login",
+    failure_string="Invalid username or password",
+)
+```
+
+- `failure_string` es lo que devuelve el panel cuando falla **una** credencial
+  (no la página de login entera): sin ese texto Hydra no distingue el éxito del
+  fracaso y el barrido no prueba nada.
+- Es la **excepción documentada** a la regla de "la fuerza bruta es el último
+  recurso": en un login encontrado, el barrido del formulario *es* el primer
+  intento, porque el SQLi manual a mano no es ni una prueba de credenciales ni
+  un SQLi real. Una vez lanzado, se aplica el límite de siempre: un intento (el
+  handler ya acota los intentos y el tiempo) y, si no da credenciales, se pasa
+  al paso 7.
+- **Solo si Hydra falla, da error o no encuentra credenciales** puedes volver a
+  SQLi —con `nexus.web.sqlmap(url=..., data="user=admin&pass=x")`, **una**
+  inyección por parámetro, nunca a mano con `nexus.web.request`— o a los
+  backups del paso 7.
 - Una API: pide `/swagger.json`, `/openapi.json`, `/api/docs`; prueba métodos
   (`OPTIONS`) y rutas sin autenticar.
 - Un CMS: `nexus.web.wp_enum`, versiones de plugins y `searchsploit`.

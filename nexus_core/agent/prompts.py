@@ -9,6 +9,24 @@ from __future__ import annotations
 
 from typing import Any
 
+#: The web-login order. It is *not* a permanent line of the prompt: it names
+#: ``nexus.cred.bruteforce``, and the per-subagent gating (asserted in
+#: ``test_subagent_gating``) forbids a prompt from even mentioning a tool that
+#: subagent cannot invoke. :func:`render_system_prompt` appends it only when the
+#: catalog being sent offers the tool, so the rule travels with the capability.
+#: Measured origin: run_6fef3c1ba9384ee79acee2bd09e8890c (v4) spent iterations
+#: 7-15 hand-writing ``admin' or '1'='1`` with ``nexus.web.request`` and closed
+#: the web branch without ever asking Hydra for the form.
+LOGIN_RULE_PROMPT = (
+    "- REGLA DE LOGIN WEB: si encuentras un formulario de login (POST con usuario y\n"
+    "  contraseña), TIENES PROHIBIDO intentar inyecciones SQL manuales con\n"
+    "  nexus.web.request como primer paso. Debes usar obligatoriamente\n"
+    "  nexus.cred.bruteforce con service=\"http-post-form\", indicando el form_url,\n"
+    "  form_params y failure_string (esta regla prevalece sobre la de bruteforce:\n"
+    "  para un login web, Hydra no es opcional). Solo si Hydra falla o da error,\n"
+    "  puedes intentar SQLi manual o buscar backups.\n"
+)
+
 REACT_SYSTEM_PROMPT = """Eres OmniAgent, un agente autónomo de
 ciberseguridad ofensiva operando dentro de un engagement autorizado.
 
@@ -52,7 +70,7 @@ REGLAS:
   antes de decidir el siguiente paso.
 - WEB (80/443): carga la skill web-recon-master (nexus.skill.load) y sigue su
   checklist ANTES de atacar; un login no es una invitación a probar contraseñas.
-- BRUTEFORCE = ÚLTIMO RECURSO: sin pista de credenciales débiles ni
+{login_rule}- BRUTEFORCE = ÚLTIMO RECURSO: sin pista de credenciales débiles ni
   enumeración agotada, no lo lances; registra un barrier y cambia de rama.
 - ENFOQUE MULTI-VECTOR (CYBER KILL CHAIN): auditas un entorno, no un puzzle
   lineal. Revisa los hechos (query_facts): con varios servicios o endpoints
@@ -452,8 +470,10 @@ def render_system_prompt(
     catalog_text = render_tool_catalog(catalog, compact=not full_catalog)
     if not full_catalog:
         catalog_text = f"{catalog_text}\n{COMPACT_CATALOG_NOTE}"
+    login_rule = LOGIN_RULE_PROMPT if "nexus.cred.bruteforce" in catalog else ""
     return REACT_SYSTEM_PROMPT.format(
         tool_catalog=catalog_text,
+        login_rule=login_rule,
         objective=objective,
         engagement_id=engagement_id or "(ninguno)",
         scope_summary=scope_summary,

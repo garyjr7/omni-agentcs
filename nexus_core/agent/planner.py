@@ -679,7 +679,11 @@ ROBOTS_INDEX_FILES: tuple[str, ...] = ("robots.txt", "sitemap.xml")
 #: many the prompt starts replacing the tool.
 ROBOTS_HINT_MAX_PATHS = 10
 #: ``Disallow: /admin`` / ``Allow: /pub`` rules (an empty value means "no rule").
-ROBOTS_RULE_RE = re.compile(r"^\s*(?:Disallow|Allow)\s*:\s*(\S+)\s*$", re.IGNORECASE)
+#: Matched per *stripped* line and deliberately without a trailing anchor: a
+#: real ``robots.txt`` (TryHackMe rooms, 2026-10-20) writes ``Disallow:/admin``
+#: without the space, indents the rule, ends lines in ``\r\n`` and appends an
+#: inline ``# comment``. The old ``(\S+)\s*$`` shape rejected all of those.
+ROBOTS_RULE_RE = re.compile(r"^(?:Disallow|Allow)\s*:\s*(\S+)", re.IGNORECASE)
 #: ``<loc>https://host/path</loc>`` entries of a sitemap.
 ROBOTS_LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.IGNORECASE)
 #: The order itself: name the file, name the routes, and require the two
@@ -961,7 +965,18 @@ def _index_routes(body: str, name: str, base: str) -> list[str]:
             if candidate and _path_key(_url_path(candidate)) != "/":
                 routes.append(candidate)
         return routes
-    for line in (body or "").splitlines():
+    for raw_line in (body or "").splitlines():
+        # ``strip`` already eats the ``\r`` of a CRLF file, the indentation of a
+        # nested rule and the surrounding blanks; a full-line comment is not a
+        # rule at all.
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Inline comment (``Disallow: /admin # legacy``): the route ends at the
+        # first ``#`` that follows whitespace, so a path is never truncated.
+        comment = line.find(" #")
+        if comment > 0:
+            line = line[:comment].rstrip()
         rule = ROBOTS_RULE_RE.match(line)
         if not rule:
             continue

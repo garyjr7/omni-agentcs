@@ -80,6 +80,42 @@ def test_prompt_forces_a_multi_vector_kill_chain_view(catalog):
     assert prompt.index("ENFOQUE MULTI-VECTOR") < prompt.index("RESPONDE SIEMPRE")
 
 
+def test_prompt_forces_hydra_before_manual_sqli_on_a_login_form(catalog):
+    # Run run_6fef3c1ba9384ee79acee2bd09e8890c (v4, iterations 7-15): the agent
+    # found ``/admin/`` and tried ``admin' or '1'='1`` by hand with
+    # ``nexus.web.request`` for nine turns; the web branch closed without ever
+    # asking the form module. The rule is an order with its three fields.
+    prompt = _prompt(catalog)
+    assert "- REGLA DE LOGIN WEB:" in prompt
+    assert "TIENES PROHIBIDO intentar inyecciones SQL manuales" in prompt
+    assert 'nexus.cred.bruteforce con service="http-post-form"' in prompt
+    for field in ("form_url", "form_params", "failure_string"):
+        assert field in prompt
+    # Hydra is the first attempt; SQLi/backups only come after it fails.
+    assert "Solo si Hydra falla o da error" in prompt
+    # Methodology again: inside the rules, before the response contract.
+    assert prompt.index("REGLA DE LOGIN WEB") < prompt.index("RESPONDE SIEMPRE")
+
+
+def test_the_login_rule_travels_only_with_the_credential_tool(catalog):
+    # The prompt is gated per subagent: a recon prompt must not even name a tool
+    # it cannot invoke (``test_subagent_gating``). The rule is therefore
+    # rendered with the catalog that offers ``nexus.cred.bruteforce``, not as a
+    # permanent line.
+    gated = {
+        tool_id: entry
+        for tool_id, entry in catalog.items()
+        if tool_id != "nexus.cred.bruteforce"
+    }
+    prompt = render_system_prompt(
+        catalog=gated, objective="x", engagement_id="eng-1", scope_summary="s"
+    )
+    assert "REGLA DE LOGIN WEB" not in prompt
+    assert "nexus.cred.bruteforce" not in prompt
+    # The rest of the methodology is unaffected.
+    assert "- BRUTEFORCE = ÚLTIMO RECURSO:" in prompt
+
+
 def test_prompt_makes_brute_force_the_last_resort(catalog):
     prompt = _prompt(catalog)
     assert "- BRUTEFORCE = ÚLTIMO RECURSO:" in prompt
@@ -152,7 +188,14 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # *order* -two failures of the same vector mean barrier + pivot-, not prose
     # (the vector checklist lives in ``web-recon-master``). The ceiling moves to
     # 24_500; the per-tool catalog bound does not move.
-    assert len(_prompt(catalog)) < 24_500
+    # The login rule (run_6fef3c1ba9384ee79acee2bd09e8890c, v4: nine turns of
+    # hand-written ``admin' or '1'='1`` on ``/admin/`` with the form module never
+    # invoked) costs 493 characters, measured at 24,900. It is an *order* with
+    # the three fields a form sweep needs -``form_url``, ``form_params``,
+    # ``failure_string``-; the recipe and the argument example stay in
+    # ``web-recon-master``, which is loaded on demand. The ceiling moves to
+    # 25_000; the per-tool catalog bound does not move.
+    assert len(_prompt(catalog)) < 25_000
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):
@@ -284,8 +327,10 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # turn: measured 6,103 average against the previous 5,987, i.e. 250k still
     # buys ~41 turns. The target moves to 6_150 (the compact turn stays at
     # 5,476, well under 6_000); what the rule buys is the pivot the measured run
-    # never made.
-    assert sum(totals) / len(totals) < 6_150
+    # never made. The login rule adds its ~124 tokens to every turn as well:
+    # measured 6,227 average, so the target moves to 6_250 (250k still buys ~40
+    # turns; the compact turn stays at 5,600).
+    assert sum(totals) / len(totals) < 6_250
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -293,5 +338,7 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # of the two rules and the 161-character index line of the new skill land
     # here: measured 8 113, and the ceiling moves to 8 150. The multi-vector rule
     # adds its ~116 tokens to the same refresh turn: measured 8,236, so the
-    # ceiling moves to 8_250.
-    assert max(totals) < 8_250
+    # ceiling moves to 8_250. The login rule lands there too: measured 8,359,
+    # so the refresh ceiling moves to 8_400 (32 compact turns at 5,600 plus 8
+    # refreshes at 8,359 are 246,072, inside the 250k budget).
+    assert max(totals) < 8_400
