@@ -468,8 +468,8 @@ def test_the_bruteforce_skill_ships_the_hydra_fallback() -> None:
     # Simple CTF: ``nexus.cred.bruteforce`` rejected rockyou.txt (133 MB) and the
     # run died before falling back to hydra by hand. The recipe is the fallback,
     # and Brute It (2026-10-20) added the two facts the skill was missing: the
-    # handler now streams that list but caps the sweep at 500 attempts / 60 s,
-    # and the room's login was an HTTP form the recipe did not cover.
+    # handler now streams that list with no cap of its own, and the room's login
+    # was an HTTP form the recipe did not cover.
     skill = load_skill("bruteforce-hydra", REPO_ROOT)
     assert skill is not None and skill.usable
     content = skill.content
@@ -479,7 +479,10 @@ def test_the_bruteforce_skill_ships_the_hydra_fallback() -> None:
     )
     assert "nexus.shell.exec" in content
     assert "/usr/share/wordlists/rockyou.txt" in content
-    assert "500 intentos" in content and "60 s" in content
+    # No internal cap anymore: the cut is the tool's budget, and the next move is
+    # a slice (Brute It v5 read the old 60 s cutoff as a broken hydra).
+    assert "timeout_seconds" in content and "900 s" in content
+    assert "500 intentos" not in content and "60 s" not in content
     assert "http-post-form" in content and "failure_string" in content
 
 

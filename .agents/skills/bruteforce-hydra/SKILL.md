@@ -17,8 +17,9 @@ Usa `nexus.cred.bruteforce` primero. Pasa a `nexus.shell.exec` con hydra solo si
 - necesitas variantes que la tool no expone: `-L` (varios usuarios), `-e nsr`
   (usuario=contraseña, vacía, inversa), `-x` (máscara), `-M` (lista de hosts);
 - el formulario necesita cookies de sesión, un token CSRF o `:H=` (cabeceras);
-- el barrido se cortó por el tope de la tool (500 intentos o 60 s) y tienes una
-  pista **concreta** de que la contraseña está más adelante en la lista.
+- el barrido se cortó por el presupuesto (`timeout_seconds`) y tienes una pista
+  **concreta** de que la contraseña está más adelante en la lista: la tool no
+  impone topes propios, el corte lo decide su contrato o el presupuesto del run.
 
 No lo uses para probar 3 credenciales sueltas ni para repetir el barrido que la
 tool ya cerró con un `barrier`: ahí `nexus.cred.bruteforce` es más barato y no
@@ -115,8 +116,9 @@ Hydra imprime la línea del hallazgo:
 [2222][ssh] host: 10.10.10.5   login: mitch   password: secret
 ```
 
-y **devuelve exit 0 aunque no encuentre nada**, así que no te fíes del código de
-salida. Verifica con un login real, no repitiendo el ataque:
+y **el código de salida no es el veredicto** (puede terminar en 0 o en 255 sin
+encontrar nada), así que no te fíes de él. Verifica con un login real, no
+repitiendo el ataque:
 
 ```bash
 grep -i "password:" hydra.txt
@@ -141,11 +143,12 @@ Con acceso confirmado:
 
 ## 6. Errores comunes
 
-- **El barrido se corta a los 500 intentos o a los 60 s**: es el tope de
-  `nexus.cred.bruteforce` (y es deliberado: Brute It gastó 144 s por barrido de
-  200 intentos contra SSH sin que fuera el vector). Solo continúa a mano si
-  tienes una pista de que la contraseña está más adelante; si no, acepta el
-  `barrier` y cambia de rama.
+- **El barrido se corta por presupuesto** (`timeout_seconds`, 900 s por
+  defecto): `nexus.cred.bruteforce` no tiene topes propios de intentos ni de
+  tiempo, así que un corte significa que la wordlist no terminó. No es un
+  veredicto: sube `timeout_seconds`, parte la lista (`sed -n '30001,60000p'`) o
+  cambia de vector. Un barrido que **sí** terminó sin hit deja un `barrier`: ahí
+  no repitas, pivota.
 - **Hydra acaba en segundos sin hit**: puerto equivocado (falta `-s`), servicio
   equivocado (`ssh://` contra un FTP) o el usuario no existe. Confirma el banner
   con `nmap -sV -p<port>` antes de repetir.
