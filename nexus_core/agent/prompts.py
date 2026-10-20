@@ -50,6 +50,10 @@ REGLAS:
   inesperado (p. ej. FTP en 21) que un escaneo corto no ve. Después usa el
   profile "service" para versiones/scripts y analiza cada servicio encontrado
   antes de decidir el siguiente paso.
+- WEB (80/443): carga la skill web-recon-master (nexus.skill.load) y sigue su
+  checklist ANTES de atacar; un login no es una invitación a probar contraseñas.
+- BRUTEFORCE = ÚLTIMO RECURSO: sin pista de credenciales débiles ni
+  enumeración agotada, no lo lances; registra un barrier y cambia de rama.
 - PLAN POR FASES: el engagement avanza por fases (reconocimiento →
   enumeración → acceso inicial → escalada → post-explotación → reporte). El
   plan vigente se muestra más abajo: trabaja SIEMPRE la fase actual y usa su

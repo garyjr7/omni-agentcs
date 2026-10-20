@@ -479,6 +479,55 @@ def test_the_bruteforce_skill_ships_the_hydra_fallback() -> None:
     assert "/usr/share/wordlists/rockyou.txt" in content
 
 
+def test_the_web_recon_skill_orders_enumeration_before_credentials() -> None:
+    """Run run_4e8779f4…: 29 turns, three rockyou sweeps, 0 findings.
+
+    The four misses are the checklist: the HTML source of the root,
+    ``robots.txt``, gobuster without extensions and the ``.git`` probe. The skill
+    must name them in order, with the real tool arguments, and make brute force
+    conditional on evidence instead of a reflex.
+    """
+    skill = load_skill("web-recon-master", REPO_ROOT)
+    assert skill is not None and skill.usable
+    content = skill.content
+    flat = " ".join(content.split())
+
+    # A checklist, not a list: the steps are ordered.
+    steps = ["### 1.", "### 2.", "### 3.", "### 4.", "### 5."]
+    positions = [content.index(step) for step in steps]
+    assert positions == sorted(positions)
+
+    # The four measured misses.
+    assert "comentarios" in flat                      # HTML source hints
+    assert "/robots.txt" in flat
+    assert '"php", "html", "txt", "bak", "zip"' in flat
+    assert "/.git/HEAD" in flat and "nexus.web.git_dump" in flat
+
+    # Real arguments and real tools, not abstractions.
+    assert 'extensions=["php", "html", "txt", "bak", "zip"]' in flat
+    for tool_id in (
+        "nexus.web.request",
+        "nexus.recon.gobuster",
+        "nexus.recon.whatweb",
+        "nexus.knowledge.record_fact",
+    ):
+        assert tool_id in content
+
+    # The gate: brute force only with a hint, a barrier otherwise.
+    assert "último recurso" in flat
+    for tool_id in (
+        "nexus.cred.bruteforce",
+        "nexus.web.wp_bruteforce",
+        "nexus.post.pivot_bruteforce",
+    ):
+        assert tool_id in flat
+    assert 'fact_type="barrier"' in flat
+
+    # It reaches the model as a one-line index entry, not as per-turn prose.
+    index = render_skill_index(discover_skills(REPO_ROOT))
+    assert "- web-recon-master:" in index
+
+
 # ------------------------------- loop harness ------------------------------- #
 
 

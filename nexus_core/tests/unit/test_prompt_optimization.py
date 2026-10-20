@@ -52,6 +52,30 @@ def test_prompt_requires_full_tcp_recon(catalog):
     assert "full_tcp" in prompt
 
 
+def test_prompt_orders_the_web_skill_before_any_web_attack(catalog):
+    # Run run_4e8779f4… (2026-10-20): the agent found /admin and went straight to
+    # passwords, SQLi and three rockyou sweeps without ever reading robots.txt or
+    # the page source. The rule is the order to load the checklist; the checklist
+    # itself lives in the skill, so it is not paid for on every turn.
+    prompt = _prompt(catalog)
+    assert "- WEB (80/443):" in prompt
+    # The order names the skill and the loader in the same sentence: the catalog
+    # already lists ``nexus.skill.load``, so a bare mention proves nothing.
+    assert "web-recon-master (nexus.skill.load)" in prompt
+    # And it forbids the reflex the measured run had: password guessing at login.
+    assert "un login no es una invitación a probar contraseñas" in prompt
+
+
+def test_prompt_makes_brute_force_the_last_resort(catalog):
+    prompt = _prompt(catalog)
+    assert "- BRUTEFORCE = ÚLTIMO RECURSO:" in prompt
+    # Every bruteforce tool id carries the word: the rule names the capability,
+    # not three tool ids (it has to fit the per-turn budget measured below).
+    assert "no lo lances" in prompt
+    # No hint means a barrier fact and a branch change, not a wordlist sweep.
+    assert "registra un barrier" in prompt
+
+
 def test_prompt_template_references_catalog_once():
     # Guard against re-introducing a second ``{...}`` catalog placeholder.
     assert REACT_SYSTEM_PROMPT.count("{tool_catalog}") == 1
@@ -101,7 +125,15 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # discipline does **not** earn room here: it travels inside the rendered
     # ledger (``coverage.render_coverage``), which only exists on turns that
     # have a discovered surface, so the static ceiling is unchanged.
-    assert len(_prompt(catalog)) < 23_700
+    # The web-enumeration and brute-force-last-resort rules (run
+    # run_4e8779f4dc6a46fd8f42608056858cfb: 29 turns, three rockyou sweeps, 0
+    # findings, never read robots.txt) cost 302 characters, measured at 23,941.
+    # They earn the room because they are *orders* -when to load the
+    # ``web-recon-master`` skill and when brute force is allowed-, not prose: the
+    # checklist itself travels in the skill, which is loaded on demand and is
+    # not paid per turn. The ceiling moves to 24_000; the per-tool catalog bound
+    # does not move.
+    assert len(_prompt(catalog)) < 24_000
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):
@@ -231,5 +263,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     ]
     assert sum(totals) / len(totals) < 6_000
     # The refresh turn is the expensive one; it must still fit a 250k budget
-    # long enough for the ~40 turns Simple CTF needs.
-    assert max(totals) < 8_000
+    # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
+    # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
+    # 8 000 ceiling had 1 token of slack at HEAD (7 999), so the +302 characters
+    # of the two rules and the 161-character index line of the new skill land
+    # here: measured 8 113, and the ceiling moves to 8 150.
+    assert max(totals) < 8_150
