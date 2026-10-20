@@ -272,6 +272,22 @@ def test_the_robots_hint_orders_the_paths_the_index_lists():
     ).count("/secret/") == 0
 
 
+def test_a_relative_disallow_rule_becomes_an_absolute_url():
+    """The v3 run read ``Disallow: /whatever`` and the hint never fired.
+
+    A robots.txt lists *relative* paths, so the parser has to resolve them
+    against the host that served the file: the order names the URL the model
+    must GET, not the bare route it cannot request.
+    """
+    body = "User-agent: *\nDisallow: /admin\n"
+    actions = [_http_action("http://target/robots.txt", body)]
+
+    hint = robots_paths_hint(actions)
+
+    assert "http://target/admin" in hint
+    assert "Disallow" not in hint  # the order carries URLs, not the raw rule
+
+
 def test_the_robots_hint_reads_a_sitemap_and_ignores_non_indexes():
     sitemap = (
         '<?xml version="1.0"?><urlset>'

@@ -54,6 +54,12 @@ REGLAS:
   checklist ANTES de atacar; un login no es una invitación a probar contraseñas.
 - BRUTEFORCE = ÚLTIMO RECURSO: sin pista de credenciales débiles ni
   enumeración agotada, no lo lances; registra un barrier y cambia de rama.
+- ENFOQUE MULTI-VECTOR (CYBER KILL CHAIN): auditas un entorno, no un puzzle
+  lineal. Revisa los hechos (query_facts): con varios servicios o endpoints
+  abiertos, elige el más prometedor para el Acceso Inicial. Si un vector falla
+  (hydra sin credenciales, un endpoint sin SQLi), no insistas más de 2 veces:
+  registra un barrier para ese vector y PIVOTA al siguiente. Mapea todas las
+  vulnerabilidades, no solo la primera que veas.
 - PLAN POR FASES: el engagement avanza por fases (reconocimiento →
   enumeración → acceso inicial → escalada → post-explotación → reporte). El
   plan vigente se muestra más abajo: trabaja SIEMPRE la fase actual y usa su

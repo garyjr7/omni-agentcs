@@ -66,6 +66,20 @@ def test_prompt_orders_the_web_skill_before_any_web_attack(catalog):
     assert "un login no es una invitación a probar contraseñas" in prompt
 
 
+def test_prompt_forces_a_multi_vector_kill_chain_view(catalog):
+    # The measured failure: one vector absorbs the run. The rule has to name the
+    # facts lookup, the two-attempt limit, the barrier and the pivot order.
+    prompt = _prompt(catalog)
+    assert "- ENFOQUE MULTI-VECTOR (CYBER KILL CHAIN):" in prompt
+    assert "query_facts" in prompt
+    assert "no insistas más de 2 veces" in prompt
+    assert "registra un barrier para ese vector" in prompt
+    assert "PIVOTA al siguiente" in prompt
+    # The rule is methodology, so it sits inside the rules block, before the
+    # response contract (a rule after the JSON examples would be truncated).
+    assert prompt.index("ENFOQUE MULTI-VECTOR") < prompt.index("RESPONDE SIEMPRE")
+
+
 def test_prompt_makes_brute_force_the_last_resort(catalog):
     prompt = _prompt(catalog)
     assert "- BRUTEFORCE = ÚLTIMO RECURSO:" in prompt
@@ -133,7 +147,12 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # checklist itself travels in the skill, which is loaded on demand and is
     # not paid per turn. The ceiling moves to 24_000; the per-tool catalog bound
     # does not move.
-    assert len(_prompt(catalog)) < 24_000
+    # The multi-vector rule (a run closed its only web branch and never tried
+    # the other open service) costs 466 characters, measured at 24,407. It is an
+    # *order* -two failures of the same vector mean barrier + pivot-, not prose
+    # (the vector checklist lives in ``web-recon-master``). The ceiling moves to
+    # 24_500; the per-tool catalog bound does not move.
+    assert len(_prompt(catalog)) < 24_500
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):
@@ -261,11 +280,18 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
         _context_messages(tmp_path, iteration=iteration, catalog=catalog)[1]
         for iteration in range(1, 23)
     ]
-    assert sum(totals) / len(totals) < 6_000
+    # The multi-vector rule (+466 chars, ~116 tokens per turn) lands on every
+    # turn: measured 6,103 average against the previous 5,987, i.e. 250k still
+    # buys ~41 turns. The target moves to 6_150 (the compact turn stays at
+    # 5,476, well under 6_000); what the rule buys is the pivot the measured run
+    # never made.
+    assert sum(totals) / len(totals) < 6_150
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
     # 8 000 ceiling had 1 token of slack at HEAD (7 999), so the +302 characters
     # of the two rules and the 161-character index line of the new skill land
-    # here: measured 8 113, and the ceiling moves to 8 150.
-    assert max(totals) < 8_150
+    # here: measured 8 113, and the ceiling moves to 8 150. The multi-vector rule
+    # adds its ~116 tokens to the same refresh turn: measured 8,236, so the
+    # ceiling moves to 8_250.
+    assert max(totals) < 8_250

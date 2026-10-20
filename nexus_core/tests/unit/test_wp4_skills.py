@@ -539,6 +539,34 @@ def test_the_web_recon_skill_orders_enumeration_before_credentials() -> None:
     assert "- web-recon-master:" in index
 
 
+def test_the_web_recon_skill_pivots_instead_of_insisting_on_one_vector() -> None:
+    """A login that does not yield closes a *vector*, not the branch.
+
+    Measured in run_8ba103e3d65e400cb82ab6b119a221c5 (v3): every attempt went to
+    the web login -``service="http-post-form"`` included- and when it did not
+    yield the run kept hammering it instead of trying the other services on the
+    map. The skill closes the checklist with the escapes and the pivot order.
+    """
+    skill = load_skill("web-recon-master", REPO_ROOT)
+    assert skill is not None and skill.usable
+    content = skill.content
+    flat = " ".join(content.split())
+
+    assert "Checklist de vectores" in flat
+    # The escapes the checklist names: backups, the index, the CMS.
+    assert ".bak" in flat and ".zip" in flat
+    assert "nexus.web.wp_enum" in flat and "searchsploit" in flat
+    assert "Disallow:" in flat and "sitemap.xml" in flat
+    # Two attempts per vector, then the barrier fact and the next service.
+    assert "Dos intentos del mismo vector" in flat
+    assert 'fact_type="barrier"' in flat
+    assert "nexus.post.ssh_exec" in flat and "nexus.recon.ftp" in flat
+
+    # It is the last checklist step, and it comes before the brute-force gate.
+    assert content.index("### 7.") > content.index("### 6.")
+    assert content.index("### 7.") < content.index("## La fuerza bruta")
+
+
 # ------------------------------- loop harness ------------------------------- #
 
 

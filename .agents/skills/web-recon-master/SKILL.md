@@ -164,6 +164,39 @@ temas antes de tocar el login.
   (`OPTIONS`) y rutas sin autenticar.
 - Un CMS: `nexus.web.wp_enum`, versiones de plugins y `searchsploit`.
 
+### 7. Checklist de vectores: si el login no cede, cambia de vector
+
+Un login que no cede no cierra la rama: cierra *ese* vector. Antes de pasar al
+siguiente servicio, recorre esta lista:
+
+- **Backups y fuente**: `/index.php.bak`, `/config.php.bak`, `/backup.zip`,
+  `/www.zip`, `/app.tar.gz`, `/.env`. Descárgalos con `save_path` y léelos con
+  `nexus.workspace.read` (`nexus.workspace.search` para `password`, `key`,
+  `BEGIN`): un backup suele ser el acceso que el login negaba.
+- **El índice, completo**: ¿quedan rutas del `robots.txt`/`sitemap.xml` sin
+  visitar (`Disallow:`, `Allow:`, cada `<loc>`)? Pídelas todas antes de
+  documentar el callejón.
+- **El CMS**: `nexus.web.wp_enum` para usuarios, plugins y temas, y
+  `nexus.exploit.searchsploit` con el plugin y su versión. Un plugin vulnerable
+  vale más que otra wordlist.
+- **Otro parámetro o método**: el mismo endpoint con otro parámetro, `OPTIONS`,
+  o la API que sirve el front (`/api/`, `/graphql`, `/swagger.json`).
+
+Dos intentos del mismo vector sin hechos nuevos son el límite: el tercero es
+presupuesto perdido. Cuando el puerto 80/443 está agotado, documenta el
+`barrier` y pivota:
+
+```
+nexus.knowledge.record_fact(
+    fact_type="barrier",
+    key="<host>:<puerto>",
+    value={"reason": "web agotada: login sin credenciales, backups e índice revisados"},
+)
+```
+
+Y pasa al siguiente servicio del mapa (`nexus.post.ssh_exec`, `nexus.recon.ftp`,
+SMB): la sala no se cierra por insistir en el puerto 80.
+
 ## La fuerza bruta es el último recurso
 
 **No uses `nexus.cred.bruteforce`, `nexus.web.wp_bruteforce` ni
