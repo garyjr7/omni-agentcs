@@ -99,6 +99,11 @@ class SurfaceEntry:
     status: str = STATUS_PENDING
     verdict: str = ""
     evidence: int = 0
+    #: ``vulnerability`` facts that name this service (verified or not). A branch
+    #: with a vector is not "closed for lack of a way in": the loop refuses to
+    #: write a ``barrier`` over it (see ``ReActCoordinator._close_stalled_branch``),
+    #: because hiding a proven vector behind a dead branch is worse than stalling.
+    vectors: int = 0
 
     @property
     def ref(self) -> str:
@@ -399,6 +404,7 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
                 status=status,
                 verdict=verdict,
                 evidence=evidence,
+                vectors=len(vectors),
             )
         )
 

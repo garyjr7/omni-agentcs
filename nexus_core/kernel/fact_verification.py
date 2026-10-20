@@ -18,7 +18,7 @@ Two invariants this module enforces on the facts it asserts (V1-29, V1-31):
 import re
 import shlex
 from typing import NamedTuple
-from urllib.parse import parse_qs, unquote_plus, urlsplit
+from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlsplit
 
 from .blackboard import Blackboard, is_verified_fact
 
@@ -81,6 +81,34 @@ WEB_COMMAND_PARAMS: tuple[str, ...] = ("c", "cmd", "command", "exec", "run", "sh
 #: its output (the canonical ``uid=<n>(<user>) gid=<n>`` line); it is written by
 #: ``nexus.web.request`` or by ``nexus.shell.exec`` running ``curl``.
 WEB_SHELL_METHOD = "web_command_completed"
+
+#: ``verification_method`` of a vulnerability the *database* confirmed. The
+#: caller's payload ran only if the engine answered with its own error text.
+SQLI_ERROR_METHOD = "http_sql_error"
+
+#: Error text only the database produces when an injected expression executed.
+#: Each entry names the engine and the literal that identifies it -never the
+#: leaked value- so the fact can say "this is injectable, MySQL" without copying
+#: credentials into the board.
+_SQL_ERROR_SIGNATURES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("mysql", re.compile(r"XPATH syntax error:\s*'~")),
+    ("mysql", re.compile(r"You have an error in your SQL syntax", re.I)),
+    ("microsoft sql server",
+     re.compile(r"Unclosed quotation mark after the character string", re.I)),
+    ("microsoft sql server", re.compile(r"Incorrect syntax near", re.I)),
+    ("postgresql", re.compile(r"ERROR:\s+syntax error at or near", re.I)),
+    ("oracle", re.compile(r"ORA-\d{4,5}:", re.I)),
+    ("sqlite", re.compile(r"unrecognized token:.*SQLITE_ERROR", re.I | re.S)),
+)
+
+#: Tokens that make the *request* an injection attempt instead of an ordinary
+#: page load. A stale error printed by a page nobody attacked proves nothing, so
+#: both halves are required: the caller sent a payload and the engine answered.
+_SQLI_PAYLOAD_TOKENS: tuple[str, ...] = (
+    "extractvalue", "updatexml", "information_schema", "union select",
+    "concat(", "or 1=1", "sleep(", "benchmark(", "waitfor delay", "0x7e",
+    "%27", "'",
+)
 
 #: The identity line a command channel prints. Same canonical shape the SSH
 #: branch accepts: the channel is proven by the command that really ran.
@@ -687,6 +715,34 @@ def _session_sid(result):
 SSH_EXEC_CHANNEL_METHODS = ('ssh_exec_completed', 'ssh_exec_sshpass_completed')
 
 
+def _sqli_parameter(url: str) -> str:
+    """Name of the query parameter that carries an injection payload, if any.
+
+    Only a request that *attacks* something can be turned into a finding: the
+    body has to name the engine error and the query string has to show the
+    payload. An unrelated page that happens to display a stale SQL error is left
+    alone, which is what keeps this from becoming a false-positive generator.
+    """
+    query = urlsplit(url).query
+    if not query:
+        return ""
+    if not any(token in query.lower() for token in _SQLI_PAYLOAD_TOKENS):
+        return ""
+    for name, value in parse_qsl(query, keep_blank_values=True):
+        if any(token in value.lower() for token in _SQLI_PAYLOAD_TOKENS):
+            return name
+    return ""
+
+
+def sql_error_signature(text: str) -> tuple[str, str] | None:
+    """``(dbms, indicator)`` when ``text`` carries an engine error only SQL prints."""
+    for dbms, pattern in _SQL_ERROR_SIGNATURES:
+        match = pattern.search(text)
+        if match:
+            return dbms, match.group(0)
+    return None
+
+
 def derive_assertions(tool_id, arguments, result, context):
     if not result.success or not context.invocation_id:
         return []
@@ -874,12 +930,35 @@ def derive_assertions(tool_id, arguments, result, context):
         url = str((arguments or {}).get('url') or output.get('url') or '')
         remote = web_command_from_url(url)
         host = urlsplit(url).hostname or ''
+        body = str(output.get('body_preview') or '')
         if host and remote:
             http_channel_assertions(
                 add, target=host, command=remote,
-                body=str(output.get('body_preview') or ''),
+                body=body,
                 method=WEB_SHELL_METHOD,
             )
+        # An error-based injection is an observation the model cannot invent: the
+        # *database* answered the payload. Without this branch the verifier was
+        # blind to it and the board learned nothing while a joomla run extracted
+        # the admin hash 15 times in 50 turns (run_c71035d9818047eaa80dfd859e887b7c,
+        # 2026-10-20: ``blackboard_delta = 0`` on every turn, 0 findings).
+        parameter = _sqli_parameter(url)
+        signature = sql_error_signature(body) if parameter else None
+        if host and signature:
+            dbms, indicator = signature
+            # The endpoint without its query string: enough for the coverage
+            # ledger to attribute the vector to the right port (``_mentions``
+            # needs the host *and* a scheme/port/service, and the bare host in
+            # the key is not one), and no payload is copied into the board.
+            parts = urlsplit(url)
+            endpoint = f"{parts.scheme or 'http'}://{parts.netloc}{parts.path or '/'}"
+            add('vulnerability', host,
+                {'class': 'error-based SQL injection', 'dbms': dbms,
+                 'parameter': parameter, 'indicator': indicator,
+                 'url': endpoint,
+                 'method': str((arguments or {}).get('method') or 'GET')},
+                f"sqli:{parts.path or '/'}:{parameter}",
+                method=SQLI_ERROR_METHOD)
     elif tool_id == 'nexus.pwn.ret2libc' and result.verification_method == 'ret2libc_root_command':
         target = output.get('target')
         add('privilege', target, {'uid': 0, 'user': 'root'})

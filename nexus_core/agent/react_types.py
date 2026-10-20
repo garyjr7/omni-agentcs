@@ -58,6 +58,18 @@ SKILL_NUDGE_TURNS = 3
 #: run_1052d63f9bba4838902b3aa21bd27d21 (2026-10-19), which cost 9 of the run's
 #: 25 minutes and returned the same empty result.
 BARREN_REPEAT_MIN_SECONDS = 30
+#: Fast calls are governed by the gateway's dedup... except that dedup is keyed
+#: on the *invocation id*, so a new turn is always a new invocation and nothing
+#: stopped an identical cheap call from being replayed every turn. Measured in
+#: run_c71035d9818047eaa80dfd859e887b7c (Joomla, 2026-10-20): three identical
+#: 0.3 s SQLi probes and four identical ``hashcat`` sweeps, 49 barren turns, 0
+#: findings. From this many barren turns, a call whose exact signature already
+#: ran inside the recent window is corrected like a slow one.
+FAST_REPEAT_MIN_NO_PROGRESS = 3
+#: How many recent actions the fast-repeat brake looks back over. A model that
+#: alternates two probes (A, B, A, B) never repeats *adjacently*, so the window
+#: has to be wider than one turn.
+FAST_REPEAT_WINDOW = 6
 #: Emitted once when the repeated-tool streak reaches :data:`SKILL_NUDGE_TURNS`.
 SKILL_NUDGE_EVENT_TYPE = "react.skill_nudge"
 #: Appended to the next prompt when the repeated-tool streak is reached. The
@@ -86,6 +98,24 @@ WEBSHELL_STALL_EVENT_TYPE = "react.webshell_stall"
 #: service while the internal web target was still pending. The hint orders the
 #: next branch; it never changes the plan nor authorizes a tool.
 COVERAGE_PIVOT_EVENT_TYPE = "react.coverage_pivot"
+#: Emitted when the *loop*, not the model, closes a branch. The pivot above asks
+#: the model to record a ``barrier`` fact and move on; when it keeps hammering the
+#: same service instead, the ledger never moves and the run spends its remaining
+#: budget on a branch it was already told to leave. Measured in
+#: run_c71035d9818047eaa80dfd859e887b7c (Joomla, 2026-10-20): the pivot fired at
+#: iteration 7 and, 43 barren turns later, the two services were still listed as
+#: open. The fact is unverified and its ``source`` names the loop, so the operator
+#: can tell an engine decision from a model claim.
+LOOP_BARRIER_EVENT_TYPE = "react.branch_closed"
+#: How many stuck thresholds the loop waits before writing that barrier. The first
+#: threshold is the advisory line; this is the margin the model gets to act on it
+#: before the loop takes the decision itself (the shape of
+#: :data:`TARGET_REACHED_GRACE_TURNS`).
+STALL_BARRIER_MULTIPLIER = 2
+#: Recent actions inspected to decide *which* branch is being hammered. The
+#: attribution must be unanimous: alternating two services is breadth, not a stall
+#: on one, and closing either of them would be a guess.
+STALLED_BRANCH_WINDOW = 6
 #: Emitted once when the board (or the successful output of this run) proves the
 #: flags the objective asked for were captured. From that turn on the prompt
 #: carries :data:`TARGET_REACHED_PROMPT` and the loop counts the tool calls the

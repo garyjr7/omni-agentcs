@@ -63,9 +63,14 @@ from .react_types import (
     SKILL_NUDGE_EVENT_TYPE,
     SKILL_NUDGE_TURNS,
     BARREN_REPEAT_MIN_SECONDS,
+    FAST_REPEAT_MIN_NO_PROGRESS,
+    FAST_REPEAT_WINDOW,
     SMART_BUDGET_EVENT_TYPE,
     WEBSHELL_STALL_EVENT_TYPE,
     COVERAGE_PIVOT_EVENT_TYPE,
+    LOOP_BARRIER_EVENT_TYPE,
+    STALL_BARRIER_MULTIPLIER,
+    STALLED_BRANCH_WINDOW,
     TARGET_REACHED_EVENT_TYPE,
     TARGET_REACHED_FORCED_EVENT_TYPE,
     TARGET_REACHED_GRACE_TURNS,
@@ -492,6 +497,11 @@ class ReActCoordinator:
         self.webshell_hint_emitted = False
         self.coverage_hint = ""
         self.coverage_hint_emitted = False
+        #: ``host:port`` refs the *loop* closed with a barrier fact this run (see
+        #: ``_close_stalled_branch``). Two reasons to keep them: never write the
+        #: same barrier twice, and never let the loop's own reflex read as
+        #: progress -it would reset the streak that made it act.
+        self.closed_branches: set[str] = set()
         self.objective_complete = False
         self.objective_complete_emitted = False
         self.budget_exempt = False
@@ -881,6 +891,117 @@ class ReActCoordinator:
             focus=focus.ref if focus is not None else None,
         )
         self.coverage_hint_emitted = True
+
+    def _stalled_branch(self, coverage: Any) -> Any | None:
+        """The one service the recent actions were aimed at (``None`` if unclear).
+
+        Attribution reads the *arguments* of the last :data:`STALLED_BRANCH_WINDOW`
+        actions through the ledger's own resolver, so it inherits its rules (an
+        explicit port, or a bare ``http(s)://host`` for the scheme default).
+        Unanimity is required: a window that touches two services is breadth, not
+        a stall on one, and closing either of them would be a guess -the loop
+        only acts where the evidence names a single target.
+        """
+        from nexus_core.agent.coverage import focus_entry
+
+        if coverage is None or not getattr(coverage, "entries", None):
+            return None
+        refs: list[str] = []
+        for record in self.actions[-STALLED_BRANCH_WINDOW:]:
+            arguments = record.get("arguments")
+            focus = focus_entry(
+                coverage, arguments if isinstance(arguments, dict) else None
+            )
+            if focus is not None:
+                refs.append(focus.ref)
+        # One attributable call is a sample, not a stall: the loop waits until the
+        # window itself is evidence of insistence.
+        if len(refs) < 2 or len(set(refs)) != 1:
+            return None
+        return coverage.find(refs[0])
+
+    def _close_stalled_branch(self) -> str | None:
+        """Write the ``barrier`` the pivot ordered and the model never wrote.
+
+        The advisory line tells the model to close a dead branch with
+        ``nexus.knowledge.record_fact``; measured in
+        ``run_c71035d9818047eaa80dfd859e887b7c`` (Joomla, 2026-10-20) that text
+        was ignored for 43 turns while the ledger kept the two services as open
+        work, so nothing in the planner or the prompt could move to the next
+        branch. From :data:`STALL_BARRIER_MULTIPLIER` stuck thresholds the loop
+        takes the decision: one ``barrier`` fact on the branch the recent actions
+        unanimously targeted, unverified and attributed to ``react.loop``.
+
+        Three refusals keep it honest:
+
+        * it acts only when the recent window names a single service (see
+          ``_stalled_branch``): closing one of two hammered branches is a guess;
+        * a branch with a registered ``vulnerability`` is not closed -hiding a
+          proven vector behind a dead branch is worse than stalling, and the
+          ledger would then send the run to a port the vector does not live on;
+        * a branch the ledger already marks ``descartado`` (or one this loop
+          already closed) is left alone: the correction is idempotent.
+
+        ``build_coverage`` reopens a closed branch when a *newer* vulnerability
+        appears on it, so a later finding still wins over this verdict.
+        """
+        from nexus_core.agent.coverage import STATUS_CLOSED
+
+        snapshot = getattr(self, "snapshot", None)
+        entry = self._stalled_branch(getattr(snapshot, "coverage", None))
+        if entry is None or entry.status == STATUS_CLOSED:
+            return None
+        if entry.ref in self.closed_branches or entry.vectors:
+            return None
+        if not self.engagement_id or not getattr(self, "store", None):
+            return None
+        reason = (
+            "el bucle cerró la rama: "
+            f"{self.consecutive_no_progress} turnos consecutivos sin hechos nuevos "
+            f"sobre {entry.label}"
+        )
+        try:
+            from nexus_core.kernel.blackboard import Blackboard
+
+            Blackboard(self.store).record(
+                tenant_id=self.tenant_id,
+                engagement_id=self.engagement_id,
+                fact_type="barrier",
+                key=entry.ref,
+                value={
+                    "reason": reason,
+                    "source": "loop",
+                    "barren_turns": int(self.consecutive_no_progress),
+                    "last_tools": self._last_tools(),
+                },
+                source="react.loop",
+                created_by="react.loop",
+                verified=False,
+            )
+        except Exception:  # noqa: BLE001 - memory must never abort a run
+            return None
+        self.closed_branches.add(entry.ref)
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            LOOP_BARRIER_EVENT_TYPE,
+            {
+                "iteration": self.iteration,
+                "phase": str(getattr(self.plan, "current", "") or ""),
+                "branch": entry.ref,
+                "label": entry.label,
+                "barren_turns": int(self.consecutive_no_progress),
+                "last_tools": self._last_tools(),
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="branch_closed",
+            decision="degrade",
+            branch=entry.ref,
+            barren_turns=int(self.consecutive_no_progress),
+        )
+        return entry.ref
 
     def _note_completed_turn(self) -> None:
         """Record that the phase of this turn has been *current* once more (V1-46).
@@ -2090,17 +2211,51 @@ class ReActCoordinator:
             return None
         if self.consecutive_no_progress <= 0:
             return None
-        if self.last_tool_elapsed_ms < BARREN_REPEAT_MIN_SECONDS * 1000:
-            return None
-        signature = previous.get("invocation_signature")
-        if not signature:
-            return None
+        current = _invocation_signature(self.action.tool_id, self.action.arguments)
         result = previous.get("tool_result")
-        if not isinstance(result, dict) or not result.get("success"):
+        if isinstance(result, dict) and result.get("outcome") == "scope_denied":
+            # A denied target never ran, so it produced no work to repeat: that
+            # case belongs to the scope-insistence streak, which only counts the
+            # same target consecutively (alternating two denied hosts is a
+            # first-and-first, not an insistence).
             return None
-        if signature != _invocation_signature(self.action.tool_id, self.action.arguments):
-            return None
-        return str(self.action.tool_id)
+        if (
+            previous.get("invocation_signature") == current
+            and isinstance(result, dict)
+            and result.get("success")
+            and self.last_tool_elapsed_ms >= BARREN_REPEAT_MIN_SECONDS * 1000
+        ):
+            return str(self.action.tool_id)
+        # The light path: a *fast* call is not automatically harmless. The
+        # gateway dedup this docstring used to defer to is keyed on the
+        # invocation id, so every turn is a fresh invocation and an identical
+        # cheap probe is never deduplicated. Measured in
+        # run_c71035d9818047eaa80dfd859e887b7c (Joomla, 2026-10-20): the same
+        # 0.3 s SQLi URL three times and the same ``hashcat`` sweep four times,
+        # across 49 barren turns and 0 findings. From
+        # ``FAST_REPEAT_MIN_NO_PROGRESS`` barren turns, a signature that already
+        # ran inside the recent window gets the same correction the slow one
+        # gets: after three turns with nothing new, re-sending the same request
+        # is the loop, not a retry. A signature that is not in the window and any
+        # turn that added a verified fact are untouched.
+        if (
+            self.consecutive_no_progress >= FAST_REPEAT_MIN_NO_PROGRESS
+            and self._signature_occurrences(current) >= 1
+        ):
+            return str(self.action.tool_id)
+        return None
+
+    def _signature_occurrences(self, signature: str) -> int:
+        """How many of the last :data:`FAST_REPEAT_WINDOW` actions used ``signature``.
+
+        Wider than the immediately preceding turn because the measured loop
+        alternated two probes (A, B, A, B) and so never repeated adjacently.
+        Entries synthesised by a correction carry no signature and are skipped.
+        """
+        recent = self.actions[-FAST_REPEAT_WINDOW:]
+        return sum(
+            1 for entry in recent if entry.get("invocation_signature") == signature
+        )
 
     async def _execute_tool(self) -> Transition:
         repeated_tool = self._repeated_failed_action()
@@ -2532,6 +2687,19 @@ class ReActCoordinator:
                     continue
                 for key, value in bucket.items():
                     counts[str(key)] = counts.get(str(key), 0) + int(value or 0)
+            if self.closed_branches:
+                # The barriers the *loop* wrote are its own reflex, not something
+                # the run learned: counting them as progress would reset the very
+                # streak that made the loop act, and the next branch would get a
+                # free margin of barren turns. They are unverified, so
+                # ``summary`` files them under ``leads``; subtracting here keeps
+                # the delta honest (a barrier the model wrote still counts, as
+                # the model following the instruction *is* progress).
+                remaining = max(0, counts.get("barrier", 0) - len(self.closed_branches))
+                if remaining:
+                    counts["barrier"] = remaining
+                else:
+                    counts.pop("barrier", None)
             return counts
         except Exception:  # noqa: BLE001 - telemetry must never abort a run
             return None
@@ -2557,6 +2725,11 @@ class ReActCoordinator:
         threshold = self.stuck_threshold
         if threshold <= 0 or self.consecutive_no_progress < threshold:
             return
+        # The first threshold is the advisory line; from the second one the loop
+        # stops asking and closes the branch itself, because the measured stall
+        # outlived eight advisory events (see ``_close_stalled_branch``).
+        if self.consecutive_no_progress >= threshold * STALL_BARRIER_MULTIPLIER:
+            self._close_stalled_branch()
         if self.consecutive_no_progress % threshold:
             return
         self.context.event(
