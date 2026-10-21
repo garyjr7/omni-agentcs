@@ -203,6 +203,7 @@ class OmniSession:
         llm_client: Any = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         *,
+        budget_tokens: int | None = None,
         agent_id: str = DEFAULT_AGENT_ID,
         operator_id: str | None = None,
         input_reader: Callable[[str], str] | None = None,
@@ -232,6 +233,9 @@ class OmniSession:
             self.max_iterations = max(1, int(max_iterations))
         except (TypeError, ValueError):
             self.max_iterations = DEFAULT_MAX_ITERATIONS
+        #: R1: ``--budget-tokens``. ``None`` derives the ceiling from
+        #: ``max_iterations``; ``0`` keeps its documented "unlimited" meaning.
+        self.budget_tokens = None if budget_tokens is None else int(budget_tokens)
         self.agent_id = agent_id
         self.operator_id = operator_id or default_operator_id()
         self.input_reader = input_reader
@@ -1139,6 +1143,11 @@ class OmniSession:
             "objective": objective,
             "engagement_id": self.engagement_id,
             "max_iterations": self.max_iterations,
+            **(
+                {"budget_tokens": self.budget_tokens}
+                if self.budget_tokens is not None
+                else {}
+            ),
             "agent_id": self.agent_id,
             "identity": self.agent_identity_payload,
             "permissions": list(self.permissions),

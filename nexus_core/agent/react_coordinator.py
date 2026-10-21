@@ -38,6 +38,7 @@ from .react_types import (
     SUBAGENT_SOFT_LIMIT_EVENT_TYPE,
     OBJECTIVE_COMPLETE_EVENT_TYPE,
     MAX_CONSECUTIVE_TOOL_FAILURES,
+    MAX_FREE_ARGUMENT_REJECTIONS,
     MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE,
     TOOL_UNAVAILABLE_EVENT_TYPE,
     PHASE_TIMEOUT_EVENT_TYPE,
@@ -101,6 +102,7 @@ from .react_support import (
     repeated_action_correction,
     barren_repeat_correction,
     _invocation_signature,
+    MEASURED_TOKENS_PER_TURN,
     _budget_tokens,
     _budget_used,
     subagent_budget_subject,
@@ -412,6 +414,9 @@ class ReActCoordinator:
         self.engagement_plan_text = ""
         from nexus_core.kernel.scope_loader import scope_signing_secret
 
+        #: R2: skills whose body this run already delivered to the prompt. From
+        #: the next successful turn the block carries the index line only.
+        self.skill_bodies_sent: set[str] = set()
         self.active_skills, refused_skills = activate_skills(
             [] if self.isolated_child else self.payload.get("active_skills") or [],
             project_root,
@@ -458,7 +463,31 @@ class ReActCoordinator:
         )
         if self.cancel_event is None:
             self.cancel_event = getattr(self.context, "cancel_event", None)
-        self.budget = _budget_tokens(self.payload, self.budget_tokens)
+        # R1: the token ceiling follows the iteration ceiling. A run asked for 50
+        # turns with a fixed 250k dies at ~21 of them (HackPark V12); the
+        # operator's ``--max-iterations`` is a promise the budget has to keep.
+        self.budget = _budget_tokens(
+            self.payload, self.budget_tokens, max_iterations=self.config.max_iterations
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.budget_plan",
+            {
+                "budget_tokens": self.budget,
+                "max_iterations": self.config.max_iterations,
+                "tokens_per_turn_estimate": MEASURED_TOKENS_PER_TURN,
+                "budget_turns": (
+                    self.budget // MEASURED_TOKENS_PER_TURN if self.budget else 0
+                ),
+                "source": (
+                    "explicit"
+                    if self.budget_tokens is not None
+                    or self.payload.get("budget_tokens") not in (None, "")
+                    else "derived"
+                ),
+            },
+        )
         history = memory.load_history(self.store, self.tenant_id, self.conversation_id, limit=500)
         if not any(
             (
@@ -531,6 +560,10 @@ class ReActCoordinator:
         self.premature_rejections = 0
         self.completion_objections = []
         self.consecutive_no_progress = 0
+        #: R7: consecutive turns rejected for their *arguments* (schema, flag,
+        #: placeholder, ``invalid_*`` verdict). They are friction, not a target
+        #: verdict, so they do not move the pivot until the free budget is spent.
+        self.argument_rejections = 0
         self.stuck_threshold = stuck_threshold()
         self.same_tool_no_progress = 0
         self.last_turn_tool = None
@@ -1063,6 +1096,12 @@ class ReActCoordinator:
                     "source": "loop",
                     "barren_turns": int(self.consecutive_no_progress),
                     "last_tools": self._last_tools(),
+                    # R6: this barrier carries its provenance. The vector *was*
+                    # attempted (the measured stall is the attempt), so it may
+                    # close the branch; a model-written barrier without a tested
+                    # attempt may not (see ``coverage.barrier_is_conclusive``).
+                    "sweep_attempted": True,
+                    "outcome": "stalled",
                 },
                 source="react.loop",
                 created_by="react.loop",
@@ -1571,6 +1610,13 @@ class ReActCoordinator:
             subagent=self.subagent,
             project_instruction=self.project_instruction,
             active_skills=self.active_skills,
+            # R2: the body travels once. Marked in ``_decode_action`` (after a
+            # successful decode) so a JSON retry still sees the recipe.
+            skill_bodies=frozenset(
+                skill.name
+                for skill in self.active_skills
+                if skill.name not in self.skill_bodies_sent
+            ),
             store=self.store,
             tenant_id=self.tenant_id,
             no_progress=self.consecutive_no_progress,
@@ -1811,6 +1857,10 @@ class ReActCoordinator:
             tool_id=getattr(self.action, "tool_id", None),
             arguments=getattr(self.action, "arguments", None),
         )
+        # R2: the bodies that travelled in this turn's prompt were delivered.
+        # Marking here (not at render time) keeps them available to a retry after
+        # an invalid JSON answer.
+        self.skill_bodies_sent.update(skill.name for skill in self.active_skills)
         self.context.event(
             "react.action",
             iteration=self.iteration,
@@ -2930,6 +2980,26 @@ class ReActCoordinator:
         except Exception:  # noqa: BLE001 - telemetry must never abort a run
             return None
 
+    def _turn_was_argument_rejection(self) -> bool:
+        """Whether the last turn failed on its arguments, not on the target.
+
+        Measured in HackPark V12 (2026-10-21, iterations 13-15): ``form_url``
+        with a query string, a missing ``^PASS^`` and an invalid
+        ``failure_string`` -three rejections of the *call*, none of them a
+        statement about the login page- raised ``consecutive_no_progress`` to 5,
+        fired ``react.stuck_detected`` and pushed the run to RDP. The target had
+        not been tested even once.
+        """
+        observation = getattr(self, "observation", None)
+        if not isinstance(observation, dict) or observation.get("success"):
+            return False
+        if observation.get("input_rejected"):
+            return True
+        outcome = str(observation.get("outcome") or "").strip().lower()
+        if outcome.startswith("invalid_"):
+            return True
+        return str(observation.get("failure_kind") or "") == "input"
+
     def _track_no_progress(self) -> None:
         """Count turns without a new verified fact and signal a stuck loop.
 
@@ -2945,6 +3015,19 @@ class ReActCoordinator:
         delta = self.telemetry.current_delta()
         if delta is None:
             return
+        # R7: an argument rejection is friction (it already carries its own
+        # telemetry flag), never a reason to abandon the branch. The first two
+        # consecutive ones leave the pivot counter untouched; from the third the
+        # model is guessing, and the turn counts like any other barren one so a
+        # run cannot loop on malformed calls until the budget dies.
+        if self._turn_was_argument_rejection():
+            self.argument_rejections += 1
+            if self.argument_rejections <= MAX_FREE_ARGUMENT_REJECTIONS:
+                self.telemetry.note_no_progress(consecutive=self.consecutive_no_progress)
+                self._track_repeated_tool(delta)
+                return
+        else:
+            self.argument_rejections = 0
         self.consecutive_no_progress = self.consecutive_no_progress + 1 if delta <= 0 else 0
         self.telemetry.note_no_progress(consecutive=self.consecutive_no_progress)
         self._track_repeated_tool(delta)
@@ -3180,6 +3263,12 @@ class ReActCoordinator:
                 else None
             ),
             completion_objections=list(self.completion_objections),
+            budget_tokens=int(self.budget or 0),
+            budget_used=(
+                _budget_used(self.store, self.tenant_id, self.run_id)
+                if self.budget
+                else 0
+            ),
             completion_verified=(
                 bool(self.completion_verified_override)
                 if self.completion_verified_override is not None

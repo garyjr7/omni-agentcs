@@ -57,6 +57,20 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="máximo de iteraciones del bucle ReAct (default: 12)",
     )
+    # R1: the token ceiling used to be a fixed 250k no matter what
+    # ``--max-iterations`` said, so a 50-turn run died at ~21. The budget is now
+    # derived from the iteration ceiling; this flag is the explicit override
+    # (``0`` keeps its documented "unlimited" meaning).
+    parser.add_argument(
+        "--budget-tokens",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "techo de tokens del run (default: derivado de --max-iterations; "
+            "0 = sin límite)"
+        ),
+    )
     # P2 (Fase 3.7): pin the subagent profile. The loop already accepted
     # ``payload["subagent"]``; without a flag an operator whose profile lacked
     # the right tool had no way to retry (``--resume``) with the right one.
@@ -523,6 +537,7 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
         engagement=engagement,
         llm_client=llm_client,
         max_iterations=args.max_iterations,
+        budget_tokens=args.budget_tokens,
         run_id=args.resume,
         trust_mode=args.trust_mode,
         # V1-54: the retry policy of an ``unknown`` invocation. It only reaches
@@ -559,7 +574,11 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
     if objective and headless_mode:
         from .headless import run_headless
 
-        return int(run_headless(session, objective, mode=headless_mode, max_iterations=args.max_iterations))
+        return int(run_headless(
+            session, objective, mode=headless_mode,
+            max_iterations=args.max_iterations,
+            budget_tokens=args.budget_tokens,
+        ))
     if objective:
         result = session.run_objective(objective)
         if result is None:

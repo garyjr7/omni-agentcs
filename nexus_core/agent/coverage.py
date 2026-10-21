@@ -300,6 +300,54 @@ def _newest(facts: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     return max(zip(stamps, facts), key=lambda pair: pair[0])[1]
 
 
+#: Outcomes that are *not* a verdict about the target: the tool refused the
+#: call (bad argument, schema, policy) or could not reach the backend. None of
+#: them tested the vector, so none of them may close a branch (R6).
+INCONCLUSIVE_BARRIER_OUTCOMES: frozenset[str] = frozenset(
+    {
+        "invalid_arguments",
+        "invalid_failure_string",
+        "invalid_csrf",
+        "unavailable",
+        "rejected",
+        "denied",
+        "validation_error",
+        "partial",
+        "timeout",
+    }
+)
+
+
+def barrier_is_conclusive(fact: Mapping[str, Any]) -> bool:
+    """Whether a ``barrier`` may close its branch.
+
+    A barrier is the agent's *decision to stop*, not evidence about the target,
+    so it needs provenance. Measured in HackPark V12 (2026-10-21, iteration 17):
+    after two **argument** rejections the model recorded a barrier saying "el
+    bruteforce no ha devuelto sesión" about a sweep that never ran
+    (``sweep_attempted: false``); the ledger marked :80 ``descartado`` and the
+    pivot sent the run to RDP, which was never a vector.
+
+    Rules, in order:
+
+    * an explicit ``sweep_attempted: false`` means nothing was tried -> the
+      branch stays open;
+    * an ``outcome`` that is a rejection/infrastructure failure -> stays open;
+    * anything else (including a fact recorded before this field existed) keeps
+      the historical behaviour and closes the branch.
+    """
+    raw_value = fact.get("value")
+    value: Mapping[str, Any] = raw_value if isinstance(raw_value, Mapping) else {}
+    if value.get("sweep_attempted") is False:
+        return False
+    outcome = str(value.get("outcome") or "").strip().lower()
+    if not outcome:
+        return True
+    if outcome.startswith("invalid_"):
+        return False
+    return outcome not in INCONCLUSIVE_BARRIER_OUTCOMES
+
+
 def _barrier_reason(fact: Mapping[str, Any]) -> str:
     """Human-readable reason of a barrier fact (always something usable)."""
     raw_value = fact.get("value")
@@ -353,6 +401,10 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
             fact_type = str(fact.get("fact_type") or "")
             if fact_type == "barrier":
                 if not (_same_ref(fact, entry) or _mentions(blob, entry)):
+                    continue
+                # R6: a barrier that does not prove an attempt is a hypothesis,
+                # not a closed branch (V12, HackPark iteration 17).
+                if not barrier_is_conclusive(fact):
                     continue
                 barriers.append(fact)
             elif not _mentions(blob, entry):

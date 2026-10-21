@@ -7,6 +7,12 @@ from nexus_core.kernel.domain_dto import ApprovalDecisionDTO
 
 DEFAULT_AGENT_ID = "omni"
 MAX_CONSECUTIVE_TOOL_FAILURES = 3
+#: R7: argument rejections that do not count towards the pivot. A malformed call
+#: (a query string in ``form_url``, a missing ``^PASS^``, a forbidden nmap flag)
+#: is the model's mistake, not a verdict from the target, and must not close the
+#: branch it was trying. Two of them are free; from the third the model is
+#: guessing at the same door and the normal no-progress counter resumes.
+MAX_FREE_ARGUMENT_REJECTIONS = 2
 #: A model answer that is not the JSON object the contract asks for is an
 #: *answer* problem, not a dead provider. The loop injects a correction and asks
 #: again; after this many turns in a row it gives up and closes the run. Measured
@@ -340,3 +346,9 @@ class ReActResult:
     #: ``premature_completion``.
     completion_objections: list[str] = field(default_factory=list)
     completion_verified: bool = False
+    #: R1: the token ceiling this run actually ran under (``0`` = unlimited) and
+    #: what it booked. ``run.complete`` publishes them next to the derived
+    #: ``tokens_per_turn``/``budget_turns`` so an operator can see whether the
+    #: ceiling or the model was the limit.
+    budget_tokens: int = 0
+    budget_used: int = 0

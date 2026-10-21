@@ -98,6 +98,19 @@ async def record_fact_handler(arguments: dict, context: RunContext) -> ToolResul
     raw_value = arguments.get("value")
     # Bind once: calling ``get`` twice in a conditional defeats static narrowing.
     value: dict[str, Any] = raw_value if isinstance(raw_value, dict) else {}
+    if fact_type == "barrier":
+        # R6: a barrier closes a branch only if the run actually tried the
+        # vector. The model writes this fact *after* a failure, so by default it
+        # cannot prove an attempt -measured in HackPark V12 (2026-10-21): the
+        # iteration-17 barrier claimed the brute force had returned no session
+        # when the sweep had been refused before testing one password
+        # (``sweep_attempted: false``), and the ledger closed the only working
+        # branch. The tools that do run the attempt (``cred.bruteforce`` after a
+        # finished wordlist, the loop's own ``_close_stalled_branch``) stamp the
+        # field themselves.
+        value = {**value}
+        value.setdefault("sweep_attempted", False)
+        value.setdefault("provenance", "model_claim")
     # Neither ``source`` nor ``verified`` is the model's to grant: both are
     # provenance the engine owns, and a model that could write
     # ``source="deterministic-verifier"`` would be promoting its own guess. The

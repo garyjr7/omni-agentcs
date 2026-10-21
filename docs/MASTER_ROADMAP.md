@@ -607,11 +607,54 @@ El roadmap es el contrato de salida a producción, no un diario: **cada run que
 se cierra actualiza esta sección y sus métricas en el mismo commit**. Una pared
 medida se convierte en capacidad genérica (validator, `next_steps`, tool
 gobernada) con su test de aceptación; una sala no se «arregla» con un caso
-especial. El orden sigue siendo P0 → P1 → P2/P3; V10 y V11 no abren fases
+especial. El orden sigue siendo P0 → P1 → P2/P3; V10, V11 y V12 no abren fases
 nuevas, cierran las paredes que impedían recorrer la cadena completa. Lo que
 falta para producción no es una tool más: es la aceptación de campo contra un
 objetivo real (panel ASP.NET con `SameSite`/`Secure`, `VIEWSTATE` rotado) y la
 decisión de red para P2 (MCP de lectura).
+
+### 5.12 Run V12 contra HackPark — presupuesto y tolerancia a fallos (2026-10-21) — **EJECUTADA**
+
+Run `run_66db1fce65b2465eb799a53d0f9299b2` (`/tmp/hackpark-run-v12.ndjson`,
+21 iteraciones, 804 s). El PoC llegó al objetivo por segunda vez, pero el run
+murió con `status=budget_exceeded` **antes de probar una contraseña**: el barrido
+llegó a 75 de 5 000 intentos y el motor le dijo al agente `unavailable`.
+
+| Muro medido | Evidencia | Fix implementado | Test de aceptación |
+|---|---|---|---|
+| `--max-iterations 50` compró **21 turnos** | 252 294 / 250 000 tokens; `react.budget_exceeded` en la iteración 21 (suma de `prompt_tokens` = 248 205, ~11 800/turno) | El techo se **deriva** del techo de iteraciones: `max_iterations × 11 800 × 1,2`, nunca por debajo de 250 000; `--budget-tokens` como override explícito (`0` = ilimitado) y `run.complete` publica `tokens_per_turn`, `budget_turns`, `tokens_spent`, `budget_tokens` | `test_the_budget_follows_the_iteration_ceiling` (50 ⇒ 708 000), `test_the_default_iteration_count_keeps_the_reviewed_ceiling`, `test_the_run_publishes_tokens_per_turn_and_budget_turns` |
+| Un `URLError: timed out` mató el barrido a los 92 s | `cred_run_…_2u0m4n5h`: 75 intentos en 55 s (1,36/s); el cliente salió con `{"ok": false, "error": "URLError: <urlopen error timed out>"}` y el handler lo clasificó `unavailable` | El cliente CSRF reintenta la **misma** contraseña una vez y sigue con la siguiente; 10 entradas perdidas seguidas cortan el slice con `outcome=partial` + `next_start_at`, nunca `unavailable` si hubo al menos un intento; `negative` exige que **toda** la slice se probó (`tested >= attempts`); evidencia con `request_timeouts` y `attempts_per_second` | `test_a_cut_request_does_not_abort_the_sweep` (1 420 entradas, 1 de cada 10 peticiones cortada, la última es la buena), `test_a_client_that_tested_something_is_partial_not_unavailable` |
+| La barrera del modelo cerró la única rama viva | Iteración 17 (`barrier` sobre `10.0.0.1:80`) con `sweep_attempted: false`; `coverage` la leyó como `descartado` y el pivote mandó el run a RDP 3389 | `barrier` lleva procedencia: `record_fact` sella `sweep_attempted: false` + `provenance: model_claim`; `cred.bruteforce` (wordlist agotada) y el cierre del bucle sellan `true` + `outcome`; `coverage.barrier_is_conclusive` ignora la barrera con `sweep_attempted: false`, `invalid_*`, `unavailable`, `partial`, `timeout`, `rejected` | `test_the_v12_barrier_does_not_close_the_branch`, `test_a_finished_sweep_still_closes_its_branch`, `test_an_inconclusive_barrier_never_closes_a_branch[7 casos]`, `test_record_fact_stamps_the_provenance_of_a_model_barrier` |
+| Dos rechazos **de argumento** dispararon el pivote | Iteraciones 13-14: `form_url` con query, `^PASS^` ausente; iteración 15 `invalid_failure_string`; `consecutive_no_progress` = 5 → `react.stuck_detected` | Un rechazo de argumento (schema, `ValueError`, `invalid_*`, `input_rejected`) no mueve `consecutive_no_progress` durante `MAX_FREE_ARGUMENT_REJECTIONS = 2`; desde el tercero cuenta, para que un modelo que adivina no queme el run | `test_two_argument_rejections_do_not_move_the_pivot`, `test_rejections_past_the_free_budget_still_count` |
+| La skill activa se reenviaba entera cada turno | `render_skills` incluía el cuerpo (18 KB) en **todos** los prompts cuando la skill venía de `--skill` | El cuerpo viaja una vez (`skill_bodies`); después el bloque lleva el índice y el `sha256`; el marcado ocurre tras un decode válido para que un reintento por JSON inválido siga viendo la receta; recargar con `nexus.skill.load` la vuelve a entregar | `test_a_skill_body_is_rendered_only_when_it_is_due`, `test_the_prompt_carries_an_active_skill_body_only_once` |
+
+**Corrección de la medición (importante):** en el análisis previo se atribuyó a la
+skill un 35 % del presupuesto. Los artefactos no lo sostienen: el cuerpo de 18 KB
+se pagó **una vez** en la iteración 3 (+3 970 tokens) y `bounded_context`
+(6 000 chars) lo dejó fuera a partir de la 4. El suelo por turno (~9-10 k) es
+prompt de sistema + catálogo + hechos + historial, no la skill. R2 sigue siendo
+un arreglo real (con `--skill` el cuerpo sí se repetía), pero **el turno extra
+viene de R1**, no de aquí: se documenta para no vender una ganancia que no existe.
+
+**Lo que estos fixes NO resuelven (medido, no supuesto):**
+
+- **Throughput del barrido:** 1,36 intentos/s (GET+POST por intento). Con
+  `1qaz2wsx` en la línea **1 420** de `rockyou.txt` hacen falta ~1 041 s; el techo
+  por defecto es 885 s (900 − margen). El run necesita `timeout_seconds ≥ 1100`
+  (o un `GET` reutilizado por slice): es una decisión de política del handler, no
+  un bug, y queda abierta como pared de capacidad.
+- **La sonda CSRF no reporta `hidden_fields`** (el payload de `mode=probe` no los
+  incluye), así que `_probe_verdict` siempre ve `[]` y el handler no puede
+distinguir "el panel no emite tokens" de "el cliente no los buscó". Se corrigió la
+  parte del script que sí los emite; falta que el handler actúe sobre
+  `hidden_fields == []` con un `invalid_csrf` explícito.
+- **`shell_url` sigue siendo del operador** (§5.10): la cadena autónoma se detiene
+  en la subida del tema si nadie aporta la ruta.
+- El barrido CSRF sigue siendo secuencial y no paraleliza por diseño (el viewstate
+  va atado a su GET).
+
+Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **3 836 passed /
+53 skipped**; `make lint` limpio; `make typecheck` sin errores en 13 ficheros.
 
 ---
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Mapping, Set
 from nexus_core.kernel.control_store import ControlStore
 from nexus_core.kernel.runtime import ExecutionContext
 from nexus_core.kernel.models import ToolDefinition
@@ -283,6 +283,10 @@ class ContextBuilder:
         subagent: SubAgentDefinition,
         project_instruction: ProjectInstruction | None,
         active_skills: list[Skill],
+        #: Skills whose body must travel this turn (R2). ``None`` renders every
+        #: body, which is the historical behaviour; the loop passes only the
+        #: skills it has not delivered yet.
+        skill_bodies: Set[str] | None = None,
         store: ControlStore,
         tenant_id: str,
         no_progress: int = 0,
@@ -318,7 +322,7 @@ class ContextBuilder:
             coverage_summary=render_coverage(snapshot.coverage),
             subagent_summary=subagent.describe(),
             project_summary=render_project_instruction(project_instruction),
-            skills_summary=render_skills(active_skills),
+            skills_summary=render_skills(active_skills, bodies=skill_bodies),
             # The catalogue is read on every turn, so a skill created during the
             # engagement is loadable without restarting the run (WP4).
             skill_index=render_skill_index(discover_skills(secret=_skills_secret())),

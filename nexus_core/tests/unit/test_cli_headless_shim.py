@@ -35,9 +35,13 @@ def no_repl(monkeypatch):
 def _capture(monkeypatch):
     seen = {}
 
-    def fake_run_headless(session, objective, *, mode, max_iterations=None):
+    def fake_run_headless(
+        session, objective, *, mode, max_iterations=None, budget_tokens=None
+    ):
         seen["objective"] = objective
         seen["mode"] = mode
+        seen["max_iterations"] = max_iterations
+        seen["budget_tokens"] = budget_tokens
         seen["use_tui"] = session._tui.use_tui
         seen["active_skills"] = list(session.active_skills)
         return 0
@@ -75,6 +79,17 @@ def test_stream_json_with_objective_is_headless_too(monkeypatch, no_repl):
     seen = _capture(monkeypatch)
     omni.main(["--objective", "Escanea x", "--stream-json", "--no-wizard"])
     assert seen["mode"] == "stream"
+
+
+def test_run_shim_forwards_the_explicit_token_budget(monkeypatch, no_repl):
+    """R1: ``--budget-tokens`` reaches the loop; absent, the loop derives it."""
+    seen = _capture(monkeypatch)
+    omni.main(["run", "Escanea x", "--max-iterations", "50", "--no-wizard"])
+    assert seen["max_iterations"] == 50
+    assert seen["budget_tokens"] is None
+
+    omni.main(["run", "Escanea x", "--budget-tokens", "900", "--no-wizard"])
+    assert seen["budget_tokens"] == 900
 
 
 def test_unknown_subcommand_fails_without_running_anything(monkeypatch, no_repl):

@@ -80,6 +80,26 @@ def exit_code_for(status, completion_verified=False):
     return 1
 
 
+def token_accounting(result: Any) -> dict[str, int]:
+    """Per-turn cost and how many turns the ceiling really buys (R1).
+
+    ``run.complete`` used to publish only ``iterations``, so an operator could not
+    tell a run that spent its budget from one that spent its iterations. The
+    number is measured from this run's own telemetry (never a global constant),
+    and ``budget_turns`` is what the ceiling bought at that price.
+    """
+    turns = [turn for turn in (getattr(result, "turns", None) or []) if isinstance(turn, dict)]
+    spent = sum(int(turn.get("total_tokens") or 0) for turn in turns)
+    per_turn = int(round(spent / len(turns))) if turns and spent else 0
+    budget = int(getattr(result, "budget_tokens", 0) or 0)
+    return {
+        "tokens_per_turn": per_turn,
+        "tokens_spent": int(getattr(result, "budget_used", 0) or spent),
+        "budget_tokens": budget,
+        "budget_turns": (budget // per_turn) if (budget and per_turn) else 0,
+    }
+
+
 def result_payload(result: Any, run_id: str) -> dict[str, Any]:
     """The final ``run.complete`` object (also used by ``--json``)."""
     return {
@@ -96,6 +116,7 @@ def result_payload(result: Any, run_id: str) -> dict[str, Any]:
         "subagent_id": getattr(result, "subagent_id", None),
         "conversation_id": getattr(result, "conversation_id", ""),
         "plan": getattr(result, "plan", None),
+        **token_accounting(result),
     }
 
 
@@ -244,6 +265,7 @@ def run_headless(
     mode: str = "json",
     stream: TextIO | None = None,
     max_iterations: int | None = None,
+    budget_tokens: int | None = None,
     preflight: PreflightVerdict | None = None,
 ) -> int:
     """Run one objective headlessly; return the process exit code.
@@ -268,6 +290,7 @@ def run_headless(
                 mode=mode,
                 stream=stream if stream is not None else machine_stream(),
                 max_iterations=max_iterations,
+                budget_tokens=budget_tokens,
                 preflight=preflight,
             )
     return _run_headless(
@@ -276,6 +299,7 @@ def run_headless(
         mode=mode,
         stream=stream,
         max_iterations=max_iterations,
+        budget_tokens=budget_tokens,
         preflight=preflight,
     )
 
@@ -287,6 +311,7 @@ def _run_headless(
     mode: str = "json",
     stream: TextIO | None = None,
     max_iterations: int | None = None,
+    budget_tokens: int | None = None,
     preflight: PreflightVerdict | None = None,
 ) -> int:
     """Body of :func:`run_headless` (already inside the stdout guard)."""
@@ -347,6 +372,13 @@ def _run_headless(
             "session_id": session.conversation_id,
             "engagement_id": session.engagement_id,
             "max_iterations": iterations,
+            # R1: the explicit ceiling (``--budget-tokens``). Absent, the loop
+            # derives it from ``max_iterations`` so the two ceilings agree.
+            **(
+                {"budget_tokens": int(budget_tokens)}
+                if budget_tokens is not None
+                else {}
+            ),
             "agent_id": session.agent_id,
             "identity": session.agent_identity_payload,
             "permissions": list(session.permissions),
@@ -479,5 +511,6 @@ __all__ = [
     "machine_stream",
     "result_payload",
     "run_headless",
+    "token_accounting",
     "write_line",
 ]

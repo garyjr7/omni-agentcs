@@ -701,15 +701,53 @@ def _observation_payload(invocation: dict[str, Any]) -> dict[str, Any]:
 
 
 #: WP2 global ceiling of one run. It is the only budget that can stop the loop;
-#: the per-subagent numbers are soft telemetry. 250k is the plan's default.
+#: the per-subagent numbers are soft telemetry. 250k is the plan's *floor*.
 DEFAULT_RUN_BUDGET_TOKENS = 250_000
 
+#: Tokens one ReAct turn costs (system prompt + catalogue + bounded history +
+#: completion). Measured on HackPark V12 (2026-10-21): 252 294 tokens over 21
+#: iterations = 12 014/turn. Kept slightly below the measurement so a normal run
+#: does not underestimate its own cost.
+MEASURED_TOKENS_PER_TURN = 11_800
+#: Head-room over the turn cost. A run that plans for exactly ``N`` turns dies
+#: on the first retry; 20 % buys two extra turns at ``max_iterations=10``.
+BUDGET_TURNS_MARGIN = 1.2
 
-def _budget_tokens(payload: dict[str, Any], explicit: int | None) -> int:
+
+def budget_tokens_for_iterations(max_iterations: Any) -> int:
+    """Token budget that is coherent with the iteration ceiling.
+
+    The two ceilings used to be independent: ``--max-iterations 50`` asked for 50
+    turns while the run still had a fixed 250 000-token budget, which at the
+    measured ~12k/turn only buys ~21. Measured in HackPark V12 (2026-10-21,
+    ``run_66db1fce65b2465eb799a53d0f9299b2``): the run died with
+    ``status=budget_exceeded`` in iteration 21 of 50, after 252 294 tokens and
+    before it could test a single password.
+
+    The derived value is ``max_iterations × MEASURED_TOKENS_PER_TURN × margin``
+    and never goes below :data:`DEFAULT_RUN_BUDGET_TOKENS`, so the default
+    invocation (12 iterations) keeps the reviewed 250k and a larger
+    ``--max-iterations`` really buys the turns it promises.
+    """
+    try:
+        turns = max(0, int(max_iterations or 0))
+    except (TypeError, ValueError):
+        turns = 0
+    if turns <= 0:
+        return DEFAULT_RUN_BUDGET_TOKENS
+    derived = int(turns * MEASURED_TOKENS_PER_TURN * BUDGET_TURNS_MARGIN + 0.999)
+    return max(DEFAULT_RUN_BUDGET_TOKENS, derived)
+
+
+def _budget_tokens(
+    payload: dict[str, Any], explicit: int | None, *, max_iterations: Any = None
+) -> int:
     """Resolve the per-run token budget from the payload, env or explicit arg.
 
     An explicit ``0`` (payload or argument) keeps its documented meaning:
-    unlimited. Only an *absent* configuration falls back to the WP2 default.
+    unlimited. Only an *absent* configuration falls back to the derived value;
+    the precedence is explicit argument → payload → ``NEXUS_RUN_BUDGET_TOKENS``
+    → ``max_iterations``-derived → :data:`DEFAULT_RUN_BUDGET_TOKENS`.
     """
     if explicit is not None:
         raw: Any = explicit
@@ -718,7 +756,7 @@ def _budget_tokens(payload: dict[str, Any], explicit: int | None) -> int:
     else:
         raw = os.getenv("NEXUS_RUN_BUDGET_TOKENS")
         if raw is None or str(raw).strip() == "":
-            raw = DEFAULT_RUN_BUDGET_TOKENS
+            return budget_tokens_for_iterations(max_iterations)
     try:
         return max(0, int(raw))
     except (TypeError, ValueError):

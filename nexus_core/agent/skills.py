@@ -17,7 +17,7 @@ Nothing is activated implicitly: a skill must be named by the operator
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -267,10 +267,21 @@ def render_skill_index(
     return wrap_untrusted_output("\n".join(lines))
 
 
-def render_skills(skills: list[Skill]) -> str:
-    """Render the active skills as a prompt block (wrapped as untrusted text)."""
+def render_skills(
+    skills: list[Skill], bodies: Set[str] | None = None
+) -> str:
+    """Render the active skills as a prompt block (wrapped as untrusted text).
+
+    ``bodies`` names the skills whose **full body** must travel this turn; a
+    skill outside it is rendered as its header plus the one-line description.
+    The body is a recipe: it is worth paying once, when the skill is delivered,
+    and it is not worth re-sending on every turn of a long run (R2). ``None``
+    keeps the historical behaviour (every body) so existing callers and tests
+    are unaffected; the loop always passes an explicit set.
+    """
     if not skills:
         return "(sin skills activas)"
+    wanted = None if bodies is None else set(bodies)
     parts: list[str] = []
     for skill in skills:
         label = "firmada" if skill.trust == TRUST_SIGNED else "sin firma"
@@ -280,6 +291,13 @@ def render_skills(skills: list[Skill]) -> str:
         )
         if skill.signals:
             header += " · señales de inyección: " + ", ".join(skill.signals)
+        if wanted is not None and skill.name not in wanted:
+            parts.append(
+                f"{header}\n(ya entregada en este run: {skill_description(skill.content)}\n"
+                "El cuerpo no se repite para no pagarlo en cada turno; vuelve a "
+                "cargarla con nexus.skill.load si necesitas el detalle.)"
+            )
+            continue
         parts.append(f"{header}\n{wrap_untrusted_output(skill.content)}")
     return "\n\n".join(parts)
 
