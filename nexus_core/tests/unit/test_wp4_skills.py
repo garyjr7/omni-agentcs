@@ -802,6 +802,11 @@ def test_the_web_recon_skill_routes_a_poc_by_file_type() -> None:
     assert "usa el campo **`path`**" in flat
     assert "NO** uses el" in flat
     assert "/themes/<nombre-del-tema>/" in flat
+    # V14 (iteration 26): the theme went to a post editor and without the panel
+    # cookie, so the panel answered 302 to login. The endpoint is an order.
+    assert "ctl00$MainContent$UploadTheme$fuTheme" in flat
+    assert "editpost.cshtml" in flat
+    assert "exploit_upload_rejected" in flat
     # The other file types the rule names explicitly.
     assert 'nexus.shell.exec(command="python3 /ruta/al/script.py")' in flat
     assert "nexus.post.smb_upload" in flat and "nexus.web.upload" in flat

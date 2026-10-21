@@ -190,6 +190,15 @@ equivocarlo gasta el turno en una subida que el objetivo no ejecuta.
   navegando a `/themes/<nombre-del-tema>/` o a la ruta donde el CMS sirva el
   control. La prueba de ejecución es la salida de `id` (el `session_ref` que
   devuelve la tool), no un `200` en la subida.
+
+  **Endpoint correcto (BlogEngine.NET).** La subida del tema va al **gestor de
+  temas**: `POST /admin/app_themes.aspx` multipart con el campo
+  `ctl00$MainContent$UploadTheme$fuTheme` y un `theme_name` único. **No** uses
+  `/admin/app/editor/editpost.cshtml`: ese es el editor de posts, no el gestor
+  de temas (run V14, HackPark: el POST se fue a un endpoint que no acepta
+  temas y, sin la cookie del panel, volvió un 302 a
+  `/Account/login.aspx?ReturnUrl=/admin/` que la tool reporta como
+  `exploit_upload_rejected`).
 - **`.py`**: ejecútalo con `nexus.shell.exec(command="python3 /ruta/al/script.py")`
   (lee antes los argumentos que espera: host/puerto de callback).
 - **`.exe` o binario**: súbelo con `nexus.web.upload` o

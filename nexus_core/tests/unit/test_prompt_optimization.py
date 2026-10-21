@@ -236,7 +236,11 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # V11 adds the PoC handoff to the CMS order (the file type decides the
     # vector: .ascx theme, .py script, .exe upload) and the catalog line of
     # ``compile_and_upload``: measured 29,131, ceiling 29_400.
-    assert len(_prompt(catalog)) < 29_400
+    # V14 adds the BlogEngine theme endpoint to the same order (the theme
+    # manager, its multipart field and the warning about editpost.cshtml): +499
+    # characters, measured 29,630, so the ceiling moves to 29_750. It is an
+    # *order* with the exact endpoint a measured run guessed wrong, not prose.
+    assert len(_prompt(catalog)) < 29_750
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -258,7 +262,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # ceiling moves with it, to 29_350.
     # V11 measured 29,758 (the same 743-character block on the 29,131 static
     # prompt), so the ceiling moves with it, to 30_000.
-    assert len(prompt) < 30_000
+    # V14 measured 30,257 (the same block on the 29,630 static prompt), so the
+    # ceiling moves to 30_400.
+    assert len(prompt) < 30_400
     assert len(block) < 1_200
 
 
@@ -429,7 +435,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # target moves to 6,350 (250k still buys ~39 turns).
     # V11's PoC handoff and the ``compile_and_upload`` catalog line land here:
     # measured 6,380, so the target moves to 6_450.
-    assert tokens < 6_450
+    # V14's BlogEngine endpoint lands here too: measured 6,505, so the target
+    # moves to 6_550 (250k still buys ~38 turns).
+    assert tokens < 6_550
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -459,7 +467,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # retrieval that run V10 never had.
     # V11 adds the file-type routing of a PoC and one catalog line: measured
     # 7,069 average (250k buys ~35 turns), so the target moves to 7_150.
-    assert sum(totals) / len(totals) < 7_150
+    # V14 adds the BlogEngine theme endpoint to the CMS order: measured 7,195
+    # average, so the target moves to 7_250 (250k buys ~34 turns).
+    assert sum(totals) / len(totals) < 7_250
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -479,7 +489,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # orders), so the ceiling moves to 9_350.
     # V11 measured 9,417 (79 lines + the PoC handoff), so the ceiling moves to
     # 9_450.
-    assert max(totals) < 9_450
+    # V14 measured 9,542 on the refresh turn (29,630 static prompt + the full
+    # catalog), so the ceiling moves to 9_600.
+    assert max(totals) < 9_600
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):
@@ -494,3 +506,19 @@ def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):
     assert "`{path, code}`" in flat
     assert "pasa ESE `path` como `exploit_path`" in flat
     assert "nunca el ID ni el CVE" in flat
+
+
+def test_the_prompt_names_the_blogengine_theme_endpoint(catalog):
+    """Run V14 (HackPark, 2026-10-21): the theme went to the wrong endpoint.
+
+    The PoC reached the panel but the POST carried no ``session_ref`` cookie and
+    the prompt never named the theme manager, so the model guessed an endpoint.
+    The order has to name both facts, and the outcome the tool reports.
+    """
+    prompt = _prompt(catalog)
+    flat = " ".join(prompt.split())
+    assert "/admin/app_themes.aspx" in flat
+    assert "ctl00$MainContent$UploadTheme$fuTheme" in flat
+    assert "editpost.cshtml" in flat
+    assert "session_ref del panel" in flat
+    assert "exploit_upload_rejected" in flat

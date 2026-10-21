@@ -74,6 +74,12 @@ CMS_EXPLOIT_RULE_PROMPT = (
     "  y actívalo; un `.py` se ejecuta\n"
     "  con nexus.shell.exec; un `.exe` se sube con nexus.web.upload o\n"
     "  nexus.post.smb_upload. Verifica access/loot con la salida real.\n"
+    "- BLOGENGINE CVE-2019-6714: el tema `PostView.ascx` se sube al GESTOR DE\n"
+    "  TEMAS con POST /admin/app_themes.aspx (multipart con el campo\n"
+    "  ctl00$MainContent$UploadTheme$fuTheme y un theme_name único), nunca a\n"
+    "  /admin/app/editor/editpost.cshtml (ese es el editor de posts). Pasa el\n"
+    "  session_ref del panel: sin cookie el POST acaba en 302 a\n"
+    "  /Account/login.aspx y la tool lo reporta exploit_upload_rejected.\n"
 )
 
 #: PLAN-FIRST: the engagement is a contract, not a stream of reactive calls.

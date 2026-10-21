@@ -694,6 +694,43 @@ cualquier PoC que `find_and_prepare` haya dejado en `loot/exploits/`.
 Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **3 842 passed /
 53 skipped**; `make lint` limpio; `make typecheck` sin errores en 9 ficheros.
 
+### 5.14 Run V14 contra HackPark — la subida deja de mentir (2026-10-21) — **EJECUTADA**
+
+Run `run_56fe8f6dce3e4087a06cca308829ded8`. Los fixes de V13 funcionaron
+(Hydra encontró `admin` con el presupuesto de 1 800 s, `form_url` normalizado,
+`session_ref` válido) y el run se atascó en el último paso: subir el exploit. La
+subida no autenticó y la tool la declaró buena.
+
+| Muro medido | Evidencia | Fix implementado | Test de aceptación |
+|---|---|---|---|
+| El POST multipart no llevaba la cookie del panel | Iteración 26: el handler recibió `session_ref: vault:6a07e383…` y el panel contestó **302 a `/Account/login.aspx`** | `compile_and_upload` **resuelve** el `session_ref` contra el vault antes de construir el POST (el valor nunca pasa por el contexto del modelo), lo envía como cabecera `Cookie` del multipart y publica `cookie_applied`/`panel_session_ref` en la evidencia | `test_the_panel_session_cookie_reaches_the_multipart_post` |
+| Un 302 a login se leyó como éxito | `outcome="success"` con un cuerpo de 8 KB (la página de login) | Un `3xx` cuyo `Location` contiene `login` es `verification_method="exploit_upload_rejected"` con `login_redirect`/`redirect_location` en el resultado; el `next_steps` pide el `session_ref` del panel | `test_a_redirect_to_login_is_a_rejected_upload` |
+| Un 200 sin señal de éxito se leyó como archivo subido | El CMS contesta 200 con su propio panel aunque no acepte el tema | Sin `session_ref` de webshell (sonda `id` ejecutada), el cuerpo debe contener una señal de aceptación (`The theme was uploaded`, `successfully`, `uploaded`…) y no de rechazo (`invalid`, `error`, `denied`); si no, `exploit_upload_rejected` con `success_signal` en la evidencia | `test_a_body_without_a_success_signal_is_not_a_landed_file` |
+| `callback_host` era la IP del objetivo | El agente pasó `10.0.0.1` (el propio HackPark) en lugar de la IP de Kali: un tema que aterrizara habría abierto la shell contra la víctima | El host de `callback_host` se compara con el de `target_url` (URL, `host:puerto` o host suelto, vía `urlsplit`); si coinciden, `verification_method="invalid_callback"` antes de escribir el artefacto o tocar la red | `test_a_callback_host_that_is_the_target_is_refused`, `test_a_callback_host_with_a_scheme_and_port_is_compared_by_host` |
+| El endpoint del tema no estaba en la orden | El POST fue a `/admin/app/editor/editpost.cshtml` (editor de posts), no al gestor de temas | `CMS_EXPLOIT_RULE_PROMPT` y `web-recon-master` nombran `POST /admin/app_themes.aspx` con el campo `ctl00$MainContent$UploadTheme$fuTheme` y un `theme_name` único, y prohíben `editpost.cshtml` | `test_the_prompt_names_the_blogengine_theme_endpoint`, `test_the_web_recon_skill_routes_a_poc_by_file_type` |
+
+**Por qué no es un parche de sala:** el handler no conoce BlogEngine. La cookie
+se resuelve por el handle del vault (cualquier login que el motor haya validado),
+el rechazo se decide por el `Location` y por el cuerpo (no por el nombre del CMS),
+y la comprobación del callback compara hosts, no una IP concreta. La orden del
+endpoint es el único texto específico, y vive en el prompt/skill, no en el código.
+
+**Límites declarados:**
+
+- La cookie vale lo que valga la entrada del vault: una sesión caducada sigue
+  fallando, pero ahora el resultado es `exploit_upload_rejected`, nunca `success`.
+- La señal de éxito es una heurística sobre el cuerpo. Un CMS con otro mensaje y
+  sin `shell_url` se reporta rechazado aunque el archivo haya aterrizado: la
+  prueba dura sigue siendo la sonda `id` que devuelve `session_ref`.
+- El 302 sólo se marca como fallo de sesión si `Location` contiene `login`; un
+  panel que redirige a otra ruta conserva el chequeo de cuerpo.
+- La comparación de callback es por host: el mismo objetivo alcanzado por otro
+  nombre (IP vs DNS) no se detecta, y un `callback_host` con puerto comparte host
+  a propósito.
+
+Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **3 848 passed /
+53 skipped**; `make lint` limpio; `make typecheck` sin errores.
+
 ---
 
 ## 6. Criterios de cierre
