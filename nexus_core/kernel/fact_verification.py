@@ -1184,6 +1184,33 @@ def derive_assertions(tool_id, arguments, result, context):
         if loot.get('sha256'):
             add('loot', loot.get('loot_id') or loot.get('name'),
                 {'sha256': loot['sha256'], 'size': loot.get('size')},loot.get('name'))
+    elif (tool_id == 'nexus.post.shell_exec'
+          and result.verification_method in {'session_pty_command', 'session_raw_command'}):
+        # A command executed over a registered pty/raw channel is proof that the
+        # owned session reaches that target: the peer was bound to the signed
+        # scope when the listener accepted it, and the handler only reports the
+        # method after ``send``/``capture`` succeeded on a live session. Access is
+        # keyed on the target, privilege only on the canonical root identity line,
+        # and loot only on flag-shaped tokens (never on an arbitrary file read).
+        transport = str(output.get('transport') or 'raw')
+        session_ref = str(output.get('session_ref') or '')
+        target = str(output.get('target') or '')
+        text = str(output.get('output') or '')
+        method = result.verification_method
+        if target:
+            add('access', target,
+                {'transport': transport, 'session_ref': session_ref,
+                 'target': target, 'session_type': 'pty'},
+                f'{target}:{session_ref}', method=method)
+        if re.search(r'uid=0\(root\) gid=\d+', text):
+            add('privilege', target or session_ref,
+                {'uid': 0, 'user': 'root', 'transport': transport,
+                 'session_ref': session_ref},
+                method=method)
+        for flag in FLAG_RE.findall(text):
+            add('loot', flag,
+                {'flag': flag, 'service': transport, 'session_ref': session_ref},
+                flag, method=method)
     elif (tool_id == 'nexus.session.pty'
           and (arguments or {}).get('action') in {'capture', 'wait'}):
         # The PTY is a command channel, but its capture is local: the deterministic

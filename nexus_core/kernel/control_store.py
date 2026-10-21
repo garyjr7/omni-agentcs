@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS kernel_sessions (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, engagement_id TEXT NOT NULL,
     run_id TEXT NOT NULL, session_type TEXT NOT NULL, target_host TEXT NOT NULL,
     opened_at TEXT NOT NULL, closed_at TEXT, opened_by_tool TEXT NOT NULL,
+    transport TEXT NOT NULL DEFAULT 'msf', transport_ref TEXT, liveness TEXT,
     FOREIGN KEY(tenant_id) REFERENCES kernel_tenants(id)
 );
 CREATE INDEX IF NOT EXISTS idx_kernel_sessions_engagement
@@ -406,6 +407,35 @@ class ControlStore:
         }
         if "consumed_at" not in approval_columns:
             conn.execute("ALTER TABLE kernel_approvals ADD COLUMN consumed_at TEXT")
+        # P1 (session_ref): a durable session records *how* it is driven
+        # (``transport``), the handle of that channel (``transport_ref``: tmux
+        # session, MSF/Sliver UUID) and its last heartbeat. Old rows are MSF
+        # sessions, which is what the default backfills.
+        session_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(kernel_sessions)")
+        }
+        session_additions = {
+            "transport": "TEXT NOT NULL DEFAULT 'msf'",
+            "transport_ref": "TEXT",
+            "liveness": "TEXT",
+        }
+        for name, definition in session_additions.items():
+            if name not in session_columns:
+                conn.execute(
+                    f"ALTER TABLE kernel_sessions ADD COLUMN {name} {definition}"
+                )
+        # Rows written before P1 only had ``session_type``: backfill the transport
+        # from it so re-registering the same UUID stays idempotent.
+        for transport, pattern in (
+            ("sliver", "sliver:%"), ("webshell", "webshell"),
+            ("pty", "pty"), ("raw", "raw"), ("raw", "listener:raw"),
+            ("pty", "listener:pty"),
+        ):
+            conn.execute(
+                "UPDATE kernel_sessions SET transport=? "
+                "WHERE transport='msf' AND session_type LIKE ?",
+                (transport, pattern),
+            )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
             (1, "durable_workflows", utc_now()),

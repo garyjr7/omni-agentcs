@@ -127,7 +127,7 @@ def _audit(
     )
 
 
-def _command_denial(context: RunContext, text: str) -> dict[str, str] | None:
+def command_denial(context: RunContext, text: str) -> dict[str, str] | None:
     """Refuse a PTY command with the same lexical rules as the local shell.
 
     ``send`` types into a live shell, so a ``sleep`` is the same non-action and a
@@ -374,7 +374,7 @@ async def session_pty_handler(arguments: dict[str, Any], context: RunContext) ->
         command_text = request.text
 
     if command_text:
-        denial = _command_denial(context, command_text)
+        denial = command_denial(context, command_text)
         if denial is not None:
             return _denied_result(
                 context,

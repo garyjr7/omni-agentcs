@@ -1,6 +1,6 @@
 # ÍNDICE DOCUMENTAL — OmniAgentCS
 
-> Última revisión: 2026-10-21 · Roadmap base: 1a96924 · W1.2 + PTY P0: HEAD · Código auditado: 430dcfb
+> Última revisión: 2026-10-21 · Roadmap base: 1a96924 · W1.2 + PTY P0: 49691be · P1 (`session_ref`): HEAD · Código auditado: 430dcfb
 > Regla: solo UN documento por tema es VIGENTE. El resto es histórico o archivado.
 > La reorganización que introduce este índice es el commit `docs: reorganize documentation into INDEX + archive, clean root`, aplicado sobre la línea base `363bba9`.
 > Ubicaciones: `/` = raíz del repo · `docs/missions/` = misiones y resultados abiertos · `docs/archive/` = material superado, solo consulta.

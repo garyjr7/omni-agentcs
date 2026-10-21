@@ -130,11 +130,44 @@ class PtySessionManager:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         return (detail[0][:300] if detail else fallback) or fallback
 
+    def owns(self, session_ref: str) -> bool:
+        """Whether ``session_ref`` is a tmux session of *this* run.
+
+        A ref read from the durable registry is data, not a capability: before it
+        is handed to ``tmux`` it must still belong to this run's prefix, otherwise
+        a forged row could address another engagement's pane on the host.
+        """
+        text = str(session_ref or "")
+        return bool(_TMUX_ID.fullmatch(text)) and text.startswith(self.prefix)
+
     async def exists(self, name: str) -> bool:
         """Whether the run-owned session is still alive."""
         session = self.session_id(name)
         result = await self._tmux("has-session", "-t", session)
         return result.exit_code == 0 and not result.timed_out
+
+    async def list_sessions(self) -> list[dict[str, object]]:
+        """Live sessions of this run (name and tmux creation epoch)."""
+        try:
+            listed = await self._tmux(
+                "list-sessions", "-F", "#{session_name}\t#{session_created}"
+            )
+        except Exception:  # noqa: BLE001 - inventory never breaks the caller
+            return []
+        if listed.exit_code != 0:
+            return []
+        sessions: list[dict[str, object]] = []
+        for line in listed.stdout.splitlines():
+            name, _, created = line.partition("\t")
+            name = name.strip()
+            if not name.startswith(self.prefix):
+                continue
+            try:
+                created_at = float(created)
+            except (TypeError, ValueError):
+                created_at = None
+            sessions.append({"name": name, "created": created_at})
+        return sessions
 
     async def reap(self, *, older_than_seconds: int | None = None) -> int:
         """Kill this run's tmux sessions (all, or only those past a TTL).

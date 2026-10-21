@@ -10,12 +10,14 @@
 | Fecha | 2026-10-21 |
 | Commit de código auditado | `430dcfb` — *Caja Negra por defecto, sin esperas pasivas y NFS sin root* |
 | Roadmap base | `1a96924` — MASTER_ROADMAP + INDEX |
-| Ejecución W1.2 + PTY P0 | commit de esta entrega (`HEAD` al cerrar) |
+| Ejecución W1.2 + PTY P0 | `49691be` |
+| Ejecución P1 (`session_ref`) | commit de esta entrega (`HEAD` al cerrar) |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
-| Regla de esta entrega | **cero cambios en `.py`**; solo documentación |
+| Regla de esta entrega | **P1**: migración aditiva de `kernel_sessions`; sin tocar `ToolGateway` |
 | Suite de referencia (`430dcfb`) | **3 735 passed / 53 skipped** |
 | Suite tras W1.2 + PTY P0 | **3 753 passed / 53 skipped** |
+| Suite tras P1 | **3 767 passed / 53 skipped** |
 | Catálogo | **77 tools durables**, **21 parsers** nativos |
 
 ---
@@ -35,10 +37,9 @@
 
 Las notas citan `fichero:línea` cuando el estado se comprobó en código. Cuando la
 clasificación procede de un documento y no se re-midió en esta pasada, se indica
-expresamente `[DOC]`. La suite se re-ejecutó tras W1.2 y PTY P0:
-**3 753 passed / 53 skipped**. La línea base del commit auditado era
-**3 735 passed / 53 skipped**; la diferencia son los tests nuevos de esta
-entrega.
+expresamente `[DOC]`. La suite se re-ejecutó tras P1:
+**3 767 passed / 53 skipped**. La línea base del commit auditado era
+**3 735 passed / 53 skipped**; W1.2 + PTY P0 añadieron 18 tests y P1 otros 14.
 
 ### 0.3 Qué NO es este documento
 
@@ -173,7 +174,7 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 |---|---|---|
 | Tools durables | 77 | `tools/registry.py`; `docs/missions/audit-v1/catalog.json` |
 | Parsers | 21 módulos | `tools/parsers/` |
-| Tests | 3 753 passed / 53 skipped | suite completa tras W1.2 + PTY P0 |
+| Tests | 3 767 passed / 53 skipped | suite completa tras P1 |
 | Prompt estático | 27 831 chars; ~6 819 tok/turno | `test_prompt_optimization.py` |
 | Sandbox por defecto | `local_strict` en dev; `oci` en producción | `kernel/sandbox_modes.py:148` |
 | MCP | 964 líneas, 41 tests en `test_mcp_integration.py` | `integrations/mcp/` |
@@ -188,7 +189,7 @@ encendarlas sin abrir una puerta lateral al gateway.
 | Pieza | Qué existe | Qué falta exactamente | Riesgo de encenderla mal |
 |---|---|---|---|
 | **MCP** (`integrations/mcp/`) | Cliente SDK con timeouts, entorno hijo sin secretos, allowlist, manifiesto de capacidades, bridge que registra tools durables y revalida la allowlist en cada llamada. 41 tests. | `sync_from_config` **solo se llama desde un test** (`test_mcp_integration.py:616`). Falta: llamada en bootstrap (`runtime.execute_tool` tras construir el catálogo, `runtime.py:297`), `/mcp list\|status\|reload`, doctor, bloque compacto en el prompt, branch de transporte en `assess_tool_catalog`, branch `mcp.*` en `derive_assertions` (fase P3), y excluir `mcp.` del chequeo AST de `test_catalog_ledger_consistency`. | Registrar MCP sin parser produce «capacidad sin evidencia»: tools que ejecutan y no escriben hechos. Registrar antes de decidir red choca con `oci`. |
-| **PTY** (`kernel/pty_sessions.py` + `tools/handlers/session_pty.py`) | Driver tmux por run, acciones `start\|send\|capture\|wait\|kill`, scope, audit, límites de nombre/líneas. Tool registrada (`registry.py:361`). **P0 cerrado**: guard OCI, checks léxicos, artifact CAS, assertions, `wait`≤60 s y reaper. | Sigue sin capturar reverse shells ni escribir `kernel_sessions`; eso es P1 (`session_ref`). | Convertir PTY en una puerta trasera de egress y una bomba de tokens (ya mitigado en P0). |
+| **PTY** (`kernel/pty_sessions.py` + `tools/handlers/session_pty.py`) | Driver tmux por run, acciones `start\|send\|capture\|wait\|kill`, scope, audit, límites de nombre/líneas. Tool registrada (`registry.py:361`). **P0 cerrado**: guard OCI, checks léxicos, artifact CAS, assertions, `wait`≤60 s y reaper. **P1 cerrado**: el listener keep-open y `shell_exec` reutilizan el mismo manager con `transport_ref` durable. | Un pane local no tiene target remoto que registrar: se lista por descubrimiento tmux, con `durable=false` (los canales con peer sí viven en `kernel_sessions`). | Convertir PTY en una puerta trasera de egress y una bomba de tokens (ya mitigado en P0). |
 | **`sync_from_config`** | Descubre todos los servidores y registra solo tools allowlisted con `replace=False`. | Nadie lo invoca en producción; no es idempotente frente a un fallo de arranque porque no se llama. | Si se llama antes del catálogo, o sin `NEXUS_MCP_CONFIG`, puede romper el arranque o el conteo del ledger. |
 | **Batch runner** (`kernel/batch.py`) | Concurrencia acotada, backpressure, cancelación y estados `completed/failed/cancelled`. | Cableado en `scripts/omni_tool.py`, **no** como tool del modelo. | Exponerlo sin cuota por target convertiría un barrido en una tormenta. |
 | **Model router** (`kernel/model_router.py`) | Rutas por clasificación, presupuesto y fallback. | Solo lo usan tests (`test_kernel_offline.py`). | Enrutar sin telemetría de coste puede ocultar el gasto por turno. |
@@ -295,7 +296,7 @@ encendarlas sin abrir una puerta lateral al gateway.
 | `nexus.shell.exec` gobernado | `ESCALADA WP1` | **[HECHO]** | Registered at `registry.py:360`; resumen + artifact; tests. |
 | PTY base (tmux) | `ESCALADA WP1` | **[HECHO]** | `PtySessionManager` + tool; 16 tests (lifecycle real, guard, egress, redacción, artifact, assertions, reaper). |
 | PTY gobernado (P0) | `AUD_MCP_PTY §5.2` | **[HECHO]** | Guard OCI, checks léxicos en `start`/`send`, artifact CAS + resumen, branch en `derive_assertions`, `wait`≤60 s y reaper en `session_end`. §5.1. |
-| `session_ref` + reverse shell (P1) | `AUD_MCP_PTY §3.2` | **[PENDIENTE]** | Unificar `kernel_sessions` con `transport`/`transport_ref`/liveness; `listener` keep-open; `shell_exec` transport `pty`. |
+| `session_ref` + reverse shell (P1) | `AUD_MCP_PTY §3.2` | **[HECHO]** | `kernel_sessions.transport/transport_ref/liveness`; `nexus.session.list` unificado; `shell_exec` `pty`/`raw`; listener keep-open con peer validado en el proceso que acepta y `session_ref`; `session.kill` cierra tmux y `closed_at`. 14 tests en `test_session_ref_p1.py`. §5.2. |
 | Loop v2: un perfil, planner como hint | `ESCALADA WP2` | **[HECHO]** | `NEXUS_LEGACY_PROFILES` para volver atrás; `test_wp2_loop_v2.py`. |
 | Prompt de 3 capas | `ESCALADA WP3` | **[PENDIENTE]** | Medido 27 831 chars estáticos / ~6 819 tok por turno; el objetivo ≤5 000 no se cumple. |
 | Skills con divulgación progresiva | `ESCALADA WP4` | **[HECHO]** | `nexus.skill.list\|load`, `.agents/skills/`; tests. |
@@ -376,17 +377,29 @@ implementado:
 
 Nada de eso toca el orden del gateway ni el contrato de `ToolResult`.
 
-### 4.4 Lo que falta para `session_ref` (P1)
+### 4.4 Lo que cerró P1 (`session_ref`)
 
-`kernel_sessions` ya es un UUID durable, pero hoy solo lo pueblan
-`msf_exploit` (`:427`) y `sliver_sessions` (`:63`). Falta:
+`kernel_sessions` era un UUID durable poblado solo por `msf_exploit` y
+`sliver_sessions`. P1 añadió:
 
-- columnas `transport`, `transport_ref`, `liveness`;
-- un productor para `webshell` (hoy el transporte está declarado y no existe);
-- `nexus.session.list` unificado (durable + MSF + Sliver + tmux);
-- `nexus.post.shell_exec` con transport `pty`/`raw`;
-- `listener` en modo keep-open que registre la sesión con el peer ya validado;
-- `nexus.session.kill` que cierre tmux **y** marque `closed_at`.
+- columnas `transport`, `transport_ref`, `liveness` (migración aditiva SQLite y
+  PostgreSQL, con `msf` como valor por defecto de las filas históricas);
+- `nexus.session.list` unificado: MSF en vivo (sigue fallando cerrado si el
+  daemon configurado no responde), filas durables de cualquier transporte y
+  panes tmux del run; todas con `session_ref`;
+- `nexus.post.shell_exec` con transport `pty`/`raw`, que resuelve el
+  `transport_ref` de la fila, exige que pertenezca al prefijo del run y aplica
+  los checks léxicos de PTY antes de enviar;
+- `listener` en modo `keep_open`: el peer se valida **en el proceso que acepta**
+  antes del primer byte, la fila nace `pending` y solo se enlaza al peer tras
+  pasar el scope firmado; el agente recibe el `session_ref` en la misma llamada;
+- `nexus.session.kill` cierra el pane tmux, pide el cierre a MSF/Sliver y marca
+  `closed_at` (un listener sin peer también se puede cerrar).
+
+Límite declarado: no hay productor automático de `webshell` (sigue siendo un
+`session_type` sin escritor) y el e2e de campo con una reverse shell real no se
+ejecutó; el bridge se prueba con un socket local y un pane tmux real por
+separado.
 
 ---
 
@@ -407,18 +420,21 @@ Nada de eso toca el orden del gateway ni el contrato de `ToolResult`.
 e2e con tmux real cubre `send`/`wait`/`capture` y el reaper. La suite completa se
 ejecuta antes del commit.
 
-### 5.2 Fase P1 — `session_ref` y reverse shell (2–4 días)
+### 5.2 Fase P1 — `session_ref` y reverse shell (2–4 días) — **EJECUTADA**
 
-1. Migración aditiva de `kernel_sessions` (`transport`, `transport_ref`,
-   `liveness`).
-2. `nexus.session.list` unificado.
-3. `shell_exec` transport `pty`/`raw`; validación de `session_type`.
-4. `nexus.post.listener` keep-open: peer validado **antes** de cualquier comando,
-   registro en `kernel_sessions`, transcripción como artifact.
-5. `nexus.session.kill` cierra tmux y `closed_at`.
+| Paso | Cambio | Ficheros | Test de aceptación |
+|---|---|---|---|
+| P1.1 | Migración aditiva `transport`/`transport_ref`/`liveness`; registro inmutable del handle | `kernel/control_store.py`, `kernel/postgres_store.py`, `kernel/sessions.py` | `test_migration_adds_transport_columns_and_round_trips` |
+| P1.2 | `nexus.session.list` unificado (durable + MSF vivo + panes tmux) con `session_ref` | `handlers/msf_session_list.py`, `kernel/pty_sessions.py` | `test_session_list_returns_a_durable_pty_session_ref` |
+| P1.3 | `shell_exec` `pty`/`raw`: resuelve `transport_ref`, valida prefijo del run, checks léxicos, captura delta | `handlers/shell_exec.py`, `handlers/session_pty.py` | `test_shell_exec_pty_runs_a_command_in_the_registered_session`, `test_shell_exec_pty_refuses_denied_and_out_of_scope_commands` |
+| P1.4 | `listener` keep-open: bridge tmux, peer-first, fila `pending` → bind al peer, `session_ref` inmediato | `handlers/listener.py` | `test_listener_keep_open_registers_a_pending_session_and_binds_its_peer`, `test_keep_open_bridge_pumps_the_socket_and_the_pane` |
+| P1.5 | `session.kill` cierra tmux y `closed_at`; rama Sliver y webshell | `handlers/msf_session_kill.py` | `test_session_kill_closes_the_row_and_the_tmux_pane` |
+| P1.6 | Hechos `access`/`privilege`/`loot` desde `session_pty_command`/`session_raw_command` | `kernel/fact_verification.py` | `test_shell_exec_channel_assertions_promote_access_privilege_and_loot` |
 
-**Gate P1:** e2e con `socat`/`nc` local y scope firmado; hecho `access` + `loot`
-en el blackboard; peer fuera de scope rechazado sin interacción.
+**Gate P1:** cumplido en la suite afectada (14 tests nuevos). El bridge real
+mueve bytes en ambos sentidos y un peer fuera de scope no llega a enlazarse. El
+e2e con una reverse shell de campo (socat/nc contra una víctima) **no** se
+ejecutó; queda como aceptación pendiente, igual que el productor de `webshell`.
 
 ### 5.3 Fase P2 — MCP de lectura cableado (3–5 días, tras decisión de red)
 
@@ -458,7 +474,8 @@ puro no hay red; en `local_strict` un servidor puede salirse del scope.
    verificados; `redact_result` se aplica en PTY, `http_request` y
    `nexus.post.shell_exec` (SSH ya lo tenía).
 
-Orden ejecutado: W1.2 → PTY P0. Siguiente: P1 (`session_ref`).
+Orden ejecutado: W1.2 → PTY P0 → P1 (`session_ref`). Siguiente decisión: P2 (MCP
+cableado), condicionada a la decisión de red.
 
 ### 5.7 Lo que NO se hará (y por qué)
 

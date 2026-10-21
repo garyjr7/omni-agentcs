@@ -105,6 +105,34 @@ class PostgresControlStore(ControlStore):
                 "lease_generation BIGINT NOT NULL DEFAULT 0"
             )
             conn.execute(
+                "ALTER TABLE kernel_sessions ADD COLUMN IF NOT EXISTS "
+                "transport TEXT NOT NULL DEFAULT 'msf'"
+            )
+            conn.execute(
+                "ALTER TABLE kernel_sessions ADD COLUMN IF NOT EXISTS transport_ref TEXT"
+            )
+            conn.execute(
+                "ALTER TABLE kernel_sessions ADD COLUMN IF NOT EXISTS liveness TEXT"
+            )
+            # Same backfill as SQLite: pre-P1 rows only carried ``session_type``.
+            for transport, session_type in (
+                ("sliver", "sliver:%"), ("webshell", "webshell"),
+                ("pty", "pty"), ("raw", "raw"), ("raw", "listener:raw"),
+                ("pty", "listener:pty"),
+            ):
+                if session_type.endswith("%"):
+                    conn.execute(
+                        "UPDATE kernel_sessions SET transport=? "
+                        "WHERE transport='msf' AND session_type LIKE ?",
+                        (transport, session_type),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE kernel_sessions SET transport=? "
+                        "WHERE transport='msf' AND session_type=?",
+                        (transport, session_type),
+                    )
+            conn.execute(
                 """INSERT INTO kernel_tenants(id,name,created_at) VALUES(?,?,?)
                 ON CONFLICT(id) DO NOTHING""",
                 ("system", "NEXUS System", utc_now()),
