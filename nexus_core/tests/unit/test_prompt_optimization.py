@@ -480,3 +480,17 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # V11 measured 9,417 (79 lines + the PoC handoff), so the ceiling moves to
     # 9_450.
     assert max(totals) < 9_450
+
+
+def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):
+    """Run V13 (HackPark, 2026-10-21, iteration 52): "46353" is not a path.
+
+    ``find_and_prepare`` answers ``{path, code}``; the model passed the EDB-ID to
+    ``compile_and_upload`` and then spent eight turns looking for a file that was
+    already in ``loot/exploits/``. The order has to name the field.
+    """
+    prompt = _prompt(catalog)
+    flat = " ".join(prompt.split())
+    assert "`{path, code}`" in flat
+    assert "pasa ESE `path` como `exploit_path`" in flat
+    assert "nunca el ID ni el CVE" in flat

@@ -158,10 +158,14 @@ Con acceso confirmado:
   llamada con ese `start_at`; no es un veredicto sobre el objetivo y no cierra
   la rama. Solo un barrido que llegó al final sin hit es `negative` y deja un
   `barrier` (ahí se pivota, no se repite).
-- **El barrido se corta por presupuesto** (`timeout_seconds`, 900 s por
-  defecto): no es un veredicto. No relances rockyou entero: sube
-  `timeout_seconds`, baja `max_attempts` y continúa con `start_at`, o cambia de
-  vector.
+- **El barrido se corta por presupuesto** (`timeout_seconds`, hasta 1 800 s;
+  por defecto 1 785 s en formularios): no es un veredicto. No relances rockyou
+  entero: sube `timeout_seconds`, baja `max_attempts` y continúa con `start_at`,
+  o cambia de vector.
+- **`form_url` con query string** (`/Account/login.aspx?ReturnURL=/admin/`):
+  la tool la quita y barre la ruta; no es un error ni hace falta huir a
+  `nexus.shell.exec`. Si olvidas `^PASS^` en `form_params`, la tool rellena el
+  campo de contraseña (`$Password=`) en lugar de rechazar el barrido.
 - **Hydra acaba en segundos sin hit**: puerto equivocado (falta `-s`), servicio
   equivocado (`ssh://` contra un FTP) o el usuario no existe. Confirma el banner
   con `nmap -sV -p<port>` antes de repetir.

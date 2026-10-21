@@ -169,6 +169,13 @@ El handler copia el PoC al workspace (`loot/exploits/`) y devuelve su código:
 no basta con saber que el exploit existe. El flujo completo es **buscar → leer →
 adaptar → subir → accionar → verificar** (`access`/`loot`), no solo buscar.
 
+**Regla de oro (ruta del PoC).** `find_and_prepare` devuelve `{"path":
+"loot/exploits/46353-....cs", "code": "..."}`: usa el campo **`path`** tal cual
+como `exploit_path` en `compile_and_upload` / `workspace.read`. **NO** uses el
+EDB-ID (`46353`) ni el nombre del CVE (`CVE-2019-6714`): no son rutas y el
+archivo no se encuentra (run V13, HackPark, iteración 52: ocho turnos buscando
+el archivo que ya estaba en `loot/exploits/`).
+
 **Regla de oro (PoC en mano).** Si `find_and_prepare` devuelve un PoC, **LEE el
 código** y sigue su `next_steps`: el tipo de archivo decide el vector, y
 equivocarlo gasta el turno en una subida que el objetivo no ejecuta.
@@ -177,8 +184,8 @@ equivocarlo gasta el turno en una subida que el objetivo no ejecuta.
   es un **tema/widget ASP.NET**, no un ejecutable. No lo subas como `.cs` a un
   formulario cualquiera: entra al panel de admin con una sesión válida
   (`csrf_mode=true`, `session_ref` si ya la tienes), súbelo con
-  `nexus.exploit.compile_and_upload(exploit_path="loot/exploits/...",
-  target_url="http://<host>/admin/app_themes.aspx",
+  `nexus.exploit.compile_and_upload(exploit_path="<el path exacto del
+  resultado>", target_url="http://<host>/admin/app_themes.aspx",
   target_filename="PostView.ascx", session_ref=..., csrf_mode=true)` y actívalo
   navegando a `/themes/<nombre-del-tema>/` o a la ruta donde el CMS sirva el
   control. La prueba de ejecución es la salida de `id` (el `session_ref` que

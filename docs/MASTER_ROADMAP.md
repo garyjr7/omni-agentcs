@@ -598,8 +598,9 @@ panel WebForms local real que rechaza el POST sin tokens y ejecuta `id`.
 - `mcs` no está en el entorno de desarrollo: la ruta de compilación se prueba
   con el compilador simulado y un fallo se reporta `unavailable` (nunca se sube
   un `.cs` que el objetivo no ejecuta).
-- `form_url` sigue sin aceptar query string; se usa la ruta del POST y la cookie
-  de la sesión resuelve el redirect.
+- `form_url` descarta la query string (no se envía en el POST); la ruta y la
+  cookie de la sesión resuelven el redirect. Un `?` ya no bloquea el barrido
+  (§5.13).
 
 ### 5.11 Regla de avance hacia producción
 
@@ -640,9 +641,10 @@ viene de R1**, no de aquí: se documenta para no vender una ganancia que no exis
 
 - **Throughput del barrido:** 1,36 intentos/s (GET+POST por intento). Con
   `1qaz2wsx` en la línea **1 420** de `rockyou.txt` hacen falta ~1 041 s; el techo
-  por defecto es 885 s (900 − margen). El run necesita `timeout_seconds ≥ 1100`
-  (o un `GET` reutilizado por slice): es una decisión de política del handler, no
-  un bug, y queda abierta como pared de capacidad.
+  por defecto era 885 s (900 − margen). **Resuelto en §5.13**: el contrato publica
+  1 800 s y el barrido por defecto dispone de 1 785 s, por encima de los ~1 041 s
+  que necesita la credencial; el `GET` reutilizado por slice sigue pendiente como
+  optimización, no como bloqueo.
 - **La sonda CSRF no reporta `hidden_fields`** (el payload de `mode=probe` no los
   incluye), así que `_probe_verdict` siempre ve `[]` y el handler no puede
 distinguir "el panel no emite tokens" de "el cliente no los buscó". Se corrigió la
@@ -655,6 +657,42 @@ distinguir "el panel no emite tokens" de "el cliente no los buscó". Se corrigi�
 
 Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **3 836 passed /
 53 skipped**; `make lint` limpio; `make typecheck` sin errores en 13 ficheros.
+
+### 5.13 Run V13 contra HackPark — encadenar el PoC y quitar topes artificiales (2026-10-21) — **EJECUTADA**
+
+Run `run_cc0cb0ce695047ac9a6b9e29d20f9974`. El presupuesto derivado de V12
+funcionó (el run llegó a la iteración 52 y al formulario correcto), y quedaron
+dos paredes: el agente no encadenó `find_and_prepare` con `compile_and_upload`, y
+`nexus.cred.bruteforce` seguía rechazando lo que el objetivo sí admite.
+
+| Muro medido | Evidencia | Fix implementado | Test de aceptación |
+|---|---|---|---|
+| El techo de 900 s rechazó un barrido de 1 200 s | Iteración 52: `timeout_seconds=1200` → error de contrato; el run improvisó `hydra` por `nexus.shell.exec` y gastó 5 turnos | `CRED_TOOL_TIMEOUT_SECONDS` = **1 800** (igual que `nmap`/`nikto`/`gobuster`); el barrido por defecto usa `1800 − 15` = 1 785 s; el techo del bucle sube a `timeout_per_tool_seconds = 1860` para que el handler -no la cancelación- responda `timeout` | `test_a_long_sweep_budget_is_accepted`, `test_the_handler_slices_by_default_and_publishes_no_ceiling`, `test_the_loop_ceiling_leaves_room_for_the_tool_to_answer_timeout` |
+| `form_url` con query string era un error | `/Account/login.aspx?ReturnURL=/admin/` rechazado por el validador | La query (y el fragmento) se **descartan** en `_normalize_form_url`; `?` es estructura de hydra y el login ASP.NET autentica por el cuerpo. La evidencia publica `form_query_dropped` | `test_a_form_url_with_a_query_is_normalized_to_its_route` (⇒ `/login.aspx`), `test_a_bare_form_path_with_a_query_is_normalized_too` |
+| `form_params` sin `^PASS^` bloqueaba el barrido | Los tres campos WebForms estaban, el placeholder de contraseña no | Se rellena el campo de contraseña (`$Password=^PASS^`) o se añade `pass=^PASS^` si no hay ninguno con nombre de contraseña; se rechaza seguir sin `^USER^`. La evidencia publica `form_params_autofill` | `test_a_missing_pass_placeholder_is_filled_in_the_password_field` |
+| `compile_and_upload(exploit_path="46353")`: el ID, no la ruta | `find_and_prepare` había devuelto `path`; el agente pasó el EDB-ID y perdió 8 iteraciones buscando el archivo | El contrato del campo nombra la regla (usa el `path` exacto, nunca el ID/CVE) y el handler **resuelve** un ID suelto si coincide con un único PoC de `loot/exploits/`; si no, el error lista las rutas reales. La evidencia publica `requested_as`/`resolved_from` | `test_an_edb_id_resolves_to_the_prepared_poc`, `test_an_unknown_reference_lists_the_real_paths` |
+| La orden no estaba en el prompt ni en la skill | El modelo sabía qué tool usar, no qué campo pasarle | La regla viaja en `CMS_EXPLOIT_RULE_PROMPT` y en `web-recon-master` («usa el campo `path` tal cual, no el EDB-ID ni el CVE»); el catálogo lo repite en la descripción de `exploit_path` | `test_the_prompt_names_the_path_field_for_compile_and_upload`, `test_the_web_recon_skill_routes_a_poc_by_file_type` |
+
+**Por qué no es un parche de sala:** ni el ID `46353` ni `ReturnURL` aparecen en el
+handler como casos especiales. El techo es el mismo que publican las demás tools
+largas, la normalización de URL se aplica a cualquier `?`, el relleno de
+`^PASS^` busca el nombre de campo y no la sala, y la resolución del ID vale para
+cualquier PoC que `find_and_prepare` haya dejado en `loot/exploits/`.
+
+**Límites declarados:**
+
+- Un ID suelto sólo se resuelve con **una** coincidencia; con varias, el error
+  nombra los candidatos en vez de elegir por el modelo.
+- `^PASS^` se añade al primer campo con nombre de contraseña **vacío**; si todos
+  traen valor, cae en `pass=^PASS^`, que es una suposición declarada en
+  `form_params_autofill` (el barrido puede fallar, pero ya no se bloquea).
+- La query descartada **no** se reenvía como campo del POST: el redirect lo
+  resuelve la cookie de sesión, no `ReturnURL`.
+- Sigue abierta la sonda CSRF con `hidden_fields == []` (§5.12) y `shell_url`
+  sigue siendo del operador (§5.10).
+
+Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **3 842 passed /
+53 skipped**; `make lint` limpio; `make typecheck` sin errores en 9 ficheros.
 
 ---
 

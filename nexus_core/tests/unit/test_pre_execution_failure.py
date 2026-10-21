@@ -98,7 +98,7 @@ def test_a_plain_value_error_stays_unknown_and_the_retry_asks_a_human(store):
 def test_the_loop_ceiling_leaves_room_for_the_tool_to_answer_timeout():
     """The handler must always answer first, or its ``attempts`` is lost.
 
-    ``cred.bruteforce`` publishes 900 s and stops its sweep 15 s earlier; the loop
+    ``cred.bruteforce`` publishes 1800 s and stops its sweep 15 s earlier; the loop
     ceiling is enforced by cancelling, so it has to be strictly larger than the
     contract plus the handler's reporting grace.
     """

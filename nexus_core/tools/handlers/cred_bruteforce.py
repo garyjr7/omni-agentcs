@@ -25,7 +25,13 @@ Safety rails:
 * hydra runs ``-f`` (stop at the first hit) and ``-I`` (ignore restore files),
   with a fixed low task count to be gentle on services; ``form_url`` takes a
   full URL as well as a bare path, because the model does not always know the
-  difference (measured in Brute It, iteration 12);
+  difference (measured in Brute It, iteration 12). A query string
+  (``/Account/login.aspx?ReturnURL=/admin/``) is dropped instead of rejected:
+  ``?`` is structural in hydra's spec and the login does not need it to
+  authenticate (run V13 against HackPark, 2026-10-21);
+* ``form_params`` must carry ``^USER^``, but a missing ``^PASS^`` is filled in
+  on the password field rather than refused: the run had the right WebForms
+  fields and lost the sweep to a placeholder (V13, iteration 52);
 * ``MEDIUM`` risk, scope-gated on ``target`` and executed through the sandbox.
 * A validated password is **never returned**: it goes into the secret vault and
   the result carries ``secret_ref`` (V1-29). hydra prints the plaintext on stdout,
@@ -69,7 +75,12 @@ CRED_DEFAULT_TIMEOUT_SECONDS = 300
 #: the cut as "hydra is broken" (Brute It v5, iteration 13, 60.08 s). Containment
 #: is the signed scope, the RoE, this contract and the run budget -never an
 #: internal timer-, so a sweep runs until the wordlist ends or this budget does.
-CRED_TOOL_TIMEOUT_SECONDS = 900
+#: Run V13 against HackPark (2026-10-21) asked for a 1 200 s sweep and the
+#: contract refused it at 900, so the run dropped to a hand-written ``hydra``
+#: through ``nexus.shell.exec`` and spent five turns there. The ceiling now
+#: matches the other long-running tools (``nmap``, ``nikto``, ``gobuster``):
+#: 1 800 s, still a ceiling the operator can see in the contract.
+CRED_TOOL_TIMEOUT_SECONDS = 1800
 #: The sweep stops a few seconds before the contract does, so the *handler* -not
 #: the gateway's ``wait_for``- answers ``timeout`` with the wordlist progress in
 #: the message. Those seconds belong to reporting, not to hydra.
@@ -451,11 +462,6 @@ def _normalize_form_url(value: Any) -> tuple[str, str, int | None, bool]:
                 "form_url must be the login path ('/admin/') or an http/https URL"
             )
         parts = urlsplit(text)
-        if parts.query:
-            raise ToolInputError(
-                "form_url must not carry a query string; pass the form fields in "
-                "form_params"
-            )
         host = str(parts.hostname or "")
         try:
             port = parts.port
@@ -465,6 +471,12 @@ def _normalize_form_url(value: Any) -> tuple[str, str, int | None, bool]:
         path = parts.path or "/"
     else:
         path = text
+    # A query string is dropped, not rejected (V13/HackPark, 2026-10-21): the
+    # model passed ``/Account/login.aspx?ReturnURL=/admin/`` and the handler
+    # answered with an error, so the run improvised outside the tool. ``?`` is
+    # structural in hydra's spec, and an ASP.NET login authenticates from the
+    # form body, not from the return URL. The fragment goes for the same reason.
+    path = path.split("?", 1)[0].split("#", 1)[0] or "/"
     if not path.startswith("/"):
         path = "/" + path
     return path, host, port, secure
@@ -505,6 +517,43 @@ def _validate_form_params(params: str) -> None:
                 f"form_params must be 'name=value' pairs joined by '&': {segment!r} "
                 "has no field name"
             )
+
+
+#: Field names that mean "this is the password field" in the forms measured so
+#: far (ASP.NET WebForms, PHP panels, Django, Joomla). Used only to place
+#: ``^PASS^`` when the caller forgot it; it never rewrites a field hydra would
+#: have posted verbatim.
+CRED_PASSWORD_FIELD_RE = re.compile(
+    r"(pass|pwd|clave|contrasen|contraseñ|secret)", re.IGNORECASE
+)
+#: Field a missing ``^PASS^`` falls back to when no password-like name exists.
+CRED_PASSWORD_FALLBACK_FIELD = "pass"
+
+
+def _ensure_password_placeholder(params: str) -> tuple[str, str]:
+    """Return ``(params, note)`` with hydra's ``^PASS^`` placeholder present.
+
+    Run V13 against HackPark (2026-10-21, iteration 52) sent the three WebForms
+    fields with ``^USER^`` and an empty ``$Password=``, and the handler refused
+    the sweep for the missing placeholder -the run then hand-rolled hydra through
+    ``nexus.shell.exec``-. Hydra cannot test a wordlist without ``^PASS^``, so the
+    empty password field is filled instead of refused.
+
+    The substitution is reported in ``note`` (and in the evidence) so the result
+    never looks like the caller wrote it. When no field matches and there is no
+    ``^USER^`` either, the params are returned untouched: that is not a login
+    description, and :func:`_form_spec` rejects it with the right message.
+    """
+    if "^PASS^" in params or "^USER^" not in params:
+        return params, ""
+    segments = params.split("&")
+    for index, segment in enumerate(segments):
+        name, separator, value = segment.partition("=")
+        if separator and CRED_PASSWORD_FIELD_RE.search(name) and not value.strip():
+            segments[index] = f"{name}=^PASS^"
+            return "&".join(segments), f"{name}=^PASS^"
+    segments.append(f"{CRED_PASSWORD_FALLBACK_FIELD}=^PASS^")
+    return "&".join(segments), f"{CRED_PASSWORD_FALLBACK_FIELD}=^PASS^"
 
 
 def _form_spec(form_url: Any, form_params: Any, failure_string: Any) -> str:
@@ -1571,11 +1620,19 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     form_spec = ""
     failure_string = ""
     form_params = ""
+    raw_form_url = ""
+    form_query_dropped = ""
+    form_params_autofill = ""
     if service in CRED_FORM_SERVICES:
-        form_path, form_host, form_port, secure = _normalize_form_url(
-            arguments.get("form_url")
+        raw_form_url = str(arguments.get("form_url") or "")
+        form_path, form_host, form_port, secure = _normalize_form_url(raw_form_url)
+        # The query is dropped by ``_normalize_form_url`` (hydra cannot carry it and
+        # the login does not need it); it is reported so the run can see that the
+        # route it reads is the one that ran.
+        form_query_dropped = urlsplit(raw_form_url.strip()).query
+        form_params, form_params_autofill = _ensure_password_placeholder(
+            str(arguments.get("form_params") or "")
         )
-        form_params = str(arguments.get("form_params") or "")
         failure_string = str(arguments.get("failure_string") or "").strip()
         form_spec = _form_spec(form_path, form_params, failure_string)
 
@@ -1818,6 +1875,12 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         # passwords only as hydra placeholders, but the path is what the board
         # needs to tie the attempt to the endpoint.
         evidence["form_url"] = form_path
+        if form_query_dropped:
+            evidence["form_query_dropped"] = form_query_dropped
+        if form_params_autofill:
+            # The caller's params were completed, not replaced: the field and the
+            # placeholder that were added travel with the verdict.
+            evidence["form_params_autofill"] = form_params_autofill
         # ``ok`` means the marker was probed and separates a failed login from
         # the page itself; ``skipped`` is infrastructure, not a verdict.
         evidence["failure_string_probe"] = probe.status

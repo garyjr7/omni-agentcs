@@ -258,7 +258,8 @@ class ReActConfig:
     max_iterations: int = 12
     #: Ceiling of one tool call. It must be *strictly greater* than the largest
     #: ``timeout_seconds`` a tool contract publishes -``cred.bruteforce`` announces
-    #: 900- plus the handler's own reporting grace, because this ceiling is
+    #: 1800 since run V13 (HackPark, 2026-10-21) asked for 1200 and was refused-
+    #: plus the handler's own reporting grace, because this ceiling is
     #: enforced by cancelling the coroutine: whoever fires first wins, and if the
     #: loop fires it also throws away the handler's answer. Measured in Brute It
     #: v6 (2026-10-20, iteration 8): the 600 s cap cancelled a 900 s sweep, the
@@ -267,7 +268,7 @@ class ReActConfig:
     #: this value the handler's own budget (:data:`CRED_TIMEOUT_MARGIN_SECONDS`
     #: below the contract) always answers first, so the result carries
     #: ``outcome="timeout"`` and the ``attempts`` that were actually made.
-    timeout_per_tool_seconds: int = 960
+    timeout_per_tool_seconds: int = 1860
     enable_summarization: bool = True
     max_history_messages: int = 40
     #: Enforce the completion gates (B8.2.2/B8.2.3): refuse a ``task_complete``

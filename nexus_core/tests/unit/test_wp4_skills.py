@@ -481,7 +481,8 @@ def test_the_bruteforce_skill_ships_the_hydra_fallback() -> None:
     assert "/usr/share/wordlists/rockyou.txt" in content
     # No internal cap anymore: the cut is the tool's budget, and the next move is
     # a slice (Brute It v5 read the old 60 s cutoff as a broken hydra).
-    assert "timeout_seconds" in content and "900 s" in content
+    # V13: the 900 s ceiling refused a 1 200 s sweep, so the run left the tool.
+    assert "timeout_seconds" in content and "1 800 s" in content
     assert "500 intentos" not in content and "60 s" not in content
     assert "http-post-form" in content and "failure_string" in content
 
@@ -795,6 +796,11 @@ def test_the_web_recon_skill_routes_a_poc_by_file_type() -> None:
     assert ".ascx" in flat and "<%@ Control %>" in flat
     assert "PostView.ascx" in flat and "/admin/app_themes.aspx" in flat
     assert "nexus.exploit.compile_and_upload" in content
+    # V13 (iteration 52): the model passed the EDB-ID instead of the ``path``
+    # ``find_and_prepare`` had just returned and lost eight turns looking for it.
+    assert "Regla de oro (ruta del PoC)" in flat
+    assert "usa el campo **`path`**" in flat
+    assert "NO** uses el" in flat
     assert "/themes/<nombre-del-tema>/" in flat
     # The other file types the rule names explicitly.
     assert 'nexus.shell.exec(command="python3 /ruta/al/script.py")' in flat
