@@ -208,6 +208,13 @@ OUTCOME_TAXONOMY = frozenset({
     #: ``Login``). Determinate *before* the sweep, so it completes instead of
     #: raising: the model gets the reason and one more turn to fix the marker.
     "invalid_failure_string",
+    #: A bounded slice of the wordlist ran to its end without a hit, and the list
+    #: has more entries (Brute It v7, iteration 16: a full ``rockyou`` sweep ran
+    #: 890 s only to be killed by the loop). It is a determinate observation
+    #: about *that slice* -not about the target- so it completes, promotes
+    #: nothing and closes no branch; ``next_start_at`` tells the caller where the
+    #: next slice begins.
+    "partial",
     #: Anything else, including an unparsed or corrupt answer.
     "error",
 })
@@ -234,6 +241,10 @@ COMPLETED_OUTCOMES = frozenset({
     # instead would journal an ``unknown`` effect for something that never ran
     # and block the corrected retry (Brute It v6, iterations 11-17).
     "invalid_failure_string",
+    # A slice that finished with the list still having entries: the call decided
+    # something about the slice it ran, so it must not raise (the caller asks for
+    # the next one instead) nor be read as a negative verdict about the target.
+    "partial",
 })
 
 #: ``verification_method`` suffixes that mean "the backend this tool talks to did

@@ -98,14 +98,26 @@ async def workspace_search_handler(arguments: dict, context: RunContext) -> Tool
     from nexus_core.tools.execution_contract import record_capture
 
     record_capture(result)
+    # ``grep`` exits 2 when *any* path it walked could not be read (a file owned
+    # by another user, a dangling symlink) even though it printed the matches.
+    # Checking the exit code alone threw those matches away: Brute It v7,
+    # iteration 27, answered ``post-condition was not verified`` with the hits
+    # already in hand. Matches are the observation; the exit code only says
+    # whether the walk was clean, and that is kept in the evidence.
+    matches = (result.stdout or "").strip()
+    verified = not result.timed_out and (
+        bool(matches) or result.exit_code in {0, 1}
+    )
     return ToolResult(
         output={"matches": result.stdout, "program": program},
-        verified=result.exit_code in {0, 1} and not result.timed_out,
+        verified=verified,
         verification_method="sandbox_exit_code",
         evidence={"query": query, "program": program, "exit_code": result.exit_code,
-                  "timed_out": result.timed_out},
+                  "timed_out": result.timed_out, "match_count": len(matches.splitlines())},
         exit_code=result.exit_code,
-        accepted_exit_codes=(0, 1),  # rg/grep use 1 for a verified empty result
+        # rg/grep use 1 for a verified empty result; 2 is a walk with unreadable
+        # paths, which still reported what it could read.
+        accepted_exit_codes=(0, 1, 2),
         stdout=result.stdout,
         stderr=result.stderr,
         timed_out=result.timed_out,

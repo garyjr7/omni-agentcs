@@ -50,6 +50,7 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.c2.sliver_loot",
     "nexus.c2.sliver_pivot",
     "nexus.cred.bruteforce",
+    "nexus.post.crack_hash",
     "nexus.exploit.msf_auxiliary",
     "nexus.exploit.msf_exploit",
     "nexus.knowledge.record_fact",
@@ -160,7 +161,7 @@ def test_active_catalog_matches_the_reviewed_expectation():
     assert active == EXPECTED_ACTIVE
     read_only = [entry["tool_id"] for entry in catalog["tools"]
                  if entry["effect"] == "read_only"]
-    # WP4 adds two read-only tools (nexus.skill.list/load): 72 - 43 active = 29.
+    # WP4 adds two read-only tools (nexus.skill.list/load): 73 - 44 active = 29.
     assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 29
 
 

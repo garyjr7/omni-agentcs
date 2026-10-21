@@ -1016,6 +1016,27 @@ def derive_assertions(tool_id, arguments, result, context):
                                        'secret_ref': _credential_handle(credential, tenant_id=tenant),
                                        'service': service},
                 f"cred:{service}:{username}@{target}")
+    elif tool_id == 'nexus.post.crack_hash' and result.verification_method == 'crack_hash_john_show':
+        # ``john --show`` reads its own pot file: a row there is a password john
+        # recovered and verified against the hash, not a line the model typed.
+        # The plaintext stays in the vault (V1-29); the fact carries the handle
+        # so the next ``ssh_exec``/``web.request`` can consume it. The key is the
+        # hash's host when the caller named one -that is what makes the handle
+        # matchable by ``_board_ssh_credential``- and the username otherwise.
+        tenant = str(getattr(context, 'tenant_id', 'system'))
+        host = output.get('target') or ''
+        hash_type = output.get('hash_type') or 'hash'
+        for credential in output.get('valid_credentials') or ():
+            username = credential.get('username')
+            add('credential', host or username,
+                {'username': username,
+                 'secret_ref': _credential_handle(credential, tenant_id=tenant),
+                 'service': hash_type,
+                 'source': 'offline-crack',
+                 **({'target': host} if host else {})},
+                # The 4th argument is the fact's key: the host is what makes the
+                # handle matchable by ``_board_ssh_credential``.
+                host or f"hash:{hash_type}:{username}")
     elif tool_id == 'nexus.web.wp_bruteforce' and result.verification_method == 'wp_credential_validated':
         username = output.get('username')
         tenant = str(getattr(context, 'tenant_id', 'system'))

@@ -36,6 +36,7 @@ def durable_tool_definitions(
         cred_bruteforce_definition,
         cred_bruteforce_handler,
     )
+    from .handlers.crack_hash import crack_hash_definition, crack_hash_handler
     from .handlers.ssh_post import (
         enum_system_definition,
         enum_system_handler,
@@ -195,6 +196,7 @@ def durable_tool_definitions(
             cred_bruteforce_definition(tenant_id),
             cred_bruteforce_handler,
         ),
+        "nexus.post.crack_hash": (crack_hash_definition(tenant_id), crack_hash_handler),
         "nexus.post.ssh_exec": (ssh_exec_definition(tenant_id), ssh_exec_handler),
         "nexus.post.ssh_upload": (
             ssh_upload_definition(tenant_id),

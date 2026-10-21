@@ -92,6 +92,10 @@ ACTIVE_TOOLS: frozenset[str] = frozenset(
         "nexus.shell.exec",
         "nexus.session.pty",
         "nexus.cred.bruteforce",
+        # Offline cracking of what the engagement already holds: a hash from a
+        # config or a passphrase-protected key from an exposed panel. Without
+        # it a validated artifact stops being usable at the last step.
+        "nexus.post.crack_hash",
         "nexus.exploit.msf_auxiliary",
         "nexus.exploit.msf_exploit",
         "nexus.attack.impacket_secretsdump",
@@ -419,6 +423,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.post.job",
                 "nexus.post.pivot_bruteforce",
                 "nexus.post.pivot_http",
+                "nexus.post.crack_hash",
                 "nexus.post.ntlm_capture",
                 "nexus.post.dns_update",
                 "nexus.post.tftp",

@@ -78,6 +78,7 @@ def test_check_env_registered_in_catalog():
         "nexus.post.ssh_upload",
         "nexus.recon.nikto",
         "nexus.cred.bruteforce",
+        "nexus.post.crack_hash",
         "nexus.post.ssh_exec",
         "nexus.post.enum_system",
         "nexus.post.privesc_hints",
@@ -96,4 +97,6 @@ def test_check_env_registered_in_catalog():
     # the synthetic run; 61 was the governed TFTP payload delivery (nexus.post.tftp) in the
     # same room; 60 were the governed DNS query, dynamic DNS update, AD password
     # reset and AD escalation (RUN_sala10); 56 were the two Windows tools.
-    assert len(catalog) == 72
+    # 72 after the Brute It v7 fixes; 73 with nexus.post.crack_hash (offline
+    # john, the step that turns a held hash/key into a usable credential).
+    assert len(catalog) == 73

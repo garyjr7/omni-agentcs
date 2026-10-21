@@ -100,6 +100,11 @@ nexus.cred.bruteforce(
 - si es HTTPS, el puerto 443/8443 activa `-S` solo;
 - si el login exige una cookie o un token, no insistas con la tool: usa
   `nexus.shell.exec` con `hydra ... http-post-form "<path>:<params>:F=<fallo>:H=Cookie\\: <valor>"`.
+- **al acertar, usa la sesión que la tool ya abrió**: la respuesta trae
+  `session.session_ref` (una referencia del vault, no la cookie en claro).
+  Pásala a `nexus.web.request(session_ref="vault:...")` para pedir
+  `/admin/panel/`, la clave o el siguiente paso autenticado; volver a barrer o
+  repetir el login sin la cookie es el muro que dejó el run v7 sin avanzar.
 
 A mano sería:
 
@@ -143,12 +148,15 @@ Con acceso confirmado:
 
 ## 6. Errores comunes
 
+- **`outcome="partial"`**: la tool prueba un slice (5 000 entradas por
+  defecto) y la lista tiene más. La respuesta dice `next_start_at`: repite la
+  llamada con ese `start_at`; no es un veredicto sobre el objetivo y no cierra
+  la rama. Solo un barrido que llegó al final sin hit es `negative` y deja un
+  `barrier` (ahí se pivota, no se repite).
 - **El barrido se corta por presupuesto** (`timeout_seconds`, 900 s por
-  defecto): `nexus.cred.bruteforce` no tiene topes propios de intentos ni de
-  tiempo, así que un corte significa que la wordlist no terminó. No es un
-  veredicto: sube `timeout_seconds`, parte la lista (`sed -n '30001,60000p'`) o
-  cambia de vector. Un barrido que **sí** terminó sin hit deja un `barrier`: ahí
-  no repitas, pivota.
+  defecto): no es un veredicto. No relances rockyou entero: sube
+  `timeout_seconds`, baja `max_attempts` y continúa con `start_at`, o cambia de
+  vector.
 - **Hydra acaba en segundos sin hit**: puerto equivocado (falta `-s`), servicio
   equivocado (`ssh://` contra un FTP) o el usuario no existe. Confirma el banner
   con `nmap -sV -p<port>` antes de repetir.

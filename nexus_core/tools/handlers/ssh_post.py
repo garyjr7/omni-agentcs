@@ -137,6 +137,28 @@ def emit(payload):
     print(json.dumps(payload))
 
 
+def load_private_key(key_text, passphrase):
+    # A key is the only credential some hosts accept (Brute It's ``john`` after
+    # the panel hands out an RSA key), and v7 could not use it at all: every
+    # ``ssh_exec`` was password-only. Try the key types paramiko can read; the
+    # first that parses wins, and the others' errors are summarised.
+    # ``paramiko`` is imported in ``main``; this function is module-level, so it
+    # needs its own reference (a NameError here was the first thing the stub
+    # client test caught).
+    import paramiko
+
+    errors = []
+    for key_class in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
+        try:
+            return key_class.from_private_key_string(key_text, password=passphrase or None)
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+    raise ValueError(
+        "private_key could not be loaded (%s): passing a passphrase for an "
+        "unencrypted key also fails here" % ",".join(dict.fromkeys(errors))
+    )
+
+
 def make_dirs(sftp, directory):
     # Recursive mkdir; an "already there" stat is success, a race on mkdir is
     # ignored (two operators may create the same parent concurrently).
@@ -174,17 +196,24 @@ def main():
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
+        connect_kwargs = dict(
             hostname=host,
             port=int(port),
             username=user,
-            password=password,
             timeout=20,
             banner_timeout=20,
             auth_timeout=20,
             allow_agent=False,
             look_for_keys=False,
         )
+        private_key = payload.get("private_key") or ""
+        if private_key:
+            connect_kwargs["pkey"] = load_private_key(
+                private_key, payload.get("passphrase") or ""
+            )
+        else:
+            connect_kwargs["password"] = password
+        client.connect(**connect_kwargs)
         connected = True
         result["connected"] = True
         if mode == "upload":
@@ -440,14 +469,15 @@ def sudo_needs_no_password(command: str) -> bool:
     return False
 
 
-def _secret_values(password: Any) -> tuple[str, ...]:
+def _secret_values(*values: Any) -> tuple[str, ...]:
     """The literals of this invocation that must never reach an observation.
 
     ``password`` is the argument the *gateway* fills in when it resolves a
     ``credential_ref`` (V1-29), so this covers both entry points: the model's
-    manual plaintext and the vault secret it never sees.
+    manual plaintext and the vault secret it never sees. ``private_key`` and
+    ``passphrase`` are secrets in exactly the same sense.
     """
-    return tuple(value for value in {str(password or "")} if value)
+    return tuple(value for value in {str(item or "") for item in values} if value)
 
 
 def _redact_output(payload: Any, secrets: tuple[str, ...]) -> Any:
@@ -484,7 +514,11 @@ def _redact_credential_from_result(handler: Any) -> Any:
             evidence = dict(result.evidence) if isinstance(result.evidence, dict) else {}
             evidence["resolved_from_board"] = resolved
             result = replace(result, evidence=evidence)
-        secrets = _secret_values(arguments.get("password"))
+        secrets = _secret_values(
+            arguments.get("password"),
+            arguments.get("private_key"),
+            arguments.get("passphrase"),
+        )
         if not secrets:
             return result
         return replace(
@@ -717,6 +751,29 @@ def _credential_schema(*, include_password: bool = True) -> dict[str, Any]:
     later).
     """
     properties: dict[str, Any] = {"credential_ref": dict(SSH_CREDENTIAL_REF)}
+    # A private key is an *authentication method*, not a password: a host whose
+    # ``authorized_keys`` only takes a key cannot be reached with any of the
+    # other fields. Brute It v7 (iteration 25) had the key on disk and failed
+    # every SSH call because the tool could not carry it.
+    properties["private_key"] = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 16384,
+        "description": (
+            "Contenido PEM/OpenSSH de la clave privada (incluidas las líneas "
+            "-----BEGIN/END-----). Sustituye a la contraseña como método de "
+            "autenticación."
+        ),
+    }
+    properties["passphrase"] = {
+        "type": "string",
+        "maxLength": 256,
+        "description": (
+            "Passphrase que descifra `private_key`. Si se omite, se usa el "
+            "`password`/`credential_ref` de esta llamada (el passphrase que "
+            "crackeó nexus.post.crack_hash)."
+        ),
+    }
     if include_password:
         properties["password"] = {
             "type": "string",
@@ -729,6 +786,27 @@ def _credential_schema(*, include_password: bool = True) -> dict[str, Any]:
             ),
         }
     return properties
+
+
+def _auth_fields(arguments: dict[str, Any]) -> dict[str, str]:
+    """How this call authenticates: a private key, or a password.
+
+    With a key, ``password`` is not a password: it is the **passphrase**, which
+    is exactly what the gateway puts there when it resolves a ``credential_ref``
+    (the handle ``nexus.post.crack_hash`` returns for a cracked key). Passing it
+    as the SSH password too would fail an encrypted key and silently succeed for
+    the wrong reason on a host that also accepts passwords.
+    """
+    private_key = str(arguments.get("private_key") or "")
+    password = str(arguments.get("password") or "")
+    passphrase = str(arguments.get("passphrase") or "")
+    if private_key:
+        return {
+            "private_key": private_key,
+            "passphrase": passphrase or password,
+            "password": "",
+        }
+    return {"private_key": "", "passphrase": passphrase, "password": password}
 
 
 def _credential_detail(payload: dict[str, Any]) -> str:
@@ -1212,8 +1290,9 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
     """Run one command over SSH through the sandbox."""
     target = _validate_text(arguments.get("target"), "target", max_length=255)
     username = _validate_text(arguments.get("username"), "username", max_length=128)
-    password = str(arguments.get("password") or "")
-    if not password:
+    auth = _auth_fields(arguments)
+    password = auth["password"]
+    if not password and not auth["private_key"]:
         # Fail closed, but say the whole way out. The engine already resolves the
         # credential from the board (any ``credential``/``access`` fact with a
         # vault handle that names this user and host), so this only fires when
@@ -1237,6 +1316,9 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
     if command.startswith("sudo ") and " -S" not in command[:16]:
         if sudo_needs_no_password(command):
             sudo_stdin_skipped = "non_interactive_flag"
+        elif not password:
+            # Key-only login: there is no account password to feed ``sudo -S``.
+            sudo_stdin_skipped = "key_auth_without_password"
         else:
             remote_command = "sudo -S " + command[len("sudo ") :]
             stdin_data = password + "\n"
@@ -1257,6 +1339,8 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
             "command": remote_command,
             "command_timeout": min(60, timeout_seconds),
             "stdin": stdin_data,
+            "private_key": auth["private_key"],
+            "passphrase": auth["passphrase"],
         },
         timeout_seconds=timeout_seconds,
     )
@@ -1266,6 +1350,7 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         "sudo_stdin": stdin_data is not None,
         "port": port,
         "username": username,
+        "auth": "private_key" if auth["private_key"] else "password",
     }
     if sudo_stdin_skipped:
         # Audited rather than silent: the operator can see that this call did not
@@ -1443,8 +1528,9 @@ async def enum_system_handler(arguments: dict, context: RunContext) -> ToolResul
     """Collect the Linux privilege-escalation surface over SSH."""
     target = _validate_text(arguments.get("target"), "target", max_length=255)
     username = _validate_text(arguments.get("username"), "username", max_length=128)
-    password = str(arguments.get("password") or "")
-    if not password:
+    auth = _auth_fields(arguments)
+    password = auth["password"]
+    if not password and not auth["private_key"]:
         # Fail closed, but say the whole way out. The engine already resolves the
         # credential from the board (any ``credential``/``access`` fact with a
         # vault handle that names this user and host), so this only fires when
@@ -1464,7 +1550,12 @@ async def enum_system_handler(arguments: dict, context: RunContext) -> ToolResul
         port=port,
         username=username,
         password=password,
-        payload={"commands": ENUM_COMMANDS, "command_timeout": min(90, timeout_seconds)},
+        payload={
+            "commands": ENUM_COMMANDS,
+            "command_timeout": min(90, timeout_seconds),
+            "private_key": auth["private_key"],
+            "passphrase": auth["passphrase"],
+        },
         timeout_seconds=timeout_seconds,
     )
     evidence: dict[str, Any] = {
@@ -1472,6 +1563,7 @@ async def enum_system_handler(arguments: dict, context: RunContext) -> ToolResul
         "port": port,
         "username": username,
         "commands": sorted(ENUM_COMMANDS),
+        "auth": "private_key" if auth["private_key"] else "password",
     }
     if result.timed_out:
         return ToolResult(
@@ -1572,8 +1664,9 @@ async def ssh_upload_handler(arguments: dict, context: RunContext) -> ToolResult
     """
     target = _validate_text(arguments.get("target"), "target", max_length=255)
     username = _validate_text(arguments.get("username"), "username", max_length=128)
-    password = str(arguments.get("password") or "")
-    if not password:
+    auth = _auth_fields(arguments)
+    password = auth["password"]
+    if not password and not auth["private_key"]:
         # Fail closed, but say the whole way out. The engine already resolves the
         # credential from the board (any ``credential``/``access`` fact with a
         # vault handle that names this user and host), so this only fires when
@@ -1614,6 +1707,8 @@ async def ssh_upload_handler(arguments: dict, context: RunContext) -> ToolResult
             "remote_path": remote_path,
             "file_mode": file_mode or None,
             "make_dirs": make_dirs,
+            "private_key": auth["private_key"],
+            "passphrase": auth["passphrase"],
         },
         timeout_seconds=timeout_seconds,
     )
@@ -1621,6 +1716,7 @@ async def ssh_upload_handler(arguments: dict, context: RunContext) -> ToolResult
         "mode": "upload",
         "port": port,
         "username": username,
+        "auth": "private_key" if auth["private_key"] else "password",
         "local_path": str(source),
         "remote_path": remote_path,
         "local_bytes": local_bytes,

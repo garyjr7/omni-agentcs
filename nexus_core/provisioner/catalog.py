@@ -161,6 +161,16 @@ def assess_tool_catalog(
                 "requires tmux and a run-owned socket in the sandbox",
             )
             binaries = ("tmux",)
+        elif module == "crack_hash":
+            # ``john`` is the cracker and ``ssh2john`` the key converter; the
+            # handler reaches both through the stdlib client, so the transport
+            # stays the python sandbox.
+            transport, state, detail = (
+                "python-sandbox",
+                "unverified",
+                "requires python3 plus john/ssh2john in the sandbox",
+            )
+            binaries = ("python3", "john")
         elif module in PYTHON_HANDLERS:
             transport, state, detail = (
                 "python-sandbox",

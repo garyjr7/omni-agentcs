@@ -139,10 +139,22 @@ class PolicyDecisionDTO(DomainDTO):
 
 
 class ToolResultDTO(DomainDTO):
+    """Boundary shape of a tool result.
+
+    ``outcome`` must accept *every* value of
+    :data:`nexus_core.kernel.models.OUTCOME_TAXONOMY` (plus ``success``). It used
+    to be a hand-written subset, so a handler could emit a value the taxonomy
+    allowed and the DTO rejected: measured in Brute It v7 (iterations 9-12),
+    where ``invalid_failure_string`` -added to the taxonomy days earlier- raised a
+    ``ValidationError`` and the run lost the verdict twice. The parity is
+    enforced by ``test_phase3n_fixes.py::test_the_result_dto_accepts_every_taxonomy_outcome``.
+    """
+
     success: bool
     outcome: Literal[
         "success", "negative", "denied", "unsupported", "unavailable", "timeout",
-        "command_failed", "error"
+        "command_failed", "scope_denied", "invalid_failure_string", "partial",
+        "error",
     ]
     output: dict[str, JsonValue]
     verified: bool

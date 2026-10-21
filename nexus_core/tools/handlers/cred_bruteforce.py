@@ -88,6 +88,12 @@ CRED_SWEEP_TIMEOUT_SECONDS = CRED_TOOL_TIMEOUT_SECONDS - CRED_TIMEOUT_MARGIN_SEC
 WORDLIST_ROOTS_ENV = "NEXUS_WORDLIST_ROOTS"
 DEFAULT_WORDLIST_ROOTS = ("/usr/share/wordlists", "/usr/share/seclists", "/opt/seclists")
 
+#: Words a slice tests when the caller does not say. A full ``rockyou`` sweep
+#: took 890 s and was killed by the loop before answering anything (Brute It v7,
+#: iteration 16), so a call now tests a bounded slice by default and reports the
+#: offset the next one starts at. 5 000 is what a local form login walks in
+#: ~80 s (measured in the same run, iteration 20).
+CRED_DEFAULT_MAX_ATTEMPTS = 5000
 #: One known-bad credential, used to learn what a *failed* login looks like
 #: before spending the wordlist on it.
 CRED_PROBE_USER_FALLBACK = "admin"
@@ -141,10 +147,28 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                 "probe": {"type": "boolean"},
                 "password_file": {"type": "string", "minLength": 1, "maxLength": 1024},
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-                # No ``maximum``: an auditor with a 14M-word list is entitled to
-                # run it. The caps are the operator's (scope/RoE) and the run's
-                # budget, not a number baked into the contract.
-                "max_attempts": {"type": "integer", "minimum": 1},
+                # A bounded slice by default (Brute It v7: an unbounded rockyou
+                # sweep ran 890 s and was cut by the loop). The cap is a *slice*,
+                # not a ceiling: the next call starts at ``next_start_at``, and
+                # an operator can still pass a bigger ``max_attempts``.
+                "max_attempts": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": CRED_DEFAULT_MAX_ATTEMPTS,
+                    "description": (
+                        f"Entradas de la wordlist a probar en esta llamada "
+                        f"(por defecto {CRED_DEFAULT_MAX_ATTEMPTS})."
+                    ),
+                },
+                "start_at": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": (
+                        "Offset de la wordlist donde empieza esta llamada "
+                        "(usa el `next_start_at` del resultado `partial`)."
+                    ),
+                },
                 "timeout_seconds": {
                     "type": "integer",
                     "minimum": 10,
@@ -234,17 +258,25 @@ def _resolve_wordlist(workspace_root: str, source: str) -> str:
         raise ToolInputError(f"forbidden path: {exc.path}") from exc
 
 
-def _truncate_wordlist(source: str, dest: str, max_attempts: int | None) -> int:
-    """Copy the non-empty lines of ``source`` into ``dest``; return the count.
+def _truncate_wordlist(
+    source: str, dest: str, max_attempts: int | None, start_at: int = 0
+) -> tuple[int, bool]:
+    """Copy one slice of ``source`` into ``dest``; return ``(count, exhausted)``.
 
-    ``None`` means *the whole list*: no artificial attempt cap, so a 14M-word
-    dictionary runs as far as the tool's time budget and the run's budget allow.
+    ``start_at`` skips that many non-empty entries (the ``next_start_at`` of a
+    previous ``partial`` call) and ``max_attempts`` bounds the slice. ``None``
+    still means *the whole list*. ``exhausted`` says whether this slice reached
+    the end of the file, which is the difference between "there is no more list"
+    and "there is another slice": only the former is a verdict about the target.
+
     The copy is streamed, so the size of the source is not work and the old
     16 MB ceiling (which rejected the one list an operator always has, measured
     in ``run_7661dda481784eebb17a76e037c5722b``) stays gone.
     """
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     count = 0
+    skipped = 0
+    exhausted = True
     with open(source, encoding="utf-8", errors="replace") as reader, open(
         dest, "w", encoding="utf-8"
     ) as writer:
@@ -254,11 +286,17 @@ def _truncate_wordlist(source: str, dest: str, max_attempts: int | None) -> int:
             token = line.rstrip("\r\n")
             if not token:
                 continue
+            if skipped < start_at:
+                skipped += 1
+                continue
+            if max_attempts is not None and count >= max_attempts:
+                # The next line is a *new* entry: the slice ended, the list did
+                # not, so the caller can ask for the next one.
+                exhausted = False
+                break
             writer.write(token + "\n")
             count += 1
-            if max_attempts is not None and count >= max_attempts:
-                break
-    return count
+    return count, exhausted
 
 
 def store_discovered_credentials(
@@ -444,25 +482,65 @@ def _form_spec(form_url: Any, form_params: Any, failure_string: Any) -> str:
 #: in both branches. The run never learned what a failed login looks like, so the
 #: next turns guessed (SSH, SQLi) instead of sweeping again.
 CRED_PROBE_SCRIPT = r'''
-import json, sys, urllib.error, urllib.request
+import json, sys, urllib.error, urllib.parse, urllib.request
 
-def fetch(url, method, body, timeout):
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    # A login answers 302 *with* the Set-Cookie. Following it silently kept only
+    # the final page's headers, so a panel that redirects to /admin/panel/ looked
+    # like it never set a session (this was the first E2E of the capture).
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+OPENER = urllib.request.build_opener(_NoRedirect())
+
+def _cookies(headers):
+    return [str(value) for value in (headers.get_all("Set-Cookie") or [])] if headers else []
+
+def fetch(url, method, body, timeout, cookie=None):
     data = body.encode("utf-8") if body else None
     request = urllib.request.Request(url, data=data, method=method)
     request.add_header("User-Agent", "nexus-cred-probe/1")
+    if cookie:
+        request.add_header("Cookie", cookie)
     if data is not None:
         request.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.getcode(), response.read(200000).decode("utf-8", "replace")
+        with OPENER.open(request, timeout=timeout) as response:
+            return (response.getcode(),
+                    response.read(200000).decode("utf-8", "replace"),
+                    _cookies(response.headers),
+                    response.headers.get("Location") or "")
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read(200000).decode("utf-8", "replace")
+        headers = getattr(exc, "headers", None)
+        return (exc.code,
+                exc.read(200000).decode("utf-8", "replace"),
+                _cookies(headers),
+                (headers.get("Location") if headers else "") or "")
 
 def main():
     baseline_url, method, action_url, body, needle, timeout = sys.argv[1:7]
     limit = float(timeout)
-    baseline_status, baseline = fetch(baseline_url, "GET", "", limit)
-    failure_status, failure = fetch(action_url, method, body, limit)
+    baseline_status, baseline, _, baseline_location = fetch(baseline_url, "GET", "", limit)
+    if baseline_location and 300 <= baseline_status < 400:
+        # The anonymous page redirects to the real login form: that page is the
+        # baseline the marker must *not* be in.
+        _, landed_baseline, _, _ = fetch(
+            urllib.parse.urljoin(baseline_url, baseline_location), "GET", "", limit
+        )
+        baseline += "\n" + landed_baseline
+    failure_status, failure, set_cookie, location = fetch(action_url, method, body, limit)
+    landed_status = failure_status
+    if location and 300 <= failure_status < 400:
+        # One hop, only to read the marker: the rejected-login text usually
+        # lives on the page the app redirects to, and the cookie stays the one
+        # the login itself answered with.
+        cookie_header = "; ".join(
+            value.split(";", 1)[0].strip() for value in set_cookie if "=" in value
+        )
+        target_url = urllib.parse.urljoin(action_url, location)
+        landed_status, landed, _, _ = fetch(target_url, "GET", "", limit, cookie_header)
+        failure = failure + "\n" + landed
+        failure_status = landed_status
     print(json.dumps({
         "ok": True,
         "baseline_status": baseline_status,
@@ -471,6 +549,11 @@ def main():
         "in_failure": needle in failure,
         "baseline_len": len(baseline),
         "failure_len": len(failure),
+        # The session the login just opened. Hydra validates the *password*; a
+        # panel then hands out a cookie, and without it the winning credential
+        # cannot be used anywhere (Brute It v7, iteration 22: the agent had
+        # ``vault:443a…`` and no way to authenticate the panel).
+        "set_cookie": set_cookie,
     }))
 
 try:
@@ -500,9 +583,15 @@ def _probe_url(target: str, port: int, secure: bool, path: str) -> str:
     return f"{scheme}://{target}:{port}{path}"
 
 
-def _probe_body(form_params: str, username: str) -> str:
-    """Fill hydra's placeholders with the real user and the known-bad password."""
-    return form_params.replace("^USER^", username).replace("^PASS^", CRED_PROBE_PASSWORD)
+def _probe_body(
+    form_params: str, username: str, password: str = CRED_PROBE_PASSWORD
+) -> str:
+    """Fill hydra's placeholders with a real user and a password.
+
+    The probe passes the known-bad one; the session capture below passes the
+    password hydra just validated, through the exact template the sweep used.
+    """
+    return form_params.replace("^USER^", username).replace("^PASS^", password)
 
 
 def _probe_verdict(payload: dict[str, Any]) -> _ProbeVerdict:
@@ -521,18 +610,22 @@ def _probe_verdict(payload: dict[str, Any]) -> _ProbeVerdict:
     return _ProbeVerdict("ok", "discriminating", detail)
 
 
-async def _probe_form_login(
+async def _form_login_observation(
     *, target: str, port: int, secure: bool, path: str, form_params: str,
-    failure_string: str, username: str, service: str, workspace_root: str,
-) -> _ProbeVerdict:
-    """Make one known-bad login and say whether ``failure_string`` separates it.
+    failure_string: str, username: str, password: str, service: str,
+    workspace_root: str,
+) -> tuple[dict[str, Any] | None, str]:
+    """One GET (anonymous) plus one form POST with ``password``.
 
-    Runs in the same sandbox as hydra (so OCI mode keeps working) and fails open:
-    a probe that cannot run is ``skipped``, never a reason to refuse the sweep.
+    Returns the client's payload and, when there is none, the reason. Both the
+    probe (known-bad password) and the session capture (validated password) go
+    through here, so the two make the *same* request the sweep does: same body
+    template, same method (``http-get-form`` puts the fields in the query), same
+    sandbox and image as hydra.
     """
     from .http_request import _parse_last_json
 
-    body = _probe_body(form_params, username or CRED_PROBE_USER_FALLBACK)
+    body = _probe_body(form_params, username or CRED_PROBE_USER_FALLBACK, password)
     baseline_url = _probe_url(target, port, secure, path)
     if service == "http-get-form":
         method, action_url, payload = "GET", f"{baseline_url}?{body}", ""
@@ -548,16 +641,113 @@ async def _probe_form_login(
         default_image="python:3.12-alpine",
     )
     if not (result.stdout or "").strip():
-        return _ProbeVerdict("skipped", "probe_did_not_run")
+        return None, "probe_did_not_run"
     try:
         payload_json = _parse_last_json(result.stdout or "")
     except ValueError:
-        return _ProbeVerdict("skipped", "probe_returned_no_verdict")
+        return None, "probe_returned_no_verdict"
     if not payload_json.get("ok"):
-        return _ProbeVerdict(
-            "skipped", str(payload_json.get("error") or "probe_failed")[:200]
-        )
+        return None, str(payload_json.get("error") or "probe_failed")[:200]
+    return payload_json, ""
+
+
+async def _probe_form_login(
+    *, target: str, port: int, secure: bool, path: str, form_params: str,
+    failure_string: str, username: str, service: str, workspace_root: str,
+) -> _ProbeVerdict:
+    """Make one known-bad login and say whether ``failure_string`` separates it.
+
+    Runs in the same sandbox as hydra (so OCI mode keeps working) and fails open:
+    a probe that cannot run is ``skipped``, never a reason to refuse the sweep.
+    """
+    payload_json, reason = await _form_login_observation(
+        target=target, port=port, secure=secure, path=path,
+        form_params=form_params, failure_string=failure_string,
+        username=username, password=CRED_PROBE_PASSWORD, service=service,
+        workspace_root=workspace_root,
+    )
+    if payload_json is None:
+        return _ProbeVerdict("skipped", reason)
     return _probe_verdict(payload_json)
+
+
+def _cookie_header(set_cookie: list[Any]) -> str:
+    """``"a=1; b=2"`` from raw ``Set-Cookie`` values (attributes dropped)."""
+    pairs = []
+    for raw in set_cookie or ():
+        first = str(raw).split(";", 1)[0].strip()
+        if "=" in first and first not in pairs:
+            pairs.append(first)
+    return "; ".join(pairs)
+
+
+def _cookie_names(set_cookie: list[Any]) -> list[str]:
+    """Names of the cookies set by a response (never the values)."""
+    names = []
+    for raw in set_cookie or ():
+        first = str(raw).split(";", 1)[0].strip()
+        name = first.split("=", 1)[0].strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+async def _capture_form_session(
+    *, target: str, port: int, secure: bool, path: str, form_params: str,
+    failure_string: str, username: str, password: str, service: str,
+    workspace_root: str, tenant_id: str,
+) -> dict[str, Any]:
+    """Log in once with the winning credential and keep the session it opens.
+
+    Hydra proves the *password*; a panel answers with a cookie, and without that
+    cookie the credential cannot be used from any other tool (Brute It v7,
+    iteration 20: ``admin`` validated, ``vault:443a…`` on the board, and every
+    later attempt answered 401/redirect because nothing carried the session).
+
+    The ``Cookie`` header is stored in the vault -it is a bearer secret- and only
+    its handle travels: ``session_ref`` is what ``nexus.web.request`` accepts.
+    The failure marker of the same login is checked again, so a session is never
+    claimed for a login the panel rejected.
+    """
+    payload, reason = await _form_login_observation(
+        target=target, port=port, secure=secure, path=path,
+        form_params=form_params, failure_string=failure_string,
+        username=username, password=password, service=service,
+        workspace_root=workspace_root,
+    )
+    if payload is None:
+        return {"verified": False, "reason": reason}
+    if payload.get("in_failure"):
+        return {
+            "verified": False,
+            "reason": "failure_marker_still_present",
+            "status": payload.get("failure_status"),
+        }
+    raw_cookies = [str(value) for value in payload.get("set_cookie") or ()]
+    header = _cookie_header(raw_cookies)
+    names = _cookie_names(raw_cookies)
+    if not header:
+        # A login without a cookie is still a valid login (HTTP basic, a token in
+        # the body): say so instead of inventing a session.
+        return {
+            "verified": True,
+            "reason": "no_set_cookie",
+            "cookies": [],
+            "status": payload.get("failure_status"),
+        }
+    ref = default_secret_store().put(
+        header.encode("utf-8"), kind="session", tenant_id=tenant_id
+    )
+    return {
+        "verified": True,
+        "session_ref": ref,
+        "cookies": names,
+        "status": payload.get("failure_status"),
+        "usage": (
+            "nexus.web.request con session_ref=<handle> reutiliza esta sesión; "
+            "no hace falta la contraseña."
+        ),
+    }
 
 
 def _invalid_failure_string_result(
@@ -713,7 +903,12 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     # tool's contract publishes. The TCP script keeps its own (smaller) budget
     # because it is a python probe, not a hydra sweep.
     requested_attempts = arguments.get("max_attempts")
-    max_attempts = int(requested_attempts) if requested_attempts else None
+    max_attempts = (
+        int(requested_attempts) if requested_attempts else CRED_DEFAULT_MAX_ATTEMPTS
+    )
+    start_at = int(arguments.get("start_at") or 0)
+    if start_at < 0:
+        raise ToolInputError("start_at must be zero or positive")
     requested_timeout = arguments.get("timeout_seconds")
     default_timeout = (
         CRED_DEFAULT_TIMEOUT_SECONDS
@@ -744,9 +939,15 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     run_dir = tempfile.mkdtemp(prefix=f"cred_{safe_run_id(context)}_", dir=workspace_root)
     wordlist_path = os.path.join(run_dir, "wordlist.txt")
     outfile_path = os.path.join(run_dir, "hydra.txt")
-    attempts = _truncate_wordlist(source_path, wordlist_path, max_attempts)
+    attempts, exhausted = _truncate_wordlist(
+        source_path, wordlist_path, max_attempts, start_at
+    )
     if attempts == 0:
-        raise ToolInputError("password_file has no usable entries")
+        raise ToolInputError(
+            f"password_file has no usable entries at offset {start_at}"
+            if start_at
+            else "password_file has no usable entries"
+        )
 
     if service in {"tcp", "telnet"}:
         from ._tcp_credentials import TCP_CREDENTIAL_SCRIPT
@@ -835,6 +1036,9 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         "username": username,
         "attempts": attempts,
         "max_attempts": max_attempts,
+        "start_at": start_at,
+        "next_start_at": start_at + attempts,
+        "slice_exhausted": exhausted,
         "found_count": len(credentials),
         "noise_level": "medium",
         "timeout_seconds": timeout_seconds,
@@ -856,6 +1060,23 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     evidence["secret_refs"] = [entry["secret_ref"] for entry in stored if entry.get("secret_ref")]
     stdout = _scrub_plaintext(result.stdout or "", credentials)
     stderr = _scrub_plaintext(result.stderr or "", credentials)
+    # A validated *form* credential is worth nothing until the panel session it
+    # opens travels with it: login once more, keep the cookie in the vault and
+    # hand the caller its handle.
+    session: dict[str, Any] | None = None
+    if stored and form_spec:
+        winner = credentials[0]
+        session = await _capture_form_session(
+            target=target, port=port, secure=secure, path=form_path,
+            form_params=form_params, failure_string=failure_string,
+            username=str(winner.get("username") or username),
+            password=str(winner.get("password") or ""),
+            service=service, workspace_root=workspace_root,
+            tenant_id=context.tenant_id,
+        )
+        evidence["session_verified"] = bool(session.get("verified"))
+        if session.get("reason"):
+            evidence["session_reason"] = session["reason"]
 
     if _hydra_unavailable(result.exit_code, result.stderr or ""):
         # hydra never ran: the target was not contacted, so this is not a verdict
@@ -901,7 +1122,8 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
                     f"Hydra se cortó a los {timeout_seconds}s sin credencial "
                     f"válida: la wordlist no terminó ({attempts} intentos "
                     "preparados). No es un veredicto sobre el objetivo: sube "
-                    "timeout_seconds, parte la lista en trozos o cambia de vector."
+                    "timeout_seconds, baja max_attempts (el barrido va por "
+                    "slices con start_at) o cambia de vector."
                 ),
                 "target": target,
                 "service": service,
@@ -927,8 +1149,13 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     # the same wordlist. hydra's own closing line travels in the output, because
     # "0 valid password found" and "[ERROR] could not connect" are different
     # facts and only the first one means the credentials were disproved.
-    negative = not stored and not result.timed_out
-    verdict = _hydra_verdict(combined) if negative else ""
+    #
+    # A slice that ended while the list still has entries is neither: it decided
+    # something about the slice, not about the target, so it completes as
+    # ``partial`` (no barrier, no verdict) and names where the next slice starts.
+    partial = not stored and not result.timed_out and not exhausted
+    negative = not stored and not result.timed_out and exhausted
+    verdict = _hydra_verdict(combined) if (negative or partial) else ""
     completed_sweep = "password found" in verdict.lower()
     if negative:
         reason = (
@@ -943,14 +1170,21 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
             detail={"service": service, "attempts": attempts},
         )
         evidence["wordlist_completed"] = completed_sweep
+    elif partial:
+        evidence["wordlist_completed"] = False
     result_output: dict[str, Any] = {
         "target": target,
         "service": service,
         "port": port,
         "username": username,
         "attempts": attempts,
+        "start_at": start_at,
+        "next_start_at": start_at + attempts,
+        "wordlist_completed": (exhausted and not result.timed_out),
         "valid_credentials": stored,
     }
+    if session is not None:
+        result_output["session"] = session
     if negative:
         result_output["message"] = (
             "Hydra completó el ataque sin encontrar credenciales válidas"
@@ -959,10 +1193,19 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         )
         if verdict:
             result_output["hydra_verdict"] = verdict
+    elif partial:
+        result_output["message"] = (
+            f"Slice sin acierto: se probaron {attempts} entradas desde el offset "
+            f"{start_at} y la wordlist tiene más. Repite la llamada con "
+            f"start_at={start_at + attempts} para el siguiente slice (no hay "
+            "veredicto sobre el objetivo todavía)."
+        )
+        if verdict:
+            result_output["hydra_verdict"] = verdict
     return ToolResult(
         output=result_output,
         verified=verified,
-        outcome="" if verified else ("negative" if negative else ""),
+        outcome="" if verified else ("partial" if partial else ("negative" if negative else "")),
         verification_method="cred_bruteforce_completed",
         evidence=evidence,
         exit_code=result.exit_code,

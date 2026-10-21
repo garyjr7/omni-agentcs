@@ -155,10 +155,14 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # dynamic skill loader (``nexus.skill.list`` + ``nexus.skill.load``): +262
     # chars for two capability lines, measured at 15,762 (218,9 per tool), so the
     # total ceiling moves to 16,000 and the per-tool bound does *not*.
-    assert len(catalog) == 72
+    # The 73rd tool (``nexus.post.crack_hash``) is one more capability line with
+    # its arguments (249 chars: hash/key input, type, owner, wordlist), measured
+    # at 16,089 (220,4 per tool). The *per-tool* average stays under 225 -the
+    # thing the bound is for- so only the total ceiling moves, to 16,150.
+    assert len(catalog) == 73
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 16000
+    assert len(text) < 16150
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -195,7 +199,9 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # ``failure_string``-; the recipe and the argument example stay in
     # ``web-recon-master``, which is loaded on demand. The ceiling moves to
     # 25_000; the per-tool catalog bound does not move.
-    assert len(_prompt(catalog)) < 25_000
+    # ``nexus.post.crack_hash`` (the 73rd tool) costs its catalog line: measured
+    # 25,152. It is capability data, not prose, so the ceiling moves to 25_250.
+    assert len(_prompt(catalog)) < 25_250
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):
@@ -340,5 +346,6 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # adds its ~116 tokens to the same refresh turn: measured 8,236, so the
     # ceiling moves to 8_250. The login rule lands there too: measured 8,359,
     # so the refresh ceiling moves to 8_400 (32 compact turns at 5,600 plus 8
-    # refreshes at 8,359 are 246,072, inside the 250k budget).
-    assert max(totals) < 8_400
+    # refreshes at 8,359 are 246,072, inside the 250k budget). The 73rd tool's
+    # catalog line lands here too: measured 8,422, so the ceiling moves to 8_450.
+    assert max(totals) < 8_450

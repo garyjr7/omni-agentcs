@@ -56,6 +56,8 @@ HTTP_ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTION
 #: Cap on custom headers (argv transport + header-injection surface).
 HTTP_MAX_HEADERS = 20
 HTTP_MAX_HEADER_VALUE = 4096
+#: Cap on the ``Cookie`` header this call may send (one line, no CRLF).
+HTTP_MAX_COOKIE_CHARS = 4096
 #: Cap on extra multipart form fields sent alongside a file upload.
 HTTP_MAX_FORM_FIELDS = 20
 #: Cap on the raw text body carried through argv.
@@ -319,6 +321,29 @@ def http_request_definition(tenant_id: str = "system") -> ToolDefinition:
                     "maxProperties": HTTP_MAX_HEADERS,
                     "additionalProperties": {"type": "string", "maxLength": HTTP_MAX_HEADER_VALUE},
                 },
+                # A session cookie is the one thing a form login leaves behind,
+                # and without it the request is anonymous: Brute It v7 had the
+                # validated ``admin`` credential and every panel request still
+                # came back unauthenticated (iteration 22).
+                "cookie": {
+                    "type": "string",
+                    "maxLength": HTTP_MAX_COOKIE_CHARS,
+                    "description": (
+                        "Valor literal de la cabecera Cookie (p. ej. "
+                        "'PHPSESSID=abc; csrf=def'). Prefiere `session_ref` si la "
+                        "sesión la abrió el motor."
+                    ),
+                },
+                "session_ref": {
+                    "type": "string",
+                    "pattern": "^vault:[a-f0-9]{32}$",
+                    "description": (
+                        "Handle de una sesión guardada en el vault (lo devuelve "
+                        "nexus.cred.bruteforce al validar un login de formulario). "
+                        "El motor lo resuelve y envía la cabecera Cookie; el "
+                        "valor no entra en el contexto del modelo."
+                    ),
+                },
                 "data": {"type": "string", "maxLength": HTTP_MAX_DATA_CHARS},
                 "data_base64": {"type": "string", "maxLength": HTTP_MAX_DATA_B64_CHARS},
                 "upload": {
@@ -493,6 +518,22 @@ def _parse_last_json(stdout: str) -> dict[str, Any]:
     raise ValueError("http client did not return a JSON result")
 
 
+def _cookie_pairs(set_cookie: Any) -> dict[str, str]:
+    """``{name: value}`` from raw ``Set-Cookie`` values (attributes dropped).
+
+    ``set_cookie`` keeps the raw header -what a browser would store- while this
+    mapping is the shape the model can paste into the next request without
+    re-parsing ``Path``/``HttpOnly`` attributes.
+    """
+    cookies: dict[str, str] = {}
+    for raw in set_cookie or ():
+        first = str(raw).split(";", 1)[0].strip()
+        name, separator, value = first.partition("=")
+        if separator and name.strip():
+            cookies[name.strip()] = value.strip()
+    return cookies
+
+
 async def http_request_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     """Send one scoped HTTP(S) request through the sandbox and parse the result."""
     from nexus_core.kernel.schema_validation import validate
@@ -503,6 +544,31 @@ async def http_request_handler(arguments: dict[str, Any], context: RunContext) -
     if method not in HTTP_ALLOWED_METHODS:
         raise ValueError(f"http method is not allowed: {method!r}")
     headers = _validate_headers(arguments.get("headers"))
+    # A login leaves a cookie behind; without a way to send it back every later
+    # request is anonymous no matter how well the credential was validated (Brute
+    # It v7, iteration 22). ``session_ref`` is the vault handle the credential
+    # tool returns, so the cookie value never has to enter the model's context.
+    session_ref = str(arguments.get("session_ref") or "").strip()
+    cookie_sent = ""
+    if session_ref:
+        from nexus_core.kernel.secret_store import default_secret_store, is_secret_ref
+
+        if not is_secret_ref(session_ref):
+            raise ValueError("session_ref must be a vault:<hex> handle")
+        try:
+            cookie_sent = default_secret_store().get(
+                session_ref, tenant_id=context.tenant_id
+            ).decode("utf-8").strip()
+        except KeyError:
+            raise ValueError(f"unknown session_ref: {session_ref}") from None
+    manual_cookie = str(arguments.get("cookie") or "").strip()
+    if manual_cookie:
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in manual_cookie):
+            raise ValueError("cookie contains control characters")
+        cookie_sent = "; ".join(part for part in (cookie_sent, manual_cookie) if part)
+    if cookie_sent:
+        headers = {key: value for key, value in headers.items() if key.lower() != "cookie"}
+        headers["Cookie"] = cookie_sent
 
     data = arguments.get("data")
     data_b64 = arguments.get("data_base64")
@@ -588,6 +654,8 @@ async def http_request_handler(arguments: dict[str, Any], context: RunContext) -
         "save_path": save_path or None,
         "timeout_seconds": timeout_seconds,
         "max_response_bytes": max_bytes,
+        "cookie_sent": bool(cookie_sent),
+        "session_ref": session_ref or None,
     }
     if result.timed_out:
         return ToolResult(
@@ -617,6 +685,7 @@ async def http_request_handler(arguments: dict[str, Any], context: RunContext) -
         )
 
     ok = bool(payload.get("ok")) and result.exit_code == 0
+    response_cookies = _cookie_pairs(payload.get("set_cookie"))
     if ok:
         evidence.update(
             {
@@ -646,6 +715,8 @@ async def http_request_handler(arguments: dict[str, Any], context: RunContext) -
             "reason": payload.get("reason"),
             "headers": payload.get("headers") or {},
             "set_cookie": payload.get("set_cookie") or [],
+            # Same values, parsed: what a follow-up call sends in ``cookie``.
+            "response_cookies": response_cookies,
             "content_type": payload.get("content_type"),
             "body_complete": payload.get("body_complete"),
             "body_bytes": payload.get("body_bytes"),
