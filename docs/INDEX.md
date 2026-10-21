@@ -1,6 +1,6 @@
 # ÍNDICE DOCUMENTAL — OmniAgentCS
 
-> Última revisión: 2026-10-15 · Commit: 363bba9 (línea base sobre la que se clasifica)
+> Última revisión: 2026-10-21 · Commit documental: 9a61785 · Código auditado: 430dcfb
 > Regla: solo UN documento por tema es VIGENTE. El resto es histórico o archivado.
 > La reorganización que introduce este índice es el commit `docs: reorganize documentation into INDEX + archive, clean root`, aplicado sobre la línea base `363bba9`.
 > Ubicaciones: `/` = raíz del repo · `docs/missions/` = misiones y resultados abiertos · `docs/archive/` = material superado, solo consulta.
@@ -19,11 +19,13 @@
 | Guía del agente autónomo y comandos `/` | `GUIA_AGENTE_1.md` | `docs/guides/` | ReAct, subagentes, playbooks y los 41 comandos `/` |
 | Auditoría UX/CLI | `AUDIT_POTENCIA_CLI.md` | `docs/archive/audits/` | 8.3/10, sustituye a `AUD_OMNI_BW` |
 | Auditoría técnica integral | `AUDIT_POT_XCLAUDE_CLI.md` | `docs/archive/audits/` | 6,0/10, segunda opinión; origen de Fase 0/1/2 |
-| Auditoría del cuerpo | `FASE_V1_AUDITORIA_CUERPO_PROMPT.md` | `docs/missions/` | Prompt de auditoría V1 |
+| Auditoría del cuerpo | `FASE_V1_AUDITORIA_CUERPO_PROMPT.md` | `docs/missions/` | Prompt de auditoría V1; resultados en `audit-v1/` y clasificados en `MASTER_ROADMAP.md` |
 | Resultado de la auditoría V1 | `docs/missions/audit-v1/00_DICTAMEN.md` | `docs/missions/audit-v1/` | 12 informes + `audit_v1.json` + `catalog.json` |
-| Plan estratégico | `PLAN_OMNIAGENTCS_V4.md` | `docs/missions/` | Parcialmente ejecutado, ver §10 |
+| **Plan maestro / roadmap** | **`MASTER_ROADMAP.md`** | **`docs/`** | **Documento único de verdad**: inventario de auditorías, matriz [HECHO]/[PENDIENTE]/[BLOQUEADO]/[DESCARTADO] y plan P0–P4 |
+| Plan estratégico | `PLAN_OMNIAGENTCS_V4.md` | `docs/missions/` | Parcialmente ejecutado, ver §10; sus promesas se clasifican en `MASTER_ROADMAP.md` |
 | Comparación manual/agente | `MANUAL_VS_AGENT.md` | `docs/missions/` | n=1, no concluyente |
-| Fase en curso | `FASE2_ORQUESTACION_AVANZADA.md` | `docs/missions/` | Rama `feat/orchestration-phase-2-close` |
+| Fase 2 (cerrada) | `FASE2_ORQUESTACION_AVANZADA.md` | `docs/missions/` | Cerrada con límites declarados; deuda viva en `MASTER_ROADMAP.md` §3.4 |
+| Auditoría MCP y PTY | `AUDITORIA_ARQUITECTONICA_MCP_PTY_2026-10-21.md` | `docs/missions/` | Veredicto y orden P0–P4; base de `MASTER_ROADMAP.md` §4 |
 | Roadmap técnico post-auditoría | `roadmap_12/10.md` | `roadmap_12/` | **WIP no versionado — no forma parte del ledger oficial** |
 | Cleanup de código legado | `CLEANUP_RESULT_V3.md` | `docs/missions/` | Resultado final; decisiones por archivo en `CLEANUP_DECISIONS.md` |
 | Decisiones de arquitectura | `ADR-004-sandbox-modes.md`, `ADR-005-surface-coverage-ledger.md`, `ADR-006-blackbox-default-authorization.md` | `docs/adr/` | Aceptadas; modos de sandbox, ledger de cobertura (veredicto por servicio) y autorización Caja Negra por defecto (RoE como única restricción de técnica) |
