@@ -13,16 +13,18 @@
 | Ejecución W1.2 + PTY P0 | `49691be` |
 | Ejecución P1 (`session_ref`) | `07e3cdc` |
 | Ejecución P1.5 (productor `webshell`) | `2d5b318` |
-| Ejecución V10 (HackPark: PoC + CSRF) | commit de esta entrega (`HEAD` al cerrar) |
+| Ejecución V10 (HackPark: PoC + CSRF) | `88f1210` |
+| Ejecución V11 (HackPark: PoC en el objetivo) | commit de esta entrega (`HEAD` al cerrar) |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
-| Regla de esta entrega | **V10**: obtener el PoC y manejar tokens CSRF sin tocar `ToolGateway` |
+| Regla de esta entrega | **V11**: el PoC tiene que llegar al objetivo (form_params reales, next_steps y subida de temas) sin tocar `ToolGateway` |
 | Suite de referencia (`430dcfb`) | **3 735 passed / 53 skipped** |
 | Suite tras W1.2 + PTY P0 | **3 753 passed / 53 skipped** |
 | Suite tras P1 | **3 767 passed / 53 skipped** |
 | Suite tras P1.5 | **3 776 passed / 53 skipped** |
 | Suite tras V10 | **3 801 passed / 53 skipped** |
-| Catálogo | **78 tools durables**, **21 parsers** nativos |
+| Suite tras V11 | **3 814 passed / 53 skipped** |
+| Catálogo | **79 tools durables**, **21 parsers** nativos |
 
 ---
 
@@ -42,11 +44,13 @@
 Las notas citan `fichero:línea` cuando el estado se comprobó en código. Cuando la
 clasificación procede de un documento y no se re-midió en esta pasada, se indica
 expresamente `[DOC]`. La suite se re-ejecutó tras P1:
-**3 801 passed / 53 skipped**. La línea base del commit auditado era
+**3 814 passed / 53 skipped**. La línea base del commit auditado era
 **3 735 passed / 53 skipped**; W1.2 + PTY P0 añadieron 18 tests, P1 otros 14,
-P1.5 otros 9 y V10 otros 25 (PoC preparado, CSRF en `web.request`, barrido
+P1.5 otros 9, V10 otros 25 (PoC preparado, CSRF en `web.request`, barrido
 CSRF en `cred.bruteforce`, normalización de URL en `nikto` y los contratos de
-prompt/catálogo/skills que los acompañan).
+prompt/catálogo/skills que los acompañan) y V11 otros 13 (form_params de
+ASP.NET, `next_steps` por tipo de archivo, `compile_and_upload` y su aceptación
+contra un panel WebForms local real).
 
 ### 0.3 Qué NO es este documento
 
@@ -104,7 +108,7 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 
 ### 1.1 Ingesta
 
-- **78 tools durables** en `tools/registry.py`, registradas por tenant y con
+- **79 tools durables** en `tools/registry.py`, registradas por tenant y con
   `effect`, `scope_required`, `sandbox_required` y permisos explícitos.
 - Ninguna tool se invoca fuera de `execute_tool` → `ToolGateway`; el bucle ReAct
   no tiene una segunda vía de ejecución.
@@ -179,7 +183,7 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 
 | Dato | Valor | Fuente |
 |---|---|---|
-| Tools durables | 78 | `tools/registry.py`; `docs/missions/audit-v1/catalog.json` |
+| Tools durables | 79 | `tools/registry.py`; `docs/missions/audit-v1/catalog.json` |
 | Parsers | 21 módulos | `tools/parsers/` |
 | Tests | 3 801 passed / 53 skipped | suite completa tras V10 |
 | Prompt estático | 28 665 chars; ~6 989 tok/turno | `test_prompt_optimization.py` |
@@ -564,6 +568,50 @@ adivine.
 - El e2e contra un panel ASP.NET real con cookies `SameSite`/`Secure` y un
   `VIEWSTATE` rotado por sesión no se ejecutó; la aceptación usa un servidor
   HTTP local real.
+
+### 5.10 Run V11 contra HackPark — el PoC llega al objetivo (2026-10-21) — **EJECUTADA**
+
+Run `run_21d83735df4e4e64833373d81533c89e`. El run hizo lo que V10 no pudo:
+identificó BlogEngine.NET 3.3.6.0, tradujo el fingerprint a `CVE-2019-6714` y
+**descargó** el PoC con `find_and_prepare`. Los tres muros restantes fueron de
+capacidad, no de gobernanza:
+
+| Muro medido | Por qué bloqueaba | Fix implementado | Test de aceptación |
+|---|---|---|---|
+| `form_params` rechazaba los nombres de ASP.NET (`ctl00$MainContent$LoginUser$UserName`) | El validador vetaba espacios y todo lo que no fuera un nombre simple; el run tenía formulario, usuario y wordlist y no llegó a probar una contraseña | Se acepta cualquier carácter de un nombre de campo; sólo se rechazan `:` y `?` (estructura de hydra) y los segmentos sin `nombre=valor` | `test_aspnet_field_names_are_accepted_verbatim`, `test_a_form_param_pair_without_a_name_is_rejected` |
+| El PoC no traía instrucciones | `next_steps` decía «lee, adapta, sube, acciona»; `46353.cs` es un control ASP.NET (`<%@ Control %>`), no un programa, y sólo se ejecuta como `PostView.ascx` en un tema | `next_steps` por extensión y por markup: tema `.ascx`, script `.py`, binario `.exe`, `.cs` sin markup → compilar; añade el paso de callback si el PoC trae `ATTACKER_IP`/`LHOST`/`LPORT` | `test_a_blogengine_theme_control_gets_upload_instructions`, `test_a_python_poc_names_the_shell_exec_runner` |
+| No había camino gobernado para subir el exploit de tema | `nexus.web.upload` no reconoce un control ASP.NET, no inyecta el callback y no distingue un 200 de un archivo ejecutable | `nexus.exploit.compile_and_upload`: prepara en `loot/exploits/prepared/`, sube `.ascx` con `csrf_mode=true`, compila un `.cs` puro con `mcs` en el sandbox, verifica con `id` y devuelve `session_ref`; un 4xx/5xx es `exploit_upload_rejected` | `test_blogengine_theme_is_uploaded_as_ascx_and_registers_a_session`, `test_the_post_is_rejected_when_csrf_mode_is_turned_off` |
+| La skill no enrutaba el PoC | El flujo «buscar → leer → adaptar → subir» no decía qué hacer con cada tipo de archivo | Regla de oro (PoC en mano) en `web-recon-master` y en el prompt del sistema | `test_the_web_recon_skill_routes_a_poc_by_file_type` |
+
+**Por qué no es un parche de sala:** el validador acepta la gramática real de
+un formulario (ASP.NET, PHP, Django), `next_steps` decide por el archivo que
+Exploit-DB entregó y no por el nombre de la sala, y la subida es la misma
+tool gobernada que ya usa cualquier webshell. La aceptación se hizo contra un
+panel WebForms local real que rechaza el POST sin tokens y ejecuta `id`.
+
+**Límites declarados:**
+
+- El `.ascx` sólo se ejecuta desde la ruta de temas del CMS: `shell_url` la
+  aporta el operador y el handler no la adivina.
+- La inyección de callback sólo sustituye placeholders literales; un PoC con la
+  IP escrita a mano se marca `callback_placeholder_missing` para editarlo.
+- `mcs` no está en el entorno de desarrollo: la ruta de compilación se prueba
+  con el compilador simulado y un fallo se reporta `unavailable` (nunca se sube
+  un `.cs` que el objetivo no ejecuta).
+- `form_url` sigue sin aceptar query string; se usa la ruta del POST y la cookie
+  de la sesión resuelve el redirect.
+
+### 5.11 Regla de avance hacia producción
+
+El roadmap es el contrato de salida a producción, no un diario: **cada run que
+se cierra actualiza esta sección y sus métricas en el mismo commit**. Una pared
+medida se convierte en capacidad genérica (validator, `next_steps`, tool
+gobernada) con su test de aceptación; una sala no se «arregla» con un caso
+especial. El orden sigue siendo P0 → P1 → P2/P3; V10 y V11 no abren fases
+nuevas, cierran las paredes que impedían recorrer la cadena completa. Lo que
+falta para producción no es una tool más: es la aceptación de campo contra un
+objetivo real (panel ASP.NET con `SameSite`/`Secure`, `VIEWSTATE` rotado) y la
+decisión de red para P2 (MCP de lectura).
 
 ---
 

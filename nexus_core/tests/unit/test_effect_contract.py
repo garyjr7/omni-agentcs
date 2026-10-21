@@ -51,6 +51,7 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.c2.sliver_pivot",
     "nexus.cred.bruteforce",
     "nexus.post.crack_hash",
+    "nexus.exploit.compile_and_upload",
     "nexus.exploit.msf_auxiliary",
     "nexus.exploit.msf_exploit",
     "nexus.knowledge.record_fact",
@@ -173,6 +174,8 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # V9 adds one read-only recon tool (nexus.recon.nfs): 77 - 46 = 31.
     # V10 adds one read-only PoC finder (nexus.exploit.find_and_prepare:
     # it reads the local DB and writes only inside the workspace): 78 - 46 = 32.
+    # V11 adds one active uploader (nexus.exploit.compile_and_upload writes to
+    # the target): 79 - 47 = 32, so the read-only count is unchanged.
     assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 32
 
 

@@ -102,4 +102,5 @@ def test_check_env_registered_in_catalog():
     # with the three PLAN MODE tools that write/read the engagement's TODOs;
     # 77 with nexus.recon.nfs (V9/Hijack: read NFS exports without root);
     # 78 with nexus.exploit.find_and_prepare (V10/HackPark: copy and read a PoC).
-    assert len(catalog) == 78
+    # 79 with nexus.exploit.compile_and_upload (V11: ship the PoC).
+    assert len(catalog) == 79

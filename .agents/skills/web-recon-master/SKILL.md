@@ -169,6 +169,33 @@ El handler copia el PoC al workspace (`loot/exploits/`) y devuelve su código:
 no basta con saber que el exploit existe. El flujo completo es **buscar → leer →
 adaptar → subir → accionar → verificar** (`access`/`loot`), no solo buscar.
 
+**Regla de oro (PoC en mano).** Si `find_and_prepare` devuelve un PoC, **LEE el
+código** y sigue su `next_steps`: el tipo de archivo decide el vector, y
+equivocarlo gasta el turno en una subida que el objetivo no ejecuta.
+
+- **`.ascx`**, o un **`.cs` con `<%@ Control %>`** (BlogEngine, `CVE-2019-6714`):
+  es un **tema/widget ASP.NET**, no un ejecutable. No lo subas como `.cs` a un
+  formulario cualquiera: entra al panel de admin con una sesión válida
+  (`csrf_mode=true`, `session_ref` si ya la tienes), súbelo con
+  `nexus.exploit.compile_and_upload(exploit_path="loot/exploits/...",
+  target_url="http://<host>/admin/app_themes.aspx",
+  target_filename="PostView.ascx", session_ref=..., csrf_mode=true)` y actívalo
+  navegando a `/themes/<nombre-del-tema>/` o a la ruta donde el CMS sirva el
+  control. La prueba de ejecución es la salida de `id` (el `session_ref` que
+  devuelve la tool), no un `200` en la subida.
+- **`.py`**: ejecútalo con `nexus.shell.exec(command="python3 /ruta/al/script.py")`
+  (lee antes los argumentos que espera: host/puerto de callback).
+- **`.exe` o binario**: súbelo con `nexus.web.upload` o
+  `nexus.post.smb_upload` y ejecútalo con `nexus.shell.exec`,
+  `nexus.post.ssh_exec` o `nexus.win.winrm_exec`.
+- **`.cs` sin markup ASP.NET**: compílalo con `mcs`/`csc` (lo hace
+  `nexus.exploit.compile_and_upload`) y sube el `.exe`; el `.cs` suelto no se
+  ejecuta en el objetivo.
+
+Si el PoC trae `ATTACKER_IP`/`LHOST`/`LPORT`, pásale tu listener con
+`callback_host`/`callback_port` a `compile_and_upload`: la sustitución se hace
+sobre una copia en `loot/exploits/prepared/`, nunca sobre el original.
+
 ### 6. Entiende cada endpoint con entrada antes de atacarlo
 
 - Un formulario de login: ¿qué parámetros? ¿hay CSRF? ¿responde distinto con

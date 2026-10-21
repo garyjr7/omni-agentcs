@@ -91,6 +91,9 @@ ACTIVE_TOOLS: frozenset[str] = frozenset(
         # the target, so both are active by classification.
         "nexus.web.request",
         "nexus.web.upload",
+        # V11: uploading a PoC writes to the target (a BlogEngine theme control
+        # or a compiled binary), so it is active by the same classification.
+        "nexus.exploit.compile_and_upload",
         # Owned-session command execution and its durable handoff. Both were in
         # the catalog but reachable from no profile, which made the
         # command_execution / local_elevation_heuristics phases unimplementable.
@@ -403,6 +406,10 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 # The PoC itself, not just the lookup: V10 found CVE-2019-6714
                 # and the profile had no way to copy/read/adapt the exploit.
                 "nexus.exploit.find_and_prepare",
+                # V11: and the way to *ship* it. The PoC is a BlogEngine theme
+                # control: uploading it as .ascx through the CMS panel is the
+                # step that turns the CVE into access.
+                "nexus.exploit.compile_and_upload",
                 "nexus.recon.netexec",
                 "nexus.pwn.analyze",
                 "nexus.pwn.ret2libc",

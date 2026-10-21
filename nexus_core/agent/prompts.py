@@ -66,9 +66,12 @@ LOGIN_RULE_PROMPT = (
 CMS_EXPLOIT_RULE_PROMPT = (
     "- CMS CON VERSIÓN VULNERABLE: si identificas BlogEngine/WordPress/Joomla y una\n"
     "  versión con CVE, no improvises el exploit: llama a\n"
-    "  nexus.exploit.find_and_prepare con el CVE o el nombre+versión. Copia el PoC\n"
-    "  al workspace: LÉELO, adapta el payload (p. ej. webshell ASPX o PHP) y súbelo\n"
-    "  con nexus.web.upload. Después acciona el vector y verifica access/loot.\n"
+    "  nexus.exploit.find_and_prepare con el CVE o el nombre+versión. LEE el PoC y\n"
+    "  sigue su `next_steps`: un `.ascx` (o un `.cs` con `<%@ Control %>`) es un\n"
+    "  tema ASP.NET, no un binario: súbelo con nexus.exploit.compile_and_upload\n"
+    "  (target_filename correcto, csrf_mode=true) y actívalo; un `.py` se ejecuta\n"
+    "  con nexus.shell.exec; un `.exe` se sube con nexus.web.upload o\n"
+    "  nexus.post.smb_upload. Verifica access/loot con la salida real.\n"
 )
 
 #: PLAN-FIRST: the engagement is a contract, not a stream of reactive calls.

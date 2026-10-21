@@ -174,10 +174,13 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # ``nexus.exploit.find_and_prepare`` (the 78th tool) is one more capability
     # line with four arguments; measured 17,035 for 78 tools (218,4 per tool), so
     # the per-tool bound still holds and only the total moves, to 17,100.
-    assert len(catalog) == 78
+    # ``nexus.exploit.compile_and_upload`` (the 79th tool) is capability data
+    # too: one line that names the upload entry point. The per-tool bound is the
+    # one that matters and it still holds; the total moves with the line.
+    assert len(catalog) == 79
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 17100
+    assert len(text) < 17400
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -230,7 +233,10 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # V10 adds the CSRF half of the login rule (~190 chars) and the CMS order
     # (~430 chars: the PoC is useless if the run never obtains it), plus the
     # catalog line of ``find_and_prepare``: measured 28,665, ceiling 28_750.
-    assert len(_prompt(catalog)) < 28_750
+    # V11 adds the PoC handoff to the CMS order (the file type decides the
+    # vector: .ascx theme, .py script, .exe upload) and the catalog line of
+    # ``compile_and_upload``: measured 29,131, ceiling 29_400.
+    assert len(_prompt(catalog)) < 29_400
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -250,7 +256,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # prompt), so the ceiling moves with the static one, to 28,700.
     # V10 measured 29,297 (the same block on the 28,665 static prompt), so the
     # ceiling moves with it, to 29_350.
-    assert len(prompt) < 29_350
+    # V11 measured 29,758 (the same 743-character block on the 29,131 static
+    # prompt), so the ceiling moves with it, to 30_000.
+    assert len(prompt) < 30_000
     assert len(block) < 1_200
 
 
@@ -419,7 +427,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # target moves to 6,250.
     # V10's CSRF clause and CMS order land here too: measured 6,309, so the
     # target moves to 6,350 (250k still buys ~39 turns).
-    assert tokens < 6_350
+    # V11's PoC handoff and the ``compile_and_upload`` catalog line land here:
+    # measured 6,380, so the target moves to 6_450.
+    assert tokens < 6_450
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -447,7 +457,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # V10's two orders are paid on every turn as well: measured 6,989 average,
     # so the target moves to 7_050; what it buys is the CSRF sweep and the PoC
     # retrieval that run V10 never had.
-    assert sum(totals) / len(totals) < 7_050
+    # V11 adds the file-type routing of a PoC and one catalog line: measured
+    # 7,069 average (250k buys ~35 turns), so the target moves to 7_150.
+    assert sum(totals) / len(totals) < 7_150
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -465,4 +477,6 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # to 9_200 (the budget note above is the price of the policy, stated there).
     # V10 measured 9,302 on the refresh turn (the full catalog plus both new
     # orders), so the ceiling moves to 9_350.
-    assert max(totals) < 9_350
+    # V11 measured 9,417 (79 lines + the PoC handoff), so the ceiling moves to
+    # 9_450.
+    assert max(totals) < 9_450

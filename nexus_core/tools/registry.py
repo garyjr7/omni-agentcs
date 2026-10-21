@@ -82,6 +82,10 @@ def durable_tool_definitions(
     from .handlers.winrm import winrm_exec_definition, winrm_exec_handler
     from .handlers.searchsploit import searchsploit_definition, searchsploit_handler
     from .handlers.exploit_prep import exploit_prep_definition, exploit_prep_handler
+    from .handlers.exploit_upload import (
+        exploit_upload_definition,
+        exploit_upload_handler,
+    )
     from .handlers.dalfox import dalfox_definition, dalfox_handler
     from .handlers.msf_search import msf_search_definition, msf_search_handler
     from .handlers.msf_auxiliary import msf_auxiliary_definition, msf_auxiliary_handler
@@ -266,6 +270,13 @@ def durable_tool_definitions(
         "nexus.exploit.find_and_prepare": (
             exploit_prep_definition(tenant_id),
             exploit_prep_handler,
+        ),
+        # V11: the PoC has to reach the target. It recognises an ASP.NET theme
+        # control (BlogEngine's .ascx), injects the callback and uploads it with
+        # csrf_mode, returning the durable session when it executes commands.
+        "nexus.exploit.compile_and_upload": (
+            exploit_upload_definition(tenant_id),
+            exploit_upload_handler,
         ),
         "nexus.recon.netexec": (netexec_definition(tenant_id), netexec_handler),
         "nexus.recon.smb": (smb_definition(tenant_id), smb_handler),

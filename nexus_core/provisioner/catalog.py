@@ -52,6 +52,9 @@ PYTHON_HANDLERS = frozenset(
         "pivot",
         "http_request",
         "web_upload",
+        # V11: prepares the PoC and delegates the multipart POST to web_upload,
+        # so it needs python3 in the sandbox (plus mcs only for a plain .cs).
+        "exploit_upload",
         "git_dump",
         "listener",
         "ntlm_capture",

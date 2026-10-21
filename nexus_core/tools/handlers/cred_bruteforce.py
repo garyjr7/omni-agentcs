@@ -470,6 +470,43 @@ def _normalize_form_url(value: Any) -> tuple[str, str, int | None, bool]:
     return path, host, port, secure
 
 
+#: Characters hydra treats as structure inside its single argv token: ``:``
+#: separates its conditions (``C=``, ``H=``, ``S=``) and ``?`` starts a query,
+#: so neither may appear in a form body. Everything else is a legal field name.
+_FORM_PARAM_STRUCTURAL_CHARS = (":", "?")
+
+
+def _validate_form_params(params: str) -> None:
+    """Accept any field name hydra can carry, reject only what breaks the spec.
+
+    The previous rule banned ``:`` **and whitespace**, which rejected the names
+    a real ASP.NET WebForms panel posts -
+    ``ctl00$MainContent$LoginUser$UserName``- with *"form_params must not
+    contain ':' or whitespace"* (run V11 against HackPark, 2026-10-21: the run had
+    the three fields, the user and the wordlist, and the validator refused the
+    login). ``$``, ``_``, ``-``, ``[]`` and spaces are ordinary body characters:
+    the token is one ``argv`` element, so a space never reaches a shell either.
+
+    What remains is the only thing hydra actually parses: ``:`` and ``?`` are
+    rejected anywhere, and every ``&``-separated segment must be ``name=value``
+    (an empty name or a dangling ``&&`` would send a nameless field).
+    """
+    for char in _FORM_PARAM_STRUCTURAL_CHARS:
+        if char in params:
+            raise ToolInputError(
+                "form_params must not contain ':' or '?' (hydra parses them as "
+                "conditions/query); field names with '$', '_', '-', spaces or "
+                "brackets are accepted"
+            )
+    for segment in params.split("&"):
+        name, separator, _value = segment.partition("=")
+        if not separator or not name.strip():
+            raise ToolInputError(
+                f"form_params must be 'name=value' pairs joined by '&': {segment!r} "
+                "has no field name"
+            )
+
+
 def _form_spec(form_url: Any, form_params: Any, failure_string: Any) -> str:
     """Build hydra's ``<path>:<params>:F=<failure>`` spec from validated parts.
 
@@ -492,8 +529,7 @@ def _form_spec(form_url: Any, form_params: Any, failure_string: Any) -> str:
             "form_params must carry hydra's placeholders, e.g. "
             "'user=^USER^&pass=^PASS^&submit=Login'"
         )
-    if ":" in params or any(char.isspace() for char in params):
-        raise ToolInputError("form_params must not contain ':' or whitespace")
+    _validate_form_params(params)
     failure = _validate_text(failure_string, "failure_string", max_length=200)
     if ":" in failure:
         raise ToolInputError(

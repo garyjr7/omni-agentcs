@@ -1,6 +1,6 @@
 # ÍNDICE DOCUMENTAL — OmniAgentCS
 
-> Última revisión: 2026-10-21 · Roadmap base: 1a96924 · W1.2 + PTY P0: 49691be · P1 (`session_ref`): 07e3cdc · P1.5 (webshell): 2d5b318 · V10 (HackPark: PoC + CSRF): HEAD · Código auditado: 430dcfb
+> Última revisión: 2026-10-21 · Roadmap base: 1a96924 · W1.2 + PTY P0: 49691be · P1 (`session_ref`): 07e3cdc · P1.5 (webshell): 2d5b318 · V10 (HackPark: PoC + CSRF): 88f1210 · V11 (HackPark: PoC en el objetivo): HEAD · Código auditado: 430dcfb
 > Regla: solo UN documento por tema es VIGENTE. El resto es histórico o archivado.
 > La reorganización que introduce este índice es el commit `docs: reorganize documentation into INDEX + archive, clean root`, aplicado sobre la línea base `363bba9`.
 > Ubicaciones: `/` = raíz del repo · `docs/missions/` = misiones y resultados abiertos · `docs/archive/` = material superado, solo consulta.
@@ -35,6 +35,7 @@
 | Campaña QA de laboratorio | `QA_RESULT.md` | `qa_runs/` | BUG-002/003/004/006/007/008 citados por `PLAN_OMNIAGENTCS_V4` §10 |
 | Evidencia de runs (trazas) | `docs/missions/examples/` | `docs/missions/examples/` | NDJSON de los runs E2E + informes |
 | Diagnóstico run V10 (HackPark) | `hackpark_v10_2026-10-21.md` | `docs/missions/diag/` | Los dos muros (CSRF y PoC) y su cierre en `MASTER_ROADMAP.md` §5.9 |
+| Diagnóstico run V11 (HackPark) | `hackpark_v11_2026-10-21.md` | `docs/missions/diag/` | Los tres muros del PoC (form_params ASP.NET, `next_steps`, subida de temas) y su cierre en `MASTER_ROADMAP.md` §5.10 |
 | Evidencia por fase | `docs/missions/evidence/phase0|phase1|phase2|phase2-close/` | `docs/missions/evidence/` | Capturas de validación por fase |
 
 > `roadmap_12/` (auditoría `10.md`, informes Fase 2–5, `Auditoria_playbook_telemetria.md`, `UI_terminal_14_10.md` y su evidencia) es **WIP no versionado — no forma parte del ledger oficial**: se conserva sin commitear y no se cita como fuente de verdad.

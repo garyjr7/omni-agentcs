@@ -29,7 +29,9 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # because ``mount`` needs root; showmount/libnfs read it unprivileged).
     # + nexus.exploit.find_and_prepare (V10/HackPark: the CVE was identified and
     # there was no way to obtain and read the PoC).
-    assert len(catalog) == 78
+    # + nexus.exploit.compile_and_upload (V11/HackPark: the PoC was a BlogEngine
+    # .ascx theme control and the run did not know how to upload it).
+    assert len(catalog) == 79
 
 
 def test_read_only_profiles_list_no_active_tool():

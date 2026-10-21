@@ -775,3 +775,30 @@ def test_the_web_recon_skill_turns_a_cve_into_a_prepared_poc() -> None:
     # its hidden tokens, which Hydra cannot refresh.
     assert "csrf_mode=True" in content
     assert "__VIEWSTATE" in content and "__EVENTVALIDATION" in content
+
+
+def test_the_web_recon_skill_routes_a_poc_by_file_type() -> None:
+    """Run V11 (HackPark): the PoC was obtained and never shipped.
+
+    ``46353.cs`` is a BlogEngine **theme control** (``<%@ Control %>``), not a
+    binary: uploading it as ``.cs`` to a random form executes nothing. The skill
+    must read ``next_steps`` and route each file type to its real vector.
+    """
+    skill = load_skill("web-recon-master", REPO_ROOT)
+    assert skill is not None and skill.usable
+    content = skill.content
+    flat = " ".join(content.split())
+
+    assert "Regla de oro (PoC en mano)" in flat
+    assert "next_steps" in flat
+    # The ASP.NET theme control: the HackPark wall.
+    assert ".ascx" in flat and "<%@ Control %>" in flat
+    assert "PostView.ascx" in flat and "/admin/app_themes.aspx" in flat
+    assert "nexus.exploit.compile_and_upload" in content
+    assert "/themes/<nombre-del-tema>/" in flat
+    # The other file types the rule names explicitly.
+    assert 'nexus.shell.exec(command="python3 /ruta/al/script.py")' in flat
+    assert "nexus.post.smb_upload" in flat and "nexus.web.upload" in flat
+    assert "mcs" in flat and "csc" in flat
+    # The original is never rewritten in place.
+    assert "loot/exploits/prepared/" in flat
