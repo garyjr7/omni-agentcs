@@ -370,3 +370,172 @@ def test_shipped_client_keeps_every_cookie_of_a_login_response():
     assert len(payload["set_cookie"]) == 2
     joined = " ".join(payload["set_cookie"])
     assert "JSESSIONID=" in joined and "csrf=" in joined
+
+
+# ------------------------------------------------------------------ csrf_mode
+_VIEWSTATE = "VS-abc/123=="
+_EVENTVALIDATION = "EV-def/456=="
+_SESSION_COOKIE = "ASP.NET_SessionId=s3ss10n"
+
+
+class _CsrfLoginHandler(http.server.BaseHTTPRequestHandler):
+    """ASP.NET WebForms-shaped login: tokens and session cookie are required."""
+
+    def _send(self, status: int, body: str, *, cookie: str | None = None) -> None:
+        encoded = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def do_GET(self):  # noqa: N802 - stdlib naming
+        if not self.path.startswith("/Account/login.aspx"):
+            self._send(404, "not found")
+            return
+        self._send(
+            200,
+            (
+                '<html><body><form method="post" action="/Account/login.aspx">'
+                f'<input type="hidden" name="__VIEWSTATE" value="{_VIEWSTATE}">'
+                f'<input type="hidden" name="__EVENTVALIDATION" value="{_EVENTVALIDATION}">'
+                '<input type="hidden" name="__VIEWSTATEGENERATOR" value="CA0B0334">'
+                '<input name="ctl00$MainContent$LoginUser$UserName">'
+                '<input name="ctl00$MainContent$LoginUser$Password" type="password">'
+                "</form></body></html>"
+            ),
+            cookie=f"{_SESSION_COOKIE}; path=/; HttpOnly",
+        )
+
+    def do_POST(self):  # noqa: N802 - stdlib naming
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8", "replace")
+        from urllib.parse import parse_qs
+
+        fields = parse_qs(body)
+        cookie = self.headers.get("Cookie") or ""
+        tokens_ok = (
+            fields.get("__VIEWSTATE") == [_VIEWSTATE]
+            and fields.get("__EVENTVALIDATION") == [_EVENTVALIDATION]
+        )
+        password = (fields.get("ctl00$MainContent$LoginUser$Password") or [""])[0]
+        if tokens_ok and _SESSION_COOKIE in cookie and password == "hackpark":
+            self._send(200, "Welcome admin")
+        else:
+            self._send(403, "Login failed")
+
+    def log_message(self, *args):  # noqa: ARG002 - silence the server
+        return
+
+
+def _run_client_with_csrf(
+    url: str, data: str, *, csrf: bool = True, form_url: str = ""
+) -> dict:
+    """Execute the shipped client against a real local server (csrf on/off)."""
+    import base64
+    import sys as _sys
+
+    argv = [
+        _sys.executable, "-c", http_module.HTTP_CLIENT_SCRIPT, "POST", url,
+        "{}", base64.b64encode(data.encode()).decode(), "null", "0", "65536",
+        "20", "", "0", "268435456", "", "1" if csrf else "0", form_url,
+    ]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    payloads = [line for line in proc.stdout.splitlines() if line.startswith("{")]
+    assert payloads, proc.stdout + proc.stderr
+    return json.loads(payloads[-1])
+
+
+def _csrf_server():
+    server = http.server.HTTPServer(("127.0.0.1", 0), _CsrfLoginHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}/Account/login.aspx"
+
+
+def test_aspnet_form_rejects_a_post_without_its_tokens():
+    server, url = _csrf_server()
+    try:
+        payload = _run_client_with_csrf(
+            url, "ctl00$MainContent$LoginUser$Password=hackpark", csrf=False
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert payload["status"] == 403
+    assert "Login failed" in payload["body_preview"]
+
+
+def test_csrf_mode_extracts_viewstate_and_reuses_the_session_cookie():
+    server, url = _csrf_server()
+    try:
+        payload = _run_client_with_csrf(
+            url,
+            "ctl00$MainContent$LoginUser$UserName=admin"
+            "&ctl00$MainContent$LoginUser$Password=hackpark",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert payload["ok"] is True
+    assert payload["status"] == 200
+    assert "Welcome admin" in payload["body_preview"]
+    assert payload["csrf"]["fields"] == [
+        "__VIEWSTATE", "__EVENTVALIDATION", "__VIEWSTATEGENERATOR"
+    ]
+    assert payload["csrf"]["cookie_names"] == ["ASP.NET_SessionId"]
+
+
+def test_csrf_mode_can_fetch_a_different_form_url():
+    server, url = _csrf_server()
+    try:
+        payload = _run_client_with_csrf(
+            url + "?ReturnURL=/admin",
+            "ctl00$MainContent$LoginUser$Password=hackpark",
+            form_url=url,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    # The POST carries a query string the form page does not have; the tokens
+    # were fetched from the explicit ``csrf_form_url``.
+    assert payload["status"] == 200
+    assert payload["csrf"]["form_url"] == url
+
+
+def test_handler_passes_csrf_flags_in_fixed_argv_positions(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", str(tmp_path))
+    payload = _ok_payload(
+        method="POST",
+        status=200,
+        csrf={"status": 200, "fields": ["__VIEWSTATE", "__EVENTVALIDATION"]},
+    )
+    with _fake_sandbox(_sandbox_for(payload)) as sandbox:
+        result = _run(
+            {
+                "url": "http://203.0.113.10/Account/login.aspx",
+                "method": "POST",
+                "data": "user=admin&pass=x",
+                "csrf_mode": True,
+            }
+        )
+    argv = sandbox.calls[0][0]
+    assert argv[14] == ""  # no download staging dir
+    assert argv[15] == "1"
+    assert argv[16] == ""
+    assert result.evidence["csrf_mode"] is True
+    assert result.evidence["csrf_fields"] == ["__VIEWSTATE", "__EVENTVALIDATION"]
+    assert result.output["csrf"]["status"] == 200
+
+
+def test_csrf_form_url_requires_csrf_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", str(tmp_path))
+    with _fake_sandbox(_sandbox_for(_ok_payload())):
+        with pytest.raises(ValueError):
+            _run(
+                {
+                    "url": "http://203.0.113.10/Account/login.aspx",
+                    "csrf_form_url": "http://203.0.113.10/Account/login.aspx",
+                }
+            )

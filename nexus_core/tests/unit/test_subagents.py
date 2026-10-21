@@ -27,7 +27,9 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # the engagement's TODO contract, shared by every profile).
     # + nexus.recon.nfs (V9/Hijack: the export was visible and unreadable
     # because ``mount`` needs root; showmount/libnfs read it unprivileged).
-    assert len(catalog) == 77
+    # + nexus.exploit.find_and_prepare (V10/HackPark: the CVE was identified and
+    # there was no way to obtain and read the PoC).
+    assert len(catalog) == 78
 
 
 def test_read_only_profiles_list_no_active_tool():

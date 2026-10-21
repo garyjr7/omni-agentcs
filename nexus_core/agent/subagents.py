@@ -400,6 +400,9 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.exploit.msf_auxiliary",
                 "nexus.exploit.msf_exploit",
                 "nexus.exploit.searchsploit",
+                # The PoC itself, not just the lookup: V10 found CVE-2019-6714
+                # and the profile had no way to copy/read/adapt the exploit.
+                "nexus.exploit.find_and_prepare",
                 "nexus.recon.netexec",
                 "nexus.pwn.analyze",
                 "nexus.pwn.ret2libc",

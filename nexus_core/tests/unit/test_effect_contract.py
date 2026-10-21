@@ -171,7 +171,9 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # PLAN MODE adds one read-only tool (get_plan_status) and two active
     # writers: 76 - 46 active = 30.
     # V9 adds one read-only recon tool (nexus.recon.nfs): 77 - 46 = 31.
-    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 31
+    # V10 adds one read-only PoC finder (nexus.exploit.find_and_prepare:
+    # it reads the local DB and writes only inside the workspace): 78 - 46 = 32.
+    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 32
 
 
 def test_the_mislabelled_tools_now_declare_their_real_effect():

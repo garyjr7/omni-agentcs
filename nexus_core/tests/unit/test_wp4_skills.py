@@ -752,3 +752,26 @@ async def test_a_new_fact_resets_the_repeated_tool_streak(tmp_path: Path) -> Non
     # Turn 3 produced a fact, so the streak restarts and never reaches three.
     assert all(SKILL_NUDGE_PROMPT not in prompt for prompt in llm.system_prompts)
     assert _events(store, context, SKILL_NUDGE_EVENT_TYPE) == []
+
+
+def test_the_web_recon_skill_turns_a_cve_into_a_prepared_poc() -> None:
+    """Run V10 (HackPark): the CVE was identified and the PoC never obtained.
+
+    The skill already sent the model to ``searchsploit``; knowing that
+    CVE-2019-6714 exists is not the same as having the file, reading it and
+    adapting its payload. The golden rule closes search → read → adapt → upload.
+    """
+    skill = load_skill("web-recon-master", REPO_ROOT)
+    assert skill is not None and skill.usable
+    content = skill.content
+    flat = " ".join(content.split())
+
+    assert "find_and_prepare" in content
+    assert "CVE-2019-6714" in content
+    assert "Lee el código del exploit" in flat
+    assert "adapta el payload" in flat
+    assert "nexus.web.upload" in content
+    # And the other wall of the same run: a form that rejects every POST without
+    # its hidden tokens, which Hydra cannot refresh.
+    assert "csrf_mode=True" in content
+    assert "__VIEWSTATE" in content and "__EVENTVALIDATION" in content

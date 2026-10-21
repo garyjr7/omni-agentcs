@@ -16,7 +16,9 @@ Usa `nexus.cred.bruteforce` primero. Pasa a `nexus.shell.exec` con hydra solo si
 
 - necesitas variantes que la tool no expone: `-L` (varios usuarios), `-e nsr`
   (usuario=contraseña, vacía, inversa), `-x` (máscara), `-M` (lista de hosts);
-- el formulario necesita cookies de sesión, un token CSRF o `:H=` (cabeceras);
+- el formulario necesita cabeceras propias (`:H=`) o varios usuarios (`-L`); para
+  tokens CSRF y cookies de sesión usa `csrf_mode=true` en la tool, que refresca
+  los tokens ocultos en cada intento (Hydra no puede hacerlo);
 - el barrido se cortó por el presupuesto (`timeout_seconds`) y tienes una pista
   **concreta** de que la contraseña está más adelante en la lista: la tool no
   impone topes propios, el corte lo decide su contrato o el presupuesto del run.
@@ -94,6 +96,9 @@ nexus.cred.bruteforce(
   HTML), no la página del formulario si son distintas;
 - `form_params` son los `name=` reales de los campos, con `^USER^` y `^PASS^`
   donde van la credencial;
+- si el login usa tokens ocultos (`__VIEWSTATE`, `__EVENTVALIDATION`,
+  `authenticity_token`, `_token`...), añade `csrf_mode=True`: el motor hace un GET
+  por intento, inyecta los tokens y conserva la cookie de sesión;
 - `failure_string` es el texto que aparece **solo cuando falla** ("Incorrect",
   "Invalid credentials", "Login failed"). Sin él hydra no puede distinguir un
   login bueno de uno malo y reporta todo como fallo;

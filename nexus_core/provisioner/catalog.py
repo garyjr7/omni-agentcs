@@ -28,6 +28,9 @@ CLI_RECIPES = {
     "whatweb": "whatweb",
     "dalfox": "dalfox",
     "searchsploit": "searchsploit",
+    # The PoC finder runs the same local Exploit-DB binary and copies the file
+    # into the workspace; no network and no extra dependency.
+    "exploit_prep": "searchsploit",
     "netexec": "netexec",
     "bloodhound": "bloodhound",
     "cred_bruteforce": "hydra",

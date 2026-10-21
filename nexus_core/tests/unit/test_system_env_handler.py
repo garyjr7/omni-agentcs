@@ -100,5 +100,6 @@ def test_check_env_registered_in_catalog():
     # 72 after the Brute It v7 fixes; 73 with nexus.post.crack_hash (offline
     # john, the step that turns a held hash/key into a usable credential); 76
     # with the three PLAN MODE tools that write/read the engagement's TODOs;
-    # 77 with nexus.recon.nfs (V9/Hijack: read NFS exports without root).
-    assert len(catalog) == 77
+    # 77 with nexus.recon.nfs (V9/Hijack: read NFS exports without root);
+    # 78 with nexus.exploit.find_and_prepare (V10/HackPark: copy and read a PoC).
+    assert len(catalog) == 78

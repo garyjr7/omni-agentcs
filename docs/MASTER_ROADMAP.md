@@ -12,15 +12,17 @@
 | Roadmap base | `1a96924` — MASTER_ROADMAP + INDEX |
 | Ejecución W1.2 + PTY P0 | `49691be` |
 | Ejecución P1 (`session_ref`) | `07e3cdc` |
-| Ejecución P1.5 (productor `webshell`) | commit de esta entrega (`HEAD` al cerrar) |
+| Ejecución P1.5 (productor `webshell`) | `2d5b318` |
+| Ejecución V10 (HackPark: PoC + CSRF) | commit de esta entrega (`HEAD` al cerrar) |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
-| Regla de esta entrega | **P1.5**: productor `webshell` sobre `kernel_sessions`; sin tocar `ToolGateway` |
+| Regla de esta entrega | **V10**: obtener el PoC y manejar tokens CSRF sin tocar `ToolGateway` |
 | Suite de referencia (`430dcfb`) | **3 735 passed / 53 skipped** |
 | Suite tras W1.2 + PTY P0 | **3 753 passed / 53 skipped** |
 | Suite tras P1 | **3 767 passed / 53 skipped** |
 | Suite tras P1.5 | **3 776 passed / 53 skipped** |
-| Catálogo | **77 tools durables**, **21 parsers** nativos |
+| Suite tras V10 | **3 801 passed / 53 skipped** |
+| Catálogo | **78 tools durables**, **21 parsers** nativos |
 
 ---
 
@@ -40,9 +42,11 @@
 Las notas citan `fichero:línea` cuando el estado se comprobó en código. Cuando la
 clasificación procede de un documento y no se re-midió en esta pasada, se indica
 expresamente `[DOC]`. La suite se re-ejecutó tras P1:
-**3 776 passed / 53 skipped**. La línea base del commit auditado era
-**3 735 passed / 53 skipped**; W1.2 + PTY P0 añadieron 18 tests, P1 otros 14 y
-P1.5 otros 9.
+**3 801 passed / 53 skipped**. La línea base del commit auditado era
+**3 735 passed / 53 skipped**; W1.2 + PTY P0 añadieron 18 tests, P1 otros 14,
+P1.5 otros 9 y V10 otros 25 (PoC preparado, CSRF en `web.request`, barrido
+CSRF en `cred.bruteforce`, normalización de URL en `nikto` y los contratos de
+prompt/catálogo/skills que los acompañan).
 
 ### 0.3 Qué NO es este documento
 
@@ -100,7 +104,7 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 
 ### 1.1 Ingesta
 
-- **77 tools durables** en `tools/registry.py`, registradas por tenant y con
+- **78 tools durables** en `tools/registry.py`, registradas por tenant y con
   `effect`, `scope_required`, `sandbox_required` y permisos explícitos.
 - Ninguna tool se invoca fuera de `execute_tool` → `ToolGateway`; el bucle ReAct
   no tiene una segunda vía de ejecución.
@@ -161,7 +165,7 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 - `read_only` ya no permite acciones en Plan Mode: el contrato de efectos está
   cerrado (`test_effect_contract.py`) y el rechazo ocurre antes del handler. La
   cifra histórica 26 `read_only` / 38 activos (`09_PLAN_V1_EJECUCION.md`, W1.1)
-  corresponde al catálogo de 64 tools, no al de 77.
+  corresponde al catálogo de 64 tools, no al de 78.
 - Redacción **por nombre** en la frontera de persistencia y redacción **por
   valor conocido** en los cuatro canales que reciben texto del objetivo: SSH,
   `nexus.web.request`, `nexus.post.shell_exec` y `nexus.session.pty` (V1-6).
@@ -175,10 +179,10 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 
 | Dato | Valor | Fuente |
 |---|---|---|
-| Tools durables | 77 | `tools/registry.py`; `docs/missions/audit-v1/catalog.json` |
+| Tools durables | 78 | `tools/registry.py`; `docs/missions/audit-v1/catalog.json` |
 | Parsers | 21 módulos | `tools/parsers/` |
-| Tests | 3 776 passed / 53 skipped | suite completa tras P1.5 |
-| Prompt estático | 27 831 chars; ~6 819 tok/turno | `test_prompt_optimization.py` |
+| Tests | 3 801 passed / 53 skipped | suite completa tras V10 |
+| Prompt estático | 28 665 chars; ~6 989 tok/turno | `test_prompt_optimization.py` |
 | Sandbox por defecto | `local_strict` en dev; `oci` en producción | `kernel/sandbox_modes.py:148` |
 | MCP | 964 líneas, 41 tests en `test_mcp_integration.py` | `integrations/mcp/` |
 | PTY | 268 líneas de manager + 16 tests (lifecycle, guard, egress, redacción, artifact, assertions, reaper) | `kernel/pty_sessions.py`, `test_session_pty.py` |
@@ -302,7 +306,7 @@ encendarlas sin abrir una puerta lateral al gateway.
 | `session_ref` + reverse shell (P1) | `AUD_MCP_PTY §3.2` | **[HECHO]** | `kernel_sessions.transport/transport_ref/liveness`; `nexus.session.list` unificado; `shell_exec` `pty`/`raw`; listener keep-open con peer validado en el proceso que acepta y `session_ref`; `session.kill` cierra tmux y `closed_at`. 14 tests en `test_session_ref_p1.py`. §5.2. |
 | Productor de sesiones `webshell` | `AUD_MCP_PTY §3.2` | **[HECHO]** | `web_upload` (con `shell_url`) prueba `id` y registra la sesión; `wp_exec` la registra con `restore=false`; `transport_ref` guarda URL+método+parámetro. 9 tests en `test_webshell_session.py`. §5.2. |
 | Loop v2: un perfil, planner como hint | `ESCALADA WP2` | **[HECHO]** | `NEXUS_LEGACY_PROFILES` para volver atrás; `test_wp2_loop_v2.py`. |
-| Prompt de 3 capas | `ESCALADA WP3` | **[PENDIENTE]** | Medido 27 831 chars estáticos / ~6 819 tok por turno; el objetivo ≤5 000 no se cumple. |
+| Prompt de 3 capas | `ESCALADA WP3` | **[PENDIENTE]** | Medido 28 665 chars estáticos / ~6 989 tok por turno; el objetivo ≤5 000 no se cumple. |
 | Skills con divulgación progresiva | `ESCALADA WP4` | **[HECHO]** | `nexus.skill.list\|load`, `.agents/skills/`; tests. |
 | Bus tipado + workers dinámicos | `ESCALADA WP5` | **[PENDIENTE]** | No hay módulo de bus; el supervisor es un árbol, no un bus. |
 | Model routing por coste/clasificación | `ESCALADA WP9` | **[PENDIENTE]** | `kernel/model_router.py` existe pero solo lo usan tests. |
@@ -349,10 +353,10 @@ El bridge ya hace lo correcto: registra la tool con `replace=False` y su handler
 solo se alcanza por `execute_tool → ToolGateway`. No hay `call_tool` fuera del
 handler. Para encenderlo sin romper nada:
 
-1. Llamar `await sync_from_config(registry)` **después** de construir el catálogo
+1.   Llamar `await sync_from_config(registry)` **después** de construir el catálogo
    first-party (`runtime.py:297`) y **antes** de renderizar el prompt.
 2. Hacerlo **no fatal**: sin `NEXUS_MCP_CONFIG` no hay servidores, no hay error, y
-   el catálogo queda en 77.
+   el catálogo queda en 78.
 3. Ser **idempotente**: `sync_registry` ya desregistra los `mcp.*` anteriores.
 4. Excluir `mcp.` del chequeo AST de `test_catalog_ledger_consistency` o marcar
    esos ids como externos; su contrato lo valida el manifiesto, no el AST.
@@ -523,6 +527,43 @@ cableado), condicionada a la decisión de red.
 - Añadir a `BACKLOG.md` los tres «code complete, not wired» que no figuran:
   `sync_from_config`, `model_router`, `jobs.status` sin `artifact_ref`.
 - No abrir una fase nueva por cada P1: el orden es P0 → P1 → P2/P3.
+
+### 5.9 Run V10 contra HackPark — los dos muros, cerrados (2026-10-21) — **EJECUTADA**
+
+Run `run_93546320c2bb47a780e4a2c6e4916584` (traza en
+`/tmp/hackpark-run-v10.ndjson`, 122 eventos). El motor de gobernanza y el
+Plan-First funcionaron: el run identificó `Microsoft-IIS 8.5` + `BlogEngine.NET
+3.3.6.0`, registró el `web_app`, encontró el login y el panel, y cerró la rama
+con `barrier` en vez de repetir sin fin. Los dos muros fueron de **capacidad**:
+
+| Muro medido | Por qué bloqueaba | Fix implementado | Test de aceptación |
+|---|---|---|---|
+| Login ASP.NET con `__VIEWSTATE`/`__EVENTVALIDATION` | Hydra no puede refrescar tokens; cada POST se rechaza antes de probar la contraseña y el barrido termina `negative` sin haber probado nada | `csrf_mode` en `cred.bruteforce`: GET por intento, extracción de `<input type=hidden>`, cookie de sesión y barrido nativo; **auto-detección** si la página declara tokens | `test_csrf_mode_sweeps_a_real_aspnet_form`, `test_a_token_protected_form_switches_to_the_csrf_sweep_by_itself` |
+| `CVE-2019-6714` identificado, PoC nunca obtenido | `searchsploit` dice *si existe*; no copia, no lee y no prepara el exploit | `nexus.exploit.find_and_prepare`: busca, copia a `loot/exploits/`, devuelve ruta + sha256 + código y candidatos ordenados | `test_cve_search_copies_the_poc_and_returns_its_code` |
+| Petición manual a un formulario con tokens | El cliente HTTP sólo enviaba el `data` del modelo | `csrf_mode` + `csrf_form_url` en `nexus.web.request` (mismos tokens y cookie del GET) | `test_csrf_mode_extracts_viewstate_and_reuses_the_session_cookie` |
+| `nikto(target="http://10.0.0.1")` rechazado | La tool declaraba host, pero el modelo lee un servicio 80 como URL; costo: un turno (iteración 9) | `nikto` acepta host o URL y deriva host/puerto/TLS | `test_an_http_url_is_reduced_to_its_host_and_port` |
+
+**Por qué esto no es un parche de una sala:** el PoC se elige por rango
+(webapps y texto antes que DoS/local/binario), el CSRF se detecta por el HTML
+y no por el nombre del CMS, y ambos caminos son genéricos (BlogEngine, WordPress,
+Joomla, ASP.NET MVC, Rails, Django). El prompt y `web-recon-master` ahora ordenan
+el flujo completo **buscar → leer → adaptar → subir → accionar → verificar**, y
+el login con tokens pasa por `csrf_mode` en lugar de confiar en que el modelo lo
+adivine.
+
+**Límites declarados:**
+
+- El barrido CSRF es **secuencial** (el viewstate va atado a su GET); con
+  `rockyou.txt` completo y un objetivo lento el presupuesto puede cortarlo, y el
+  resultado es `timeout` con `start_at` para el siguiente slice, no un falso
+  negativo.
+- `find_and_prepare` trabaja contra la **base local** de Exploit-DB. Si el PoC no
+  está en la copia instalada, devuelve `found=false`; no descarga de Internet.
+- Se sigue exigiendo `failure_string` discriminante: la sonda CSRF lo valida con
+  el mismo flujo de tokens antes de gastar la wordlist.
+- El e2e contra un panel ASP.NET real con cookies `SameSite`/`Secure` y un
+  `VIEWSTATE` rotado por sesión no se ejecutó; la aceptación usa un servidor
+  HTTP local real.
 
 ---
 

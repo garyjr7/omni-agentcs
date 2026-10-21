@@ -67,7 +67,7 @@ HTTP_MAX_DATA_B64_CHARS = 524_288
 
 #: stdlib client executed inside the sandbox. argv layout (after ``-c``):
 #: method url headers_json data_b64 upload_json follow max_bytes timeout save_path
-#: insecure.
+#: insecure download_limit staging csrf csrf_form_url.
 #: ``upload_json`` is ``null`` or ``{"field","filename","content_type","path"}``.
 #: ``insecure`` (``1``/``0``) disables TLS certificate verification for exactly
 #: one request; it is an explicit operator opt-in, never a default.
@@ -98,6 +98,100 @@ def _get_all(headers, name):
         except Exception:
             return []
     return [str(value) for key, value in headers.items() if key.lower() == name.lower()]
+
+
+def _hidden_fields(page):
+    # ASP.NET WebForms (and most CSRF defences) put the anti-forgery values in
+    # hidden inputs: __VIEWSTATE, __EVENTVALIDATION, __VIEWSTATEGENERATOR,
+    # __RequestVerificationToken, authenticity_token, _token... Collecting every
+    # hidden input is both simpler and more complete than a name allowlist.
+    from html.parser import HTMLParser
+
+    class _Collect(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.fields = []
+            self.action = None
+
+        def handle_starttag(self, tag, attrs):
+            values = {key.lower(): (value if value is not None else "") for key, value in attrs}
+            name = values.get("name", "")
+            if tag.lower() == "input" and name:
+                if values.get("type", "").lower() == "hidden":
+                    self.fields.append((name, values.get("value", "")))
+            elif tag.lower() == "form" and self.action is None:
+                self.action = values.get("action") or None
+
+    collector = _Collect()
+    collector.feed(page or "")
+    return collector.fields, collector.action
+
+
+def _csrf_prepare(url, headers, body, upload, timeout, form_url):
+    # Fetch the form, merge its hidden fields into the body (or the multipart
+    # fields) and carry the session cookie the GET set: without that cookie a
+    # token issued for an anonymous session is rejected by the panel.
+    page_url = form_url or url
+    get_headers = {
+        key: value for key, value in headers.items()
+        if key.lower() not in {"content-type", "content-length"}
+    }
+    redirect = _NoRedirect()
+    redirect.allow_same_origin = True
+    opener = urllib.request.build_opener(redirect)
+    request = urllib.request.Request(page_url, method="GET", headers=get_headers)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            status = response.status
+            page = response.read(1_000_000).decode("utf-8", "replace")
+            set_cookie = _get_all(response.headers, "Set-Cookie")
+            final_url = response.geturl()
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        page = exc.read(1_000_000).decode("utf-8", "replace")
+        set_cookie = _get_all(exc.headers, "Set-Cookie")
+        final_url = exc.geturl() if hasattr(exc, "geturl") else page_url
+        exc.close()
+
+    fields, action = _hidden_fields(page)
+    cookies = []
+    for raw in set_cookie:
+        first = str(raw).split(";", 1)[0].strip()
+        if "=" in first and first not in cookies:
+            cookies.append(first)
+    cookie_sent = headers.get("Cookie") or headers.get("cookie") or ""
+    if cookie_sent:
+        cookies.append(cookie_sent)
+    if cookies:
+        merged = "; ".join(cookies)
+        headers = {key: value for key, value in headers.items() if key.lower() != "cookie"}
+        headers["Cookie"] = merged
+
+    if upload:
+        existing = upload.setdefault("fields", {})
+        for name, value in fields:
+            existing.setdefault(name, value)
+    else:
+        content_type = headers.get("Content-Type") or headers.get("content-type") or ""
+        if body and content_type and "application/x-www-form-urlencoded" not in content_type:
+            raise ValueError("csrf_mode requires an urlencoded form body")
+        pairs = urllib.parse.parse_qsl(
+            (body or b"").decode("utf-8", "replace"), keep_blank_values=True
+        )
+        present = {name for name, _ in pairs}
+        pairs.extend((name, value) for name, value in fields if name not in present)
+        body = urllib.parse.urlencode(pairs).encode("utf-8")
+        headers = {key: value for key, value in headers.items() if key.lower() != "content-length"}
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+    return body, headers, {
+        "form_url": final_url or page_url,
+        "form_action": action,
+        "status": status,
+        "fields": [name for name, _ in fields],
+        "field_count": len(fields),
+        "cookie_names": [value.split("=", 1)[0] for value in cookies if "=" in value],
+    }
 
 
 def _build_upload(upload):
@@ -156,6 +250,26 @@ def main():
     body = base64.b64decode(data_b64) if data_b64 else None
     uploaded = None
     upload = json.loads(upload_json) if upload_json and upload_json != "null" else None
+    # ``csrf_mode`` (sys.argv[13]) and the optional form URL (sys.argv[14]):
+    # ASP.NET WebForms rejects a POST without the __VIEWSTATE/__EVENTVALIDATION
+    # tokens of the page it rendered, and Hydra/manual requests cannot ask for
+    # them. ``sys.argv[0]`` is ``-c``, so the script sees ``handler_argv - 2``.
+    csrf = None
+    csrf_mode = len(sys.argv) > 13 and sys.argv[13] == "1"
+    csrf_form_url = sys.argv[14] if len(sys.argv) > 14 else ""
+    if csrf_mode:
+        try:
+            body, headers, csrf = _csrf_prepare(
+                url, headers, body, upload, timeout, csrf_form_url
+            )
+        except Exception as exc:
+            print(json.dumps({
+                "ok": False,
+                "url": url,
+                "method": method,
+                "error": "csrf_form_fetch_failed: %s: %s" % (type(exc).__name__, exc),
+            }))
+            return
     if upload:
         content_type, body, size, wire_size = _build_upload(upload)
         headers = {k: v for k, v in headers.items() if k.lower() not in {"content-length", "transfer-encoding"}}
@@ -291,6 +405,7 @@ def main():
         "elapsed_ms": elapsed_ms,
         "uploaded": uploaded,
         "saved": saved,
+        "csrf": csrf,
     }))
 
 
@@ -371,6 +486,28 @@ def http_request_definition(tenant_id: str = "system") -> ToolDefinition:
                         "Desactiva la verificación del certificado TLS SOLO para esta "
                         "petición (objetivos con certificado autofirmado o que no "
                         "coincide con el host). Por defecto false y queda en evidencia."
+                    ),
+                },
+                "csrf_mode": {
+                    "type": "boolean",
+                    "description": (
+                        "Para formularios con token anti-CSRF (ASP.NET WebForms, "
+                        "Django, Rails, Joomla): hace primero un GET a la página, "
+                        "extrae TODOS los <input type=hidden> (__VIEWSTATE, "
+                        "__EVENTVALIDATION, __RequestVerificationToken, _token...) "
+                        "y los inyecta en el POST junto con tu `data`, reutilizando "
+                        "la cookie de sesión que dejó el GET. Imprescindible cuando "
+                        "el panel rechaza el login sin esos tokens."
+                    ),
+                },
+                "csrf_form_url": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 2048,
+                    "description": (
+                        "URL del formulario para el GET de `csrf_mode` cuando no "
+                        "coincide con `url` (p. ej. la action absoluta del form). "
+                        "Por defecto se usa `url`."
                     ),
                 },
                 "save_path": {
@@ -604,6 +741,12 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
     if not 1 <= download_limit <= 268435456:
         raise ValueError("max_download_bytes must be between 1 and 268435456")
     insecure = bool(arguments.get("insecure", False))
+    csrf_mode = bool(arguments.get("csrf_mode", False))
+    csrf_form_url = str(arguments.get("csrf_form_url") or "").strip()
+    if csrf_form_url and not csrf_mode:
+        raise ValueError("csrf_form_url requires csrf_mode=true")
+    if csrf_form_url:
+        csrf_form_url = _validate_url(csrf_form_url)
 
     argv = [
         "python3",
@@ -627,7 +770,13 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
         parent = Path(save_path).parent
         parent.mkdir(parents=True, exist_ok=True)
         staging = tempfile.TemporaryDirectory(prefix=".http-download-", dir=parent)
-        argv.append(staging.name)
+    # Fixed trailing positions keep the client's argv contract stable even when
+    # no download staging dir exists.
+    argv.extend([
+        staging.name if staging is not None else "",
+        "1" if csrf_mode else "0",
+        csrf_form_url,
+    ])
     try:
         result = await run_in_sandbox(
             sandbox,
@@ -657,6 +806,8 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
         "max_response_bytes": max_bytes,
         "cookie_sent": bool(cookie_sent),
         "session_ref": session_ref or None,
+        "csrf_mode": csrf_mode,
+        "csrf_form_url": csrf_form_url or None,
     }
     if result.timed_out:
         return ToolResult(
@@ -705,6 +856,10 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
         if save_path:
             evidence["saved_path"] = (payload.get("saved") or {}).get("path")
             evidence["saved_bytes"] = (payload.get("saved") or {}).get("bytes")
+        if csrf_mode:
+            csrf_payload = payload.get("csrf") or {}
+            evidence["csrf_form_status"] = csrf_payload.get("status")
+            evidence["csrf_fields"] = csrf_payload.get("fields") or []
     else:
         evidence["error"] = payload.get("error")
 
@@ -727,6 +882,7 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
             "elapsed_ms": payload.get("elapsed_ms"),
             "uploaded": payload.get("uploaded"),
             "saved": payload.get("saved"),
+            "csrf": payload.get("csrf"),
             "error": payload.get("error"),
         },
         verified=ok,

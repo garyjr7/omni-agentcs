@@ -94,6 +94,8 @@ def test_prompt_forces_hydra_before_manual_sqli_on_a_login_form(catalog):
         assert field in prompt
     # Hydra is the first attempt; SQLi/backups only come after it fails.
     assert "Solo si Hydra falla o da error" in prompt
+    # The one thing Hydra cannot do: refresh hidden tokens per attempt.
+    assert "csrf_mode=true" in prompt
     # Methodology again: inside the rules, before the response contract.
     assert prompt.index("REGLA DE LOGIN WEB") < prompt.index("RESPONDE SIEMPRE")
 
@@ -169,10 +171,13 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # 216 chars): measured 16,786 for 77 tools (218,0 per tool). The per-tool
     # bound is what this ceiling protects and it did not move, so only the total
     # does, to 17,000.
-    assert len(catalog) == 77
+    # ``nexus.exploit.find_and_prepare`` (the 78th tool) is one more capability
+    # line with four arguments; measured 17,035 for 78 tools (218,4 per tool), so
+    # the per-tool bound still holds and only the total moves, to 17,100.
+    assert len(catalog) == 78
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 17000
+    assert len(text) < 17100
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -222,7 +227,10 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # forced ("if the binary is missing, install it" instead of "give up").
     # Measured 27,831 (26,513 + 1,102 chars of policy + the nfs catalog line),
     # so the ceiling moves to 28,000; the per-tool catalog bound does not move.
-    assert len(_prompt(catalog)) < 28_000
+    # V10 adds the CSRF half of the login rule (~190 chars) and the CMS order
+    # (~430 chars: the PoC is useless if the run never obtains it), plus the
+    # catalog line of ``find_and_prepare``: measured 28,665, ceiling 28_750.
+    assert len(_prompt(catalog)) < 28_750
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -240,7 +248,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     prompt = _prompt(catalog, engagement_plan_summary=block)
     # V9: measured 28,458 (the 743-character 7-TODO block on the 27,831 static
     # prompt), so the ceiling moves with the static one, to 28,700.
-    assert len(prompt) < 28_700
+    # V10 measured 29,297 (the same block on the 28,665 static prompt), so the
+    # ceiling moves with it, to 29_350.
+    assert len(prompt) < 29_350
     assert len(block) < 1_200
 
 
@@ -407,7 +417,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # V9: the two policy orders land on the compact turn too: measured 6,150
     # (5,600 + the philosophy, the wait ban and the nfs catalog line), so the
     # target moves to 6,250.
-    assert tokens < 6_250
+    # V10's CSRF clause and CMS order land here too: measured 6,309, so the
+    # target moves to 6,350 (250k still buys ~39 turns).
+    assert tokens < 6_350
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -432,7 +444,10 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # every turn. Measured 6,819 average, so the target moves to 6_900: 250k now
     # buys ~36 turns instead of 38, and what it buys is a run that keeps going
     # after the first technical wall instead of stopping at it (run V9).
-    assert sum(totals) / len(totals) < 6_900
+    # V10's two orders are paid on every turn as well: measured 6,989 average,
+    # so the target moves to 7_050; what it buys is the CSRF sweep and the PoC
+    # retrieval that run V10 never had.
+    assert sum(totals) / len(totals) < 7_050
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -448,4 +463,6 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # this turn as well: measured 8,765, so the ceiling moves to 8_800.
     # V9 lands on the refresh turn as well: measured 9,094, so the ceiling moves
     # to 9_200 (the budget note above is the price of the policy, stated there).
-    assert max(totals) < 9_200
+    # V10 measured 9,302 on the refresh turn (the full catalog plus both new
+    # orders), so the ceiling moves to 9_350.
+    assert max(totals) < 9_350

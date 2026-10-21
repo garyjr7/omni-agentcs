@@ -212,3 +212,30 @@ def test_definition_is_registered_in_the_catalog():
 
     assert unwrap(handler) is nikto_handler
     assert json.dumps(definition.input_schema)[:1] == "{"
+
+
+def test_an_http_url_is_reduced_to_its_host_and_port():
+    """run V10: ``target="http://10.65.170.171"`` cost a turn in iteration 9."""
+    with _fake_sandbox(SandboxResult(0, HEADER + FINDINGS + FOOTER, "")) as sandbox:
+        result = _run({"target": "http://10.65.170.171"})
+    argv = sandbox.calls[0][0]
+    assert argv[argv.index("-host") + 1] == "10.65.170.171"
+    assert argv[argv.index("-port") + 1] == "80"
+    assert "-ssl" not in argv
+    assert result.verified is True
+
+
+def test_an_https_url_sets_ssl_and_its_port():
+    with _fake_sandbox(SandboxResult(0, HEADER + FINDINGS + FOOTER, "")) as sandbox:
+        _run({"target": "https://10.65.170.171:8443/blog/"})
+    argv = sandbox.calls[0][0]
+    assert argv[argv.index("-host") + 1] == "10.65.170.171"
+    assert argv[argv.index("-port") + 1] == "8443"
+    assert "-ssl" in argv
+
+
+def test_an_explicit_port_still_wins_over_the_url_port():
+    with _fake_sandbox(SandboxResult(0, HEADER + FINDINGS + FOOTER, "")) as sandbox:
+        _run({"target": "http://10.65.170.171:8080/", "ports": "80"})
+    argv = sandbox.calls[0][0]
+    assert argv[argv.index("-port") + 1] == "80"

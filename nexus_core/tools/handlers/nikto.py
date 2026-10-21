@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import sandbox_for_environment
@@ -71,6 +72,37 @@ def _validate_target(value: Any) -> str:
     if not _TARGET_RE.fullmatch(text):
         raise ValueError(f"target contains unsupported characters: {text!r}")
     return text
+
+
+def _parse_target(value: Any) -> tuple[str, str, bool]:
+    """Return ``(host, port_from_url, secure)`` from a host or an http(s) URL.
+
+    ``nexus.recon.nikto`` declares ``target`` as a host, but the model reads a
+    port-80 service as ``http://host`` (run V10 against HackPark, 2026-10-21,
+    iteration 9): the URL was rejected as "unsupported characters" and the turn
+    was lost. The URL already carries host, port and TLS, so they are used
+    instead of refused; a bare host keeps the strict character check.
+    """
+    text = str(value or "").strip()
+    if "://" not in text:
+        return _validate_target(text), "", False
+    scheme = text.partition("://")[0].strip().lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError(f"target scheme must be http or https: {scheme!r}")
+    parts = urlsplit(text)
+    host = str(parts.hostname or "")
+    if not host:
+        raise ValueError("target URL has no host")
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    try:
+        port = str(parts.port) if parts.port else ""
+    except ValueError as exc:
+        raise ValueError("target URL carries an invalid port") from exc
+    if port and not _PORT_RE.fullmatch(port):
+        raise ValueError(f"target URL carries an invalid port: {port!r}")
+    port = port or ("443" if scheme == "https" else "80")
+    return _validate_target(host), port, scheme == "https"
 
 
 def _validate_ports(value: Any) -> str:
@@ -199,9 +231,9 @@ def nikto_definition(tenant_id: str = "system") -> ToolDefinition:
 
 async def nikto_handler(arguments: dict, context: RunContext) -> ToolResult:
     """Run one allowlisted nikto scan through the sandbox and parse it."""
-    target = _validate_target(arguments.get("target"))
-    ports = _validate_ports(arguments.get("ports"))
-    ssl = bool(arguments.get("ssl", False))
+    target, url_port, url_secure = _parse_target(arguments.get("target"))
+    ports = _validate_ports(arguments.get("ports")) or url_port
+    ssl = bool(arguments.get("ssl", False)) or url_secure
     tuning = _validate_chars(arguments.get("tuning"), "tuning", NIKTO_TUNING_CHARS)
     evasion = _validate_chars(arguments.get("evasion"), "evasion", NIKTO_EVASION_CHARS)
     user_agent = _validate_user_agent(arguments.get("user_agent"))

@@ -154,6 +154,21 @@ vulnerabilidades. Sin esa pareja, cualquier exploit es adivinación. Si es
 WordPress hay herramientas propias: `nexus.web.wp_enum` para usuarios, plugins y
 temas antes de tocar el login.
 
+**Regla de oro (CMS con versión vulnerable).** Si identificas un CMS
+(BlogEngine, WordPress, Joomla) con una versión vulnerable, usa
+`nexus.exploit.find_and_prepare` con el CVE o el nombre del CMS. Lee el código
+del exploit, adapta el payload (p. ej. una webshell ASPX o PHP) y súbelo con
+`nexus.web.upload`.
+
+```
+nexus.exploit.find_and_prepare(cve="CVE-2019-6714")
+# -> {path: "loot/exploits/46353-....cs", code: "# Exploit Title...", language: "csharp"}
+```
+
+El handler copia el PoC al workspace (`loot/exploits/`) y devuelve su código:
+no basta con saber que el exploit existe. El flujo completo es **buscar → leer →
+adaptar → subir → accionar → verificar** (`access`/`loot`), no solo buscar.
+
 ### 6. Entiende cada endpoint con entrada antes de atacarlo
 
 - Un formulario de login: ¿qué parámetros? ¿hay CSRF? ¿responde distinto con
@@ -179,8 +194,18 @@ nexus.cred.bruteforce(
     form_url="/admin/index.php",         # la ruta del POST, no el host
     form_params="user=^USER^&pass=^PASS^&submit=Login",
     failure_string="Invalid username or password",
+    csrf_mode=True,                      # SOLO si el form valida tokens ocultos
 )
 ```
+
+- **Formularios con CSRF/ASP.NET:** si el HTML trae `<input type="hidden">`
+  con `__VIEWSTATE`, `__EVENTVALIDATION`, `__RequestVerificationToken`,
+  `authenticity_token`, `_token` o similar, Hydra no puede refrescarlos y cada
+  POST se rechaza antes de probar la contraseña. Pasa `csrf_mode=true`: el motor
+  hace un GET por intento, extrae los tokens ocultos, reutiliza la cookie de
+  sesión y recién entonces prueba la credencial. Para una petición suelta,
+  `nexus.web.request` acepta el mismo `csrf_mode=true` (y `csrf_form_url` si la
+  página del formulario no es la URL del POST).
 
 - `failure_string` es lo que devuelve el panel cuando falla **una** credencial
   (no la página de login entera): sin ese texto Hydra no distingue el éxito del

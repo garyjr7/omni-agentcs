@@ -51,8 +51,24 @@ LOGIN_RULE_PROMPT = (
     "  nexus.web.request como primer paso. Debes usar obligatoriamente\n"
     "  nexus.cred.bruteforce con service=\"http-post-form\", indicando el form_url,\n"
     "  form_params y failure_string (esta regla prevalece sobre la de bruteforce:\n"
-    "  para un login web, Hydra no es opcional). Solo si Hydra falla o da error,\n"
+    "  para un login web, Hydra no es opcional). Si el panel usa tokens ocultos\n"
+    "  (ASP.NET __VIEWSTATE/__EVENTVALIDATION o cualquier CSRF), añade\n"
+    "  csrf_mode=true: sin los tokens cada intento se rechaza ANTES de probar la\n"
+    "  contraseña y el barrido no prueba nada. Solo si Hydra falla o da error,\n"
     "  puedes intentar SQLi manual o buscar backups.\n"
+)
+
+#: The CMS order. searchsploit answers *whether* an exploit exists; without the
+#: next step the run stalls on that answer. Measured in run V10 against HackPark
+#: (2026-10-21): the model recorded ``CVE-2019-6714`` for BlogEngine.NET 3.3.6
+#: and then had no tool to obtain, read or adapt the PoC. Gated on the catalog so
+#: a subagent that cannot call the tool never sees the order.
+CMS_EXPLOIT_RULE_PROMPT = (
+    "- CMS CON VERSIÓN VULNERABLE: si identificas BlogEngine/WordPress/Joomla y una\n"
+    "  versión con CVE, no improvises el exploit: llama a\n"
+    "  nexus.exploit.find_and_prepare con el CVE o el nombre+versión. Copia el PoC\n"
+    "  al workspace: LÉELO, adapta el payload (p. ej. webshell ASPX o PHP) y súbelo\n"
+    "  con nexus.web.upload. Después acciona el vector y verifica access/loot.\n"
 )
 
 #: PLAN-FIRST: the engagement is a contract, not a stream of reactive calls.
@@ -123,7 +139,7 @@ REGLAS:
   antes de decidir el siguiente paso.
 - WEB (80/443): carga la skill web-recon-master (nexus.skill.load) y sigue su
   checklist ANTES de atacar; un login no es una invitación a probar contraseñas.
-{login_rule}- BRUTEFORCE = ÚLTIMO RECURSO: sin pista de credenciales débiles ni
+{login_rule}{cms_exploit_rule}- BRUTEFORCE = ÚLTIMO RECURSO: sin pista de credenciales débiles ni
   enumeración agotada, no lo lances; registra un barrier y cambia de rama.
 - ENFOQUE MULTI-VECTOR (CYBER KILL CHAIN): auditas un entorno, no un puzzle
   lineal. Revisa los hechos (query_facts): con varios servicios o endpoints
@@ -528,6 +544,11 @@ def render_system_prompt(
     if not full_catalog:
         catalog_text = f"{catalog_text}\n{COMPACT_CATALOG_NOTE}"
     login_rule = LOGIN_RULE_PROMPT if "nexus.cred.bruteforce" in catalog else ""
+    cms_exploit_rule = (
+        CMS_EXPLOIT_RULE_PROMPT
+        if "nexus.exploit.find_and_prepare" in catalog
+        else ""
+    )
     passive_wait_rule = PASSIVE_WAIT_RULE_PROMPT
     plan_rule = (
         ENGAGEMENT_PLAN_RULE_PROMPT
@@ -539,6 +560,7 @@ def render_system_prompt(
         black_box_rule=BLACK_BOX_PHILOSOPHY_PROMPT,
         passive_wait_rule=passive_wait_rule,
         login_rule=login_rule,
+        cms_exploit_rule=cms_exploit_rule,
         engagement_plan_rule=plan_rule,
         engagement_plan_summary=(
             engagement_plan_summary
