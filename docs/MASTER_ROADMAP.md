@@ -9,7 +9,8 @@
 |---|---|
 | Fecha | 2026-10-21 |
 | Commit de código auditado | `430dcfb` — *Caja Negra por defecto, sin esperas pasivas y NFS sin root* |
-| Último commit documental | `9a61785` — auditoría MCP/PTY |
+| Commit de este roadmap | `1a96924` — MASTER_ROADMAP + INDEX |
+| Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
 | Regla de esta entrega | **cero cambios en `.py`**; solo documentación |
 | Suite de referencia | **3 735 passed / 53 skipped** (`3788` tests recogidos) |
@@ -43,6 +44,18 @@ código; el recuento de colección (`3788`) coincide exactamente con
   `ADR-006` (Caja Negra por defecto) siguen vigentes.
 - No declara cerrado ningún gate que exija aceptación de campo. Un test de
   primitiva no sustituye una cadena revalidada.
+
+### 0.4 Correspondencia con el formato solicitado
+
+| Sección pedida | Dónde está |
+|---|---|
+| 1. Estado arquitectónico actual | §1, con el desglose por capas en §1.1–§1.5 y la línea base en §1.6 |
+| 2. Matriz de estado de features | §3, dividida en P0 (§3.1), P1 (§3.2), P2 (§3.3), arquitectura (§3.4) y MCP (§3.5) |
+| 3. El plan de vuelo | §5, con las fases P0–P4, la corrección W1.2 y los descartes |
+
+El inventario de auditorías y planes que alimenta la matriz está en §2; el
+veredicto razonado sobre MCP/PTY y el detalle de «code complete, not wired» están
+en §4 y §1.7.
 
 ---
 
