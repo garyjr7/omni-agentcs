@@ -11,13 +11,15 @@
 | Commit de código auditado | `430dcfb` — *Caja Negra por defecto, sin esperas pasivas y NFS sin root* |
 | Roadmap base | `1a96924` — MASTER_ROADMAP + INDEX |
 | Ejecución W1.2 + PTY P0 | `49691be` |
-| Ejecución P1 (`session_ref`) | commit de esta entrega (`HEAD` al cerrar) |
+| Ejecución P1 (`session_ref`) | `07e3cdc` |
+| Ejecución P1.5 (productor `webshell`) | commit de esta entrega (`HEAD` al cerrar) |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
-| Regla de esta entrega | **P1**: migración aditiva de `kernel_sessions`; sin tocar `ToolGateway` |
+| Regla de esta entrega | **P1.5**: productor `webshell` sobre `kernel_sessions`; sin tocar `ToolGateway` |
 | Suite de referencia (`430dcfb`) | **3 735 passed / 53 skipped** |
 | Suite tras W1.2 + PTY P0 | **3 753 passed / 53 skipped** |
 | Suite tras P1 | **3 767 passed / 53 skipped** |
+| Suite tras P1.5 | **3 776 passed / 53 skipped** |
 | Catálogo | **77 tools durables**, **21 parsers** nativos |
 
 ---
@@ -38,8 +40,9 @@
 Las notas citan `fichero:línea` cuando el estado se comprobó en código. Cuando la
 clasificación procede de un documento y no se re-midió en esta pasada, se indica
 expresamente `[DOC]`. La suite se re-ejecutó tras P1:
-**3 767 passed / 53 skipped**. La línea base del commit auditado era
-**3 735 passed / 53 skipped**; W1.2 + PTY P0 añadieron 18 tests y P1 otros 14.
+**3 776 passed / 53 skipped**. La línea base del commit auditado era
+**3 735 passed / 53 skipped**; W1.2 + PTY P0 añadieron 18 tests, P1 otros 14 y
+P1.5 otros 9.
 
 ### 0.3 Qué NO es este documento
 
@@ -174,7 +177,7 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 |---|---|---|
 | Tools durables | 77 | `tools/registry.py`; `docs/missions/audit-v1/catalog.json` |
 | Parsers | 21 módulos | `tools/parsers/` |
-| Tests | 3 767 passed / 53 skipped | suite completa tras P1 |
+| Tests | 3 776 passed / 53 skipped | suite completa tras P1.5 |
 | Prompt estático | 27 831 chars; ~6 819 tok/turno | `test_prompt_optimization.py` |
 | Sandbox por defecto | `local_strict` en dev; `oci` en producción | `kernel/sandbox_modes.py:148` |
 | MCP | 964 líneas, 41 tests en `test_mcp_integration.py` | `integrations/mcp/` |
@@ -193,7 +196,7 @@ encendarlas sin abrir una puerta lateral al gateway.
 | **`sync_from_config`** | Descubre todos los servidores y registra solo tools allowlisted con `replace=False`. | Nadie lo invoca en producción; no es idempotente frente a un fallo de arranque porque no se llama. | Si se llama antes del catálogo, o sin `NEXUS_MCP_CONFIG`, puede romper el arranque o el conteo del ledger. |
 | **Batch runner** (`kernel/batch.py`) | Concurrencia acotada, backpressure, cancelación y estados `completed/failed/cancelled`. | Cableado en `scripts/omni_tool.py`, **no** como tool del modelo. | Exponerlo sin cuota por target convertiría un barrido en una tormenta. |
 | **Model router** (`kernel/model_router.py`) | Rutas por clasificación, presupuesto y fallback. | Solo lo usan tests (`test_kernel_offline.py`). | Enrutar sin telemetría de coste puede ocultar el gasto por turno. |
-| **Transporte `webshell`** | Declarado en `nexus.post.shell_exec` (`shell_exec.py:17`). | **Ningún productor** escribe una sesión `session_type="webshell"`; el chequeo de `shell_exec.py:74` no se puede satisfacer hoy. | Un canal que parece disponible y nunca lo está. |
+| **Transporte `webshell`** | **[HECHO]** (P1.5) `nexus.web.upload` registra la sesión tras probar `id` contra la URL indicada en `shell_url`; `nexus.web.wp_exec` la registra con `restore=false`. `shell_exec(transport="webshell")` resuelve el `transport_ref` (URL + método + parámetro) y `session.kill` cierra la fila. 9 tests en `test_webshell_session.py`. | Verificado contra un servidor HTTP local; falta el e2e contra un panel real que renombre o mueva el fichero subido. | Registrar sin probar ejecución convertiría un 200 del formulario en un falso acceso. |
 | **`nexus.post.job`** | Lanza y consulta jobs gobernados. | `jobs.status` no devuelve `artifact_ref`/`journal_ref`; el resultado queda en el journal y no se puede leer desde el job. | Empuja al modelo a esperar en vez de usar el job como alternativa. |
 
 ---
@@ -297,6 +300,7 @@ encendarlas sin abrir una puerta lateral al gateway.
 | PTY base (tmux) | `ESCALADA WP1` | **[HECHO]** | `PtySessionManager` + tool; 16 tests (lifecycle real, guard, egress, redacción, artifact, assertions, reaper). |
 | PTY gobernado (P0) | `AUD_MCP_PTY §5.2` | **[HECHO]** | Guard OCI, checks léxicos en `start`/`send`, artifact CAS + resumen, branch en `derive_assertions`, `wait`≤60 s y reaper en `session_end`. §5.1. |
 | `session_ref` + reverse shell (P1) | `AUD_MCP_PTY §3.2` | **[HECHO]** | `kernel_sessions.transport/transport_ref/liveness`; `nexus.session.list` unificado; `shell_exec` `pty`/`raw`; listener keep-open con peer validado en el proceso que acepta y `session_ref`; `session.kill` cierra tmux y `closed_at`. 14 tests en `test_session_ref_p1.py`. §5.2. |
+| Productor de sesiones `webshell` | `AUD_MCP_PTY §3.2` | **[HECHO]** | `web_upload` (con `shell_url`) prueba `id` y registra la sesión; `wp_exec` la registra con `restore=false`; `transport_ref` guarda URL+método+parámetro. 9 tests en `test_webshell_session.py`. §5.2. |
 | Loop v2: un perfil, planner como hint | `ESCALADA WP2` | **[HECHO]** | `NEXUS_LEGACY_PROFILES` para volver atrás; `test_wp2_loop_v2.py`. |
 | Prompt de 3 capas | `ESCALADA WP3` | **[PENDIENTE]** | Medido 27 831 chars estáticos / ~6 819 tok por turno; el objetivo ≤5 000 no se cumple. |
 | Skills con divulgación progresiva | `ESCALADA WP4` | **[HECHO]** | `nexus.skill.list\|load`, `.agents/skills/`; tests. |
@@ -396,10 +400,12 @@ Nada de eso toca el orden del gateway ni el contrato de `ToolResult`.
 - `nexus.session.kill` cierra el pane tmux, pide el cierre a MSF/Sliver y marca
   `closed_at` (un listener sin peer también se puede cerrar).
 
-Límite declarado: no hay productor automático de `webshell` (sigue siendo un
-`session_type` sin escritor) y el e2e de campo con una reverse shell real no se
-ejecutó; el bridge se prueba con un socket local y un pane tmux real por
-separado.
+P1.5 cerró el productor de `webshell`: `nexus.web.upload` lo registra cuando el
+llamante aporta `shell_url` y la prueba `id` devuelve salida real; `wp_exec` lo
+registra solo con `restore=false` (con el fichero restaurado la URL deja de
+ejecutar). El e2e de campo con una reverse shell real sigue sin ejecutarse: el
+bridge se prueba con un socket local y un pane tmux real por separado, y el
+webshell contra un servidor HTTP local.
 
 ---
 
@@ -434,7 +440,21 @@ ejecuta antes del commit.
 **Gate P1:** cumplido en la suite afectada (14 tests nuevos). El bridge real
 mueve bytes en ambos sentidos y un peer fuera de scope no llega a enlazarse. El
 e2e con una reverse shell de campo (socat/nc contra una víctima) **no** se
-ejecutó; queda como aceptación pendiente, igual que el productor de `webshell`.
+ejecutó; queda como aceptación pendiente.
+
+**Productor `webshell` (P1.5, misma entrega):**
+
+| Paso | Cambio | Ficheros | Test de aceptación |
+|---|---|---|---|
+| W.1 | `web_upload` prueba `id` contra `shell_url` y solo entonces registra la sesión | `handlers/web_upload.py`, `kernel/sessions.py` | `test_upload_probes_the_webshell_and_returns_a_session_ref`, `test_upload_probe_without_command_output_creates_no_session` |
+| W.2 | `wp_exec` registra la sesión únicamente si el implante persiste (`restore=false`) | `handlers/wp.py` | `test_wp_exec_registers_a_durable_webshell_when_the_implant_persists`, `test_wp_exec_restoring_the_file_creates_no_session` |
+| W.3 | `shell_exec(transport="webshell")` resuelve URL/método/parámetro del `transport_ref` | `handlers/shell_exec.py`, `kernel/sessions.py` | `test_shell_exec_webshell_posts_the_command_to_the_registered_url`, `test_shell_exec_webshell_refuses_a_different_url` |
+| W.4 | Hechos `access`/`privilege`/`loot` desde `session_webshell_command` | `kernel/fact_verification.py` | `test_shell_exec_webshell_assertions_promote_access_privilege_and_loot` |
+| W.5 | `session.kill` cierra la fila webshell | `handlers/msf_session_kill.py` | `test_session_kill_closes_a_webshell_row` |
+
+**Gate W:** cumplido con un servidor HTTP local real (upload multipart, POST y
+GET de comandos). Queda pendiente el panel real que renombre/mueva el fichero:
+en ese caso la URL de `shell_url` debe ser la final.
 
 ### 5.3 Fase P2 — MCP de lectura cableado (3–5 días, tras decisión de red)
 

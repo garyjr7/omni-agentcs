@@ -1185,7 +1185,8 @@ def derive_assertions(tool_id, arguments, result, context):
             add('loot', loot.get('loot_id') or loot.get('name'),
                 {'sha256': loot['sha256'], 'size': loot.get('size')},loot.get('name'))
     elif (tool_id == 'nexus.post.shell_exec'
-          and result.verification_method in {'session_pty_command', 'session_raw_command'}):
+          and result.verification_method in {
+              'session_pty_command', 'session_raw_command', 'session_webshell_command'}):
         # A command executed over a registered pty/raw channel is proof that the
         # owned session reaches that target: the peer was bound to the signed
         # scope when the listener accepted it, and the handler only reports the

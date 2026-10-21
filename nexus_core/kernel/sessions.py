@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 from .models import RunContext, ToolResult, utc_now
 from .scope_loader import scope_signing_secret
@@ -17,6 +21,95 @@ SESSION_TRANSPORTS = ("msf", "sliver", "webshell", "pty", "raw")
 #: immediately, and ``denial`` refuses to drive it until the peer is bound to
 #: the signed scope by :meth:`SessionRegistry.bind_target`.
 SESSION_PENDING_TARGET = "pending"
+
+#: How a webshell is driven when the caller does not say otherwise (the classic
+#: ``shell.php?cmd=id`` / ``POST cmd=id`` implant).
+WEBSHELL_DEFAULT_PARAMETER = "cmd"
+_WEBSHELL_PARAMETER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+
+def encode_webshell_ref(
+    url: str, *, method: str = "POST", parameter: str = WEBSHELL_DEFAULT_PARAMETER,
+) -> str:
+    """Serialize a webshell handle: the exact URL plus how to drive it.
+
+    ``transport_ref`` is a single TEXT column, so the URL alone would lose the
+    request method and the command parameter. The handle is a small JSON object;
+    :func:`parse_webshell_ref` still accepts a bare URL (POST/``cmd``) so a row
+    written by hand or by an older run remains usable.
+    """
+    return json.dumps(
+        {"url": str(url), "method": str(method).upper(), "parameter": str(parameter)},
+        separators=(",", ":"), sort_keys=True,
+    )
+
+
+def parse_webshell_ref(value: Any) -> dict[str, str]:
+    """Return ``{url, method, parameter}`` from a durable webshell handle."""
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("webshell transport_ref is empty")
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("webshell transport_ref is not valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("webshell transport_ref must be an object")
+        url = str(payload.get("url") or "").strip()
+        method = str(payload.get("method") or "POST").strip().upper()
+        parameter = str(payload.get("parameter") or WEBSHELL_DEFAULT_PARAMETER)
+    else:
+        url, method, parameter = text, "POST", WEBSHELL_DEFAULT_PARAMETER
+    if method not in {"GET", "POST"}:
+        raise ValueError("webshell method must be GET or POST")
+    if not _WEBSHELL_PARAMETER_RE.match(parameter):
+        raise ValueError("webshell parameter is not a valid form field name")
+    host = urlsplit(url).hostname
+    if not url or not host:
+        raise ValueError("webshell transport_ref does not contain a URL")
+    return {"url": url, "method": method, "parameter": parameter}
+
+
+def open_webshell_session(
+    context: RunContext,
+    *,
+    url: str,
+    method: str = "POST",
+    parameter: str = WEBSHELL_DEFAULT_PARAMETER,
+    opened_by_tool: str,
+) -> str:
+    """Register a verified webshell and return its durable ``session_ref``.
+
+    Reusing an open row with the same handle keeps repeated uploads/probes from
+    accumulating sessions for one implant. The target is validated against the
+    signed scope here as well: the caller already made an in-scope request, but a
+    durable row must not outlive that check.
+    """
+    if context.store is None or context.scope is None:
+        raise PermissionError("webshell sessions require a store and engagement")
+    handle = encode_webshell_ref(url, method=method, parameter=parameter)
+    host = urlsplit(url).hostname or ""
+    registry = SessionRegistry(context.store)
+    for row in registry.list_sessions(context.tenant_id, context.scope.engagement_id):
+        if (row.get("transport") == "webshell"
+                and row.get("transport_ref") == handle
+                and row.get("closed_at") is None):
+            return str(row["id"])
+    ScopeValidator(context.scope, signing_secret=scope_signing_secret()).validate(host)
+    session_uuid = str(uuid4())
+    registry.register(
+        session_uuid=session_uuid,
+        tenant_id=context.tenant_id,
+        engagement_id=context.scope.engagement_id,
+        run_id=context.run_id,
+        session_type="webshell",
+        target_host=host,
+        opened_by_tool=opened_by_tool,
+        transport="webshell",
+        transport_ref=handle,
+    )
+    return session_uuid
 
 
 def transport_for(session_type: str) -> str:

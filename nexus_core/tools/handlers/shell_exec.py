@@ -6,14 +6,18 @@ import asyncio
 import hashlib
 import time
 from typing import Any, Literal
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.pty_sessions import PTY_MAX_LINES, PtySessionManager
 from nexus_core.kernel.redaction import redact_result, secrets_for_redaction
-from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope
+from nexus_core.kernel.sessions import (
+    SessionRegistry,
+    parse_webshell_ref,
+    validate_session_scope,
+)
 from nexus_core.tools.passive_wait import PASSIVE_WAIT_GUIDANCE, passive_wait_reason
 
 from .http_request import http_request_definition, http_request_handler, _validate_url
@@ -241,19 +245,69 @@ async def _shell_exec_handler(arguments: dict[str, Any], context: RunContext) ->
         return await sliver_exec_handler({'session_id': request.session_id, 'command': command,
                                          'timeout_seconds': request.timeout_seconds}, context)
     session = registry.get(context.tenant_id, request.session_id)
-    url = _validate_url(request.url)
-    if (not session or session['session_type'] != 'webshell'
-            or urlsplit(url).hostname != session['target_host']):
+    if not session or session['session_type'] != 'webshell':
+        return ToolResult(verification_method='webshell_session_target_mismatch')
+    # The handle written by the producer carries the URL *and* how to drive it;
+    # a model-supplied URL is only accepted when it is the same target.
+    try:
+        handle = parse_webshell_ref(session.get('transport_ref'))
+    except ValueError:
+        return ToolResult(verification_method='webshell_transport_ref_invalid')
+    url = _validate_url(handle['url'])
+    if request.url and _validate_url(request.url) != url:
+        return ToolResult(verification_method='webshell_session_target_mismatch')
+    if urlsplit(url).hostname != session['target_host']:
         return ToolResult(verification_method='webshell_session_target_mismatch')
     # Revalidate the full URL, including port, rather than only its hostname.
     from nexus_core.scope import make_scope_validator
     from nexus_core.kernel.scope_loader import scope_signing_secret
     definition = http_request_definition(context.tenant_id)
     make_scope_validator(signing_secret=scope_signing_secret())(context, definition, {'url': url})
-    return await http_request_handler({
-        'url': url, 'method': 'POST', 'data': urlencode({request.parameter: command}),
-        'headers': {'Content-Type': 'application/x-www-form-urlencoded'},
-        'timeout_seconds': request.timeout_seconds}, context)
+    if handle['method'] == 'GET':
+        separator = '&' if urlsplit(url).query else '?'
+        request_args: dict[str, Any] = {
+            'url': f"{url}{separator}{handle['parameter']}={quote(command)}",
+            'method': 'GET',
+            'timeout_seconds': request.timeout_seconds,
+        }
+    else:
+        request_args = {
+            'url': url, 'method': 'POST',
+            'data': urlencode({handle['parameter']: command}),
+            'headers': {'Content-Type': 'application/x-www-form-urlencoded'},
+            'timeout_seconds': request.timeout_seconds,
+        }
+    http_result = await http_request_handler(request_args, context)
+    body = str((http_result.output or {}).get('body_preview') or '')
+    alive = bool(http_result.verified)
+    digest = (http_result.output or {}).get('body_sha256')
+    return ToolResult(
+        output={
+            'session_ref': request.session_id,
+            'transport': 'webshell',
+            'transport_ref': str(session.get('transport_ref') or ''),
+            'target': session['target_host'],
+            'url': url,
+            'command': request.command,
+            'output': body,
+            'status': (http_result.output or {}).get('status'),
+            'alive': alive,
+            'sha256': digest,
+        },
+        verified=alive,
+        verification_method='session_webshell_command',
+        evidence={
+            'session_ref': request.session_id,
+            'transport': 'webshell',
+            'url': url,
+            'alive': alive,
+            'sha256': digest,
+            'bytes': len(body.encode('utf-8')),
+        },
+        stdout=body[:65536],
+        stderr=http_result.stderr,
+        exit_code=http_result.exit_code,
+    )
 
 
 async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
