@@ -98,5 +98,6 @@ def test_check_env_registered_in_catalog():
     # same room; 60 were the governed DNS query, dynamic DNS update, AD password
     # reset and AD escalation (RUN_sala10); 56 were the two Windows tools.
     # 72 after the Brute It v7 fixes; 73 with nexus.post.crack_hash (offline
-    # john, the step that turns a held hash/key into a usable credential).
-    assert len(catalog) == 73
+    # john, the step that turns a held hash/key into a usable credential); 76
+    # with the three PLAN MODE tools that write/read the engagement's TODOs.
+    assert len(catalog) == 76

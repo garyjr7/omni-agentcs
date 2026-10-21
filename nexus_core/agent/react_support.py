@@ -490,6 +490,8 @@ def _completion_objections(
     evidence_stats: dict[str, Any] | None = None,
     engagement_id: str | None = None,
     require_plan_phase: bool = True,
+    engagement_plan: Any = None,
+    require_plan_first: bool = False,
 ) -> list[str]:
     """Why this ``task_complete`` must not be accepted yet (B8.2.2/B8.2.3).
 
@@ -527,6 +529,31 @@ def _completion_objections(
                 f"el plan sigue en la fase '{label}' ({done}/{total} fases de la "
                 "kill chain con evidencia): faltan "
                 + (", ".join(pending) if pending else "fases obligatorias")
+            )
+    # PLAN-FIRST: the engagement's own TODO contract (``ENGAGEMENT_PLAN.md``) is
+    # the closure gate. Measured in run v8 (``run_a00cddfa…``): the run captured
+    # one flag and closed, because the only thing holding it was the kill-chain
+    # phase -which a single loot already satisfies-. The TODOs say what *this*
+    # objective promised (root, the other flag, the report) and none of them can
+    # be closed by prose: each one is ticked by a verifier assertion or justified
+    # as ``failed`` with a reason.
+    if enforce_completion_gates and require_plan_first and engagement_id and engagement_plan is None:
+        objections.append(
+            "no hay PLAN DEL ENGAGEMENT en loot/ENGAGEMENT_PLAN.md: créalo con "
+            "nexus.orchestrator.create_plan antes de cerrar (el plan es el "
+            "contrato de lo que este engagement prometió)"
+        )
+    elif enforce_completion_gates and engagement_plan is not None:
+        open_todos = tuple(engagement_plan.pending)
+        if open_todos:
+            shown = ", ".join(
+                f"{todo.id} ({todo.description[:60]})" for todo in open_todos[:6]
+            )
+            if len(open_todos) > 6:
+                shown += f" y {len(open_todos) - 6} más"
+            objections.append(
+                f"quedan {len(open_todos)} TODO(s) del plan del engagement sin cerrar: "
+                f"{shown}"
             )
     if enforce_completion_gates and evidence_stats and fabricated_evidence(evidence_stats):
         counts = (

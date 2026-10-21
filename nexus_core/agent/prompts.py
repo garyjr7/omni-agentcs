@@ -27,6 +27,26 @@ LOGIN_RULE_PROMPT = (
     "  puedes intentar SQLi manual o buscar backups.\n"
 )
 
+#: PLAN-FIRST: the engagement is a contract, not a stream of reactive calls.
+#: Appended only when the catalog offers ``nexus.orchestrator.create_plan``, so a
+#: prompt shown to a subagent that cannot create one never names it (same rule as
+#: :data:`LOGIN_RULE_PROMPT`). Measured origin: run v8
+#: ``run_a00cddfa69da488d8946188daddee3e3`` closed on the first flag -one flag is
+#: a finding, not the engagement- because nothing held the run to the rest of the
+#: objective.
+ENGAGEMENT_PLAN_RULE_PROMPT = (
+    "- PLAN-FIRST (OBLIGATORIO): esto es un ENGAGEMENT contra un objetivo. Tu\n"
+    "  primera acción es nexus.orchestrator.create_plan con la lista completa de\n"
+    "  TODOs (id, description, fact_types = los hechos verificados que lo\n"
+    "  cierran). Sin plan, el motor DENIEGA toda tool que toque el objetivo\n"
+    "  (nmap, web, credenciales, ssh, exploit): solo puedes leer contexto\n"
+    "  (query_facts, workspace.read). Consulta get_plan_status en cada turno,\n"
+    "  trabaja el SIGUIENTE TODO y no declares \"task_complete\" con TODOs\n"
+    "  pendientes: si uno es inalcanzable tras 3 intentos, ciérralo con\n"
+    "  update_plan (status=\"failed\" + reason). Los TODOs con fact_types los\n"
+    "  palomea SOLO la evidencia; nunca los declares done a mano.\n"
+)
+
 REACT_SYSTEM_PROMPT = """Eres OmniAgent, un agente autónomo de
 ciberseguridad ofensiva operando dentro de un engagement autorizado.
 
@@ -78,7 +98,7 @@ REGLAS:
   (hydra sin credenciales, un endpoint sin SQLi), no insistas más de 2 veces:
   registra un barrier para ese vector y PIVOTA al siguiente. Mapea todas las
   vulnerabilidades, no solo la primera que veas.
-- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
+{engagement_plan_rule}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
   enumeración → acceso inicial → escalada → post-explotación → reporte). El
   plan vigente se muestra más abajo: trabaja SIEMPRE la fase actual y usa su
   foco y su siguiente paso sugerido como guía. Cuando completes la fase, tus
@@ -166,6 +186,9 @@ OBJETIVO DEL USUARIO:
 PLAN VIGENTE:
 {plan_summary}
 {coverage_summary}
+
+PLAN DEL ENGAGEMENT (TODOs verificables, fichero loot/ENGAGEMENT_PLAN.md):
+{engagement_plan_summary}
 
 SUBAGENTE ACTIVO:
 {subagent_summary}
@@ -452,6 +475,7 @@ def render_system_prompt(
     history_summary: str = "(sin historial previo)",
     facts_summary: str = "(sin hechos registrados)",
     plan_summary: str = "(sin plan)",
+    engagement_plan_summary: str = "",
     coverage_summary: str = "",
     subagent_summary: str = "(sin subagente)",
     project_summary: str = "(sin OMNI.md ni AGENTS.md en el proyecto)",
@@ -471,9 +495,20 @@ def render_system_prompt(
     if not full_catalog:
         catalog_text = f"{catalog_text}\n{COMPACT_CATALOG_NOTE}"
     login_rule = LOGIN_RULE_PROMPT if "nexus.cred.bruteforce" in catalog else ""
+    plan_rule = (
+        ENGAGEMENT_PLAN_RULE_PROMPT
+        if "nexus.orchestrator.create_plan" in catalog
+        else ""
+    )
     return REACT_SYSTEM_PROMPT.format(
         tool_catalog=catalog_text,
         login_rule=login_rule,
+        engagement_plan_rule=plan_rule,
+        engagement_plan_summary=(
+            engagement_plan_summary
+            or "(sin plan de engagement: si el objetivo es un engagement, "
+            "créalo con nexus.orchestrator.create_plan antes de atacar)"
+        ),
         objective=objective,
         engagement_id=engagement_id or "(ninguno)",
         scope_summary=scope_summary,

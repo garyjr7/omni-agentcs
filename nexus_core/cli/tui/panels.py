@@ -72,6 +72,34 @@ def panel_lines(plan: dict[str, Any] | None, *, width: int = 44) -> list[tuple[s
         label = _safe(item.get("label") or item.get("id") or "?")
         suffix = " (opcional)" if item.get("optional") else ""
         fragments.append((style, f"  {mark} {label}{suffix}"))
+    # The engagement's own TODOs (``loot/ENGAGEMENT_PLAN.md``): what this
+    # objective promised to prove, not where the blackboard thinks the chain is.
+    # Both are shown because they answer different questions.
+    todos = plan.get("todos") if isinstance(plan.get("todos"), list) else []
+    if todos:
+        done = plan.get("todos_done")
+        total = plan.get("todos_total") or len(todos)
+        suffix = f" ({done}/{total})" if done is not None else ""
+        fragments.append(("class:panel-title", f" PLAN DEL ENGAGEMENT{suffix}"))
+        for item in todos:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "pending")
+            mark = {"done": "✓", "in_progress": "⏳", "failed": "✗"}.get(status, "·")
+            style = {
+                "done": "class:panel-done",
+                "in_progress": "class:panel-current",
+                "failed": "class:panel-failed",
+            }.get(status, "class:panel-pending")
+            label = _safe(item.get("id") or "?")
+            description = _safe(item.get("description") or "")
+            line = f"  {mark} {label}"
+            room = inner - len(_safe(line)) - 3
+            if description and room > 8:
+                line += " — " + (
+                    description if len(description) <= room else description[:room].rstrip() + "…"
+                )
+            fragments.append((style, line))
     hint = plan.get("next_hint")
     if hint:
         fragments.append(("class:panel-title", " SIGUIENTE PASO"))
@@ -99,6 +127,7 @@ def panel_style() -> dict[str, str]:
         "panel-title": "bg:#0d1117 #00e5ff bold",
         "panel-current": "bg:#0d1117 #ffc950 bold",
         "panel-done": "bg:#0d1117 #56e696",
+        "panel-failed": "bg:#0d1117 #ff4054",
         "panel-pending": "bg:#0d1117 #6a6f76",
     }
 

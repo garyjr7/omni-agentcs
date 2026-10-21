@@ -294,6 +294,7 @@ class ContextBuilder:
         webshell_hint: str = "",
         coverage_hint: str = "",
         robots_hint: str = "",
+        engagement_plan_summary: str = "",
     ) -> list[LLMMessage]:
         full_catalog = self.full_catalog_for(iteration=iteration, subagent=subagent)
         history_summary, plan, facts_text = (
@@ -310,6 +311,10 @@ class ContextBuilder:
             history_summary=history_summary or "(sin historial previo)",
             facts_summary=facts_text,
             plan_summary=plan.render(),
+            # The engagement's own TODO contract (``loot/ENGAGEMENT_PLAN.md``),
+            # reconciled against the board before this turn: every profile sees
+            # the same checklist, so a subagent knows what the run still owes.
+            engagement_plan_summary=engagement_plan_summary,
             coverage_summary=render_coverage(snapshot.coverage),
             subagent_summary=subagent.describe(),
             project_summary=render_project_instruction(project_instruction),
@@ -409,6 +414,8 @@ class CompletionVerifier:
         hooks: HookRunner,
         objective: str,
         require_plan_phase: bool = True,
+        engagement_plan: Any = None,
+        require_plan_first: bool = False,
     ) -> CompletionAssessment:
         from nexus_core.kernel.blackboard import Blackboard, is_verified_fact
 
@@ -419,6 +426,8 @@ class CompletionVerifier:
             evidence_stats=stats,
             engagement_id=engagement_id,
             require_plan_phase=require_plan_phase,
+            engagement_plan=engagement_plan,
+            require_plan_first=require_plan_first,
         )
         facts = (
             [

@@ -143,6 +143,42 @@ from .project_context import ProjectInstruction
 from .skills import Skill
 from typing import TYPE_CHECKING
 
+#: Effects that act *on the objective*. With no engagement plan, the PLAN-FIRST
+#: gate refuses every one of them: recon and scanning are already an action
+#: against a target, and the plan is what says which action is worth taking.
+#: ``state_write`` (the plan tools themselves, the blackboard) and
+#: ``read_only`` stay available so the model can write the plan it needs.
+ATTACK_EFFECTS = frozenset(
+    {
+        "active",
+        "recon",
+        "network_scan",
+        "target_write",
+        "exploit",
+        "execution",
+        "post_exploitation",
+        "credential_access",
+        "credential_dump",
+        "lateral_movement",
+        "pivoting",
+        "c2_implant_build",
+    }
+)
+
+
+def _touches_target(entry: Any) -> bool:
+    """Whether this catalog entry acts on the objective (needs the plan)."""
+    definition = entry[0] if isinstance(entry, tuple) and entry else entry
+    if definition is None:
+        return False
+    tool_id = str(getattr(definition, "tool_id", "") or "")
+    if tool_id.startswith("nexus.orchestrator."):
+        return False
+    if bool(getattr(definition, "scope_required", False)):
+        return True
+    return str(getattr(definition, "effect", "")) in ATTACK_EFFECTS
+
+
 if TYPE_CHECKING:
     from nexus_core.hooks import HookRunner
 from nexus_core.kernel.control_store import ControlStore
@@ -293,6 +329,12 @@ class ReActCoordinator:
     telemetry: TurnTelemetryRecorder
     snapshot: ContextSnapshot
     plan: Plan
+    #: The engagement's own contract (``loot/ENGAGEMENT_PLAN.md``), loaded and
+    #: reconciled against the board every turn. ``None`` when the engagement has
+    #: no plan yet -which is exactly what the PLAN-FIRST gate refuses to work
+    #: around.
+    engagement_plan: Any | None
+    engagement_plan_text: str
     subagent: SubAgentDefinition
     allowed_catalog: dict[str, Any]
     messages: list[LLMMessage]
@@ -366,6 +408,8 @@ class ReActCoordinator:
         self.project_instruction = (
             None if self.isolated_child else load_project_instruction(project_root)
         )
+        self.engagement_plan = None
+        self.engagement_plan_text = ""
         from nexus_core.kernel.scope_loader import scope_signing_secret
 
         self.active_skills, refused_skills = activate_skills(
@@ -675,6 +719,10 @@ class ReActCoordinator:
         # every turn, so a flag captured after the previous turn is announced on
         # the very next prompt instead of when the budget runs out.
         self._refresh_target_reached()
+        # PLAN MODE's contract: the TODOs of ``ENGAGEMENT_PLAN.md`` are ticked from
+        # the verified facts before the prompt is built, so the model reads the
+        # real state of the plan (never its own memory of it).
+        self._refresh_engagement_plan()
         # WP6: a wide surface after ten turns without access gets one explicit
         # order to stop enumerating (see ``enumeration_budget_hint``).
         self._refresh_budget_hint()
@@ -1128,6 +1176,82 @@ class ReActCoordinator:
         )
         self.target_reached_emitted = True
 
+    def _refresh_engagement_plan(self) -> None:
+        """Load ``ENGAGEMENT_PLAN.md`` and tick what the board already proves.
+
+        The file is the source of truth (shared with the human and with any
+        isolated child of the run); this only refreshes it with the facts that
+        landed since the last turn. A TODO ticked here is a verifier assertion,
+        never a model claim.
+
+        Never raises: a plan that cannot be read degrades to "no plan" and the
+        gate below decides what that means for this run.
+        """
+        from nexus_core.agent.engagement_plan import (
+            load_plan_for,
+            prompt_block,
+            reconcile,
+            save_plan,
+        )
+
+        # The same directory the CLI wrote the plan into: the payload's
+        # ``project_root`` (the operator's workspace), never an implicit cwd. A
+        # bound local workspace lives in ``scope.notes``, so the two can differ.
+        root = str(self.payload.get("project_root") or "") or None
+        plan = None
+        try:
+            plan = load_plan_for(self.engagement_id, root)
+            if plan is not None:
+                facts = [
+                    fact
+                    for fact in self._blackboard_facts()
+                    if fact.get("verified") is True
+                ]
+                # Flags this run read out of a tool output are evidence too, and
+                # the verifier does not always derive a loot fact for them.
+                facts.extend(
+                    {
+                        "fact_type": "loot",
+                        "key": str(source.get("ref") or "flag"),
+                        "value": {"flag": flag},
+                        "verified": True,
+                    }
+                    for flag, source in self.captured_flag_refs.items()
+                )
+                updated, ticks = reconcile(
+                    plan, facts, engagement_id=self.engagement_id
+                )
+                if ticks and updated is not None:
+                    save_plan(updated, root)
+                    plan = updated
+                    self.store.append_run_event(
+                        self.tenant_id,
+                        self.run_id,
+                        "orchestrator.plan_todos",
+                        {
+                            "iteration": self.iteration,
+                            "done": list(ticks),
+                            "pending": [todo.id for todo in plan.pending],
+                        },
+                    )
+        except Exception:  # noqa: BLE001 - the plan must never abort a turn
+            plan = None
+        self.engagement_plan = plan
+        self.engagement_plan_text = prompt_block(plan)
+
+    def _plan_required_missing(self) -> bool:
+        """Whether this turn must refuse an attack tool until there is a plan."""
+        return bool(
+            self.config.require_plan_first
+            and self.engagement_id
+            and self.engagement_plan is None
+        )
+
+    def _flag_todos_pending(self) -> bool:
+        """Whether the plan still promises a flag that was not captured."""
+        plan = self.engagement_plan
+        return bool(plan is not None and plan.flags_pending)
+
     def _note_observed_flags(self) -> None:
         """Keep every flag seen in the successful output of this run (WP5).
 
@@ -1458,6 +1582,7 @@ class ReActCoordinator:
             webshell_hint=self.webshell_hint,
             coverage_hint=self.coverage_hint,
             robots_hint=self.robots_hint,
+            engagement_plan_summary=self.engagement_plan_text,
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)
@@ -1709,6 +1834,10 @@ class ReActCoordinator:
             # WP2: in the default loop the phase is a hint; only the legacy path
             # keeps refusing a task_complete because the plan is not on reporting.
             require_plan_phase=legacy_profiles(),
+            # The engagement's own TODOs close the run (PLAN-FIRST): a plan the
+            # model committed to outranks the phase hint.
+            engagement_plan=self.engagement_plan,
+            require_plan_first=self.config.require_plan_first,
         )
         annotated, self.evidence_stats = (assessment.findings, assessment.evidence_stats)
         self.completion_objections = assessment.objections
@@ -1964,6 +2093,57 @@ class ReActCoordinator:
                 return Transition.STOP
             self.consecutive_failures = 0
             return Transition.NEXT_TURN
+        if self._plan_required_missing() and _touches_target(
+            self.catalog.get(self.action.tool_id)
+        ):
+            # PLAN-FIRST: an engagement does not start by attacking. The engine
+            # refuses the call (it is not counted as a tool failure: it is an
+            # ordering rule) and tells the model exactly what unblocks it.
+            from nexus_core.tools.handlers.plan_engagement import CREATE_PLAN_TOOL
+
+            self.observation = {
+                "success": False,
+                "status": "denied_no_plan",
+                "tool_id": self.action.tool_id,
+                "error": (
+                    "hay que fijar el PLAN DEL ENGAGEMENT antes de atacar: "
+                    f"llama a {CREATE_PLAN_TOOL} con los TODOs del objetivo "
+                    "(id, description, fact_types). Mientras no exista el plan, "
+                    "el motor solo admite lectura de contexto (query_facts, "
+                    "workspace.read) y las tools nexus.orchestrator.*."
+                ),
+                "next": CREATE_PLAN_TOOL,
+            }
+            self.entry["tool_result"] = self.observation
+            self.actions.append(self.entry)
+            _inject_observation(
+                self.store,
+                self.tenant_id,
+                self.conversation_id,
+                self.run_id,
+                self.iteration,
+                self.action,
+                self.observation,
+                subagent_id=self.active_subagent_id,
+            )
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                "orchestrator.plan_required",
+                {
+                    "iteration": self.iteration,
+                    "tool_id": self.action.tool_id,
+                    "subagent_id": self.active_subagent_id,
+                },
+            )
+            self.audit_step(
+                iteration=self.iteration,
+                action=self.action.action,
+                decision="deny",
+                tool_id=self.action.tool_id,
+                reason="plan_required",
+            )
+            return Transition.NEXT_TURN
         if self.action.tool_id in self.unavailable_tools:
             self.observation = {
                 "success": False,
@@ -2009,6 +2189,9 @@ class ReActCoordinator:
             "session_id": self.conversation_id,
             "phase": getattr(self.plan, "current", "") or "",
             "objective": self.objective,
+            # The operator's workspace, so a handler writes/reads the same
+            # directory as the engine (the plan file, the loot, the wordlists).
+            "project_root": str(self.payload.get("project_root") or ""),
             # V1-54: how a retry of an ``unknown`` invocation is resolved. The
             # engine set it from ``--resume-policy`` (only under trust mode).
             "resume_policy": str(getattr(self.config, "resume_policy", "") or ""),
@@ -2991,6 +3174,11 @@ class ReActCoordinator:
             plan=self.last_plan.to_dict() if self.last_plan is not None else None,
             subagent_id=self.last_subagent_id,
             evidence_stats=self.evidence_stats,
+            engagement_plan=(
+                self.engagement_plan.to_dict()
+                if self.engagement_plan is not None
+                else None
+            ),
             completion_objections=list(self.completion_objections),
             completion_verified=(
                 bool(self.completion_verified_override)
@@ -3066,7 +3254,25 @@ class ReActCoordinator:
         # the next call is intercepted: the run ends with a synthesized
         # ``task_complete`` instead of dying at the budget with the work done.
         if self._target_margin_spent():
-            return self._force_target_completion()
+            # PLAN-FIRST: a capture is not the engagement while the plan still
+            # promises a flag (run v8 closed on the first one). The margin is
+            # reset instead of forcing the closure, so the model keeps working
+            # on the open TODO; without a plan the old WP5 behavior stands.
+            if self._flag_todos_pending():
+                self.tool_calls_since_target_reached = 0
+                self.store.append_run_event(
+                    self.tenant_id,
+                    self.run_id,
+                    "orchestrator.plan_open_at_target",
+                    {
+                        "iteration": self.iteration,
+                        "pending": [
+                            todo.id for todo in (self.engagement_plan.flags_pending if self.engagement_plan else ())
+                        ],
+                    },
+                )
+            else:
+                return self._force_target_completion()
         return await self._tool_turn()
 
     async def _tool_turn(self) -> Transition:

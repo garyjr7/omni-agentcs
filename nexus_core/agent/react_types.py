@@ -270,6 +270,13 @@ class ReActConfig:
     #: for a caller that deliberately scripts a completion out of order (e.g.
     #: loop-mechanics tests); production always leaves it on.
     enforce_completion_gates: bool = True
+    #: PLAN-FIRST gate: with an engagement and no ``loot/ENGAGEMENT_PLAN.md``,
+    #: every tool that touches the target is denied and the observation asks for
+    #: ``nexus.orchestrator.create_plan``. The loop's default keeps the old
+    #: behavior so a harness can replay a scripted run; the product entry points
+    #: (``omni`` REPL, ``--headless``, the bench) set it, and they are also the
+    #: ones that draft the plan before the first turn (``agent/planning.py``).
+    require_plan_first: bool = False
     #: Interactive approval hook. When set, the loop asks policy *before* every
     #: tool invocation and, if the decision requires human approval, calls this
     #: callback with ``(tool_id, arguments, decision)``. Returning ``None`` or a
@@ -320,6 +327,9 @@ class ReActResult:
     subagent_id: str | None = None
     #: Evidence-grounding counters of the accepted completion (B8.2.3).
     evidence_stats: dict[str, int] | None = None
+    #: The engagement's own TODO contract (``ENGAGEMENT_PLAN.md``) at closure:
+    #: what the run promised, what it proved and what it justified as failed.
+    engagement_plan: dict[str, Any] | None = None
     #: One operational telemetry record per iteration (token consumption,
     #: reasoning duration, friction flags and blackboard delta). The same
     #: records are emitted durably as ``react.turn_telemetry`` run events; they

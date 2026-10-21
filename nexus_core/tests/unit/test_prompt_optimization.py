@@ -19,13 +19,14 @@ def catalog():
     return durable_tool_definitions("system")
 
 
-def _prompt(catalog) -> str:
+def _prompt(catalog, **kwargs) -> str:
     return render_system_prompt(
         catalog=catalog,
         objective="escanea el host",
         engagement_id="eng-1",
         scope_summary="engagement=eng-1",
         history_summary="",
+        **kwargs,
     )
 
 
@@ -159,10 +160,15 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # its arguments (249 chars: hash/key input, type, owner, wordlist), measured
     # at 16,089 (220,4 per tool). The *per-tool* average stays under 225 -the
     # thing the bound is for- so only the total ceiling moves, to 16,150.
-    assert len(catalog) == 73
+    # PLAN MODE adds the three ``nexus.orchestrator.*`` plan tools (create,
+    # update, status): the contract they write is the one the run is held to.
+    # Measured at 16,570 chars for 76 tools (218,0 per tool) -the per-tool bound
+    # is what the ceiling protects and it did not move-, so only the total does,
+    # to 16,900.
+    assert len(catalog) == 76
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 16150
+    assert len(text) < 16900
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -201,7 +207,29 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # 25_000; the per-tool catalog bound does not move.
     # ``nexus.post.crack_hash`` (the 73rd tool) costs its catalog line: measured
     # 25,152. It is capability data, not prose, so the ceiling moves to 25_250.
-    assert len(_prompt(catalog)) < 25_250
+    # PLAN MODE adds two things: the `PLAN-FIRST` rule (an order: without a plan
+    # no attack tool runs) and the `PLAN DEL ENGAGEMENT` section that carries the
+    # TODOs. Measured 26,513 with the three catalog lines and an empty plan, so
+    # the ceiling moves to 26,700; the plan itself is measured in
+    # ``test_prompt_with_a_plan_stays_under_its_ceiling`` below.
+    assert len(_prompt(catalog)) < 26_700
+
+
+def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
+    """The TODO block is data the run pays for every turn: it has a ceiling.
+
+    A 7-TODO plan (the seed of an engagement) costs 627 characters on top of the
+    static prompt: measured 27,140. The block is capped at 40 TODOs by
+    ``prompt_block``, so a pathological plan cannot grow without bound.
+    """
+    from nexus_core.agent.engagement_plan import new_plan, prompt_block, seed_todos
+
+    plan = new_plan("objective", "eng-1", seed_todos("objective"))
+    block = prompt_block(plan)
+    assert block
+    prompt = _prompt(catalog, engagement_plan_summary=block)
+    assert len(prompt) < 27_400
+    assert len(block) < 1_200
 
 
 def test_catalog_lists_every_tool_exactly_once(catalog):
@@ -336,7 +364,12 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # never made. The login rule adds its ~124 tokens to every turn as well:
     # measured 6,227 average, so the target moves to 6_250 (250k still buys ~40
     # turns; the compact turn stays at 5,600).
-    assert sum(totals) / len(totals) < 6_250
+    # PLAN MODE is the expensive rule of the set and it is paid every turn: the
+    # PLAN-FIRST order (~112 tokens) plus the engagement's TODO checklist (~157
+    # tokens for a 7-TODO plan). Measured 6,524 average, so the target moves to
+    # 6_600: 250k now buys ~38 turns instead of 40, and what it buys is the
+    # contract that stops a run from closing on the first flag (run v8).
+    assert sum(totals) / len(totals) < 6_600
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -348,4 +381,6 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # so the refresh ceiling moves to 8_400 (32 compact turns at 5,600 plus 8
     # refreshes at 8,359 are 246,072, inside the 250k budget). The 73rd tool's
     # catalog line lands here too: measured 8,422, so the ceiling moves to 8_450.
-    assert max(totals) < 8_450
+    # The three PLAN MODE catalog lines plus the rule and the checklist land on
+    # this turn as well: measured 8,765, so the ceiling moves to 8_800.
+    assert max(totals) < 8_800

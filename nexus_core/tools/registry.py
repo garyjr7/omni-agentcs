@@ -152,6 +152,14 @@ def durable_tool_definitions(
     )
     from .handlers.sliver_loot import sliver_loot_definition, sliver_loot_handler
     from .handlers.playbook import playbook_definition, playbook_handler
+    from .handlers.plan_engagement import (
+        create_plan_definition,
+        create_plan_handler,
+        get_plan_status_definition,
+        get_plan_status_handler,
+        update_plan_definition,
+        update_plan_handler,
+    )
     from .handlers.pwn import (
         pwn_analyze_definition,
         pwn_analyze_handler,
@@ -178,6 +186,18 @@ def durable_tool_definitions(
         "nexus.workspace.read": (
             workspace_read_definition(tenant_id),
             workspace_read_handler,
+        ),
+        "nexus.orchestrator.create_plan": (
+            create_plan_definition(tenant_id),
+            create_plan_handler,
+        ),
+        "nexus.orchestrator.update_plan": (
+            update_plan_definition(tenant_id),
+            update_plan_handler,
+        ),
+        "nexus.orchestrator.get_plan_status": (
+            get_plan_status_definition(tenant_id),
+            get_plan_status_handler,
         ),
         "nexus.recon.nmap": (nmap_definition(tenant_id), nmap_handler),
         "nexus.recon.dns": (dns_query_definition(tenant_id), dns_query_handler),

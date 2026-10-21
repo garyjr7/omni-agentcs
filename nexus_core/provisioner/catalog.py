@@ -70,6 +70,9 @@ INTERNAL_HANDLERS = frozenset(
         # WP4: the skill loader reads the project's own SKILL.md files in-process;
         # there is no binary, transport or target behind it.
         "skill",
+        # PLAN MODE: create/update/status of ``loot/ENGAGEMENT_PLAN.md``. One
+        # Markdown file in the engagement workspace, no binary behind it.
+        "plan_engagement",
     }
 )
 

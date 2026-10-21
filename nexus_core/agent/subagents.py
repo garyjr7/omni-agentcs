@@ -50,6 +50,14 @@ COMMON_TOOLS: frozenset[str] = frozenset(
         "nexus.system.status",
         "nexus.system.check_env",
         "nexus.orchestrator.playbook",
+        # PLAN MODE: the engagement's own contract (``ENGAGEMENT_PLAN.md``).
+        # Every profile must be able to read it -it is what the run is held to-
+        # and the two writers are here because a phase that discovers a new
+        # vector is exactly who has to add its TODO. They write a file in the
+        # engagement's workspace (``scope_required=False``), never the target.
+        "nexus.orchestrator.create_plan",
+        "nexus.orchestrator.update_plan",
+        "nexus.orchestrator.get_plan_status",
         # WP4: the skill catalogue. Read-only local files, no target, so every
         # profile (including the read-only ones) may consult and load a recipe.
         "nexus.skill.list",
@@ -126,6 +134,26 @@ ACTIVE_TOOLS: frozenset[str] = frozenset(
         "nexus.c2.sliver_generate",
         "nexus.c2.sliver_deploy",
         "nexus.c2.sliver_loot",
+        # PLAN MODE writers (COMMON_TOOLS): they mutate the engagement's own
+        # plan file, not the target, so a read-only profile may keep them. See
+        # ``ORCHESTRATOR_PLAN_TOOLS`` for why the invariant excludes them.
+        "nexus.orchestrator.create_plan",
+        "nexus.orchestrator.update_plan",
+    }
+)
+
+#: The plan tools are the one active pair every profile carries. The invariant
+#: "a read-only profile lists no active tool" exists to stop a *capability* leak
+#: (a recon profile acquiring sqlmap); a profile that can read the contract it is
+#: held to but cannot fix it would deadlock the run on iteration 0 (recon is
+#: read-only and the plan is mandatory before any attack). They write one file in
+#: the engagement workspace and never touch the objective, which is why they are
+#: excluded exactly like the universal execution overlay.
+ORCHESTRATOR_PLAN_TOOLS: frozenset[str] = frozenset(
+    {
+        "nexus.orchestrator.create_plan",
+        "nexus.orchestrator.update_plan",
+        "nexus.orchestrator.get_plan_status",
     }
 )
 
@@ -785,7 +813,10 @@ def validate_registry(catalog: Mapping[str, Any] | None = None) -> list[str]:
         if profile.read_only:
             # The universal execution substrate is profile-independent and is
             # never counted as a leak (WP1); every other active tool is.
-            leaked = sorted(profile.tools & (ACTIVE_TOOLS - UNIVERSAL_TOOLS))
+            leaked = sorted(
+                profile.tools
+                & (ACTIVE_TOOLS - UNIVERSAL_TOOLS - ORCHESTRATOR_PLAN_TOOLS)
+            )
             if leaked:
                 problems.append(
                     f"profile '{profile.id}' is read-only but lists active tools: {leaked}"

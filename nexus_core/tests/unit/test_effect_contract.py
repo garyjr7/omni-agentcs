@@ -54,6 +54,12 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.exploit.msf_auxiliary",
     "nexus.exploit.msf_exploit",
     "nexus.knowledge.record_fact",
+    # PLAN MODE: they write ``loot/ENGAGEMENT_PLAN.md``, which is engagement
+    # state (exactly what ``read_only`` forbids), so ``state_write`` is the
+    # honest label. They are never a target action; the PLAN-FIRST gate is what
+    # keeps them ahead of the attack.
+    "nexus.orchestrator.create_plan",
+    "nexus.orchestrator.update_plan",
     "nexus.post.dns_update",
     "nexus.post.dpapi",
     "nexus.post.enum_system",
@@ -162,7 +168,9 @@ def test_active_catalog_matches_the_reviewed_expectation():
     read_only = [entry["tool_id"] for entry in catalog["tools"]
                  if entry["effect"] == "read_only"]
     # WP4 adds two read-only tools (nexus.skill.list/load): 73 - 44 active = 29.
-    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 29
+    # PLAN MODE adds one read-only tool (get_plan_status) and two active
+    # writers: 76 - 46 active = 30.
+    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 30
 
 
 def test_the_mislabelled_tools_now_declare_their_real_effect():

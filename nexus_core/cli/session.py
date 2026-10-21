@@ -708,10 +708,32 @@ class OmniSession:
         if self._tui.use_tui:
             self._tui.set_status(**fields)
             if plan is not None:
-                self._tui.set_plan(plan.to_dict())
+                self._tui.set_plan(self._plan_panel_payload(plan))
         else:
             for key, value in fields.items():
                 setattr(self._tui._status, key, value)
+
+    def _plan_panel_payload(self, plan: Any) -> dict[str, Any]:
+        """Phase plan plus the engagement's TODOs, for the side panel.
+
+        The phase plan is derived from the blackboard; the TODOs come from
+        ``loot/ENGAGEMENT_PLAN.md`` and are what the run actually promised. Both
+        are shown because they answer different questions ("where is the kill
+        chain" vs "what did this engagement contract to prove").
+        """
+        payload = plan.to_dict()
+        try:
+            from nexus_core.agent.engagement_plan import load_plan_for, panel_todos
+
+            contract = load_plan_for(self.engagement_id, str(self.workspace_root))
+        except Exception:  # noqa: BLE001 - presentation must not fail
+            return payload
+        if contract is not None:
+            counts = contract.counts()
+            payload["todos"] = panel_todos(contract)
+            payload["todos_done"] = counts.get("done", 0)
+            payload["todos_total"] = len(contract.todos)
+        return payload
 
     # --------------------------------------------------------------- sessions
     def fetch_sessions(self) -> dict[str, Any] | None:
@@ -1056,6 +1078,40 @@ class OmniSession:
         return True
 
     # ------------------------------------------------------------------ run
+    async def _draft_engagement_plan(
+        self, llm_client: Any, objective: str, *, workspace: str | None = None
+    ) -> Any:
+        """PLAN MODE: write ``loot/ENGAGEMENT_PLAN.md`` before the first turn.
+
+        The plan is a property of an engagement instruction, not of every run: a
+        question or an objective that only needs reasoning returns ``None`` and
+        the loop keeps its old behavior. A planning failure is not fatal -the
+        deterministic seed is written instead- so the contract always exists.
+        """
+        from nexus_core.agent.engagement_plan import is_engagement_objective
+        from nexus_core.agent.planning import draft_engagement_plan
+
+        # Only an engagement is planned: without a signed scope there is no target
+        # to attack, so there is nothing to contract.
+        if not self.engagement_id or not is_engagement_objective(objective):
+            return None
+        try:
+            plan = await draft_engagement_plan(
+                llm_client=llm_client,
+                objective=objective,
+                engagement_id=self.engagement_id,
+                workspace=workspace,
+            )
+        except Exception:  # noqa: BLE001 - planning must never block the run
+            return None
+        if plan is not None:
+            render.render_status(
+                f"plan del engagement: {len(plan.todos)} TODOs ({plan.source}) → "
+                "loot/ENGAGEMENT_PLAN.md"
+            )
+            self._update_status_bar()
+        return plan
+
     @routed
     def run_objective(self, objective: str) -> Any:
         """Run one objective through the durable ReAct loop, streaming events."""
@@ -1114,6 +1170,10 @@ class OmniSession:
             # Stream the model's reasoning into the live overlay (TUI only).
             on_thought=self._tui.set_thought if self._tui.use_tui else None,
             on_thought_done=self._tui.end_thought if self._tui.use_tui else None,
+            # PLAN-FIRST: an engagement does not begin by attacking. The plan is
+            # drafted below, before the first turn; this flag is what makes the
+            # loop hold the run to it.
+            require_plan_first=True,
         )
         stop_event = threading.Event()
         streamer = threading.Thread(
@@ -1144,16 +1204,29 @@ class OmniSession:
                 use_ascii=not self._supports_unicode(),
             ):
                 cancel_event = asyncio.Event()
-                result = asyncio.run(
-                    self._with_cancel(run_react_loop(
+                llm_client = (
+                    self._metered_client(self._llm)
+                    if self._tui.use_tui
+                    else self.llm_client
+                )
+
+                async def _plan_then_run() -> Any:
+                    """PLAN MODE (iteration 0) and then the ACT loop."""
+                    await self._draft_engagement_plan(
+                        llm_client, objective, workspace=str(self.workspace_root)
+                    )
+                    return await run_react_loop(
                         context=context,
                         objective=objective,
                         engagement_id=self.engagement_id,
-                        llm_client=self._metered_client(self._llm) if self._tui.use_tui else self.llm_client,
+                        llm_client=llm_client,
                         config=config,
                         conversation_id=self.conversation_id,
                         cancel_event=cancel_event,
-                    ), run_id, cancel_event=cancel_event)
+                    )
+
+                result = asyncio.run(
+                    self._with_cancel(_plan_then_run(), run_id, cancel_event=cancel_event)
                 )
         except KeyboardInterrupt:
             self.store.append_run_event(

@@ -21,7 +21,7 @@ from nexus_core.kernel.control_store import ControlStore
 from nexus_core.llm.abstraction import LLMProvider, LLMResponse
 from nexus_core.scope import EngagementScope, EngagementStore
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration]
 
 TENANT = "system"
 
@@ -74,7 +74,7 @@ def session(tmp_path) -> OmniSession:
     store = ControlStore(tmp_path / "e2e.db")
     store.initialize()
     scope = EngagementStore(store).create(_scope())
-    return OmniSession(
+    session = OmniSession(
         store=store,
         tenant_id=TENANT,
         engagement=scope,
@@ -82,6 +82,10 @@ def session(tmp_path) -> OmniSession:
         operator_id="operator:tester",
         use_tui=False,
     )
+    # PLAN MODE writes ``loot/ENGAGEMENT_PLAN.md`` into the engagement workspace
+    # before the first turn: keep it inside the test's tmp dir, never the repo.
+    session.workspace_root = tmp_path
+    return session
 
 
 def test_consecutive_objectives_share_work_session(session):
@@ -125,7 +129,4 @@ def test_ask_reuses_work_session_created_by_objectives(session):
 
 # This module's unsigned scopes exercise targeting/session behavior. Authentication
 # is covered separately in test_scope_governed_mode with the governed default.
-pytestmark = globals().get("pytestmark", [])
-if not isinstance(pytestmark, list):
-    pytestmark = [pytestmark]
 pytestmark.append(pytest.mark.usefixtures("lab_scope"))

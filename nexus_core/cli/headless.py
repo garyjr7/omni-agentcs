@@ -368,6 +368,10 @@ def _run_headless(
         # ``--resume-policy``: only a trust-mode run may replay an ``unknown``
         # invocation without asking; anything else keeps the fail-closed block.
         resume_policy=getattr(session, "effective_resume_policy", ""),
+        # PLAN-FIRST: an engagement does not start by attacking. The planning
+        # turn below writes the contract; this flag makes the loop hold the run
+        # to it (and refuse a closure with TODOs still open).
+        require_plan_first=True,
     )
 
     stop = threading.Event()
@@ -377,17 +381,47 @@ def _run_headless(
         emitter.start()
     started = time.monotonic()
     result: Any = None
-    try:
-        result = asyncio.run(
-            run_react_loop(
-                context=context,
-                objective=objective,
-                engagement_id=session.engagement_id,
-                llm_client=session.llm_client,
-                config=config,
-                conversation_id=session.conversation_id,
-            )
+    async def _plan_then_run() -> Any:
+        """PLAN MODE (iteration 0) and then the ACT loop.
+
+        The planning call is one extra model turn *before* any tool can touch the
+        target; if it fails, the deterministic seed is written, so a headless run
+        never starts without a contract (run v8 closed on the first flag).
+        """
+        from nexus_core.agent.engagement_plan import is_engagement_objective
+        from nexus_core.agent.planning import draft_engagement_plan
+
+        # Only an engagement is planned: a bare objective has no signed scope to
+        # attack, so there is nothing to contract. This also keeps the extra model
+        # call out of runs that are not engagements.
+        if session.engagement_id and is_engagement_objective(objective):
+            try:
+                plan = await draft_engagement_plan(
+                    llm_client=session.llm_client,
+                    objective=objective,
+                    engagement_id=session.engagement_id,
+                    workspace=os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd()),
+                )
+                if plan is not None:
+                    write_line(out, {
+                        "event": "plan_created",
+                        "todos": len(plan.todos),
+                        "source": plan.source,
+                        "path": "loot/ENGAGEMENT_PLAN.md",
+                    })
+            except Exception:  # noqa: BLE001 - planning must never block the run
+                pass
+        return await run_react_loop(
+            context=context,
+            objective=objective,
+            engagement_id=session.engagement_id,
+            llm_client=session.llm_client,
+            config=config,
+            conversation_id=session.conversation_id,
         )
+
+    try:
+        result = asyncio.run(_plan_then_run())
     except ApprovalPending:
         result = SimpleNamespace(status="blocked", completion_verified=False)
     except PermissionError:

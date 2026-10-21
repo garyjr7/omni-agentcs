@@ -23,7 +23,9 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # + nexus.post.dpapi (the synthetic run/the synthetic lab: the KeePass flag behind user DPAPI).
     # + nexus.post.ssh_upload, nexus.recon.nikto (RUN_sala12/Intrusion Detection).
     # + nexus.skill.list, nexus.skill.load (WP4: the dynamic skill loader).
-    assert len(catalog) == 73
+    # + nexus.orchestrator.create_plan/update_plan/get_plan_status (PLAN MODE:
+    # the engagement's TODO contract, shared by every profile).
+    assert len(catalog) == 76
 
 
 def test_read_only_profiles_list_no_active_tool():
@@ -31,8 +33,15 @@ def test_read_only_profiles_list_no_active_tool():
         if profile.read_only:
             # WP1: the universal execution substrate (shell + PTY) is available
             # to every profile by design; the read-only kill-chain subset still
-            # cannot acquire any other active tool.
-            leaked = profile.tools & (subagents.ACTIVE_TOOLS - subagents.UNIVERSAL_TOOLS)
+            # cannot acquire any other active tool. PLAN MODE adds the same kind
+            # of exception for the plan writers: every profile is held to the
+            # contract, so every profile must be able to write it, and those
+            # tools only touch ``loot/ENGAGEMENT_PLAN.md`` (never the target).
+            leaked = profile.tools & (
+                subagents.ACTIVE_TOOLS
+                - subagents.UNIVERSAL_TOOLS
+                - subagents.ORCHESTRATOR_PLAN_TOOLS
+            )
             assert not leaked, profile.id
             assert profile.parallel_safe
 
