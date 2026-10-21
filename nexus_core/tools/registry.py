@@ -32,6 +32,7 @@ def durable_tool_definitions(
     from .handlers.ffuf import ffuf_definition, ffuf_handler
     from .handlers.httpx import httpx_definition, httpx_handler
     from .handlers.ftp import ftp_definition, ftp_handler
+    from .handlers.nfs import nfs_definition, nfs_handler
     from .handlers.cred_bruteforce import (
         cred_bruteforce_definition,
         cred_bruteforce_handler,
@@ -212,6 +213,9 @@ def durable_tool_definitions(
         "nexus.recon.subfinder": (subfinder_definition(tenant_id), subfinder_handler),
         "nexus.recon.httpx": (httpx_definition(tenant_id), httpx_handler),
         "nexus.recon.ftp": (ftp_definition(tenant_id), ftp_handler),
+        # V9 (Hijack): NFS was visible and unreachable because ``mount`` needs
+        # root. ``showmount`` and libnfs read it unprivileged.
+        "nexus.recon.nfs": (nfs_definition(tenant_id), nfs_handler),
         "nexus.cred.bruteforce": (
             cred_bruteforce_definition(tenant_id),
             cred_bruteforce_handler,

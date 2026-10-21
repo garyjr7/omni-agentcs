@@ -99,5 +99,6 @@ def test_check_env_registered_in_catalog():
     # reset and AD escalation (RUN_sala10); 56 were the two Windows tools.
     # 72 after the Brute It v7 fixes; 73 with nexus.post.crack_hash (offline
     # john, the step that turns a held hash/key into a usable credential); 76
-    # with the three PLAN MODE tools that write/read the engagement's TODOs.
-    assert len(catalog) == 76
+    # with the three PLAN MODE tools that write/read the engagement's TODOs;
+    # 77 with nexus.recon.nfs (V9/Hijack: read NFS exports without root).
+    assert len(catalog) == 77

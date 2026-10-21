@@ -17,6 +17,7 @@ from .recipes import load_recipes
 # a dependency; RPC clients do not require a local server executable.
 CLI_RECIPES = {
     "nmap": "nmap",
+    "nfs": "nfs-common",
     "ffuf": "ffuf",
     "nuclei": "nuclei",
     "httpx": "httpx",

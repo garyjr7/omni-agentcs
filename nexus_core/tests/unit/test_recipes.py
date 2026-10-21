@@ -11,8 +11,10 @@ pytestmark = pytest.mark.usefixtures("onboarding_env")
 
 def test_load_recipes_valid_json():
     recipes = load_recipes()
-    assert len(recipes) == 21
+    assert len(recipes) == 23
     assert {"whatweb", "searchsploit", "dalfox", "netexec", "bloodhound"} <= set(recipes)
+    # V9 (Hijack): the NFS surface without root (showmount + libnfs clients).
+    assert {"nfs-common", "libnfs-utils"} <= set(recipes)
     assert {"hydra", "minisign", "sliver-server"} <= set(recipes)
     assert "sliver-py" in recipes
     assert recipes["sliver-py"]["recipes"]["pip"]["command"] == ["pip", "install", "sliver-py"]

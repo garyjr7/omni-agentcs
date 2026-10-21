@@ -167,6 +167,30 @@
       "pip": {"command": ["pip", "install", "sliver-py"], "sudo": false}
     }
   },
+  "nfs-common": {
+    "description": "NFS client utilities; `showmount` enumerates exports without root",
+    "purpose": "Enumeración de exports NFS en un sandbox sin privilegios (V9/Hijack)",
+    "verify": ["showmount", "--help"],
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "nfs-common"], "sudo": true},
+      "dnf": {"command": ["dnf", "install", "-y", "nfs-utils"], "sudo": true},
+      "yum": {"command": ["yum", "install", "-y", "nfs-utils"], "sudo": true},
+      "pacman": {"command": ["pacman", "-S", "--noconfirm", "nfs-utils"], "sudo": true},
+      "zypper": {"command": ["zypper", "--non-interactive", "install", "nfs-client"], "sudo": true}
+    }
+  },
+  "libnfs-utils": {
+    "description": "Userland NFS client tools (`nfs-ls`, `nfs-cat`) that read exports without a kernel mount",
+    "purpose": "Lectura de exports NFS sin root desde el sandbox (V9/Hijack)",
+    "verify": ["nfs-ls", "--help"],
+    "recipes": {
+      "apt": {"command": ["apt", "install", "-y", "libnfs-utils"], "sudo": true},
+      "dnf": {"command": ["dnf", "install", "-y", "libnfs-utils"], "sudo": true},
+      "yum": {"command": ["yum", "install", "-y", "libnfs-utils"], "sudo": true},
+      "pacman": {"command": ["pacman", "-S", "--noconfirm", "libnfs"], "sudo": true},
+      "zypper": {"command": ["zypper", "--non-interactive", "install", "libnfs-tools"], "sudo": true}
+    }
+  },
   "ripgrep": {
     "description": "Recursive text search (ripgrep); `rg` is the binary (alias)",
     "purpose": "Búsqueda de patrones en el workspace del engagement",

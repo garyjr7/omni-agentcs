@@ -164,6 +164,9 @@ El catálogo durable contiene **42 herramientas**:
 - `nexus.recon.nmap` (perfiles `quick`/`full_tcp`/`service`/`top_udp`),
   `nexus.recon.subfinder`, `nexus.recon.httpx`.
 - `nexus.recon.ftp` (login anónimo, `list`/`download`, read-only).
+- `nexus.recon.nfs` (read-only: `showmount -e` para exports y `nfs-ls`/
+  `nfs-cat` para leerlos **sin root**, sin montaje del kernel; si el cliente
+  userland no está, devuelve `partial` con los exports visibles).
 - `nexus.cred.bruteforce` (prueba usuario + wordlist del workspace contra
   `ssh`/`ftp` con hydra; intentos acotados).
 - `nexus.post.ssh_exec` (HIGH, ejecuta UN comando vía SSH con una credencial

@@ -25,7 +25,9 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # + nexus.skill.list, nexus.skill.load (WP4: the dynamic skill loader).
     # + nexus.orchestrator.create_plan/update_plan/get_plan_status (PLAN MODE:
     # the engagement's TODO contract, shared by every profile).
-    assert len(catalog) == 76
+    # + nexus.recon.nfs (V9/Hijack: the export was visible and unreadable
+    # because ``mount`` needs root; showmount/libnfs read it unprivileged).
+    assert len(catalog) == 77
 
 
 def test_read_only_profiles_list_no_active_tool():

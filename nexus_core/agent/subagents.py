@@ -324,6 +324,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.recon.subfinder",
                 "nexus.recon.httpx",
                 "nexus.recon.ftp",
+                "nexus.recon.nfs",
                 "nexus.recon.gobuster",
                 "nexus.recon.whatweb",
                 "nexus.recon.nikto",
@@ -361,7 +362,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         focus="enumerar cada servicio hallado (FTP, SMB, HTTP…) y registrar usuarios y pistas",
         tools=_with_common(
             WEB_ENUM_TOOLS
-            | {"nexus.recon.ftp", "nexus.recon.netexec", "nexus.pwn.analyze"}
+            | {"nexus.recon.ftp", "nexus.recon.nfs", "nexus.recon.netexec", "nexus.pwn.analyze"}
             # Enumerating the *application boundary* includes touching it: probing
             # a panel and staging a component against it are part of phase 2 of
             # red_team_base, which starts while the phase is still `enumeration`.

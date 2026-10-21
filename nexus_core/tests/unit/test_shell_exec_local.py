@@ -85,8 +85,11 @@ def test_shell_exec_runs_echo_hola(context):
 def test_shell_exec_timeout_is_a_result_with_partial_artifact(context):
     # 64 KiB of stdin to a child that never reads it: the feed must not stall
     # the timeout (the sandbox writes stdin concurrently with the deadline).
+    # ``tail -f`` is the stand-in for "a command that runs past the deadline":
+    # plain ``sleep`` is refused by the passive-wait guard (V9), so using it here
+    # would test the guard instead of the timeout.
     result = _run(context, {
-        "command": "echo antes; sleep 30",
+        "command": "echo antes; tail -f /dev/null",
         "timeout_seconds": 5,
         "stdin": "x" * 65536,
     })

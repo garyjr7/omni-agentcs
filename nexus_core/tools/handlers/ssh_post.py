@@ -54,6 +54,7 @@ from typing import Any
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.redaction import redact_secret_values
 from nexus_core.kernel.sandbox import sandbox_for_environment
+from nexus_core.tools.passive_wait import PASSIVE_WAIT_GUIDANCE, passive_wait_reason
 
 from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox
 from .workspace import resolve_workspace_path
@@ -1305,6 +1306,23 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
     forbidden = _forbidden_command(command)
     if forbidden is not None:
         raise ValueError(f"command contains a forbidden token: {forbidden!r}")
+    # V9 (Hijack): waiting burns the turn on the remote host too. The refusal is
+    # determinate (``denied``), not an engine failure, and it names the tools
+    # that replace each legitimate reason to wait.
+    wait_reason = passive_wait_reason(command)
+    if wait_reason is not None:
+        return ToolResult(
+            output={
+                "error": "passive wait refused",
+                "wait": wait_reason,
+                "command": command,
+                "guidance": PASSIVE_WAIT_GUIDANCE,
+            },
+            verified=False,
+            outcome="denied",
+            verification_method="ssh_passive_wait_denied",
+            evidence={"target": target, "username": username, "wait": wait_reason},
+        )
     # ``sudo`` needs a password on a non-interactive channel. Reuse the login
     # credential (the common case) via ``sudo -S`` and feed it on stdin, so the
     # secret never appears in the remote argv ... but only when sudo is allowed to

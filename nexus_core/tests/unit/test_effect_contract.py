@@ -170,7 +170,8 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # WP4 adds two read-only tools (nexus.skill.list/load): 73 - 44 active = 29.
     # PLAN MODE adds one read-only tool (get_plan_status) and two active
     # writers: 76 - 46 active = 30.
-    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 30
+    # V9 adds one read-only recon tool (nexus.recon.nfs): 77 - 46 = 31.
+    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 31
 
 
 def test_the_mislabelled_tools_now_declare_their_real_effect():

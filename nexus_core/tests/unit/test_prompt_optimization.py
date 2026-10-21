@@ -165,10 +165,14 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # Measured at 16,570 chars for 76 tools (218,0 per tool) -the per-tool bound
     # is what the ceiling protects and it did not move-, so only the total does,
     # to 16,900.
-    assert len(catalog) == 76
+    # V9 adds ``nexus.recon.nfs`` (one capability line with four arguments,
+    # 216 chars): measured 16,786 for 77 tools (218,0 per tool). The per-tool
+    # bound is what this ceiling protects and it did not move, so only the total
+    # does, to 17,000.
+    assert len(catalog) == 77
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 16900
+    assert len(text) < 17000
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -212,7 +216,13 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # TODOs. Measured 26,513 with the three catalog lines and an empty plan, so
     # the ceiling moves to 26,700; the plan itself is measured in
     # ``test_prompt_with_a_plan_stays_under_its_ceiling`` below.
-    assert len(_prompt(catalog)) < 26_700
+    # V9 (Hijack) adds the two orders the measured run lacked: the BLACK-BOX
+    # philosophy (the whole kill chain is authorized unless the RoE says
+    # otherwise) and the passive-wait ban, plus the install/scope rewrite they
+    # forced ("if the binary is missing, install it" instead of "give up").
+    # Measured 27,831 (26,513 + 1,102 chars of policy + the nfs catalog line),
+    # so the ceiling moves to 28,000; the per-tool catalog bound does not move.
+    assert len(_prompt(catalog)) < 28_000
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -228,7 +238,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     block = prompt_block(plan)
     assert block
     prompt = _prompt(catalog, engagement_plan_summary=block)
-    assert len(prompt) < 27_400
+    # V9: measured 28,458 (the 743-character 7-TODO block on the 27,831 static
+    # prompt), so the ceiling moves with the static one, to 28,700.
+    assert len(prompt) < 28_700
     assert len(block) < 1_200
 
 
@@ -238,6 +250,49 @@ def test_catalog_lists_every_tool_exactly_once(catalog):
     assert len(lines) == len(catalog)
     for tool_id in catalog:
         assert text.count(f"- {tool_id}:") == 1
+
+
+def test_prompt_states_the_black_box_default_and_the_roe_precedence(catalog):
+    """V9 (Hijack): the default authorization is the whole kill chain.
+
+    The prompt must say (a) that every phase is authorized by default, (b) that
+    only the objective/RoE can restrict a technique, and (c) that the signed
+    scope still bounds the targets -so "no limits" is never read as
+    "out of scope".
+    """
+    from nexus_core.agent.prompts import BLACK_BOX_PHILOSOPHY_PROMPT
+
+    prompt = _prompt(catalog)
+    assert BLACK_BOX_PHILOSOPHY_PROMPT in prompt
+    for phase in ("reconocimiento", "explotación", "persistencia", "C2", "exfiltración"):
+        assert phase in BLACK_BOX_PHILOSOPHY_PROMPT
+    assert "Solo el objetivo o el RoE" in BLACK_BOX_PHILOSOPHY_PROMPT
+    assert "vía libre dentro del scope" in BLACK_BOX_PHILOSOPHY_PROMPT
+    assert "limita los TARGETS, nunca las técnicas" in prompt
+
+
+def test_web_upload_publishes_the_webshell_use_case_in_its_catalog_line(catalog):
+    """V9: the admin-panel upload path must be visible *before* truncation.
+
+    The model read ``nexus.web.upload`` as a generic HTTP helper and never
+    tried a webshell in the panel it had just opened. The catalog line is cut
+    at 64 characters, so the word has to be in the first 64.
+    """
+    from nexus_core.agent.prompts import CATALOG_DESCRIPTION_CHARS
+
+    line = next(
+        line for line in render_tool_catalog(catalog).splitlines()
+        if line.startswith("- nexus.web.upload:")
+    )
+    head = line.split(":", 1)[1].split("|", 1)[0]
+    assert "webshell" in head.lower()
+    assert len(head.strip()) <= CATALOG_DESCRIPTION_CHARS + 1
+
+
+def test_prompt_forbids_passive_waits_and_names_the_replacements(catalog):
+    prompt = _prompt(catalog)
+    assert "SIN ESPERAS PASIVAS" in prompt
+    assert "nexus.post.listener" in prompt and "nexus.post.job" in prompt
 
 
 def test_prompt_tells_model_about_shared_session(catalog):
@@ -349,7 +404,10 @@ def test_the_full_catalog_comes_back_on_the_first_turn_and_every_fifth(catalog):
 def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     messages, tokens = _context_messages(tmp_path, iteration=2, catalog=catalog)
     assert "catálogo resumido" in messages[0].content
-    assert tokens < 6_000
+    # V9: the two policy orders land on the compact turn too: measured 6,150
+    # (5,600 + the philosophy, the wait ban and the nfs catalog line), so the
+    # target moves to 6,250.
+    assert tokens < 6_250
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -369,7 +427,12 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # tokens for a 7-TODO plan). Measured 6,524 average, so the target moves to
     # 6_600: 250k now buys ~38 turns instead of 40, and what it buys is the
     # contract that stops a run from closing on the first flag (run v8).
-    assert sum(totals) / len(totals) < 6_600
+    # V9 (Hijack) is the expensive rule of the set because it is policy, not a
+    # capability: the black-box philosophy and the passive-wait ban are paid on
+    # every turn. Measured 6,819 average, so the target moves to 6_900: 250k now
+    # buys ~36 turns instead of 38, and what it buys is a run that keeps going
+    # after the first technical wall instead of stopping at it (run V9).
+    assert sum(totals) / len(totals) < 6_900
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -383,4 +446,6 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # catalog line lands here too: measured 8,422, so the ceiling moves to 8_450.
     # The three PLAN MODE catalog lines plus the rule and the checklist land on
     # this turn as well: measured 8,765, so the ceiling moves to 8_800.
-    assert max(totals) < 8_800
+    # V9 lands on the refresh turn as well: measured 9,094, so the ceiling moves
+    # to 9_200 (the budget note above is the price of the policy, stated there).
+    assert max(totals) < 9_200

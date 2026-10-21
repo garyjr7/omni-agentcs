@@ -316,6 +316,7 @@ modelo **nunca** aporta `argv`, solo elige `tool_name` + `manager` del catálogo
 | `nexus.recon.subfinder` | read_only | `domain` | `domain` | `timeout_seconds` |
 | `nexus.recon.httpx` | low | `targets` | `targets` | `probe`, `tech_detect`, `timeout_seconds` |
 | `nexus.recon.ftp` | low | `target` | `target` | `action` (`list`/`download`), `remote_path`, `port`, `username`, `password`, `timeout_seconds` |
+| `nexus.recon.nfs` | low | `target` | `target` | `action` (`exports`/`list`/`read`), `path`, `file`, `timeout_seconds` |
 | `nexus.recon.gobuster` | medium | `target` | `mode`, `target`, `wordlist` | `mode` (`dir`/`dns`/`vhost`), `extensions`, `threads`, `status_codes`, `exclude_length`, `timeout_seconds` |
 | `nexus.recon.nikto` | medium | `target` | `target` | `ports`, `ssl`, `tuning`, `evasion`, `pause`, `user_agent`, `request_timeout`, `maxtime_seconds`, `timeout_seconds` |
 | `nexus.recon.whatweb` | low | `targets` | `targets` | `aggression` (`1`/`3`/`4`), `timeout_seconds`, `user_agent` |

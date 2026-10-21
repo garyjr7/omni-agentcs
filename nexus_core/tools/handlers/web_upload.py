@@ -18,7 +18,14 @@ def web_upload_definition(tenant_id: str = 'system') -> ToolDefinition:
         schema['properties'].pop(inline_body)
     return ToolDefinition(
         tool_id='nexus.web.upload', tenant_id=tenant_id, name='HTTP file upload',
-        description='Subida POST multipart o PUT binario desde el workspace con memoria acotada.',
+        # The first 64 characters are what the prompt's catalog line shows
+        # (``CATALOG_DESCRIPTION_CHARS``): the webshell must be visible *before*
+        # the truncation or the model never learns the tool is the upload path.
+        description=(
+            'Sube webshells (PHP/JSP) y payloads del workspace a un formulario web '
+            'multipart o por PUT. Úsalas para RCE en un panel de administración y '
+            'ejecútalas después con nexus.web.request.'
+        ),
         effect='target_write', risk=RiskLevel.MEDIUM,
         input_schema=schema,
         required_permissions=['execute:tool:nexus.web.upload'],

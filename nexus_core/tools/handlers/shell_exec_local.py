@@ -62,6 +62,7 @@ from nexus_core.kernel.sandbox import OCISandbox, sandbox_for_environment
 from nexus_core.kernel.scope_loader import scope_signing_secret
 from nexus_core.kernel.sessions import validate_session_scope
 from nexus_core.scope import ScopeValidator, ScopeViolation
+from nexus_core.tools.passive_wait import PASSIVE_WAIT_GUIDANCE, passive_wait_reason
 from ._exec import run_in_sandbox
 from .report_generate import default_artifact_root
 from .workspace import workspace_root
@@ -834,6 +835,31 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
     _, cwd_relative = resolve_cwd(root, request.cwd)
     started = time.monotonic()
 
+    # V9 (Hijack): ``sleep 170`` spent a turn and its budget without changing
+    # the target. A wait is refused before the deny list (it is not a
+    # destructive command, it is a non-action), and the answer names the tools
+    # that replace every legitimate reason to wait.
+    wait_reason = passive_wait_reason(request.command)
+    if wait_reason is not None:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        _audit(
+            context, command=request.command, cwd=cwd_relative,
+            exit_code=None, duration_ms=duration_ms, bytes_written=0,
+            timed_out=False, decision="deny", reason=f"passive_wait:{wait_reason}",
+        )
+        return ToolResult(
+            output={
+                "error": "passive wait refused",
+                "wait": wait_reason,
+                "command": request.command,
+                "guidance": PASSIVE_WAIT_GUIDANCE,
+            },
+            verified=False,
+            outcome="denied",
+            verification_method="shell_passive_wait_denied",
+            evidence={"cwd": cwd_relative, "wait": wait_reason},
+        )
+
     reason = prohibited_reason(request.command)
     if reason is not None:
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -1071,6 +1097,7 @@ __all__ = [
     "has_background_operator",
     "is_background_command",
     "out_of_scope_fetch_target",
+    "passive_wait_reason",
     "prohibited_reason",
     "resolve_cwd",
     "shell_code",
