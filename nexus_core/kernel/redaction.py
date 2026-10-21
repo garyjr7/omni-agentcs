@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import Any
 
 SECRET_TERMS = frozenset({
@@ -39,6 +40,150 @@ MIN_INLINE_SECRET_LENGTH = 8
 
 #: What replaces a redacted secret value.
 REDACTED = "[REDACTED]"
+
+#: Argument names whose *value* is a secret. ``SECRET_TERMS`` is broader on
+#: purpose (it also names fields that hold a reference/identifier); redacting a
+#: session id from every observation would corrupt evidence without protecting
+#: anything.
+ARGUMENT_SECRET_FIELDS = SECRET_TERMS - {
+    "session_id",
+    "credential",
+    "credentials",
+    # A manually supplied cookie is already in the caller's context, and the
+    # handler deliberately returns ``set_cookie`` so the next request can reuse
+    # it. Redacting it would destroy that evidence without hiding anything the
+    # model did not send itself. Vault handles (``session_ref``) still resolve.
+    "cookie",
+}
+
+#: Ceiling on how many known secrets one observation may redact. Credential
+#: facts accumulate across an engagement; a bounded lookup keeps a long run from
+#: paying for a vault read per fact on every tool call.
+MAX_CONTEXT_SECRETS = 64
+
+
+def _vault_secret(ref: Any, tenant_id: str) -> str:
+    """Plaintext behind a ``vault:`` handle, or ``""`` when it is not one."""
+    from .secret_store import default_secret_store, is_secret_ref
+
+    text = str(ref or "")
+    if not is_secret_ref(text):
+        return ""
+    try:
+        return default_secret_store().get(text, tenant_id=tenant_id).decode(
+            "utf-8", errors="replace"
+        )
+    except Exception:  # noqa: BLE001 - a missing handle must never break a tool
+        return ""
+
+
+def _collect_argument_secrets(value: Any, key: str, found: list[str], tenant_id: str) -> None:
+    """Collect literals under secret-named fields and every ``vault:`` handle."""
+    from .secret_store import is_secret_ref
+
+    name = str(key or "").lower().replace("-", "_")
+    if isinstance(value, dict):
+        for item_key, item in value.items():
+            _collect_argument_secrets(item, str(item_key), found, tenant_id)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _collect_argument_secrets(item, name, found, tenant_id)
+        return
+    if not isinstance(value, str) or not value:
+        return
+    if is_secret_ref(value):
+        resolved = _vault_secret(value, tenant_id)
+        if resolved:
+            found.append(resolved)
+        return
+    if name in ARGUMENT_SECRET_FIELDS:
+        found.append(value)
+
+
+def secrets_for_redaction(
+    context: Any,
+    arguments: dict[str, Any] | None = None,
+    *,
+    include_board: bool = True,
+) -> tuple[str, ...]:
+    """Every secret value this invocation is allowed to know (V1-6).
+
+    Three sources, in order: secret-named arguments (a manual ``password``), any
+    ``vault:<hex>`` handle anywhere in the arguments, and the **verified**
+    credential facts of the current engagement resolved through the vault. The
+    third is what covers a value the model never typed and no argument carries:
+    a password the engine proved in an earlier turn and a tool later echoes.
+
+    The lookup is best-effort and bounded: an unreadable board, a missing vault
+    entry or an oversized history never blocks the tool. Only values are kept,
+    never the handles, and duplicates collapse preserving order.
+    """
+    tenant_id = str(getattr(context, "tenant_id", "system") or "system")
+    found: list[str] = []
+    if arguments:
+        _collect_argument_secrets(arguments, "", found, tenant_id)
+    if include_board:
+        store = getattr(context, "store", None)
+        engagement_id = str(getattr(context, "engagement_id", "") or "")
+        if store is not None and engagement_id:
+            try:
+                from .blackboard import Blackboard, is_verified_fact
+
+                facts = Blackboard(store).list_facts(
+                    tenant_id, engagement_id, fact_type="credential"
+                )
+            except Exception:  # noqa: BLE001 - redaction is never a gate
+                facts = []
+            for fact in facts:
+                if not is_verified_fact(fact):
+                    continue
+                ref = (fact.get("value") or {}).get("secret_ref")
+                resolved = _vault_secret(ref, tenant_id)
+                if resolved:
+                    found.append(resolved)
+                if len(found) >= MAX_CONTEXT_SECRETS:
+                    break
+    unique: list[str] = []
+    for value in found:
+        if value and value not in unique:
+            unique.append(value)
+        if len(unique) >= MAX_CONTEXT_SECRETS:
+            break
+    return tuple(unique)
+
+
+def redact_payload(value: Any, secrets: Iterable[str]) -> Any:
+    """Apply value-based redaction to every string of a nested payload."""
+    values = tuple(secrets or ())
+    if not values:
+        return value
+    if isinstance(value, dict):
+        return {key: redact_payload(item, values) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_payload(item, values) for item in value]
+    if isinstance(value, str):
+        return redact_secret_values(value, values)
+    return value
+
+
+def redact_result(result: Any, secrets: Iterable[str]) -> Any:
+    """Redact a ``ToolResult`` at its four model/ledger boundaries.
+
+    Applied by the handlers that receive a channel (PTY, HTTP, session shell),
+    not by the gateway: the gateway keeps its contract and every handler decides
+    which secrets it is allowed to know.
+    """
+    values = tuple(secrets or ())
+    if not values:
+        return result
+    return replace(
+        result,
+        output=redact_payload(result.output, values),
+        evidence=redact_payload(result.evidence, values),
+        stdout=redact_secret_values(result.stdout, values),
+        stderr=redact_secret_values(result.stderr, values),
+    )
 
 
 def redact_secret_values(content: str, secrets: Iterable[str]) -> str:

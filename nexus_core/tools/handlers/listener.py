@@ -10,8 +10,9 @@ scope/policy/audit chain.
 This tool closes that gap without inventing a background daemon: it is a
 **one-shot catch**. The operator runs it (normally backgrounded in the shell) and
 then triggers the reverse connection from another governed tool; on
-``accept()`` it sends the provided commands, captures the transcript to a
-workspace artifact and returns it.
+``accept()`` it validates the peer against the signed scope, sends the provided
+commands only when the peer is authorised, captures the transcript to a workspace
+artifact and returns it.
 
 Design notes
 ------------
@@ -56,9 +57,10 @@ LISTENER_MAX_COMMANDS = 50
 LISTENER_MAX_COMMAND_CHARS = 2000
 
 #: stdlib listener executed inside the sandbox. argv layout (after ``-c``):
-#: bind_host port timeout idle max_bytes commands_json.
+#: bind_host port timeout idle max_bytes commands_json allowed_cidrs_json
+#: excluded_targets_json scope_expires_at_epoch.
 LISTENER_CLIENT_SCRIPT = r"""
-import hashlib, json, socket, sys, time
+import hashlib, ipaddress, json, socket, sys, time
 
 
 def emit(payload):
@@ -66,9 +68,50 @@ def emit(payload):
     sys.stdout.flush()
 
 
+def _networks(entries):
+    networks = []
+    for entry in entries or ():
+        try:
+            networks.append(ipaddress.ip_network(str(entry).strip(), strict=False))
+        except ValueError:
+            continue
+    return networks
+
+
+def _peer_allowed(peer_host, allowed, excluded, expires_at):
+    # Same authorising rule as ScopeValidator for a literal IP peer, including
+    # the validity window: a listener that outlives the engagement must not accept
+    # a new peer.
+    if not expires_at or time.time() > float(expires_at):
+        return False
+    try:
+        address = ipaddress.ip_address(str(peer_host).strip())
+    except ValueError:
+        return False
+    for network in _networks(excluded):
+        if address.version == network.version and address in network:
+            return False
+    authorising = next(
+        (network for network in _networks(allowed)
+         if address.version == network.version and address in network),
+        None,
+    )
+    if authorising is None:
+        return False
+    # A private/loopback/link-local peer is only authorised by a private range,
+    # exactly as ``ScopeValidator._check_private`` decides it.
+    if (address.is_private or address.is_loopback or address.is_link_local
+            or address.is_multicast) and not authorising.is_private:
+        return False
+    return True
+
+
 def main():
-    bind_host, port, timeout, idle, max_bytes, commands_json = sys.argv[1:7]
+    (bind_host, port, timeout, idle, max_bytes, commands_json,
+     allowed_json, excluded_json, expires_at) = sys.argv[1:10]
     commands = json.loads(commands_json or "[]")
+    allowed = json.loads(allowed_json or "[]")
+    excluded = json.loads(excluded_json or "[]")
     timeout = float(timeout)
     idle = float(idle)
     max_bytes = int(max_bytes)
@@ -94,6 +137,29 @@ def main():
         server.close()
 
     peer_host = peer[0] if isinstance(peer, tuple) else str(peer)
+    # V1-1: the peer is known here, before any byte is read or written. An
+    # out-of-scope host is closed immediately; the transcript of an unauthorised
+    # interaction must not exist, not even as an empty file.
+    if not _peer_allowed(peer_host, allowed, excluded, expires_at):
+        try:
+            conn.close()
+        except OSError:
+            pass
+        emit({
+            "ok": True,
+            "bound": True,
+            "peer": peer_host,
+            "peer_allowed": False,
+            "port": int(port),
+            "commands_sent": [],
+            "status": "peer_out_of_scope",
+            "bytes": 0,
+            "sha256": hashlib.sha256(b"").hexdigest(),
+            "transcript": "",
+            "truncated": False,
+            "elapsed_ms": int((time.time() - started) * 1000),
+        })
+        return
     buffer = bytearray()
     truncated = False
 
@@ -138,6 +204,7 @@ def main():
         "ok": True,
         "bound": True,
         "peer": peer_host,
+        "peer_allowed": True,
         "port": int(port),
         "commands_sent": sent,
         "status": status,
@@ -250,6 +317,26 @@ def _peer_in_scope(context: RunContext, peer: str) -> bool:
         return False
 
 
+def _peer_policy(context: RunContext) -> tuple[list[str], list[str], float]:
+    """CIDRs, exclusions and expiry the child may use before sending anything.
+
+    ``validate_session_scope`` already authenticated the signed envelope, so the
+    parent can hand the child the authorising ranges without the HMAC secret. Only
+    IP/CIDR exclusions travel: a domain exclusion cannot match a literal peer
+    address, and the parent re-validates the peer with the full validator anyway.
+    """
+    scope = context.scope
+    if scope is None:
+        return [], [], 0.0
+    try:
+        from nexus_core.scope.models import parse_iso8601
+
+        expires_at = parse_iso8601(scope.valid_until).timestamp()
+    except (TypeError, ValueError):
+        expires_at = 0.0
+    return list(scope.cidrs), list(scope.exclusions), expires_at
+
+
 async def listener_handler(arguments: dict, context: RunContext) -> ToolResult:
     """Bind, catch one reverse connection, drive it and return the transcript."""
     try:
@@ -282,6 +369,7 @@ async def listener_handler(arguments: dict, context: RunContext) -> ToolResult:
     )
 
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
+    allowed_cidrs, excluded_targets, expires_at = _peer_policy(context)
     argv = [
         "python3",
         "-c",
@@ -292,6 +380,9 @@ async def listener_handler(arguments: dict, context: RunContext) -> ToolResult:
         str(idle_seconds),
         str(max_bytes),
         json.dumps(commands),
+        json.dumps(allowed_cidrs),
+        json.dumps(excluded_targets),
+        str(expires_at),
     ]
     sandbox = sandbox_for_environment(workspace_root, allowed_programs=LISTENER_ALLOWED_PROGRAMS)
     result = await run_in_sandbox(
@@ -306,6 +397,7 @@ async def listener_handler(arguments: dict, context: RunContext) -> ToolResult:
         "port": port,
         "bind_host": bind_host,
         "commands_requested": len(commands),
+        "peer_allowed": None,
         "timeout_seconds": timeout_seconds,
         "idle_seconds": idle_seconds,
         "noise_level": "high",
@@ -368,12 +460,21 @@ async def listener_handler(arguments: dict, context: RunContext) -> ToolResult:
         )
 
     peer = str(payload.get("peer") or "")
-    # The peer is only known now: fail closed when the connecting host is not in
-    # the signed scope, so a catch can never become an out-of-scope interaction.
-    if not peer or not _peer_in_scope(context, peer):
+    # The child refuses an out-of-scope peer before reading or sending anything.
+    # The parent repeats the full signed-scope check as defence in depth: a bug in
+    # the child policy can never turn a catch into an authorised interaction.
+    if payload.get("peer_allowed") is False or not peer or not _peer_in_scope(context, peer):
         evidence["peer"] = peer
+        evidence["peer_allowed"] = False
+        evidence["commands_sent"] = 0
         return ToolResult(
-            output={"error": "reverse connection from out-of-scope host", "peer": peer, "port": port},
+            output={
+                "error": "reverse connection from out-of-scope host",
+                "peer": peer,
+                "port": port,
+                "peer_allowed": False,
+                "commands_sent": [],
+            },
             verified=False,
             verification_method="listener_peer_out_of_scope",
             evidence=evidence,
@@ -397,6 +498,7 @@ async def listener_handler(arguments: dict, context: RunContext) -> ToolResult:
         {
             "peer": peer,
             "commands_sent": len(payload.get("commands_sent") or []),
+            "peer_allowed": True,
             "bytes": payload.get("bytes"),
             "sha256": payload.get("sha256"),
             "status": payload.get("status"),

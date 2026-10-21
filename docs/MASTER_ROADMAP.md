@@ -9,11 +9,13 @@
 |---|---|
 | Fecha | 2026-10-21 |
 | Commit de código auditado | `430dcfb` — *Caja Negra por defecto, sin esperas pasivas y NFS sin root* |
-| Commit de este roadmap | `1a96924` — MASTER_ROADMAP + INDEX |
+| Roadmap base | `1a96924` — MASTER_ROADMAP + INDEX |
+| Ejecución W1.2 + PTY P0 | commit de esta entrega (`HEAD` al cerrar) |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
 | Regla de esta entrega | **cero cambios en `.py`**; solo documentación |
-| Suite de referencia | **3 735 passed / 53 skipped** (`3788` tests recogidos) |
+| Suite de referencia (`430dcfb`) | **3 735 passed / 53 skipped** |
+| Suite tras W1.2 + PTY P0 | **3 753 passed / 53 skipped** |
 | Catálogo | **77 tools durables**, **21 parsers** nativos |
 
 ---
@@ -33,9 +35,10 @@
 
 Las notas citan `fichero:línea` cuando el estado se comprobó en código. Cuando la
 clasificación procede de un documento y no se re-midió en esta pasada, se indica
-expresamente `[DOC]`. La suite no se re-ejecutó porque esta entrega no toca
-código; el recuento de colección (`3788`) coincide exactamente con
-`3735 passed + 53 skipped`.
+expresamente `[DOC]`. La suite se re-ejecutó tras W1.2 y PTY P0:
+**3 753 passed / 53 skipped**. La línea base del commit auditado era
+**3 735 passed / 53 skipped**; la diferencia son los tests nuevos de esta
+entrega.
 
 ### 0.3 Qué NO es este documento
 
@@ -100,8 +103,9 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 - La ingesta externa (MCP) existe como código (`integrations/mcp/`, 964 líneas)
   pero **no está encendida** en el runtime (§4).
 - Canales entrantes: `nexus.post.listener` (one-shot), `nexus.post.ntlm_capture`
-  y `nexus.post.job` (background gobernado). El listener valida el peer **después**
-  de la interacción (§3.1, V1-1).
+  y `nexus.post.job` (background gobernado). Desde W1.2 el listener valida el peer
+  **antes** de leer o enviar nada; un peer fuera de scope se cierra sin
+  interacción (§3.1, V1-1).
 
 ### 1.2 Transformación
 
@@ -110,9 +114,10 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 - `kernel/fact_verification.py:746` (`derive_assertions`) deriva `host`,
   `service`, `endpoint`, `access`, `credential`, `privilege`, `loot`, `session`
   y hechos de superficie a partir de la observación.
-- **No hay branch para `nexus.session.pty`** ni para `mcp.*`: hoy esas salidas
-  quedan como observación no acreditada, que es el comportamiento correcto pero
-  incompleto (§5.2).
+- `nexus.session.pty` **ya tiene branch** (`capture`/`wait`): una flag produce
+  `loot`, la línea canónica `uid=0(root)` produce `privilege`, y sin ninguna de
+  las dos la observación queda marcada `unverified_observation` (no se inventa un
+  hecho negativo). `mcp.*` sigue sin branch hasta P3 (§5.2).
 - La validación de entrada es JSON Schema completo (Draft 2020-12,
   `kernel/schema_validation.py`), no el subconjunto antiguo. `V1-10` está
   cerrado; la fila `P1-C` de `BACKLOG.md` está **obsoleta**.
@@ -153,9 +158,11 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
   cerrado (`test_effect_contract.py`) y el rechazo ocurre antes del handler. La
   cifra histórica 26 `read_only` / 38 activos (`09_PLAN_V1_EJECUCION.md`, W1.1)
   corresponde al catálogo de 64 tools, no al de 77.
-- Redacción **por nombre** en la frontera de persistencia; la redacción **por
-  valor conocido** existe (`redact_secret_values`) pero solo la usa
-  `ssh_post.py` (V1-6 sigue abierto para el resto de canales).
+- Redacción **por nombre** en la frontera de persistencia y redacción **por
+  valor conocido** en los cuatro canales que reciben texto del objetivo: SSH,
+  `nexus.web.request`, `nexus.post.shell_exec` y `nexus.session.pty` (V1-6).
+  `secrets_for_redaction` combina argumentos secretos, handles `vault:` y los
+  hechos `credential` **verificados** del engagement.
 - `oci_network` **no existe**: el modo falla explícitamente
   (`kernel/sandbox_modes.py:150`). En `oci` no hay red; en `local_strict` no hay
   aislamiento de egress.
@@ -166,11 +173,11 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 |---|---|---|
 | Tools durables | 77 | `tools/registry.py`; `docs/missions/audit-v1/catalog.json` |
 | Parsers | 21 módulos | `tools/parsers/` |
-| Tests | 3 735 passed / 53 skipped / 3 788 recogidos | suite de `430dcfb`; `--collect-only` en esta pasada |
+| Tests | 3 753 passed / 53 skipped | suite completa tras W1.2 + PTY P0 |
 | Prompt estático | 27 831 chars; ~6 819 tok/turno | `test_prompt_optimization.py` |
 | Sandbox por defecto | `local_strict` en dev; `oci` en producción | `kernel/sandbox_modes.py:148` |
 | MCP | 964 líneas, 41 tests en `test_mcp_integration.py` | `integrations/mcp/` |
-| PTY | 268 líneas de manager + 4 tests reales de tmux | `kernel/pty_sessions.py`, `test_session_pty.py` |
+| PTY | 268 líneas de manager + 16 tests (lifecycle, guard, egress, redacción, artifact, assertions, reaper) | `kernel/pty_sessions.py`, `test_session_pty.py` |
 
 ### 1.7 «Code complete, not wired»
 
@@ -181,7 +188,7 @@ encendarlas sin abrir una puerta lateral al gateway.
 | Pieza | Qué existe | Qué falta exactamente | Riesgo de encenderla mal |
 |---|---|---|---|
 | **MCP** (`integrations/mcp/`) | Cliente SDK con timeouts, entorno hijo sin secretos, allowlist, manifiesto de capacidades, bridge que registra tools durables y revalida la allowlist en cada llamada. 41 tests. | `sync_from_config` **solo se llama desde un test** (`test_mcp_integration.py:616`). Falta: llamada en bootstrap (`runtime.execute_tool` tras construir el catálogo, `runtime.py:297`), `/mcp list\|status\|reload`, doctor, bloque compacto en el prompt, branch de transporte en `assess_tool_catalog`, branch `mcp.*` en `derive_assertions` (fase P3), y excluir `mcp.` del chequeo AST de `test_catalog_ledger_consistency`. | Registrar MCP sin parser produce «capacidad sin evidencia»: tools que ejecutan y no escriben hechos. Registrar antes de decidir red choca con `oci`. |
-| **PTY** (`kernel/pty_sessions.py` + `tools/handlers/session_pty.py`) | Driver tmux por run, acciones `start\|send\|capture\|wait\|kill`, scope, audit, límites de nombre/líneas. Tool registrada (`registry.py:361`). 4 tests con tmux real. | No detecta `OCISandbox`; `send` no aplica checks léxicos de egress/espera; `capture` devuelve 64 KiB crudos al prompt; no hay branch en `derive_assertions`; no hay TTL/reaper; `wait` permite 900 s; no captura reverse shells ni escribe `kernel_sessions`. | Convertir PTY en una puerta trasera de egress y una bomba de tokens. |
+| **PTY** (`kernel/pty_sessions.py` + `tools/handlers/session_pty.py`) | Driver tmux por run, acciones `start\|send\|capture\|wait\|kill`, scope, audit, límites de nombre/líneas. Tool registrada (`registry.py:361`). **P0 cerrado**: guard OCI, checks léxicos, artifact CAS, assertions, `wait`≤60 s y reaper. | Sigue sin capturar reverse shells ni escribir `kernel_sessions`; eso es P1 (`session_ref`). | Convertir PTY en una puerta trasera de egress y una bomba de tokens (ya mitigado en P0). |
 | **`sync_from_config`** | Descubre todos los servidores y registra solo tools allowlisted con `replace=False`. | Nadie lo invoca en producción; no es idempotente frente a un fallo de arranque porque no se llama. | Si se llama antes del catálogo, o sin `NEXUS_MCP_CONFIG`, puede romper el arranque o el conteo del ledger. |
 | **Batch runner** (`kernel/batch.py`) | Concurrencia acotada, backpressure, cancelación y estados `completed/failed/cancelled`. | Cableado en `scripts/omni_tool.py`, **no** como tool del modelo. | Exponerlo sin cuota por target convertiría un barrido en una tormenta. |
 | **Model router** (`kernel/model_router.py`) | Rutas por clasificación, presupuesto y fallback. | Solo lo usan tests (`test_kernel_offline.py`). | Enrutar sin telemetría de coste puede ocultar el gasto por turno. |
@@ -240,8 +247,8 @@ encendarlas sin abrir una puerta lateral al gateway.
 | JSON Schema completo en el gateway | `V1-10` | **[HECHO]** | `schema_validation.py` delega en `jsonschema` Draft 2020-12; 7 tests, incluido «todo keyword declarado se aplica». La fila P1-C de `BACKLOG.md` es obsoleta. |
 | Resultados negativos no se convierten en `ProviderFailure` | `V0-22` | **[HECHO]** | `tool_gateway.py:518` conserva `negative`/`denied`/`unsupported`; `unavailable` solo cuando el backend no respondió. |
 | Batch con presupuesto de CPU/concurrencia | `V0-9` | **[HECHO]** | `kernel/batch.py` (4 global / 1 por target, backpressure, cancelación) y CLI `scripts/omni_tool.py`. No es tool del modelo; ver §5.5. |
-| Listener valida el peer antes de interactuar | `V1-1` | **[PENDIENTE]** | El subproceso acepta, envía comandos y devuelve `peer`; el handler lo valida **después** (`listener.py:373`). La comprobación existe, pero llega tarde: un peer fuera de scope ya recibió la interacción. Hay que pasar la allowlist/scope al subproceso y rechazar antes del primer `sendall`. |
-| Secretos opacos en la redacción | `V1-6` | **[PENDIENTE]** | `redact_secret_values` existe (V1-46) pero **solo** lo usa `ssh_post.py`. `capture` de PTY, `shell.exec`, `http_request` y observaciones MCP no reciben los valores conocidos; la redacción por nombre no cubre un secreto sin campo. |
+| Listener valida el peer antes de interactuar | `V1-1` | **[HECHO]** | W1.2: el subproceso recibe los CIDR/exclusiones ya autenticados y cierra al peer fuera de scope antes del primer `recv`/`sendall` (`listener.py`). Test end-to-end: un peer conecta y recibe **0 bytes**. El handler repite la validación con el scope firmado como defensa en profundidad. |
+| Secretos opacos en la redacción | `V1-6` | **[HECHO]** | W1.2: `secrets_for_redaction` reúne argumentos secretos, handles `vault:` y hechos `credential` verificados; `redact_result` se aplica en PTY, `http_request` y `shell_exec` (SSH ya lo tenía). Tests con un secreto real del vault en los tres canales. Límite: solo valores conocidos, no un detector genérico. |
 | SARIF en `format=both` | `V0-5` | **[PENDIENTE]** | `report_generate.py:212`: SARIF solo se escribe con `format="sarif"`. `both` produce JSON+MD+HTML y omite el SARIF ya calculado. |
 | Egress aislado con red gobernada | `V1-2`, `P1-B` | **[BLOQUEADO]** | `sandbox_modes.py:150` lanza `SandboxModeNotImplemented` para `oci_network`. Depende de implementar/filtrar egress por scope (5–8 días) o de un broker de red. |
 | Pivote con sesión y transferencia durable | `V0-20` | **[PENDIENTE]** | Hay `pivot_http`, `pivot_bruteforce`, `ssh_upload`, pero no un objeto de transferencia/sesión que sobreviva al turno ni un `session_ref` de pivote. |
@@ -286,8 +293,8 @@ encendarlas sin abrir una puerta lateral al gateway.
 |---|---|---|---|
 | Sandbox `local_strict` con confinamiento de workspace | `ESCALADA WP1`, ADR-004 | **[HECHO]** | `kernel/sandbox.py`; no aísla host/red. |
 | `nexus.shell.exec` gobernado | `ESCALADA WP1` | **[HECHO]** | Registered at `registry.py:360`; resumen + artifact; tests. |
-| PTY base (tmux) | `ESCALADA WP1` | **[HECHO]** | `PtySessionManager` + tool; 4 tests reales. |
-| PTY gobernado (P0) | `AUD_MCP_PTY §5.2` | **[PENDIENTE]** | Mode guard, egress checks, artifact, assertions, TTL. §5.1. |
+| PTY base (tmux) | `ESCALADA WP1` | **[HECHO]** | `PtySessionManager` + tool; 16 tests (lifecycle real, guard, egress, redacción, artifact, assertions, reaper). |
+| PTY gobernado (P0) | `AUD_MCP_PTY §5.2` | **[HECHO]** | Guard OCI, checks léxicos en `start`/`send`, artifact CAS + resumen, branch en `derive_assertions`, `wait`≤60 s y reaper en `session_end`. §5.1. |
 | `session_ref` + reverse shell (P1) | `AUD_MCP_PTY §3.2` | **[PENDIENTE]** | Unificar `kernel_sessions` con `transport`/`transport_ref`/liveness; `listener` keep-open; `shell_exec` transport `pty`. |
 | Loop v2: un perfil, planner como hint | `ESCALADA WP2` | **[HECHO]** | `NEXUS_LEGACY_PROFILES` para volver atrás; `test_wp2_loop_v2.py`. |
 | Prompt de 3 capas | `ESCALADA WP3` | **[PENDIENTE]** | Medido 27 831 chars estáticos / ~6 819 tok por turno; el objetivo ≤5 000 no se cumple. |
@@ -354,16 +361,18 @@ handler. Para encenderlo sin romper nada:
 ### 4.3 Por qué PTY no rompe el gateway
 
 `nexus.session.pty` ya es una tool durable con `effect=execution`, scope y audit.
-El trabajo P0 es **endurecer su handler**, no crear una vía nueva:
+El trabajo P0 fue **endurecer su handler**, no crear una vía nueva; ya está
+implementado:
 
-- Detectar `OCISandbox` y devolver `outcome="unavailable"` con
+- Detecta `OCISandbox` y devuelve `outcome="unavailable"` con
   `pty_requires_persistent_sandbox`.
-- Pasar `send` por los mismos checks léxicos de `shell_exec_local`
+- `start`/`send` pasan por los mismos checks léxicos de `shell_exec_local`
   (`passive_wait_reason`, deny list, `fetch_targets`).
-- Devolver resumen + artifact CAS en vez de 64 KiB crudos.
-- Añadir `derive_assertions` para `capture` (loot/privesc/access) reutilizando
-  los verificadores existentes.
-- TTL/reaper en `session_end`, `wait` con techo corto y `pattern` obligatorio.
+- Devuelve resumen + artifact CAS (sha256 y `artifact_ref`) en vez de 64 KiB.
+- `derive_assertions` deriva `loot`/`privilege` de `capture`/`wait`; sin
+  evidencia, la observación se marca `unverified_observation` (no se inventa un
+  hecho negativo).
+- TTL de 1 h, reaper en `session_end`, `wait` ≤60 s y `pattern` obligatorio.
 
 Nada de eso toca el orden del gateway ni el contrato de `ToolResult`.
 
@@ -383,19 +392,20 @@ Nada de eso toca el orden del gateway ni el contrato de `ToolResult`.
 
 ## 5. El plan de vuelo
 
-### 5.1 Fase P0 — PTY gobernado (1–2 días)
+### 5.1 Fase P0 — PTY gobernado (1–2 días) — **EJECUTADA**
 
 | Paso | Cambio | Ficheros | Test de aceptación |
 |---|---|---|---|
-| P0.1 | Guard de sandbox: detectar `OCISandbox`, devolver `unavailable` + `pty_requires_persistent_sandbox` | `tools/handlers/session_pty.py`, `kernel/sandbox.py` | `test_session_pty_oci_is_unavailable` |
-| P0.2 | Checks léxicos en `send`: `passive_wait_reason`, deny list y `fetch_targets` | `handlers/session_pty.py`, reutilizar `shell_exec_local` | `test_pty_send_denies_passive_wait`, `test_pty_send_denies_out_of_scope_fetch` |
-| P0.3 | Captura resumida + artifact CAS con sha256; no 64 KiB al prompt | `handlers/session_pty.py`, `kernel/artifacts.py` | `test_pty_capture_returns_artifact_ref` |
-| P0.4 | `derive_assertions` branch `nexus.session.pty` para `capture` | `kernel/fact_verification.py` | `test_pty_capture_derives_loot_and_privilege`; `test_pty_without_parser_is_unverified` |
-| P0.5 | TTL/reaper en `session_end`; `wait` ≤60 s y `pattern` obligatorio; telemetría | `kernel/pty_sessions.py`, `agent/react_coordinator.py` | `test_pty_reaper_closes_run_sessions`, `test_pty_wait_budget` |
+| P0.1 | Guard de sandbox: detectar `OCISandbox`, devolver `unavailable` + `pty_requires_persistent_sandbox` | `tools/handlers/session_pty.py` | `test_oci_sandbox_fails_explicitly_before_tmux` |
+| P0.2 | Checks léxicos en `start`/`send`: `passive_wait_reason`, deny list y `fetch_targets` | `handlers/session_pty.py`, reutilizar `shell_exec_local` | `test_send_refuses_wait_denylist_and_out_of_scope_fetch`, `test_start_refuses_an_out_of_scope_fetch_too` |
+| P0.3 | Captura resumida + artifact CAS con sha256; no 64 KiB al prompt | `handlers/session_pty.py`, `kernel/artifacts.py` | `test_capture_returns_artifact_and_a_bounded_summary` |
+| P0.4 | `derive_assertions` branch `nexus.session.pty` para `capture`/`wait`; `unverified_observation` sin evidencia | `kernel/fact_verification.py` | `test_capture_assertions_derive_loot_and_privilege`; `test_capture_without_a_flag_or_root_derives_no_fact`; `test_capture_without_evidence_is_an_unverified_observation` |
+| P0.5 | TTL/reaper en `session_end`; `wait` ≤60 s y `pattern` obligatorio | `kernel/pty_sessions.py`, `agent/react.py` | `test_reaper_closes_every_session_of_the_run`, `test_loop_reaps_pty_sessions_before_session_end`, `test_wait_longer_than_sixty_seconds_is_rejected_by_the_contract` |
+| P0.6 | Redacción V1-6 en PTY (`capture`) y artifact | `kernel/redaction.py`, `handlers/session_pty.py` | `test_capture_redacts_a_secret_known_to_the_vault` |
 
-**Gate P0:** suite completa verde, cero regresiones en `test_session_pty.py` y
-`test_effect_contract.py`, y un e2e local con tmux real que capture una flag y
-la convierta en hecho `loot`.
+**Gate P0:** cumplido en la suite afectada (16 tests PTY + 3 de redacción); el
+e2e con tmux real cubre `send`/`wait`/`capture` y el reaper. La suite completa se
+ejecuta antes del commit.
 
 ### 5.2 Fase P1 — `session_ref` y reverse shell (2–4 días)
 
@@ -438,18 +448,17 @@ No empezar hasta que exista `oci_network` (egress filtrado por scope) o un broke
 de red gobernado. Hoy `oci_network` lanza `SandboxModeNotImplemented`; en `oci`
 puro no hay red; en `local_strict` un servidor puede salirse del scope.
 
-### 5.6 Correcciones inmediatas fuera de fase (W1.2, 0,5–1 día)
+### 5.6 Correcciones inmediatas fuera de fase (W1.2) — **EJECUTADA**
 
-Antes de PTY P0, dos P0 de gobernanza son más baratos y más urgentes:
+1. **V1-1 — listener peer-first.** El subproceso recibe CIDR/exclusiones ya
+   autenticados y cierra al peer fuera de scope antes del primer `recv`/`sendall`.
+   Test end-to-end: el peer conecta y recibe 0 bytes.
+2. **V1-6 — redacción por valor en todos los canales.** `secrets_for_redaction`
+   combina argumentos secretos, handles del vault y hechos `credential`
+   verificados; `redact_result` se aplica en PTY, `http_request` y
+   `nexus.post.shell_exec` (SSH ya lo tenía).
 
-1. **V1-1 — listener peer-first.** Validar el peer dentro del subproceso antes
-   del primer `sendall`; el chequeo actual (`listener.py:373`) llega después de
-   la interacción.
-2. **V1-6 — redacción por valor en todos los canales.** Aplicar
-   `redact_secret_values` con los secretos resueltos de la invocación en
-   `shell.exec`, PTY, `http_request` y observaciones MCP, no solo en `ssh_post`.
-
-Después, PTY P0.
+Orden ejecutado: W1.2 → PTY P0. Siguiente: P1 (`session_ref`).
 
 ### 5.7 Lo que NO se hará (y por qué)
 

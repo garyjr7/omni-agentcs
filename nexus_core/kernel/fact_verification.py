@@ -1184,6 +1184,26 @@ def derive_assertions(tool_id, arguments, result, context):
         if loot.get('sha256'):
             add('loot', loot.get('loot_id') or loot.get('name'),
                 {'sha256': loot['sha256'], 'size': loot.get('size')},loot.get('name'))
+    elif (tool_id == 'nexus.session.pty'
+          and (arguments or {}).get('action') in {'capture', 'wait'}):
+        # The PTY is a command channel, but its capture is local: the deterministic
+        # evidence is what the pane printed, not that a remote host answered. Only
+        # a flag-shaped token or the canonical root identity line is promoted;
+        # everything else stays an observation. ``unverified_observation`` is a
+        # ``ToolResult`` status (the handler sets it), not a fact type: the
+        # blackboard only accepts verified facts, and inventing a negative row
+        # there would let a later turn read "no evidence" as a proven claim.
+        session_id = str(output.get('session_id') or 'pty')
+        text = str(output.get('output') or '')
+        for flag in FLAG_RE.findall(text):
+            add('loot', flag,
+                {'flag': flag, 'service': 'pty', 'session_id': session_id},
+                flag, method='pty_capture_observed')
+        if re.search(r'uid=0\(root\) gid=\d+', text):
+            add('privilege', session_id,
+                {'uid': 0, 'user': 'root', 'via': 'session.pty',
+                 'session_id': session_id},
+                method='pty_capture_observed')
     return rows
 
 

@@ -5,6 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import socket
+import subprocess
+import sys
+import time
 from unittest import mock
 
 import pytest
@@ -12,7 +16,11 @@ import pytest
 from nexus_core.kernel.models import Identity, RunContext
 from nexus_core.kernel.sandbox import SandboxResult
 from nexus_core.tools.handlers import listener as listener_module
-from nexus_core.tools.handlers.listener import listener_definition, listener_handler
+from nexus_core.tools.handlers.listener import (
+    LISTENER_CLIENT_SCRIPT,
+    listener_definition,
+    listener_handler,
+)
 
 
 class FakeSandbox:
@@ -56,6 +64,7 @@ def _catch_payload(peer: str = "203.0.113.10", **overrides) -> dict:
         "ok": True,
         "bound": True,
         "peer": peer,
+        "peer_allowed": True,
         "port": 9001,
         "commands_sent": ["id"],
         "status": "closed",
@@ -136,6 +145,78 @@ def test_out_of_scope_peer_is_refused(tmp_path, monkeypatch):
         result = _run({"port": 9001})
     assert result.verified is False
     assert result.verification_method == "listener_peer_out_of_scope"
+
+
+def test_child_peer_rejection_is_refused_without_commands(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", str(tmp_path))
+    payload = _catch_payload(peer_allowed=False, commands_sent=[], transcript="", bytes=0)
+    with _fake_sandbox(_sandbox_for(payload)):
+        result = _run({"port": 9001})
+    assert result.verified is False
+    assert result.verification_method == "listener_peer_out_of_scope"
+    assert result.evidence["commands_sent"] == 0
+    assert result.output["commands_sent"] == []
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def test_listener_client_rejects_out_of_scope_peer_before_sending_a_byte():
+    """V1-1 end-to-end: the peer connects and receives nothing at all.
+
+    The check must happen inside the process that owns the socket. A handler-level
+    check after the client returned would still have sent the commands, which is
+    exactly the bug this test pins down.
+    """
+    port = _free_port()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            LISTENER_CLIENT_SCRIPT,
+            "127.0.0.1",
+            str(port),
+            "5",
+            "1",
+            "4096",
+            json.dumps(["id"]),
+            json.dumps(["10.0.0.0/8"]),
+            json.dumps([]),
+            str(time.time() + 60),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    client = None
+    try:
+        deadline = time.time() + 5
+        while True:
+            try:
+                client = socket.create_connection(("127.0.0.1", port), timeout=0.25)
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    raise AssertionError("listener client did not bind in time")
+                time.sleep(0.05)
+        client.settimeout(1.0)
+        assert client.recv(4096) == b"", "the listener sent bytes to an out-of-scope peer"
+        stdout, stderr = process.communicate(timeout=5)
+    finally:
+        if client is not None:
+            client.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+    assert process.returncode == 0, stderr
+    payload = json.loads(stdout.strip().splitlines()[-1])
+    assert payload["peer_allowed"] is False
+    assert payload["commands_sent"] == []
+    assert payload["transcript"] == ""
+    assert payload["bytes"] == 0
 
 
 def test_timeout_is_not_verified(tmp_path, monkeypatch):

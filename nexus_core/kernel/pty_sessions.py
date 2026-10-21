@@ -43,6 +43,11 @@ PTY_MAX_LINES = 2000
 PTY_CAPTURE_RING = 2000
 PTY_WAIT_POLL_SECONDS = 0.25
 PTY_COMMAND_TIMEOUT_SECONDS = 20
+#: A wait is never the agent's way to burn a turn: 60 s is the hard ceiling.
+PTY_MAX_WAIT_SECONDS = 60
+#: Sessions outlive a call, not the engagement shift. The run-end reaper removes
+#: them anyway; this TTL catches a run that died without firing ``session_end``.
+PTY_SESSION_TTL_SECONDS = 3600
 
 _TMUX_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -101,8 +106,12 @@ class PtySessionManager:
         return f"{self.prefix}{slug}"[:PTY_MAX_NAME]
 
     # ---------------------------------------------------------------- plumbing
+    def sandbox(self):
+        """The effective sandbox for this run (PTY needs a persistent one)."""
+        return sandbox_for_environment(self.root, allowed_programs=self.allowed_programs)
+
     async def _tmux(self, *args: str, timeout_seconds: float = PTY_COMMAND_TIMEOUT_SECONDS) -> SandboxResult:
-        sandbox = sandbox_for_environment(self.root, allowed_programs=self.allowed_programs)
+        sandbox = self.sandbox()
         # ``TERM`` is not a sandbox control: tmux needs a terminal description
         # even for a detached session.
         return await sandbox.run(
@@ -126,6 +135,44 @@ class PtySessionManager:
         session = self.session_id(name)
         result = await self._tmux("has-session", "-t", session)
         return result.exit_code == 0 and not result.timed_out
+
+    async def reap(self, *, older_than_seconds: int | None = None) -> int:
+        """Kill this run's tmux sessions (all, or only those past a TTL).
+
+        Best-effort by construction: a missing tmux, a dead server or a session
+        that disappears between ``list-sessions`` and ``kill-session`` must never
+        turn a cleanup into a run failure. Only names under this run's prefix are
+        touched, so another engagement's server is invisible.
+        """
+        try:
+            listed = await self._tmux(
+                "list-sessions", "-F", "#{session_name}\t#{session_created}"
+            )
+        except Exception:  # noqa: BLE001 - cleanup never blocks the caller
+            return 0
+        if listed.exit_code != 0 or not listed.stdout.strip():
+            return 0
+        now = time.time()
+        killed = 0
+        for line in listed.stdout.splitlines():
+            name, _, created = line.partition("\t")
+            name = name.strip()
+            if not name.startswith(self.prefix):
+                continue
+            if older_than_seconds is not None:
+                try:
+                    age = now - float(created)
+                except (TypeError, ValueError):
+                    continue
+                if age < max(0, int(older_than_seconds)):
+                    continue
+            try:
+                result = await self._tmux("kill-session", "-t", name)
+            except Exception:  # noqa: BLE001 - one wedged session is not fatal
+                continue
+            if result.exit_code == 0:
+                killed += 1
+        return killed
 
     # ---------------------------------------------------------------- actions
     async def start(self, cmd: str, name: str) -> PtyResult:
@@ -212,13 +259,14 @@ class PtySessionManager:
         text = str(pattern or "")
         if not text:
             raise ValueError("wait requires pattern")
+        timeout_seconds = max(1, min(int(timeout_seconds), PTY_MAX_WAIT_SECONDS))
         try:
             # MULTILINE so ``^``/``$`` mean "line" in a captured pane, which is
             # what an operator writing a prompt pattern expects.
             matcher = re.compile(text, re.MULTILINE)
         except re.error as exc:
             raise ValueError(f"invalid wait pattern: {exc}") from exc
-        deadline = time.monotonic() + max(1, int(timeout_seconds))
+        deadline = time.monotonic() + timeout_seconds
         latest = await self.capture(name)
         while True:
             if latest.error == "session_not_found":
@@ -262,6 +310,8 @@ __all__ = [
     "PTY_CAPTURE_RING",
     "PTY_MAX_LINES",
     "PTY_MAX_NAME",
+    "PTY_MAX_WAIT_SECONDS",
+    "PTY_SESSION_TTL_SECONDS",
     "PtyResult",
     "PtySessionManager",
 ]

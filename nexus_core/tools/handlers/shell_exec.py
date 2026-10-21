@@ -5,6 +5,7 @@ from typing import Any, Literal
 from urllib.parse import urlencode, urlsplit
 from pydantic import BaseModel, ConfigDict, Field
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
+from nexus_core.kernel.redaction import redact_result, secrets_for_redaction
 from nexus_core.kernel.sessions import SessionRegistry, validate_session_scope
 from nexus_core.tools.passive_wait import PASSIVE_WAIT_GUIDANCE, passive_wait_reason
 from .http_request import http_request_definition, http_request_handler, _validate_url
@@ -32,7 +33,7 @@ def shell_exec_definition(tenant_id: str = 'system') -> ToolDefinition:
     )
 
 
-async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
+async def _shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     request = ShellRequest.model_validate(arguments)
     validate_session_scope(context)
     # V9 (Hijack): a ``sleep`` over an owned session is the same non-action as a
@@ -83,3 +84,16 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
         'url': url, 'method': 'POST', 'data': urlencode({request.parameter: command}),
         'headers': {'Content-Type': 'application/x-www-form-urlencoded'},
         'timeout_seconds': request.timeout_seconds}, context)
+
+
+async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
+    """Run through the owned session, then redact every known vault secret.
+
+    The transport handlers already redact the secret they resolved for their own
+    call (SSH/HTTP). This boundary covers what the *remote command* prints: a
+    session can echo a password the engagement proved earlier, and that value
+    must not reach the prompt just because it arrived through Metasploit or
+    Sliver instead of SSH (V1-6).
+    """
+    result = await _shell_exec_handler(arguments, context)
+    return redact_result(result, secrets_for_redaction(context, arguments))

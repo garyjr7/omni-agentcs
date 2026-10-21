@@ -655,3 +655,24 @@ pytestmark = globals().get("pytestmark", [])
 if not isinstance(pytestmark, list):
     pytestmark = [pytestmark]
 pytestmark.append(pytest.mark.usefixtures("lab_scope"))
+
+
+async def test_loop_reaps_pty_sessions_before_session_end(harness, monkeypatch):
+    """P0.5: a PTY survives the call, never the run."""
+    _, context = harness
+    llm = ScriptedLLM([task_complete()])
+    reaped: list[str] = []
+
+    async def fake_reap(run_context):
+        reaped.append(str(run_context.run_id))
+
+    monkeypatch.setattr("nexus_core.agent.react._reap_pty_sessions", fake_reap)
+    result = await run_react_loop(
+        config=_loop_config(),
+        context=context,
+        objective="objetivo",
+        engagement_id="eng-1",
+        llm_client=llm,
+    )
+    assert result.status == STATUS_COMPLETED
+    assert reaped == [context.run_id]

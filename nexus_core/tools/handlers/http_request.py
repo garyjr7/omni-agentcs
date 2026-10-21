@@ -35,6 +35,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
+from nexus_core.kernel.redaction import redact_result, secrets_for_redaction
 from nexus_core.kernel.sandbox import sandbox_for_environment
 
 from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox
@@ -534,7 +535,7 @@ def _cookie_pairs(set_cookie: Any) -> dict[str, str]:
     return cookies
 
 
-async def http_request_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
+async def _http_request_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     """Send one scoped HTTP(S) request through the sandbox and parse the result."""
     from nexus_core.kernel.schema_validation import validate
 
@@ -736,6 +737,19 @@ async def http_request_handler(arguments: dict[str, Any], context: RunContext) -
         stdout=result.stdout,
         stderr=result.stderr,
     )
+
+
+async def http_request_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
+    """Redact every known vault secret from the response before it is returned.
+
+    A page can echo a password the engine proved earlier (a login form, a
+    diagnostic page, a redirect with the credential in the query). The handler
+    knows the engagement's verified credential facts, so it removes those values
+    from the preview, the evidence and the raw stdout -the same boundary SSH
+    already applies (V1-6/V1-46).
+    """
+    result = await _http_request_handler(arguments, context)
+    return redact_result(result, secrets_for_redaction(context, arguments))
 
 
 __all__ = [

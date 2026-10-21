@@ -122,6 +122,26 @@ async def _run_react_loop_impl(
     ).run()
 
 
+async def _reap_pty_sessions(context: Any) -> None:
+    """Close this run's tmux sessions before ``session_end`` (P0.5).
+
+    A PTY survives the call that created it by design; it must not survive the
+    run. Cleanup is best-effort: no tmux, an already-dead server or a sandbox
+    that cannot spawn must never turn a finished run into an exception.
+    """
+    try:
+        from nexus_core.kernel.pty_sessions import PtySessionManager
+
+        workspace = (
+            str(getattr(context, "project_root", "") or "")
+            or os.getenv("NEXUS_WORKSPACE_ROOT")
+            or os.getcwd()
+        )
+        await PtySessionManager(workspace, str(getattr(context, "run_id", ""))).reap()
+    except BaseException:  # noqa: BLE001 - teardown must not mask the run result
+        return
+
+
 async def run_react_loop(
     *,
     context: Any,
@@ -189,9 +209,11 @@ async def run_react_loop(
             isolated_child=isolated_child,
         )
     except BaseException:
+        await _reap_pty_sessions(context)
         if hooks is not None:
             await hooks.emit("session_end", status="exception", reason="exception")
         raise
+    await _reap_pty_sessions(context)
     if hooks is not None:
         await hooks.emit(
             "session_end",
