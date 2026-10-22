@@ -37,6 +37,8 @@
 | Diagnóstico run V10 (HackPark) | `hackpark_v10_2026-10-21.md` | `docs/missions/diag/` | Los dos muros (CSRF y PoC) y su cierre en `MASTER_ROADMAP.md` §5.9 |
 | Diagnóstico run V11 (HackPark) | `hackpark_v11_2026-10-21.md` | `docs/missions/diag/` | Los tres muros del PoC (form_params ASP.NET, `next_steps`, subida de temas) y su cierre en `MASTER_ROADMAP.md` §5.10 |
 | Diagnóstico run V15 (HackPark) | `hackpark_v15_2026-10-21.md` | `docs/missions/diag/` | El pivote de cobertura pisó la orden del operador y su cierre en `MASTER_ROADMAP.md` §5.15 |
+| Campaña DeadDrop (2026-10-22) | `deaddrop_campaign_2026-10-22.md` | `docs/missions/diag/` | Seis runs, nueve muros cerrados y el estado de las fases 3-5 en `MASTER_ROADMAP.md` §5.16 |
+| Diagnóstico run P1 (DeadDrop) | `deaddrop_p1_2026-10-22.md` | `docs/missions/diag/` | Primer ciclo: recon, tres muros y sus fixes |
 | Evidencia por fase | `docs/missions/evidence/phase0|phase1|phase2|phase2-close/` | `docs/missions/evidence/` | Capturas de validación por fase |
 
 > `roadmap_12/` (auditoría `10.md`, informes Fase 2–5, `Auditoria_playbook_telemetria.md`, `UI_terminal_14_10.md` y su evidencia) es **WIP no versionado — no forma parte del ledger oficial**: se conserva sin commitear y no se cita como fuente de verdad.

@@ -773,6 +773,49 @@ Detalle completo: `docs/missions/diag/hackpark_v15_2026-10-21.md`.
 
 ---
 
+### 5.16 Campaña DeadDrop — multi-red con pivote (2026-10-22) — **EJECUTADA EN PARTE**
+
+Sala con dos capas: DMZ `10.0.0.1` y LAN `10.0.0.1/24` alcanzable
+sólo desde ella (`10.0.0.1` DC, `.51` workstation). Seis runs, 44 turnos
+de agente entre todos. Fase 1 y 2 cumplidas **por el motor**; la fase 3 quedó
+bloqueada cuando la instancia de la sala dejó de responder a las 03:12 UTC.
+
+| Muro medido | Evidencia | Fix implementado | Test de aceptación |
+|---|---|---|---|
+| `service` no podía acotar el fingerprint | P1: `-p 22,80` descartado y `-p- -sV -sC` corrió 333 s | `selects_ports` distingue una selección real del barrido y quita `-p-` del perfil `service` | `test_service_profile_narrows_to_the_ports_the_model_named` |
+| El plan palpaba el pivote con hechos de la DMZ | P1 iteración 2: `done: [recon, pivot, enum-lan]` con sólo 22/80 de `.200` | Un TODO que nombra hosts sólo acepta hechos de esos hosts | `test_a_todo_that_names_hosts_waits_for_a_fact_on_that_host` |
+| Un paso «desde A hacia B» se cerraba con A | P2 iteración 2: el TODO citaba `.200` como origen y el hecho de `.200` lo cerró | `proven_hosts`: si el TODO nombra un host ya probado y otro nuevo, sólo el nuevo lo cierra | `test_a_step_from_a_proved_host_to_a_new_one_is_not_proved_by_the_source` |
+| La skill de web prohibía la sonda que abre la sala | P1/P3: 5 y 30 min de wordlists con `/login` vulnerable a `admin'-- -` | Tres sondas deterministas, Hydra sólo si el login enumera usuarios, y cada fichero que el panel lista es una lectura | `test_the_login_hint_orders_the_three_probes_on_a_form_read` |
+| El modelo leía el login y volvía a barrer | P3 iteración 5-6 y P4 iteración 5-6 | `login_probe_hint` (planner, determinista) inyecta la orden y emite `react.login_probe` | `test_the_loop_injects_the_login_probe_hint_once` |
+| `crack_hash` no leía una línea de `/etc/shadow` | P4 iteración 45: «hash_type could not be autodetected» sobre `svc-drop:$6$…:19700` | `_hash_field` extrae el campo con prefijo crypt | `test_a_shadow_line_is_read_as_its_hash_field` |
+| El schema de `crack_hash` rechazaba lo que el handler soporta | P4 iteración 44: `sha512crypt` «is not one of» | El enum pasa a ser `CRACK_FORMATS` + `auto` | `test_the_hash_type_enum_admits_every_format_the_handler_supports` |
+| Un `full_tcp` expirado devolvía un timeout sin hechos | P5: 600 s, 0 hechos, todas las fases a ciegas | Un barrido que expira reintenta top-1000 `--min-rate 1000` | `test_a_timed_out_full_sweep_is_retried_with_top_ports` |
+| El rescate no cabía en el presupuesto de la tool | P6: 600,2 s y el reintento cancelado al arrancar | Con `-p-` el barrido reserva `600 - 180 - 15` s | `test_full_tcp_profile_scans_all_ports_with_its_own_timeout` |
+
+**Por qué no son parches de sala:** `selects_ports` y el reparto de presupuesto
+son de `nmap`; `proven_hosts` cruza IPv4 del TODO con IPv4 del hecho;
+`login_probe_hint` detecta un `<form>` con campo de contraseña; `_hash_field`
+parte por `:` buscando un prefijo crypt. Nada nombra DeadDrop.
+
+**Límites declarados:**
+
+- El foothold SSH no lo ejecutó OMNI: lo validó el operador con la password
+  crackeada a mano. El run P4 se quedó en registrar el hash como hecho.
+- No hay primitiva de abuso de ACL: `bloodhound_python` necesita DNS del dominio
+  y el túnel SOCKS rechaza el DNS sobre TCP; la fase 5 sigue dependiendo de
+  `shell.exec` + `proxychains4`.
+- `nexus.web.request` acepta `session_ref` pero sólo `cred.bruteforce` escribe
+  ese handle: una sesión obtenida por bypass manual obliga a copiar la cookie.
+- `cred.bruteforce` dejó `hydra` huérfanos al matar el run desde fuera y devolvió
+  `partial` a los 571 s con 300 s de presupuesto.
+- La sala dejó de responder a las 03:12 UTC: los runs P5/P6 miden la caída del
+  objetivo, no un defecto del motor.
+
+Detalle completo: `docs/missions/diag/deaddrop_campaign_2026-10-22.md` y
+`docs/missions/diag/deaddrop_p1_2026-10-22.md`.
+
+---
+
 ## 6. Criterios de cierre
 
 | Fase | Criterio duro | Lo que **no** cuenta |
