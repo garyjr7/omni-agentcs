@@ -298,6 +298,7 @@ class ContextBuilder:
         webshell_hint: str = "",
         coverage_hint: str = "",
         robots_hint: str = "",
+        login_hint: str = "",
         engagement_plan_summary: str = "",
     ) -> list[LLMMessage]:
         full_catalog = self.full_catalog_for(iteration=iteration, subagent=subagent)
@@ -369,6 +370,12 @@ class ContextBuilder:
         # the branch cannot be closed with the index half-read.
         if robots_hint:
             system_prompt = f"{system_prompt}\n\n{robots_hint}"
+        # A login form read but never probed: enumerating the directory tree
+        # first is the documented order, and it was measured to burn 5 and 30
+        # minutes on wordlists while the form accepted `admin'-- -`. The rule
+        # lives in the planner (``login_probe_hint``, deterministic).
+        if login_hint:
+            system_prompt = f"{system_prompt}\n\n{login_hint}"
         # WP5: the objective's flags are in hand. The model still decides how to
         # close -the loop only forbids more exploration and orders the closure-;
         # if it ignores the order for the whole margin, the loop closes itself.

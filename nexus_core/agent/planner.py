@@ -988,6 +988,67 @@ def _index_routes(body: str, name: str, base: str) -> list[str]:
     return routes
 
 
+LOGIN_PROBE_PROMPT = (
+    'FORMULARIO DE LOGIN SIN SONDEAR: {url} sirve un formulario con campo de '
+    'contraseña y el run todavía no ha probado nada sobre él. Antes de '
+    'cualquier wordlist, haz estas TRES peticiones, una por llamada, con '
+    'nexus.web.request(url="{url}", method="POST", data=...):\n'
+    '  1. username=nosuchuser&password=x — ¿el error distingue al usuario?\n'
+    '  2. username=admin\'-- -&password=x — bypass por comentario SQL\n'
+    '  3. username[$ne]=x&password[$ne]=x — operador NoSQL\n'
+    'La prueba de éxito es un 302 a un panel con Set-Cookie: guarda ese '
+    'set_cookie y mándalo como cabecera Cookie en cada petición siguiente. '
+    'Un 200 con el formulario otra vez es un fallo, no un login. Solo si las '
+    'tres fallan pasa a nexus.cred.bruteforce; si una devuelve error del '
+    'servidor o traza, escálala a nexus.web.sqlmap con el data exacto.'
+)
+
+#: Respuestas que delatan un campo de contraseña en el HTML.
+_PASSWORD_INPUT_RE = re.compile(r"type\s*=\s*[\"']?password", re.IGNORECASE)
+#: Datos de un POST que ya es una sonda de inyección (no una credencial).
+_INJECTION_PROBE_RE = re.compile(r"['\"]|\[\$ne\]|--", re.IGNORECASE)
+
+
+def login_probe_hint(actions: Iterable[Any] | None = None) -> str:
+    """Order the three login probes on a form the run read but never tested.
+
+    Fires while the history holds a response whose ``body_preview`` has a
+    password input and no POST has yet carried an injection probe. DeadDrop
+    (2026-10-22): the login accepted ``admin'-- -`` with any password and the
+    runs P1/P3 spent five and thirty minutes on directory wordlists before
+    touching it, because enumerating first is the documented order and nothing
+    said the form was still untested.
+
+    A POST with a plain credential (``admin/admin``) does **not** silence the
+    hint: that is the guessing the rule exists to replace. Only a probe with a
+    quote, a comment marker or a NoSQL operator counts. The rule never stops the
+    run, never changes the plan and never authorizes a tool.
+    """
+    history = [action for action in actions or () if isinstance(action, Mapping)]
+    if not history:
+        return ""
+    form_url = ""
+    probed = False
+    for action in history:
+        arguments = action.get("arguments")
+        arguments = arguments if isinstance(arguments, Mapping) else {}
+        body = _action_body_preview(action)
+        if (
+            not form_url
+            and body
+            and "<form" in body.casefold()
+            and _PASSWORD_INPUT_RE.search(body)
+        ):
+            form_url = _action_url(action)
+        if str(arguments.get("method") or "").upper() == "POST":
+            data = str(arguments.get("data") or "")
+            if data and _INJECTION_PROBE_RE.search(data):
+                probed = True
+    if not form_url or probed:
+        return ""
+    return LOGIN_PROBE_PROMPT.format(url=form_url)
+
+
 def robots_paths_hint(actions: Iterable[Any] | None = None) -> str:
     """Order visiting the routes a read ``robots.txt``/``sitemap.xml`` lists.
 

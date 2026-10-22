@@ -134,6 +134,7 @@ from .planner import (
     escalate_enumeration,
     escalate_session,
     established_msf_session,
+    login_probe_hint,
     objective_completion,
     robots_paths_hint,
     session_handover,
@@ -301,6 +302,8 @@ class ReActCoordinator:
     #: listed and this run never requested.
     robots_hint: str
     robots_hint_emitted: bool
+    login_hint: str
+    login_hint_emitted: bool
     #: The board already proves the objective (verified top privilege + verified
     #: loot). Refreshed every turn from the facts; it adds the closure hint to the
     #: plan and exempts the active profile's token ceiling (V1-35, V1-38).
@@ -584,6 +587,8 @@ class ReActCoordinator:
         self.coverage_hint_emitted = False
         self.robots_hint = ""
         self.robots_hint_emitted = False
+        self.login_hint = ""
+        self.login_hint_emitted = False
         #: ``host:port`` refs the *loop* closed with a barrier fact this run (see
         #: ``_close_stalled_branch``). Two reasons to keep them: never write the
         #: same barrier twice, and never let the loop's own reflex read as
@@ -768,6 +773,9 @@ class ReActCoordinator:
         # The index files: reading ``robots.txt``/``sitemap.xml`` is not
         # following them; the routes it lists get one explicit order.
         self._refresh_robots_hint()
+        # A login form read but never probed gets the three deterministic
+        # probes, before any wordlist (DeadDrop P1/P3).
+        self._refresh_login_hint()
         self.last_plan = self.plan
         return Transition.READY
 
@@ -1020,6 +1028,34 @@ class ReActCoordinator:
             decision="degrade",
         )
         self.robots_hint_emitted = True
+
+    def _refresh_login_hint(self) -> None:
+        """Order the three login probes on a form the run read but never tested.
+
+        The rule lives in the planner (``login_probe_hint``, deterministic and
+        unit-tested over the persisted action history); the loop only injects
+        its text and audits it once.
+        """
+        self.login_hint = login_probe_hint(self.actions)
+        if not self.login_hint or self.login_hint_emitted:
+            return
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.login_probe",
+            {
+                "iteration": self.iteration,
+                "phase": str(getattr(self.plan, "current", "") or ""),
+                "last_tools": self._last_tools(),
+                "hint": self.login_hint,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="login_probe",
+            decision="degrade",
+        )
+        self.login_hint_emitted = True
 
     def _stalled_branch(self, coverage: Any) -> Any | None:
         """The one service the recent actions were aimed at (``None`` if unclear).
@@ -1634,6 +1670,7 @@ class ReActCoordinator:
             webshell_hint=self.webshell_hint,
             coverage_hint=self.coverage_hint,
             robots_hint=self.robots_hint,
+            login_hint=self.login_hint,
             engagement_plan_summary=self.engagement_plan_text,
         )
         reservation = None

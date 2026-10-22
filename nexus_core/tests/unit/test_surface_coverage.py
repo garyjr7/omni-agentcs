@@ -754,6 +754,69 @@ def test_the_coordinator_honours_the_objective_it_was_given(tmp_path):
     assert payload["focus"] == f"{TARGET}:80"
 
 
+def test_the_loop_injects_the_login_probe_hint_once(tmp_path):
+    """The wiring: a read login form becomes one order to probe it.
+
+    DeadDrop P1/P3 (2026-10-22): the form was read twice and the run went back
+    to directory wordlists, so the rule has to reach the prompt, not only the
+    planner.
+    """
+    from nexus_core.agent.react_coordinator import ReActCoordinator
+    from nexus_core.kernel.audit import AuditWriter
+
+    store = ControlStore(tmp_path / "login.db")
+    store.initialize()
+    run = store.create_run(TENANT, {})
+    coordinator = ReActCoordinator.__new__(ReActCoordinator)
+    coordinator.tenant_id = TENANT
+    coordinator.engagement_id = ENGAGEMENT
+    coordinator.agent_id = "omni"
+    coordinator.active_subagent_id = "omni"
+    coordinator.store = store
+    coordinator.run_id = run["id"]
+    coordinator.iteration = 6
+    coordinator.plan = build_plan(counts={"service": 2})
+    coordinator.audit = AuditWriter(store)
+    coordinator.login_hint = ""
+    coordinator.login_hint_emitted = False
+    coordinator.actions = [
+        {
+            "tool_id": "nexus.web.request",
+            "arguments": {"url": f"http://{TARGET}/login"},
+            "tool_result": {
+                "output": {
+                    "body_preview": (
+                        '<form method="POST" action="/login">'
+                        '<input type="password" name="password"></form>'
+                    )
+                }
+            },
+        }
+    ]
+
+    coordinator._refresh_login_hint()
+
+    assert f"http://{TARGET}/login" in coordinator.login_hint
+    events = [
+        event
+        for event in store.list_run_events(TENANT, run["id"])
+        if event.get("event_type") == "react.login_probe"
+    ]
+    assert len(events) == 1
+    coordinator._refresh_login_hint()
+    assert coordinator.login_hint_emitted is True
+    assert (
+        len(
+            [
+                event
+                for event in store.list_run_events(TENANT, run["id"])
+                if event.get("event_type") == "react.login_probe"
+            ]
+        )
+        == 1
+    )
+
+
 async def test_a_real_loop_turn_carries_the_ledger_from_the_store(tmp_path, lab_scope):
     """End to end: blackboard → snapshot → system prompt of the first turn.
 

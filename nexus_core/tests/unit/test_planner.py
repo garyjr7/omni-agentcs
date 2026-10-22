@@ -17,6 +17,7 @@ from nexus_core.agent.planner import (
     endpoint_ceiling,
     enumeration_budget_hint,
     normalize_counts,
+    login_probe_hint,
     plan_from_summary,
     robots_paths_hint,
     webshell_stall_hint,
@@ -245,6 +246,57 @@ def _http_action(url: str, body: str = "") -> dict:
         "arguments": {"url": url},
         "tool_result": {"output": {"body_preview": body}} if body else {},
     }
+
+
+LOGIN_HTML = (
+    '<form method="POST" action="/login">'
+    '<input type="text" name="username"><input type="password" name="password">'
+    "</form>"
+)
+
+
+def _post_action(url: str, data: str) -> dict:
+    return {
+        "tool_id": "nexus.web.request",
+        "arguments": {"url": url, "method": "POST", "data": data},
+        "tool_result": {"output": {"status": 200}},
+    }
+
+
+def test_the_login_hint_orders_the_three_probes_on_a_form_read():
+    """DeadDrop P1/P3 (2026-10-22): el login aceptaba `admin'-- -`."""
+    actions = [
+        _http_action("http://192.168.11.200/"),
+        _http_action("http://192.168.11.200/login", LOGIN_HTML),
+    ]
+
+    hint = login_probe_hint(actions)
+
+    assert "http://192.168.11.200/login" in hint
+    assert "admin'-- -" in hint and "[$ne]" in hint
+    assert "Set-Cookie" in hint and "nexus.cred.bruteforce" in hint
+
+
+def test_a_plain_credential_attempt_does_not_silence_the_login_hint():
+    """`admin/admin` es la adivinación que la regla sustituye, no una sonda."""
+    actions = [
+        _http_action("http://192.168.11.200/login", LOGIN_HTML),
+        _post_action("http://192.168.11.200/login", "username=admin&password=admin"),
+    ]
+    assert login_probe_hint(actions) != ""
+
+
+def test_an_injection_probe_silences_the_login_hint():
+    actions = [
+        _http_action("http://192.168.11.200/login", LOGIN_HTML),
+        _post_action("http://192.168.11.200/login", "username=admin'-- -&password=x"),
+    ]
+    assert login_probe_hint(actions) == ""
+
+
+def test_a_page_without_a_password_field_never_asks_for_probes():
+    actions = [_http_action("http://192.168.11.200/", "<html><body>hola</body></html>")]
+    assert login_probe_hint(actions) == ""
 
 
 def test_the_robots_hint_orders_the_paths_the_index_lists():
