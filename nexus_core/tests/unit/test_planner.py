@@ -294,6 +294,46 @@ def test_an_injection_probe_silences_the_login_hint():
     assert login_probe_hint(actions) == ""
 
 
+def test_a_paraphrased_probe_does_not_count_and_the_hint_names_the_exact_payload():
+    """DeadDrop P7 (2026-10-22, iteraciones 6-11): el modelo reformuló las sondas.
+
+    Envió `username[$ne]=invalid&password[$ne]=invalid` y
+    `username=admin&password[$ne]=x`: la regla antigua (un operador cualquiera
+    silencia el aviso) lo daba por sondeado, el bypass SQLi nunca corrió y el run
+    volvió a los wordlists de directorios.
+    """
+    actions = [
+        _http_action("http://192.168.11.200/login", LOGIN_HTML),
+        _post_action(
+            "http://192.168.11.200/login",
+            "username=nosuchuser&password=x",
+        ),
+        _post_action(
+            "http://192.168.11.200/login",
+            "username[$ne]=invalid&password[$ne]=invalid",
+        ),
+        _post_action("http://192.168.11.200/login", "username=admin&password[$ne]=x"),
+    ]
+
+    hint = login_probe_hint(actions)
+
+    assert "PARAFRASEADAS" in hint
+    # Las que faltan, verbatim: el bypass y el NoSQL canónico.
+    assert 'data="username=admin\'-- -&password=x"' in hint
+    assert 'data="username[$ne]=x&password[$ne]=x"' in hint
+    # La que ya se hizo tal cual no se repite.
+    assert "nosuchuser" not in hint
+
+
+def test_the_exact_bypass_payload_silences_the_rule():
+    actions = [
+        _http_action("http://192.168.11.200/login", LOGIN_HTML),
+        _post_action("http://192.168.11.200/login", "username[$ne]=invalid&password[$ne]=invalid"),
+        _post_action("http://192.168.11.200/login", "username=admin'-- -&password=x"),
+    ]
+    assert login_probe_hint(actions) == ""
+
+
 def test_a_page_without_a_password_field_never_asks_for_probes():
     actions = [_http_action("http://192.168.11.200/", "<html><body>hola</body></html>")]
     assert login_probe_hint(actions) == ""

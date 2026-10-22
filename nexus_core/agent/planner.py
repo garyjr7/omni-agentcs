@@ -988,14 +988,29 @@ def _index_routes(body: str, name: str, base: str) -> list[str]:
     return routes
 
 
+#: The three probes, as the exact ``data`` string each one must send. A probe
+#: counts as done only when the payload matches one of these: DeadDrop P7
+#: (2026-10-22) sent ``username[$ne]=invalid&password[$ne]=invalid`` and
+#: ``username=admin&password[$ne]=x`` -paraphrases that satisfied the old
+#: "has an operator" regex- and never ran the SQLi bypass that opens the room,
+#: so the run went back to directory wordlists with the login still untested.
+LOGIN_PROBE_CANONICAL: tuple[str, ...] = (
+    "username=nosuchuser&password=x",
+    "username=admin'-- -&password=x",
+    "username[$ne]=x&password[$ne]=x",
+)
+#: The bypass probe: if this one has not run, the form is still untested no
+#: matter how many operators the model invented.
+LOGIN_PROBE_BYPASS = LOGIN_PROBE_CANONICAL[1]
+
 LOGIN_PROBE_PROMPT = (
     'FORMULARIO DE LOGIN SIN SONDEAR: {url} sirve un formulario con campo de '
     'contraseña y el run todavía no ha probado nada sobre él. Antes de '
     'cualquier wordlist, haz estas TRES peticiones, una por llamada, con '
     'nexus.web.request(url="{url}", method="POST", data=...):\n'
-    '  1. username=nosuchuser&password=x — ¿el error distingue al usuario?\n'
-    '  2. username=admin\'-- -&password=x — bypass por comentario SQL\n'
-    '  3. username[$ne]=x&password[$ne]=x — operador NoSQL\n'
+    '  1. data="username=nosuchuser&password=x" — ¿el error distingue al usuario?\n'
+    '  2. data="username=admin\'-- -&password=x" — bypass por comentario SQL\n'
+    '  3. data="username[$ne]=x&password[$ne]=x" — operador NoSQL\n'
     'La prueba de éxito es un 302 a un panel con Set-Cookie: la respuesta '
     'devuelve un session_ref (vault:...) con esa cookie guardada; mándalo tal '
     'cual como session_ref en cada petición siguiente, sin copiar el valor. '
@@ -1004,10 +1019,35 @@ LOGIN_PROBE_PROMPT = (
     'servidor o traza, escálala a nexus.web.sqlmap con el data exacto.'
 )
 
+#: Second, stricter order: the run posted to the form but with invented
+#: payloads, so the bypass is still untested. Naming the exact strings is the
+#: point -the model paraphrased the prose from the first hint-.
+LOGIN_PROBE_PAYLOAD_PROMPT = (
+    'SONDAS DEL LOGIN PARAFRASEADAS: ya has enviado POST a {url}, pero ninguna '
+    'es una de las tres sondas canónicas; las variantes inventadas no prueban '
+    'el bypass. Envía TAL CUAL, como `data` de '
+    'nexus.web.request(url="{url}", method="POST"), una por llamada y en este '
+    'orden, solo las que faltan: {payloads}. La segunda es la que abre la '
+    'sala: un 302 con Set-Cookie devuelve un session_ref, y ese handle se pasa '
+    'en cada petición siguiente. Solo si las tres fallan, '
+    'nexus.cred.bruteforce.'
+)
+
 #: Respuestas que delatan un campo de contraseña en el HTML.
 _PASSWORD_INPUT_RE = re.compile(r"type\s*=\s*[\"']?password", re.IGNORECASE)
 #: Datos de un POST que ya es una sonda de inyección (no una credencial).
 _INJECTION_PROBE_RE = re.compile(r"['\"]|\[\$ne\]|--", re.IGNORECASE)
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _payload_key(data: str) -> str:
+    """Normalise a POST body so a canonical probe is recognised verbatim.
+
+    Whitespace and case are the only liberties taken: a different operator, a
+    different value or a JSON body is *not* the canonical probe, which is the
+    distinction P7 needed (``[$ne]=invalid`` silenced the old rule).
+    """
+    return _WHITESPACE_RE.sub("", str(data or "")).casefold()
 
 
 def login_probe_hint(actions: Iterable[Any] | None = None) -> str:
@@ -1029,7 +1069,8 @@ def login_probe_hint(actions: Iterable[Any] | None = None) -> str:
     if not history:
         return ""
     form_url = ""
-    probed = False
+    posts = 0
+    sent: set[str] = set()
     for action in history:
         arguments = action.get("arguments")
         arguments = arguments if isinstance(arguments, Mapping) else {}
@@ -1043,10 +1084,24 @@ def login_probe_hint(actions: Iterable[Any] | None = None) -> str:
             form_url = _action_url(action)
         if str(arguments.get("method") or "").upper() == "POST":
             data = str(arguments.get("data") or "")
-            if data and _INJECTION_PROBE_RE.search(data):
-                probed = True
-    if not form_url or probed:
+            if data:
+                posts += 1
+                sent.add(_payload_key(data))
+    if not form_url:
         return ""
+    canonical = {_payload_key(payload) for payload in LOGIN_PROBE_CANONICAL}
+    if _payload_key(LOGIN_PROBE_BYPASS) in sent or canonical <= sent:
+        return ""
+    missing = [
+        payload
+        for payload in LOGIN_PROBE_CANONICAL
+        if _payload_key(payload) not in sent
+    ]
+    if posts:
+        return LOGIN_PROBE_PAYLOAD_PROMPT.format(
+            url=form_url,
+            payloads=" · ".join(f'data="{payload}"' for payload in missing),
+        )
     return LOGIN_PROBE_PROMPT.format(url=form_url)
 
 

@@ -304,6 +304,11 @@ class ReActCoordinator:
     robots_hint_emitted: bool
     login_hint: str
     login_hint_emitted: bool
+    #: The exact texts already injected. The rule has two strengths ("nothing
+    #: probed" and "probed with invented payloads"), and the second one must
+    #: reach the model even though the first already fired -while neither may
+    #: be repeated turn after turn.
+    login_hints_sent: set[str]
     #: The board already proves the objective (verified top privilege + verified
     #: loot). Refreshed every turn from the facts; it adds the closure hint to the
     #: plan and exempts the active profile's token ceiling (V1-35, V1-38).
@@ -589,6 +594,7 @@ class ReActCoordinator:
         self.robots_hint_emitted = False
         self.login_hint = ""
         self.login_hint_emitted = False
+        self.login_hints_sent = set()
         #: ``host:port`` refs the *loop* closed with a barrier fact this run (see
         #: ``_close_stalled_branch``). Two reasons to keep them: never write the
         #: same barrier twice, and never let the loop's own reflex read as
@@ -1037,8 +1043,9 @@ class ReActCoordinator:
         its text and audits it once.
         """
         self.login_hint = login_probe_hint(self.actions)
-        if not self.login_hint or self.login_hint_emitted:
+        if not self.login_hint or self.login_hint in self.login_hints_sent:
             return
+        self.login_hints_sent.add(self.login_hint)
         self.store.append_run_event(
             self.tenant_id,
             self.run_id,

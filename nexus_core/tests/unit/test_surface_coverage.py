@@ -779,6 +779,7 @@ def test_the_loop_injects_the_login_probe_hint_once(tmp_path):
     coordinator.audit = AuditWriter(store)
     coordinator.login_hint = ""
     coordinator.login_hint_emitted = False
+    coordinator.login_hints_sent = set()
     coordinator.actions = [
         {
             "tool_id": "nexus.web.request",
