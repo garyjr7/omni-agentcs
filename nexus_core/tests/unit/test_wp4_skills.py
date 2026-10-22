@@ -571,13 +571,14 @@ def test_the_web_recon_skill_pivots_instead_of_insisting_on_one_vector() -> None
     assert content.index("### 7.") < content.index("## La fuerza bruta")
 
 
-def test_the_web_recon_skill_forces_hydra_on_a_login_form() -> None:
-    """Run run_6fef3c… (v4): nine turns of manual SQLi on ``/admin/``.
+def test_the_web_recon_skill_probes_the_login_before_hydra() -> None:
+    """Run run_6fef3c… (v4) se pasó nueve turnos con SQLi a mano; DeadDrop P1/P3
+    se pasó 35 minutos barriendo directorios con el login vulnerable.
 
-    The agent found an HTTP login and hand-wrote ``admin' or '1'='1`` with
-    ``nexus.web.request`` until the branch closed, without ever passing the form
-    to ``nexus.cred.bruteforce``. The skill now spends its login step on the
-    order and on the three fields the form module needs.
+    La regla tiene que ordenar las dos cosas: tres sondas deterministas primero
+    (una petición cada una, con su criterio de éxito) y Hydra **después**, sólo
+    si el login enumera usuarios o ya hay un usuario válido. El párrafo que
+    prohibía la sonda convirtió el login de DeadDrop en un muro.
     """
     skill = load_skill("web-recon-master", REPO_ROOT)
     assert skill is not None and skill.usable
@@ -585,14 +586,18 @@ def test_the_web_recon_skill_forces_hydra_on_a_login_form() -> None:
     flat = " ".join(content.split())
 
     assert "Regla de login web" in flat
-    assert "prohibido" in flat and "nexus.web.request" in flat
+    assert "Paso 1" in flat and "Paso 2" in flat
+    assert "admin'-- -" in flat and "[$ne]" in flat
+    assert "Set-Cookie" in flat
     assert 'service="http-post-form"' in flat
     for field in ("form_url=", "form_params=", "failure_string="):
         assert field in content
-    assert "Solo si Hydra falla" in flat
-    # The login is the *documented exception* to the brute-force gate, so the
-    # skill has to say both: why it is mandatory here and where the gate stays.
+    # Hydra ya no es el primer intento: la sonda sí, y la palabra «prohibido»
+    # sobre la sonda desapareció a propósito.
+    assert content.index("Paso 1") < content.index('service="http-post-form"')
     assert "excepción documentada" in flat
+    # Con sesión, cada fichero del panel es una lectura (P4 lo necesitó).
+    assert "Paso 3" in flat and "preview" in flat
     assert content.index("Regla de login web") < content.index("## La fuerza bruta")
 
 
