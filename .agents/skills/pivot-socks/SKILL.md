@@ -63,6 +63,14 @@ como él espera. El mismo puerto, con el mismo túnel, sale `open` con
 «puerto filtrado» desde un `nmap` por SOCKS: usa `nxc` (smb/ldap/winrm/ssh/mssql
 según el servicio), `impacket-*` o `nc -zv`.
 
+**Antes de todo eso, mira si el pivot ya tiene herramientas.** Un `ls -la ~` y
+un `command -v nmap nc python3` deciden la ruta: en DeadDrop el usuario traía
+`~/backup/nmap` (binario estático 6.49 con su propio `~/backup/DC` ya escaneado)
+y `~/chisel`. Si hay binario, el barrido se corre **en el host** con
+`nexus.post.ssh_exec` y te traes la salida; eso no depende del túnel y no miente.
+Si no hay binario y hace falta un escaneo fino, sube uno estático con
+`nexus.post.ssh_upload` en vez de pelear con proxychains.
+
 - Orden barato: `nxc smb <cidr>` para hosts Windows y SMB; para servicios sin
   SMB, `nc -zv` de los puertos que el enunciado nombre.
 - `--timeout 2` evita que un host muerto coma el presupuesto del barrido.
