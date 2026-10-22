@@ -27,7 +27,7 @@ import os
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Collection, Iterable, Mapping, Sequence
 
 #: Where the plan lives, relative to the engagement workspace root.
 PLAN_RELATIVE_PATH = os.path.join("loot", "ENGAGEMENT_PLAN.md")
@@ -503,6 +503,7 @@ def _fact_for_type(
     facts: Sequence[Mapping[str, Any]],
     *,
     todo: "Todo | None" = None,
+    proven_hosts: Collection[str] = (),
 ) -> Mapping[str, Any] | None:
     """The first fact that proves ``kind`` for this TODO, or ``None``.
 
@@ -517,9 +518,17 @@ def _fact_for_type(
     ``192.168.11.100``, so the plan claimed the internal network was reached
     before it was touched. A fact that carries no address of its own (a
     hostname-only finding) cannot be attributed either way and still counts.
+
+    ``proven_hosts`` are the hosts an earlier TODO already proved. A TODO that
+    names a host already proved **and** a new one is a step from the first to
+    the second ("pivot from 192.168.11.200 to 192.168.11.51"): only the new
+    host can close it, which is what stops the source host's own sweep from
+    proving the pivot. When every host it names is already proved the TODO is a
+    re-verification of a known host and keeps the old rule.
     """
     wanted = _flag_file_hint(todo) if todo is not None else ""
     wanted_hosts = _todo_hosts(todo) if todo is not None else set()
+    accept_hosts = wanted_hosts - set(proven_hosts)
     for fact in facts:
         fact_type = str(fact.get("fact_type") or "")
         if kind == "flag":
@@ -536,7 +545,11 @@ def _fact_for_type(
                     continue
             return fact
         elif fact_type == kind:
-            if wanted_hosts:
+            if accept_hosts:
+                seen = _fact_hosts(fact)
+                if seen and not seen & accept_hosts:
+                    continue
+            elif wanted_hosts:
                 seen = _fact_hosts(fact)
                 if seen and not seen & wanted_hosts:
                     continue
@@ -570,18 +583,28 @@ def reconcile(
         return plan, []
     ticks: list[str] = []
     updated: list[Todo] = []
+    # Hosts already proved by the TODOs the plan carries plus the ones this pass
+    # closes: a step that goes from a proved host to a new one is proved only by
+    # the new one.
+    proven_hosts: set[str] = set()
+    for todo in plan.todos:
+        if todo.done and todo.verified_by:
+            proven_hosts |= set(_IPV4_RE.findall(todo.verified_by))
     for todo in plan.todos:
         if not todo.open or not todo.fact_types:
             updated.append(todo)
             continue
         matched = None
         for kind in todo.fact_types:
-            matched = _fact_for_type(kind, facts, todo=todo)
+            matched = _fact_for_type(
+                kind, facts, todo=todo, proven_hosts=proven_hosts
+            )
             if matched is not None:
                 break
         if matched is None:
             updated.append(todo)
             continue
+        proven_hosts |= _fact_hosts(matched)
         kind = str(matched.get("fact_type") or "")
         key = _one_line(matched.get("key"), 120)
         updated.append(
