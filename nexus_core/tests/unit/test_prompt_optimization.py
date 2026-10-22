@@ -181,10 +181,14 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # argument list is the contract (action, target, principal, rights): measured
     # 17,647 for 80 tools (220,6 per tool), so the per-tool bound still holds and
     # only the total moves, to 17,750.
-    assert len(catalog) == 80
+    # ``nexus.post.verify_route`` (the 81st tool) is one capability line with two
+    # required arguments (from_host, to_host, method): measured 17,935 for 81
+    # tools (221,4 per tool), so the per-tool bound still holds and only the
+    # total moves, to 18,050.
+    assert len(catalog) == 81
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 17_750
+    assert len(text) < 18_050
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -246,7 +250,12 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # *order* with the exact endpoint a measured run guessed wrong, not prose.
     # ``nexus.attack.ad_acl`` adds its catalog line (the DACL primitive the
     # DeadDrop phase 5 lacked): measured 29,982, so the ceiling moves to 30,100.
-    assert len(_prompt(catalog)) < 30_100
+    # Tanda A costs 458 characters: the 81st catalog line plus the PIVOTE order
+    # (the canonical ``ssh -D`` + proxychains4 chain and the ``verify_route``
+    # step that proves it). It earns the room because it is what DeadDrop P11
+    # lacked: 20 turns of ``ssh -L`` and a wrapper script, 0 findings, no route
+    # anybody could prove. Measured 30,558; ceiling 30,650.
+    assert len(_prompt(catalog)) < 30_650
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -271,7 +280,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # V14 measured 30,257 (the same block on the 29,630 static prompt), so the
     # ceiling moves to 30_400.
     # The ad_acl catalog line measured 30,609 on the same block: ceiling 30_750.
-    assert len(prompt) < 30_750
+    # Tanda A adds the same 458 characters on top of the ad_acl measurement:
+    # 30,609 + 576 measured 31,185; ceiling 31_300.
+    assert len(prompt) < 31_300
     assert len(block) < 1_200
 
 
@@ -445,7 +456,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # V14's BlogEngine endpoint lands here too: measured 6,505, so the target
     # moves to 6_550 (250k still buys ~38 turns).
     # The ad_acl catalog line adds 19 characters: measured 6,569, ceiling 6_600.
-    assert tokens < 6_600
+    # Tanda A adds one compact catalog line and the PIVOTE order: measured 6,671,
+    # ceiling 6_700 (the 6,600 target still holds for every other factor).
+    assert tokens < 6_700
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -479,7 +492,8 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # average, so the target moves to 7_250 (250k buys ~34 turns).
     # The ad_acl line measured 7,272 on average (the mean is what grows with a
     # tool whose argument list is long): ceiling 7_350.
-    assert sum(totals) / len(totals) < 7_350
+    # Tanda A: measured 7,384 over the 22 iterations; ceiling 7_420.
+    assert sum(totals) / len(totals) < 7_420
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -503,7 +517,8 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # catalog), so the ceiling moves to 9_600.
     # The ad_acl catalog line measured 9,665 on the refresh turn (the static
     # prompt plus all 80 lines), so the ceiling moves to 9_750.
-    assert max(totals) < 9_750
+    # Tanda A: the full-catalog turn measured 9,809; ceiling 9_850.
+    assert max(totals) < 9_850
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):

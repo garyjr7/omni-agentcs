@@ -1123,7 +1123,7 @@ class ReActCoordinator:
         The rule lives in the planner (``pivot_hint``, deterministic over the
         persisted action history); the loop injects its text once.
         """
-        self.pivot_hint = pivot_hint(self.actions)
+        self.pivot_hint = pivot_hint(self.actions, facts=self._blackboard_facts())
         if not self.pivot_hint or self.pivot_hint_emitted:
             return
         self.store.append_run_event(
@@ -2677,7 +2677,15 @@ class ReActCoordinator:
         target = pivot_target_host(tool_id, self.action.arguments)
         if not target:
             return None
-        hint = await pivot_gate(tool_id, self.action.arguments, self.actions)
+        # The board, not the history, is what can turn the gate off: a verified
+        # ``route`` fact is proof of reachability, and an attempted ``ssh -D`` is
+        # not (DeadDrop P11 stayed gated on a tunnel that had already died).
+        hint = await pivot_gate(
+            tool_id,
+            self.action.arguments,
+            self.actions,
+            facts=self._blackboard_facts(),
+        )
         if not hint:
             return None
         self.pivot_gate_streak += 1

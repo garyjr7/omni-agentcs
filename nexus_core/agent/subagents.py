@@ -463,6 +463,10 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.post.job",
                 "nexus.post.pivot_bruteforce",
                 "nexus.post.pivot_http",
+                # The verification step of any tunnel this profile builds: without
+                # it the pivot is a claim (DeadDrop P11 burned twenty turns on
+                # tunnels nobody could prove).
+                "nexus.post.verify_route",
                 "nexus.post.crack_hash",
                 "nexus.post.ntlm_capture",
                 "nexus.post.dns_update",
@@ -540,6 +544,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.post.ssh_exec",
                 "nexus.post.pivot_bruteforce",
                 "nexus.post.pivot_http",
+                "nexus.post.verify_route",
                 "nexus.session.list",
                 "nexus.session.interact",
                 "nexus.c2.sliver_sessions",

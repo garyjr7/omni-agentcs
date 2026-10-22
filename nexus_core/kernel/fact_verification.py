@@ -21,6 +21,7 @@ from typing import NamedTuple
 from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlsplit
 
 from .blackboard import Blackboard, is_verified_fact
+from .route_facts import route_key
 
 #: Flag-shaped tokens (``flag{fake_flag}``, ``flag{fake_flag}``, ``flag{fake_flag}``) found in the
 #: output of a verified command execution. Keeping the prefixes explicit avoids
@@ -1232,6 +1233,24 @@ def derive_assertions(tool_id, arguments, result, context):
                 {'uid': 0, 'user': 'root', 'via': 'session.pty',
                  'session_id': session_id},
                 method='pty_capture_observed')
+    elif (tool_id == 'nexus.post.verify_route'
+          and result.verification_method == 'route_probe_ok'):
+        # Only a completed probe is a route. The value carries the invocation_id
+        # that proved it because the gate and the plan's reconciliation read
+        # ``verified_by`` as the route's provenance (DeadDrop P11: the run could
+        # not close ``pivot-lan`` because "a tunnel exists" was only an opinion).
+        route = output.get('route') if isinstance(output.get('route'), dict) else {}
+        from_host = str(route.get('from_host') or '')
+        to_host = str(route.get('to_host') or '')
+        if from_host and to_host:
+            port = route.get('to_port')
+            port = port if isinstance(port, int) and 0 < port < 65536 else None
+            add('route', route_key(from_host, to_host, port),
+                {'from_host': from_host, 'to_host': to_host, 'to_port': port,
+                 'method': str(route.get('method') or 'direct'),
+                 'forwarder_ref': route.get('forwarder_ref') or None,
+                 'verified_by': str(context.invocation_id)},
+                route_key(from_host, to_host, port), method='route_probe_ok')
     return rows
 
 

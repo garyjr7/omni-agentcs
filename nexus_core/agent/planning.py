@@ -53,10 +53,16 @@ Reglas:
 - `description` es una acción concreta y comprobable, no una intención vaga.
 - `fact_types` son los hechos VERIFICADOS que cierran el TODO. Valores válidos:
   host, service, web_app, endpoint, user, email, credential, access, privilege,
-  vulnerability, session, artifact, loot, hint, flag, report.
+  vulnerability, session, artifact, loot, hint, route, flag, report.
   Usa "flag" para la captura de una flag, "loot" para el primer archivo robado,
   "privilege" para uid=0/Administrador, "session"/"credential" para acceso, y
   deja `fact_types` vacío SOLO para el informe final.
+- Si el plan incluye un PIVOTE hacia otra red, declara `fact_types:["route"]` y
+  una `condition` que fije el destino: {"route":{"value.to_host":"10.0.0.5"}}. El
+  TODO lo cierra el hecho route verificado, no que el modelo diga que abrió un
+  túnel.
+- `condition` es opcional y sirve para no cerrar un TODO con el hecho de otro:
+  {"credential":{"source":"apk_decompile","key_matches":"synthetic-user*"}}.
 - `evidence` describe la prueba esperada (tool + condición), en una línea.
 - Un TODO por objetivo real del enunciado: si pide comprometer, escalar y capturar
   flags, el plan DEBE incluir acceso, escalada y cada flag.

@@ -102,6 +102,19 @@ ENGAGEMENT_PLAN_RULE_PROMPT = (
     "  palomea SOLO la evidencia; nunca los declares done a mano.\n"
 )
 
+#: The pivot order. Names ``nexus.post.verify_route``, so it is appended only
+#: when the catalog offers it (same rule as :data:`LOGIN_RULE_PROMPT`). Measured
+#: origin: DeadDrop P11 (2026-10-22). With SSH on 192.168.11.200 and the DC at
+#: 192.168.11.100, the model tried ``ssh -L`` port by port, then wrote a wrapper
+#: script, then concluded -wrongly- that ``shell.exec`` intercepted ``ssh``; the
+#: run closed at 45 iterations with 0 findings and no route it could prove.
+PIVOT_ROUTE_RULE_PROMPT = (
+    "- PIVOTE: la cadena canónica es `ssh -D` (SOCKS) + proxychains4, no `ssh -L`\n"
+    "  por puerto suelto. Tras montar el túnel, verifica la ruta con\n"
+    "  nexus.post.verify_route (forwarder_ref = extremo local) ANTES de enumerar\n"
+    "  el destino: un túnel sin verificación es una hipótesis, no una ruta.\n"
+)
+
 REACT_SYSTEM_PROMPT = """Eres OmniAgent, un agente autónomo de
 ciberseguridad ofensiva operando dentro de un engagement autorizado.
 
@@ -158,7 +171,7 @@ REGLAS:
   (hydra sin credenciales, un endpoint sin SQLi), no insistas más de 2 veces:
   registra un barrier para ese vector y PIVOTA al siguiente. Mapea todas las
   vulnerabilidades, no solo la primera que veas.
-{engagement_plan_rule}{passive_wait_rule}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
+{engagement_plan_rule}{passive_wait_rule}{pivot_route_rule}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
   enumeración → acceso inicial → escalada → post-explotación → reporte). El
   plan vigente se muestra más abajo: trabaja SIEMPRE la fase actual y usa su
   foco y su siguiente paso sugerido como guía. Cuando completes la fase, tus
@@ -566,6 +579,11 @@ def render_system_prompt(
         if "nexus.orchestrator.create_plan" in catalog
         else ""
     )
+    pivot_route_rule = (
+        PIVOT_ROUTE_RULE_PROMPT
+        if "nexus.post.verify_route" in catalog
+        else ""
+    )
     return REACT_SYSTEM_PROMPT.format(
         tool_catalog=catalog_text,
         black_box_rule=BLACK_BOX_PHILOSOPHY_PROMPT,
@@ -573,6 +591,7 @@ def render_system_prompt(
         login_rule=login_rule,
         cms_exploit_rule=cms_exploit_rule,
         engagement_plan_rule=plan_rule,
+        pivot_route_rule=pivot_route_rule,
         engagement_plan_summary=(
             engagement_plan_summary
             or "(sin plan de engagement: si el objetivo es un engagement, "

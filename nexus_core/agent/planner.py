@@ -1217,24 +1217,23 @@ class PivotState:
 def pivot_state(actions: Iterable[Any] | None = None) -> PivotState | None:
     """Return the pivot state, or ``None`` when the rule cannot apply.
 
-    ``None`` means one of the three preconditions is missing: no proven SSH
-    access, no recon of the operator (nothing to compare against) or a tunnel
-    already open (``ssh -D`` in a command), in which case there is nothing to
-    order. The scan set stops at the *first* ``ssh_exec`` on purpose: a host the
-    operator's recon found needs no tunnel, and a scan launched after the shell
-    existed is not evidence of reachability -it is the mistake this rule exists
-    to prevent-.
+    ``None`` means one of the two preconditions is missing: no proven SSH access
+    or no recon of the operator (nothing to compare against). The scan set stops
+    at the *first* ``ssh_exec`` on purpose: a host the operator's recon found
+    needs no tunnel, and a scan launched after the shell existed is not evidence
+    of reachability -it is the mistake this rule exists to prevent-.
+
+    A third precondition used to live here and was a hole: any ``ssh -D`` string
+    in the history turned the rule off. In DeadDrop P11 (2026-10-22) the model
+    ran ``ssh -D`` against a port the sandbox could not reach, the tunnel died
+    and the gate stayed blind for the remaining turns -the run had *attempted* a
+    tunnel, which is not a route-. Whether the operator can route somewhere is
+    now answered by a verified ``route`` fact (:mod:`nexus_core.kernel.
+    route_facts`), never by the text of a command.
     """
     history = [action for action in actions or () if isinstance(action, Mapping)]
     if not history:
         return None
-    for action in history:
-        arguments = action.get("arguments")
-        if not isinstance(arguments, Mapping):
-            continue
-        command = str(arguments.get("command") or "")
-        if "-D " in command or "-D1080" in command:
-            return None
     access_host = ""
     access_user = ""
     scanned: set[str] = set()
@@ -1306,6 +1305,7 @@ async def pivot_gate(
     actions: Iterable[Any] | None = None,
     *,
     probe: Any = None,
+    facts: Iterable[Mapping[str, Any]] | None = None,
 ) -> str:
     """Refuse a sweep the operator has no route to, *before* it burns its budget.
 
@@ -1321,13 +1321,19 @@ async def pivot_gate(
 
     Returns the order text to hand the model, or ``""`` to let the call run.
     ``probe`` is the async ``(host, ports) -> bool`` used to decide; ``None``
-    uses :func:`nexus_core.agent.reachability.host_reachable`.
+    uses :func:`nexus_core.agent.reachability.host_reachable`. ``facts`` is the
+    engagement board: a **verified route** from the access host to the target
+    is proof of reachability, so the probe is skipped and the sweep runs -a run
+    that installed and verified a SOCKS tunnel must not be asked to build it
+    again-.
     """
     state = pivot_state(actions)
     if state is None:
         return ""
     target = pivot_target_host(tool_id, arguments)
     if not target or target == state.access_host or target in state.scanned:
+        return ""
+    if _route_covers(state.access_host, target, facts):
         return ""
     ports = _scan_ports(arguments if isinstance(arguments, Mapping) else {})
     if probe is None:
@@ -1339,7 +1345,34 @@ async def pivot_gate(
     return _pivot_order(state, target)
 
 
-def pivot_hint(actions: Iterable[Any] | None = None) -> str:
+def _route_covers(
+    access_host: str,
+    target: str,
+    facts: Iterable[Mapping[str, Any]] | None,
+) -> bool:
+    """Whether the board already proves ``access_host -> target``.
+
+    Only a verifier's ``route`` fact counts (see
+    :func:`nexus_core.kernel.route_facts.route_reaches`); a route the model
+    registered is a hypothesis and keeps the gate armed.
+    """
+    if not facts:
+        return False
+    try:
+        from nexus_core.kernel.route_facts import route_reaches
+
+        return route_reaches(
+            facts, from_host=access_host, to_host=target
+        ) is not None
+    except Exception:  # noqa: BLE001 - a broken board must not unlock the gate
+        return False
+
+
+def pivot_hint(
+    actions: Iterable[Any] | None = None,
+    *,
+    facts: Iterable[Mapping[str, Any]] | None = None,
+) -> str:
     """Order the SOCKS pivot when the run aims at a host it cannot route to.
 
     Measured in DeadDrop P8 (2026-10-22, iterations 51-69): with a proven
@@ -1375,6 +1408,8 @@ def pivot_hint(actions: Iterable[Any] | None = None) -> str:
             )
             continue
         if host and host not in state.scanned and host != state.access_host:
+            if _route_covers(state.access_host, host, facts):
+                continue
             return _pivot_order(state, host)
     return ""
 

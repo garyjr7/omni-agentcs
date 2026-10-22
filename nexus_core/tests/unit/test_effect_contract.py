@@ -178,7 +178,9 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # V11 adds one active uploader (nexus.exploit.compile_and_upload writes to
     # the target): 79 - 47 = 32, so the read-only count is unchanged.
     # V12 adds one active directory writer (nexus.attack.ad_acl): 80 - 48 = 32.
-    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 32
+    # Tanda A adds one read-only prober (nexus.post.verify_route opens sockets and
+    # changes nothing): 81 - 48 = 33.
+    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 33
 
 
 def test_the_mislabelled_tools_now_declare_their_real_effect():

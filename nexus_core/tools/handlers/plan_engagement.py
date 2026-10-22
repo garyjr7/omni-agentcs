@@ -57,6 +57,21 @@ _TODO_SCHEMA = {
             "items": {"type": "string"},
             "maxItems": 6,
         },
+        # Tanda A: a TODO can say *which* fact closes it, not only its type.
+        # ``apk-creds`` was ticked by the shadow hash on DeadDrop because both
+        # TODOs declared ``credential`` and nothing distinguished them.
+        "condition": {
+            "type": "object",
+            "description": (
+                "Por tipo de hecho: cláusulas que el hecho debe cumplir. Claves: "
+                "source, key, key_matches (glob) o value.<campo>. Sin condición, "
+                "cualquier hecho del tipo cierra el TODO."
+            ),
+            "additionalProperties": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+            },
+        },
         "status": {"type": "string", "enum": ["pending", "in_progress"]},
     },
     "required": ["id", "description"],

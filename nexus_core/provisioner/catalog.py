@@ -48,6 +48,9 @@ PYTHON_HANDLERS = frozenset(
     {
         "dns",
         "dns_update",
+        # Tanda A: the route prober is pure Python sockets (TCP connect and a
+        # SOCKS5 CONNECT). It runs no binary, so there is nothing to install.
+        "verify_route",
         "tftp",
         "dpapi",
         "ftp",

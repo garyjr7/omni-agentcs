@@ -566,8 +566,8 @@ async def test_the_gate_ignores_the_access_host_and_the_recon_hosts():
 
 
 @pytest.mark.asyncio
-async def test_the_gate_never_consults_the_probe_without_access_or_a_tunnel_free_run():
-    """Sin SSH probado no hay pivote posible, y con el túnel abierto no hace falta."""
+async def test_the_gate_never_consults_the_probe_without_access():
+    """Sin SSH probado no hay pivote posible, así que la sonda ni se llama."""
     asked: list[tuple[str, tuple[int, ...]]] = []
 
     async def spy(host: str, ports) -> bool:
@@ -581,20 +581,33 @@ async def test_the_gate_never_consults_the_probe_without_access_or_a_tunnel_free
         [{"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.200"}}],
         probe=spy,
     ) == ""
-    # A tunnel already open: there is nothing to order.
-    assert await pivot_gate(
-        "nexus.recon.nmap",
-        {"target": "192.168.11.100"},
-        [
-            {
-                "tool_id": "nexus.shell.exec",
-                "arguments": {"command": "ssh -f -N -D 1080 svc-drop@192.168.11.200"},
-            },
-            *_pivot_history(),
-        ],
-        probe=spy,
-    ) == ""
     assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_an_attempted_tunnel_does_not_switch_the_gate_off():
+    """P11 (2026-10-22): un `ssh -D` que no arrancó dejó el gate ciego.
+
+    La versión anterior devolvía ``None`` en cuanto cualquier acción contenía
+    ``-D``: haberlo *intentado* contaba como tenerlo. Lo que desarma el gate es
+    un hecho ``route`` verificado (ver ``test_route_facts``), nunca el texto de
+    un comando.
+    """
+    attempted = [
+        {
+            "tool_id": "nexus.shell.exec",
+            "arguments": {"command": "ssh -f -N -D 1080 svc-drop@192.168.11.200"},
+            "tool_result": {"success": False, "outcome": "timeout"},
+        },
+        *_pivot_history(),
+    ]
+
+    order = await pivot_gate(
+        "nexus.recon.nmap", {"target": "192.168.11.100"}, attempted,
+        probe=_unreachable,
+    )
+
+    assert "PIVOTE NECESARIO" in order
 
 
 @pytest.mark.asyncio

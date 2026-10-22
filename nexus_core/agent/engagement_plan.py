@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field, replace
+from fnmatch import fnmatchcase
 from datetime import datetime, timezone
 from typing import Any, Collection, Iterable, Mapping, Sequence
 
@@ -74,11 +75,26 @@ FACT_TYPES = (
     "artifact",
     "loot",
     "hint",
+    #: ``route`` mirrors :data:`nexus_core.kernel.blackboard.FACT_TYPES`: a TODO
+    #: that promises to reach a host is closed by the verifier that proved the
+    #: path (`nexus.post.verify_route`), never by a tunnel the model says it
+    #: opened.
+    "route",
 )
 
 ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _TODO_LINE_RE = re.compile(r"^- \[(?P<mark>[ x~!])\] `(?P<id>[^`]+)`(?P<rest>.*)$")
 _META_MARK = "(tipos: "
+_CONDITION_MARK = "; condición: "
+
+#: Clauses a TODO condition can ask of a fact. ``source``/``key`` compare exactly
+#: unless they contain a wildcard; ``key_matches`` is always a glob; any
+#: ``value.<field>`` reads that field of the fact's value. Nothing else is
+#: accepted: a condition that cannot be evaluated would silently never match (or
+#: worse, always match), so an unknown clause is a validation error.
+_CONDITION_CLAUSES = ("source", "key", "key_matches")
+_CONDITION_VALUE_PREFIX = "value."
+_GLOB_CHARS = frozenset("*?[")
 
 
 @dataclass(frozen=True)
@@ -91,6 +107,12 @@ class Todo:
     #: Fact types that close this TODO when a verifier asserts one. Empty means
     #: the model owns the closure (a report, a decision).
     fact_types: tuple[str, ...] = ()
+    #: Per-fact-type condition the proving fact must satisfy (``{"credential":
+    #: {"source": "apk_decompile", "key_matches": "synthetic-user*"}}``). Required when
+    #: the type alone would accept the wrong fact: ``apk-creds`` was ticked by the
+    #: shadow hash on DeadDrop (2026-10-22) because both TODOs declared
+    #: ``credential`` and nothing distinguished them.
+    condition: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     status: str = TODO_PENDING
     #: Set when the engine ticked the TODO: the fact type and key that proved it.
     verified_by: str = ""
@@ -111,6 +133,9 @@ class Todo:
             "description": self.description,
             "evidence": self.evidence,
             "fact_types": list(self.fact_types),
+            "condition": {
+                kind: dict(clauses) for kind, clauses in self.condition.items()
+            },
             "status": self.status,
             "verified_by": self.verified_by,
             "reason": self.reason,
@@ -290,6 +315,9 @@ def todo_from_mapping(raw: Mapping[str, Any]) -> Todo:
             )
         if name not in fact_types:
             fact_types.append(name)
+    condition = _condition_from_mapping(
+        raw.get("condition"), todo_id=todo_id, fact_types=fact_types
+    )
     status = str(raw.get("status") or TODO_PENDING).strip().lower()
     if status not in TODO_STATUSES:
         raise ValueError(
@@ -301,9 +329,62 @@ def todo_from_mapping(raw: Mapping[str, Any]) -> Todo:
         description=description,
         evidence=evidence,
         fact_types=tuple(fact_types),
+        condition=condition,
         status=status,
         reason=_one_line(raw.get("reason"), 300),
     )
+
+
+def _condition_from_mapping(
+    raw: Any, *, todo_id: str, fact_types: Sequence[str]
+) -> dict[str, dict[str, str]]:
+    """Validate the optional ``condition`` a TODO declares, or raise ``ValueError``.
+
+    Shape: ``{fact_type: {clause: expected}}``. The fact type has to be one the
+    TODO already declares (a condition on a type it does not accept could never
+    run) and every clause has to be one this engine knows how to evaluate.
+    """
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            f"todo '{todo_id}': condition must be an object "
+            "({fact_type: {clause: value}})"
+        )
+    parsed: dict[str, dict[str, str]] = {}
+    for kind, clauses in raw.items():
+        name = str(kind or "").strip().lower()
+        if name not in fact_types:
+            raise ValueError(
+                f"todo '{todo_id}': condition names {name!r}, which the TODO does "
+                f"not declare in fact_types ({', '.join(fact_types) or 'none'})"
+            )
+        if not isinstance(clauses, Mapping) or not clauses:
+            raise ValueError(
+                f"todo '{todo_id}': condition[{name!r}] must be a non-empty object"
+            )
+        wanted: dict[str, str] = {}
+        for clause, expected in clauses.items():
+            key = str(clause or "").strip()
+            if key not in _CONDITION_CLAUSES and not key.startswith(_CONDITION_VALUE_PREFIX):
+                raise ValueError(
+                    f"todo '{todo_id}': unknown condition clause {key!r} "
+                    f"(allowed: {', '.join(_CONDITION_CLAUSES)}, value.<field>)"
+                )
+            if key.startswith(_CONDITION_VALUE_PREFIX) and len(key) == len(
+                _CONDITION_VALUE_PREFIX
+            ):
+                raise ValueError(
+                    f"todo '{todo_id}': condition clause {key!r} names no field"
+                )
+            text = str(expected if expected is not None else "").strip()
+            if not text:
+                raise ValueError(
+                    f"todo '{todo_id}': condition[{name!r}][{key!r}] needs a value"
+                )
+            wanted[key] = text
+        parsed[name] = wanted
+    return parsed
 
 
 def new_plan(
@@ -369,6 +450,8 @@ def render_markdown(plan: EngagementPlan) -> str:
             meta: list[str] = []
             if todo.fact_types:
                 meta.append("tipos: " + ", ".join(todo.fact_types))
+            if todo.condition:
+                meta.append("condición: " + _condition_text(todo.condition))
             if todo.evidence:
                 meta.append("evidencia: " + todo.evidence)
             line += " (" + "; ".join(meta) + ")"
@@ -378,6 +461,28 @@ def render_markdown(plan: EngagementPlan) -> str:
         if todo.status == TODO_FAILED:
             lines.append(f"      motivo: {todo.reason or '(sin motivo)'}")
     return "\n".join(lines) + "\n"
+
+
+def _condition_text(condition: Mapping[str, Mapping[str, str]]) -> str:
+    """Render a condition as ``credential.source=x, credential.key_matches=y*``."""
+    return ", ".join(
+        f"{kind}.{clause}={expected}"
+        for kind, clauses in condition.items()
+        for clause, expected in clauses.items()
+    )
+
+
+def _parse_condition_text(text: str) -> dict[str, dict[str, str]]:
+    """Read back :func:`_condition_text` (tolerant: unknown pieces are dropped)."""
+    parsed: dict[str, dict[str, str]] = {}
+    for item in text.split(","):
+        piece = item.strip()
+        head, sep, expected = piece.partition("=")
+        kind, dot, clause = head.partition(".")
+        if not sep or not dot or not kind.strip() or not clause.strip():
+            continue
+        parsed.setdefault(kind.strip(), {})[clause.strip()] = expected.strip()
+    return parsed
 
 
 def parse_markdown(text: str) -> EngagementPlan | None:
@@ -411,7 +516,7 @@ def parse_markdown(text: str) -> EngagementPlan | None:
             # metadata block is still valid (the model may write a short line).
             if body.startswith("—"):
                 body = body[1:].strip()
-            evidence, fact_types = _parse_meta(body)
+            evidence, fact_types, condition = _parse_meta(body)
             if fact_types or evidence:
                 body = body[: body.rfind(_META_MARK)].strip()
             description = body
@@ -421,6 +526,7 @@ def parse_markdown(text: str) -> EngagementPlan | None:
                 description=_one_line(description),
                 evidence=evidence,
                 fact_types=tuple(fact_types),
+                condition=condition,
                 status=status,
             )
             todos.append(current)
@@ -445,19 +551,26 @@ def parse_markdown(text: str) -> EngagementPlan | None:
     )
 
 
-def _parse_meta(text: str) -> tuple[str, list[str]]:
-    """Split our own ``(tipos: a, b; evidencia: …)`` suffix from a TODO line."""
+def _parse_meta(
+    text: str,
+) -> tuple[str, list[str], dict[str, dict[str, str]]]:
+    """Split our own ``(tipos: …; condición: …; evidencia: …)`` suffix."""
     body = text.strip()
     start = body.rfind(_META_MARK)
     if start < 0:
-        return "", []
+        return "", [], {}
     meta = body[start + len(_META_MARK):]
     if not meta.endswith(")"):
-        return "", []
+        return "", [], {}
     meta = meta[:-1]
-    types_text, _sep, evidence = meta.partition("; evidencia: ")
+    types_text, has_condition, rest = meta.partition(_CONDITION_MARK)
+    if has_condition:
+        condition_text, _sep, evidence = rest.partition("; evidencia: ")
+    else:
+        condition_text = ""
+        types_text, _sep, evidence = meta.partition("; evidencia: ")
     fact_types = [item.strip().lower() for item in types_text.split(",") if item.strip()]
-    return _one_line(evidence, 300), fact_types
+    return _one_line(evidence, 300), fact_types, _parse_condition_text(condition_text)
 
 
 # ------------------------------------------------------------ reconciliation
@@ -498,12 +611,47 @@ def _fact_hosts(fact: Mapping[str, Any]) -> set[str]:
     )
 
 
+def _value_matches(expected: str, actual: Any) -> bool:
+    """Exact match, or a simple glob when ``expected`` carries a wildcard."""
+    text = "" if actual is None else str(actual)
+    if any(char in expected for char in _GLOB_CHARS):
+        return fnmatchcase(text.lower(), expected.lower())
+    return text.lower() == expected.lower()
+
+
+def _condition_matches(
+    condition: Mapping[str, str], fact: Mapping[str, Any]
+) -> bool:
+    """Whether ``fact`` satisfies every clause of a TODO condition.
+
+    ``source``/``key`` read the fact's provenance and key (exact, or glob when
+    the expected value carries a wildcard); ``key_matches`` is always a glob;
+    ``value.<field>`` reads that field of the fact's value. A clause that names
+    a field the fact does not carry never matches -that is the point of the
+    condition-.
+    """
+    raw_value = fact.get("value")
+    value = raw_value if isinstance(raw_value, Mapping) else {}
+    for clause, expected in condition.items():
+        if clause.startswith(_CONDITION_VALUE_PREFIX):
+            field = clause[len(_CONDITION_VALUE_PREFIX):]
+            if not _value_matches(expected, value.get(field)):
+                return False
+        elif clause in ("key", "key_matches"):
+            if not _value_matches(expected, fact.get("key")):
+                return False
+        elif not _value_matches(expected, fact.get("source")):
+            return False
+    return True
+
+
 def _fact_for_type(
     kind: str,
     facts: Sequence[Mapping[str, Any]],
     *,
     todo: "Todo | None" = None,
     proven_hosts: Collection[str] = (),
+    condition: Mapping[str, str] | None = None,
 ) -> Mapping[str, Any] | None:
     """The first fact that proves ``kind`` for this TODO, or ``None``.
 
@@ -543,6 +691,8 @@ def _fact_for_type(
                 path = str(value.get("path") or value.get("file") or "").lower()
                 if wanted not in key and wanted not in path:
                     continue
+            if condition and not _condition_matches(condition, fact):
+                continue
             return fact
         elif fact_type == kind:
             if accept_hosts:
@@ -553,6 +703,8 @@ def _fact_for_type(
                 seen = _fact_hosts(fact)
                 if seen and not seen & wanted_hosts:
                     continue
+            if condition and not _condition_matches(condition, fact):
+                continue
             return fact
     return None
 
@@ -597,7 +749,11 @@ def reconcile(
         matched = None
         for kind in todo.fact_types:
             matched = _fact_for_type(
-                kind, facts, todo=todo, proven_hosts=proven_hosts
+                kind,
+                facts,
+                todo=todo,
+                proven_hosts=proven_hosts,
+                condition=todo.condition.get(kind),
             )
             if matched is not None:
                 break
@@ -651,6 +807,12 @@ def prompt_block(plan: EngagementPlan | None, *, max_todos: int = 40) -> str:
     if nxt is not None:
         lines.append(
             f"SIGUIENTE TODO: {nxt.id} — {nxt.description}"
+            + (
+                f" (se cierra con un hecho verificado que cumpla: "
+                f"{_condition_text(nxt.condition)})"
+                if nxt.condition
+                else ""
+            )
             + (f" (evidencia: {nxt.evidence})" if nxt.evidence else "")
         )
     else:

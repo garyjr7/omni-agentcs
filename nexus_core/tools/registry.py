@@ -66,6 +66,7 @@ def durable_tool_definitions(
     from .handlers.dns import dns_query_definition, dns_query_handler
     from .handlers.dns_update import dns_update_definition, dns_update_handler
     from .handlers.tftp import tftp_definition, tftp_handler
+    from .handlers.verify_route import verify_route_definition, verify_route_handler
     from .handlers.dpapi import dpapi_definition, dpapi_handler
     from .handlers.impacket_changepasswd import (
         impacket_changepasswd_definition,
@@ -239,6 +240,13 @@ def durable_tool_definitions(
             pivot_bruteforce_handler,
         ),
         "nexus.post.pivot_http": (pivot_http_definition(tenant_id), pivot_http_handler),
+        # The verification step of the pivot chain: a tunnel that is not proved
+        # is a hypothesis (DeadDrop P11 closed at 0 findings with a tunnel the
+        # model *believed* it had built).
+        "nexus.post.verify_route": (
+            verify_route_definition(tenant_id),
+            verify_route_handler,
+        ),
         "nexus.post.privesc_hints": (
             privesc_hints_definition(tenant_id),
             privesc_hints_handler,

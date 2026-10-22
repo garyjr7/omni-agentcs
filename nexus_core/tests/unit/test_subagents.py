@@ -31,7 +31,10 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # there was no way to obtain and read the PoC).
     # + nexus.exploit.compile_and_upload (V11/HackPark: the PoC was a BlogEngine
     # .ascx theme control and the run did not know how to upload it).
-    assert len(catalog) == 80
+    # + nexus.post.verify_route (Tanda A: a tunnel is a hypothesis until a TCP /
+    # SOCKS CONNECT proves it reaches the destination; DeadDrop P11 spent twenty
+    # turns on tunnels nobody could verify).
+    assert len(catalog) == 81
 
 
 def test_read_only_profiles_list_no_active_tool():

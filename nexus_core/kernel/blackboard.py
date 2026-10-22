@@ -45,6 +45,13 @@ FACT_TYPES = (
     "artifact",
     "loot",
     "hint",
+    #: A *verified* path from one host to another ("from 192.168.11.200 I reach
+    #: 192.168.11.100:445"). This is what closes a pivot TODO and what the
+    #: pre-scan gate reads instead of guessing from an ``ssh -D`` string in the
+    #: history. Only a verifier can assert it: a route the model registers stays
+    #: a hypothesis (`asserted_by="agent"`) and is ignored by every reader
+    #: (:mod:`nexus_core.kernel.route_facts`).
+    "route",
 )
 
 SOURCE_URI_PREFIX = "blackboard"
