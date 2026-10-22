@@ -481,6 +481,23 @@ def _flag_file_hint(todo: "Todo") -> str:
     return match.group(0).rsplit("/", 1)[-1] if match else ""
 
 
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+
+def _todo_hosts(todo: "Todo") -> set[str]:
+    """The IPv4 addresses a TODO names, or an empty set when it names none."""
+    return set(_IPV4_RE.findall(f"{todo.id} {todo.description} {todo.evidence}"))
+
+
+def _fact_hosts(fact: Mapping[str, Any]) -> set[str]:
+    """The IPv4 addresses a fact is attributed to (``key``/``target``)."""
+    return set(
+        _IPV4_RE.findall(
+            " ".join(str(fact.get(field) or "") for field in ("key", "target"))
+        )
+    )
+
+
 def _fact_for_type(
     kind: str,
     facts: Sequence[Mapping[str, Any]],
@@ -493,8 +510,16 @@ def _fact_for_type(
     carries the token, which is exactly what the flag verifier writes. A TODO
     that names a flag file (``root.txt``) only accepts that file, so the first
     flag of the engagement cannot tick the TODO of the last one.
+
+    A TODO that names hosts only accepts facts attributed to one of them: on
+    DeadDrop (2026-10-22) the DMZ sweep of ``192.168.11.200`` ticked the
+    ``pivot`` and ``enum-lan`` TODOs, which named ``192.168.11.51`` and
+    ``192.168.11.100``, so the plan claimed the internal network was reached
+    before it was touched. A fact that carries no address of its own (a
+    hostname-only finding) cannot be attributed either way and still counts.
     """
     wanted = _flag_file_hint(todo) if todo is not None else ""
+    wanted_hosts = _todo_hosts(todo) if todo is not None else set()
     for fact in facts:
         fact_type = str(fact.get("fact_type") or "")
         if kind == "flag":
@@ -511,6 +536,10 @@ def _fact_for_type(
                     continue
             return fact
         elif fact_type == kind:
+            if wanted_hosts:
+                seen = _fact_hosts(fact)
+                if seen and not seen & wanted_hosts:
+                    continue
             return fact
     return None
 
