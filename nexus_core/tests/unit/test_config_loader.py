@@ -99,3 +99,43 @@ def test_unwritable_recovery_does_not_crash(onboarding_env):
     paths.config_file.write_text("x=[")
     with patch("pathlib.Path.replace", side_effect=OSError):
         assert load_config(paths) == OmniConfig()
+
+
+# ------------------------------------------- the provider chain (Tanda C, 4.1)
+def test_the_fallback_chain_round_trips_and_reaches_the_environment(
+    onboarding_env, monkeypatch
+):
+    import os
+
+    monkeypatch.delenv("NEXUS_LLM_FALLBACK_CHAIN", raising=False)
+    config = OmniConfig()
+    config.llm.fallback_chain = ["groq", "deepseek", "ollama"]
+
+    restored = OmniConfig.from_toml(config.to_toml())
+    apply_environment(restored, onboarding_env.paths)
+
+    assert restored.llm.fallback_chain == ["groq", "deepseek", "ollama"]
+    assert os.environ["NEXUS_LLM_FALLBACK_CHAIN"] == "groq,deepseek,ollama"
+
+
+def test_an_absent_chain_keeps_the_environment_unset(onboarding_env, monkeypatch):
+    import os
+
+    monkeypatch.delenv("NEXUS_LLM_FALLBACK_CHAIN", raising=False)
+    apply_environment(OmniConfig(), onboarding_env.paths)
+    assert "NEXUS_LLM_FALLBACK_CHAIN" not in os.environ
+
+
+@pytest.mark.parametrize(
+    "chain",
+    [
+        ["groq", "nope"],          # unknown provider
+        ["groq", "deepseek", "groq"],  # a provider twice is a typo, not a plan
+        ["groq", "fake"],          # the fake would answer every failure
+    ],
+)
+def test_an_invalid_chain_is_rejected(chain):
+    config = OmniConfig()
+    config.llm.fallback_chain = chain
+    with pytest.raises(ValueError):
+        OmniConfig.from_toml(config.to_toml())

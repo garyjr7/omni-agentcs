@@ -33,6 +33,11 @@ class LlmConfig:
     default_provider: str = "groq"
     default_model: str = "qwen/qwen3.8-27b"
     api_keys: dict[str, str] = field(default_factory=dict, repr=False)
+    #: Providers tried in order when one of them cannot serve a turn (Tanda C,
+    #: Fix 4.1). Empty (the default) keeps the historical behaviour: one
+    #: provider plus the offline fake, no chain. When set, the **whole** chain is
+    #: built, not just the second entry.
+    fallback_chain: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -111,6 +116,16 @@ class OmniConfig:
             "postgres",
         }:
             raise ValueError("invalid provider or database backend")
+        chain = result.llm.fallback_chain
+        if any(name not in PROVIDERS for name in chain):
+            raise ValueError("invalid provider in fallback_chain")
+        if len(set(chain)) != len(chain):
+            raise ValueError("fallback_chain repeats a provider")
+        if chain and "fake" in chain:
+            # The fake is the offline last resort the selector appends itself; a
+            # chain that names it would silently answer every failure with a
+            # canned completion.
+            raise ValueError("fallback_chain must not include the fake provider")
         if not all(k in PROVIDERS and isinstance(v, str) for k, v in result.llm.api_keys.items()):
             raise ValueError("invalid API key mapping")
         if not all(isinstance(v, str) for v in result.provisioning.available_managers):

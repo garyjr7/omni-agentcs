@@ -160,6 +160,34 @@ async def _reap_stale_process_groups() -> None:
         return
 
 
+def _attach_llm_event_sink(llm_client: Any, context: Any) -> None:
+    """Route ``provider_fallback`` from the LLM chain into the run journal.
+
+    The chain lives below the coordinator, so the event has to be written by
+    whoever owns the store: this run. One event per transition (not per
+    attempt), ``{from, to, reason, attempt}`` in free-form JSON - no schema
+    migration (Tanda C, Fix 4.3). A store that cannot write must never turn a
+    working turn into a failed one.
+    """
+    attach = getattr(llm_client, "attach_event_sink", None)
+    store = getattr(context, "store", None)
+    if attach is None or store is None:
+        return
+    tenant_id = str(getattr(context, "tenant_id", ""))
+    run_id = str(getattr(context, "run_id", ""))
+
+    def sink(event_type: str, payload: dict[str, Any]) -> None:
+        try:
+            store.append_run_event(tenant_id, run_id, event_type, payload)
+        except Exception:  # noqa: BLE001 - telemetry never breaks the turn
+            return
+
+    try:
+        attach(sink)
+    except Exception:  # noqa: BLE001 - a client without the hook is normal
+        return
+
+
 async def run_react_loop(
     *,
     context: Any,
@@ -216,6 +244,7 @@ async def run_react_loop(
     # Before the first tool: whatever an earlier run left running is no longer
     # part of this engagement.
     await _reap_stale_process_groups()
+    _attach_llm_event_sink(llm_client, context)
     try:
         result = await _run_react_loop_impl(
             context=context,

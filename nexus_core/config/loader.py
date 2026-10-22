@@ -89,6 +89,13 @@ def apply_environment(config, paths):
         os.environ.setdefault("NEXUS_SCOPE_SIGNING_SECRET", config.scope.signing_secret)
     if config.llm.default_provider == "ollama":
         os.environ.setdefault("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    # Tanda C (Fix 4.1): the chain travels through the environment like every
+    # other operator setting, so the durable runner and the CLI build the same
+    # one without either re-reading the TOML.
+    if config.llm.fallback_chain:
+        os.environ.setdefault(
+            "NEXUS_LLM_FALLBACK_CHAIN", ",".join(config.llm.fallback_chain)
+        )
     if config.db.backend == "postgres" and not os.getenv("DATABASE_URL", "").startswith(
         ("postgres://", "postgresql://")
     ):

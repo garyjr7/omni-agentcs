@@ -366,6 +366,55 @@ def headless_requested(args: Any) -> bool:
     return bool(args.objective and (args.stream_json or args.json))
 
 
+def _revalidate_plan_on_resume(session: OmniSession) -> list[str]:
+    """Demote the TODOs an earlier run ticked without the promised evidence.
+
+    DeadDrop (2026-10-22): ``apk-creds`` was closed by a ``credential`` fact the
+    shadow crack produced, so a resumed run started at 7/12 and never went back
+    for the decompilation. The corrected plan is written **before** the first
+    turn and reported once, so the operator sees the count change; a failure here
+    never blocks the resume (the turn loop reconciles normally afterwards).
+    """
+    from nexus_core.agent.engagement_plan import load_plan_for, reconcile, save_plan
+    from nexus_core.kernel.blackboard import Blackboard, is_verified_fact
+
+    engagement_id = getattr(session, "engagement_id", None)
+    root = str(getattr(session, "workspace_root", "") or "") or None
+    if not engagement_id:
+        return []
+    try:
+        plan = load_plan_for(engagement_id, root)
+        if plan is None or not any(todo.done and todo.verified_by for todo in plan.todos):
+            return []
+        facts = [
+            fact
+            for fact in Blackboard(session.store).list_facts(
+                session.tenant_id, engagement_id, limit=2000
+            )
+            if is_verified_fact(fact)
+        ]
+        updated, _ = reconcile(plan, facts, engagement_id=engagement_id, revalidate=True)
+    except Exception as exc:  # noqa: BLE001 - a resume must never be blocked by this
+        render.render_error(f"no se pudo revisar el plan cargado: {type(exc).__name__}")
+        return []
+    if updated is None or updated is plan:
+        return []
+    demoted = [
+        before.id
+        for before, after in zip(plan.todos, updated.todos)
+        if before.done and not after.done
+    ]
+    if not demoted:
+        return []
+    save_plan(updated, root)
+    done, total = len(updated.todos) - len(updated.pending), len(updated.todos)
+    render.render_status(
+        f"plan recalculado: {', '.join(demoted)} vuelve a pendiente "
+        f"(la prueba no cumple la condición) · {done}/{total}"
+    )
+    return demoted
+
+
 def main(argv: Sequence[str] | None = None, *, config: Any = None, paths: Any = None) -> int:
     """Run the ``omni`` CLI; returns the process exit code.
 
@@ -555,6 +604,11 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
 
     session.autospawn = bool(args.autospawn)
     session.supervisor_budget = int(args.supervisor_budget or 0)
+
+    # ``--continue``/``--resume`` are the only entry points that load a plan
+    # another run wrote, so they are the only ones that distrust it (Tanda C, 5b).
+    if args.continue_engagement or args.resume:
+        _revalidate_plan_on_resume(session)
 
     # A resume with an explicit unknown-invocation policy is resolved before the
     # run starts, so a crashed step is never silently replayed by headless.

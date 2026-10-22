@@ -119,6 +119,73 @@ def test_select_llm_client_falls_back_to_fake_when_no_real(clean_env):
     assert select_llm_client().primary.config.provider.value == "fake"
 
 
+# ------------------------------------------- the chain (Tanda C, Fix 4.1)
+def _clients(*names):
+    from nexus_core.llm.abstraction import LLMProvider, LLMConfig
+
+    class _Stub:
+        def __init__(self, name):
+            self.config = LLMConfig(provider=LLMProvider(name), model=f"{name}-stub")
+
+    return {name: _Stub(name) for name in names}
+
+
+def test_select_llm_client_builds_the_whole_configured_chain(clean_env):
+    """The configured chain is the order, not "primary + one fallback"."""
+    from nexus_core.kernel import runtime
+
+    clean_env.setenv("NEXUS_LLM_FALLBACK_CHAIN", "groq,deepseek,ollama")
+    clients = _clients("groq", "deepseek", "ollama", "fake")
+    with mock.patch.object(
+        runtime.LLMFactory, "create_from_env", return_value=clients
+    ):
+        llm = runtime.select_llm_client()
+
+    assert llm.provider_names == ("groq", "deepseek", "ollama")
+    assert llm.primary.config.provider.value == "groq"
+    assert llm.fallback.config.provider.value == "deepseek"
+
+
+def test_an_absent_chain_keeps_the_historical_pair(clean_env):
+    from nexus_core.kernel import runtime
+
+    clean_env.delenv("NEXUS_LLM_FALLBACK_CHAIN", raising=False)
+    clients = _clients("groq", "deepseek", "ollama", "fake")
+    with mock.patch.object(
+        runtime.LLMFactory, "create_from_env", return_value=clients
+    ):
+        llm = runtime.select_llm_client()
+
+    assert llm.provider_names == ("groq", "deepseek")
+
+
+def test_a_chain_naming_a_missing_provider_drops_it(clean_env):
+    """A provider without a key is not silently replaced by another cloud."""
+    from nexus_core.kernel import runtime
+
+    clean_env.setenv("NEXUS_LLM_FALLBACK_CHAIN", "groq,nope,ollama")
+    clients = _clients("groq", "ollama", "fake")
+    with mock.patch.object(
+        runtime.LLMFactory, "create_from_env", return_value=clients
+    ):
+        llm = runtime.select_llm_client()
+
+    assert llm.provider_names == ("groq", "ollama")
+
+
+def test_a_chain_with_no_usable_provider_falls_back_to_the_offline_fake(clean_env):
+    from nexus_core.kernel import runtime
+
+    clean_env.setenv("NEXUS_LLM_FALLBACK_CHAIN", "nope")
+    clients = _clients("fake")
+    with mock.patch.object(
+        runtime.LLMFactory, "create_from_env", return_value=clients
+    ):
+        llm = runtime.select_llm_client()
+
+    assert llm.provider_names == ("fake",)
+
+
 # ------------------------------------------------------------------- consumers
 async def test_execute_react_uses_select_llm_client(clean_env, monkeypatch):
     """``execute_react`` must delegate the decision, never re-implement it."""

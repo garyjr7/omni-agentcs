@@ -89,13 +89,31 @@ class ExecutorRegistry:
         return result
 
 
+def _configured_chain(clients: dict[str, Any]) -> list[str]:
+    """``NEXUS_LLM_FALLBACK_CHAIN`` resolved against the clients with keys.
+
+    The value is the ``[llm] fallback_chain`` list ``apply_environment`` exports
+    as a comma-separated string. When it is set it *is* the order, and every
+    named provider with a usable key is kept - not only the second one. A chain
+    that names nothing available returns ``["fake"]``: the offline fake, never
+    silently another cloud.
+    """
+    raw = os.getenv("NEXUS_LLM_FALLBACK_CHAIN", "")
+    names = [name.strip().lower() for name in raw.split(",") if name.strip()]
+    if not names:
+        return []
+    available = [name for name in names if name in clients and name != "fake"]
+    return available or ["fake"]
+
+
 def select_llm_client() -> NexusLLM:
     """Build the resilient LLM client used by agentic executors.
 
     ``LLMFactory.create_from_env()`` always yields the deterministic ``fake``
     provider; real providers therefore take precedence and ``fake`` stays as the
     last-resort fallback. Shared by ``execute_react`` and the ``omni`` CLI so a
-    human-driven session runs on exactly the same provider resolution.
+    human-driven session runs on exactly the same provider resolution, and now
+    on the same *chain* (Tanda C, Fix 4.1).
     """
     from nexus_core.llm.abstraction import NexusLLM
 
@@ -104,12 +122,21 @@ def select_llm_client() -> NexusLLM:
         raise RuntimeError("no LLM provider configured")
     providers = [name for name in clients if name != "fake"] or ["fake"]
     selected = os.getenv("NEXUS_LLM_DEFAULT_PROVIDER")
+    configured = _configured_chain(clients)
     if selected:
         # Missing keys use offline fake, never silently choose a different cloud.
         providers = [selected] if selected in clients else ["fake"]
+    elif configured:
+        providers = configured
+    else:
+        # No chain configured: the historical pair -primary plus at most one
+        # fallback-, byte for byte what a run did before Tanda C (Fix 4.1).
+        providers = providers[:2]
+    chain = [clients[name] for name in providers]
     return NexusLLM(
-        primary=clients[providers[0]],
-        fallback=clients[providers[1]] if len(providers) > 1 else None,
+        primary=chain[0],
+        fallback=chain[1] if len(chain) > 1 else None,
+        chain=chain,
     )
 
 

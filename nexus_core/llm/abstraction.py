@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, cast
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, cast
 
 try:
     import httpx
@@ -87,6 +87,26 @@ class NexusLLMError(Exception):
     pass
 
 
+class LLMChainExhausted(NexusLLMError):
+    """Every provider of the chain failed; ``causes`` says how each one did.
+
+    The coordinator never learns there was a chain: it sees either the final
+    answer or this error, whose text names every provider, its status and its
+    failure class, so the operator does not have to guess which key is dead.
+    """
+
+    def __init__(self, causes: List[Dict[str, Any]]) -> None:
+        self.causes = tuple(causes)
+        detail = "; ".join(
+            f"{cause.get('provider') or '?'}: {cause.get('reason') or 'failed'}"
+            + (f" (status {cause['status_code']})" if cause.get("status_code") else "")
+            for cause in self.causes
+        )
+        super().__init__(
+            "all LLM providers failed: " + (detail or "no provider configured")
+        )
+
+
 class LLMInvalidJSONError(NexusLLMError):
     """The provider answered with content that is not the requested JSON object.
 
@@ -117,6 +137,91 @@ def is_invalid_json_error(error: BaseException | None) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+# --- Provider chain (Tanda C, Fix 4) -----------------------------------------
+#
+# Measured problem: ``NexusLLM`` had two slots and fell back on *any* exception,
+# so a 401 spent the other provider's quota, a 503 never reached the next
+# provider (the client raised after its own quota retry), and the final error was
+# one sentence with no cause. The chain classifies the failure first.
+
+#: Total attempts a **single** provider gets when it is the last one in the
+#: chain and the failure is transient (Fix 4.2).
+CHAIN_MAX_ATTEMPTS = 3
+
+#: The correction a malformed-JSON turn gets on the same provider, once.
+JSON_ONLY_INSTRUCTION = (
+    "Responde SOLO con un objeto JSON válido, sin markdown ni texto fuera del objeto."
+)
+
+FAILURE_AUTH = "authentication"
+FAILURE_TRANSIENT = "transient"
+FAILURE_INVALID_JSON = "invalid_json"
+FAILURE_OTHER = "other"
+
+#: Statuses that mean "the configuration is wrong", not "the provider is busy".
+AUTH_STATUS_CODES = frozenset({401, 403})
+
+
+def _status_code_of(error: BaseException | None) -> int | None:
+    """HTTP status of an exception, walking the cause chain.
+
+    The clients wrap provider errors in ``NexusLLMError`` (sometimes with
+    ``from e``, sometimes after dropping it), so the code can live on the error
+    itself or on any of its causes.
+    """
+    seen: set[int] = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        raw = getattr(current, "status_code", None)
+        if isinstance(raw, int):
+            return raw
+        raw = getattr(getattr(current, "response", None), "status_code", None)
+        if isinstance(raw, int):
+            return raw
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def classify_failure(error: Exception) -> str:
+    """Which retry policy a provider failure asks for (Fix 4.2).
+
+    * ``authentication`` -401/403: configuration, terminal, no retry anywhere;
+    * ``invalid_json`` -the provider answered, the answer is not the contract;
+    * ``transient`` -quota (413/429/503), the 5xx family (500/502/504) and
+      network stalls: another provider may serve it right now, and as the last
+      provider it earns the bounded retries;
+    * ``other`` -anything else: never retried on the same provider, but the next
+      one still gets the turn; as the last provider it fails the run.
+    """
+    if is_invalid_json_error(error):
+        return FAILURE_INVALID_JSON
+    status = _status_code_of(error)
+    if status in AUTH_STATUS_CODES:
+        return FAILURE_AUTH
+    if status is not None and (
+        is_transient_status(status) or is_rate_limit_status(status)
+    ):
+        return FAILURE_TRANSIENT
+    if _is_transport_stall(error) or isinstance(error, (asyncio.TimeoutError, TimeoutError)):
+        return FAILURE_TRANSIENT
+    return FAILURE_OTHER
+
+
+def _nexus_error(message: str, cause: BaseException | None = None) -> "NexusLLMError":
+    """A ``NexusLLMError`` that keeps the provider's status for the chain."""
+    error = NexusLLMError(message)
+    status = _status_code_of(cause) if cause is not None else None
+    if status is not None:
+        error.status_code = status  # type: ignore[attr-defined]
+    return error
+
+
+def _with_json_correction(messages: List["LLMMessage"]) -> List["LLMMessage"]:
+    """``messages`` plus the one-shot instruction a malformed answer earns."""
+    return [*messages, LLMMessage(role="user", content=JSON_ONLY_INSTRUCTION)]
 
 
 def _is_transport_stall(error: Exception) -> bool:
@@ -640,7 +745,9 @@ class DeepSeekClient(OpenAIClient):
                     (time.perf_counter() - start) * 1000, response.model_dump())
             except (openai.APIError, httpx.HTTPError) as exc:
                 if not await self._retry(exc, attempt):
-                    raise NexusLLMError(f"DeepSeek request failed ({type(exc).__name__})") from None
+                    # Keep the status on the error: the chain decides "next
+                    # provider" or "fail the run" from it (Tanda C, Fix 4.2).
+                    raise _nexus_error(f"DeepSeek request failed ({type(exc).__name__})", exc) from None
             finally:
                 self.pacer.settle(reservation, actual)
         raise NexusLLMError("DeepSeek retry budget exhausted")
@@ -686,7 +793,7 @@ class DeepSeekClient(OpenAIClient):
             except (openai.APIError, httpx.HTTPError) as exc:
                 # Never replay deltas after any content reached the consumer.
                 if collected or not await self._retry(exc, attempt):
-                    raise NexusLLMError(f"DeepSeek stream failed ({type(exc).__name__})") from None
+                    raise _nexus_error(f"DeepSeek stream failed ({type(exc).__name__})", exc) from None
             finally:
                 try:
                     if response is not None:
@@ -1014,14 +1121,21 @@ class LLMFactory:
 
 
 class NexusLLM:
+    """A chain of LLM clients with per-cause retry and aggregated errors.
+
+    ``primary``/``fallback`` stay for the callers that still name two slots;
+    ``chain`` is the real order. The coordinator is deliberately unaware of the
+    chain: it receives the final response or :class:`LLMChainExhausted`, whose
+    text names every provider, its status code and its failure class (Fix 4.4).
     """
-    A high-level wrapper for LLM clients that provides resilience and stats.
-    """
+
     def __init__(
         self,
         primary: BaseLLMClient,
         fallback: Optional[BaseLLMClient] = None,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        *,
+        chain: Optional[List[BaseLLMClient]] = None,
     ):
         """
         Initializes the NexusLLM wrapper.
@@ -1030,62 +1144,141 @@ class NexusLLM:
             primary: The main LLM client to use.
             fallback: An optional secondary client to use if the primary fails.
             logger: An optional logger instance.
+            chain: The full provider order, when longer than two. ``None``
+                keeps the historical ``(primary, fallback)`` pair.
         """
         self.primary = primary
         self.fallback = fallback
         self._logger = logger or get_logger("NexusLLM")
-        
+        ordered = [primary, fallback] if chain is None else list(chain)
+        self.chain: tuple[BaseLLMClient, ...] = tuple(
+            client for client in ordered if client is not None
+        )
+        self._event_sink: Optional[Callable[[str, Dict[str, Any]], None]] = None
+
         # Stats tracking
         self._calls_total = 0
         self._calls_primary = 0
         self._calls_fallback = 0
+        self._successes_primary = 0
+        self._successes_fallback = 0
         self._total_tokens = 0
         self._total_latency_ms = 0.0
+
+    @property
+    def provider_names(self) -> tuple[str, ...]:
+        """The chain in order, as the operator named it."""
+        return tuple(client.config.provider.value for client in self.chain)
+
+    def attach_event_sink(self, sink: Optional[Callable[[str, Dict[str, Any]], None]]) -> None:
+        """Route chain telemetry (``provider_fallback``) to the run journal.
+
+        The sink is a plain ``(event_type, payload)`` callable so the LLM layer
+        never imports the kernel (Fix 4.3). Telemetry must never break a turn:
+        a raising sink is logged and ignored.
+        """
+        self._event_sink = sink
+
+    def _emit(self, event_type: str, payload: Dict[str, Any]) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            self._event_sink(event_type, payload)
+        except Exception as error:  # noqa: BLE001 - telemetry is best-effort
+            self._logger.warning(f"LLM telemetry sink failed for {event_type}: {error}")
 
     async def complete(
         self, messages: List[LLMMessage], **kwargs: Any
     ) -> LLMResponse:
-        """
-        Executes a completion request with optional fallback.
+        """Executes a completion request across the provider chain (Fix 4.2).
 
-        Tries the primary client first. If it fails, and a fallback client
-        is configured, it retries the request with the fallback.
+        * transient (413/429/500/502/503/504, network stall): next provider, and
+          when the failing one is the last, up to ``CHAIN_MAX_ATTEMPTS`` attempts
+          with exponential backoff;
+        * invalid JSON: the same provider once more with an explicit
+          \"answer only JSON\" turn, then the next provider;
+        * authentication (401/403): terminal, the run fails with the cause.
 
         Args:
             messages: The conversation history.
             **kwargs: Provider-specific arguments.
 
         Returns:
-            The LLMResponse from the successful client.
+            The LLMResponse from the first provider that answered.
 
         Raises:
-            NexusLLMError: If both primary and fallback clients fail.
+            LLMChainExhausted: If every provider failed; carries each cause.
         """
         self._calls_total += 1
-        try:
-            self._logger.info(f"Attempting completion with primary provider: {self.primary.config.provider.value}")
-            self._calls_primary += 1
-            response = await self.primary.complete(messages, **kwargs)
-            self._update_stats(response)
-            return response
-        except Exception as primary_error:
-            self._logger.warning(
-                f"Primary provider '{self.primary.config.provider.value}' failed: {primary_error}"
-            )
-            if self.fallback:
-                self._logger.info(f"Attempting completion with fallback provider: {self.fallback.config.provider.value}")
+        chain = self.chain or (self.primary,)
+        causes: List[Dict[str, Any]] = []
+        for index, client in enumerate(chain):
+            name = client.config.provider.value
+            is_last = index == len(chain) - 1
+            self._logger.info(f"Attempting completion with provider: {name}")
+            if index == 0:
+                self._calls_primary += 1
+            else:
                 self._calls_fallback += 1
+            json_correction_used = False
+            attempt = 1
+            while True:
                 try:
-                    response = await self.fallback.complete(messages, **kwargs)
+                    response = await client.complete(messages, **kwargs)
+                    if index == 0:
+                        self._successes_primary += 1
+                    else:
+                        self._successes_fallback += 1
                     self._update_stats(response)
                     return response
-                except Exception as fallback_error:
-                    self._logger.error(
-                        f"Fallback provider '{self.fallback.config.provider.value}' also failed: {fallback_error}"
+                except Exception as error:  # noqa: BLE001 - classified below
+                    kind = classify_failure(error)
+                    status = _status_code_of(error)
+                    causes.append(
+                        {
+                            "provider": name,
+                            "status_code": status,
+                            "reason": kind,
+                            "message": str(error)[:300],
+                            "attempt": attempt,
+                        }
                     )
-                    raise NexusLLMError("Both primary and fallback LLM providers failed.") from fallback_error
-            else:
-                raise NexusLLMError("Primary LLM provider failed and no fallback is configured.") from primary_error
+                    self._logger.warning(
+                        f"Provider '{name}' failed ({kind}"
+                        f"{f', status {status}' if status else ''}): {error}"
+                    )
+                    if kind == FAILURE_AUTH:
+                        # A rejected key or a forbidden account is configuration:
+                        # spending the rest of the chain on it hides the cause.
+                        raise LLMChainExhausted(causes) from error
+                    if kind == FAILURE_INVALID_JSON and not json_correction_used:
+                        json_correction_used = True
+                        attempt += 1
+                        messages = _with_json_correction(messages)
+                        self._logger.info(
+                            f"Provider '{name}' returned invalid JSON; retrying once "
+                            f"with an explicit JSON-only instruction"
+                        )
+                        continue
+                    if not is_last:
+                        self._emit(
+                            "provider_fallback",
+                            {
+                                "from": name,
+                                "to": chain[index + 1].config.provider.value,
+                                "reason": kind,
+                                "attempt": attempt,
+                            },
+                        )
+                        break
+                    if kind == FAILURE_TRANSIENT and attempt < CHAIN_MAX_ATTEMPTS:
+                        delay = backoff_base_seconds() * (2 ** (attempt - 1))
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                        attempt += 1
+                        continue
+                    raise LLMChainExhausted(causes) from error
+        raise LLMChainExhausted(causes)
 
     @property
     def supports_streaming(self) -> bool:
@@ -1143,8 +1336,8 @@ class NexusLLM:
         avg_latency = (self._total_latency_ms / self._calls_total) if self._calls_total > 0 else 0
         return {
             "calls_total": self._calls_total,
-            "calls_primary_success": self._calls_primary - self._calls_fallback,
-            "calls_fallback_success": self._calls_fallback,
+            "calls_primary_success": self._successes_primary,
+            "calls_fallback_success": self._successes_fallback,
             "total_tokens_processed": self._total_tokens,
             "avg_latency_ms": avg_latency,
         }

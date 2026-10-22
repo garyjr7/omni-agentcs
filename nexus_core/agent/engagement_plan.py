@@ -709,11 +709,64 @@ def _fact_for_type(
     return None
 
 
+def _condition_expectation(todo: Todo) -> str:
+    """The clauses a done TODO claims to satisfy, as one readable line."""
+    clauses = [
+        f"{key}={value}"
+        for condition in (todo.condition or {}).values()
+        for key, value in condition.items()
+    ]
+    return ", ".join(clauses)
+
+
+def _fact_observation(todo: Todo, fact: Mapping[str, Any] | None) -> str:
+    """What the board actually offers for the clauses the condition names.
+
+    Read exactly like :func:`_condition_matches` does: a bare clause reads the
+    fact's provenance (``source``/``key``), ``value.<field>`` reads its value.
+    """
+    if fact is None:
+        return "no matching fact"
+    raw_value = fact.get("value")
+    value = raw_value if isinstance(raw_value, Mapping) else {}
+    parts: list[str] = []
+    for condition in (todo.condition or {}).values():
+        for clause in sorted(condition):
+            if clause.startswith(_CONDITION_VALUE_PREFIX):
+                field = clause[len(_CONDITION_VALUE_PREFIX):]
+                parts.append(f"{clause}={value.get(field)}")
+            else:
+                parts.append(f"{clause}={fact.get(clause)}")
+    if not parts:
+        return f"{fact.get('fact_type')}:{fact.get('key')}"
+    return ", ".join(parts)
+
+
+def _evidence_still_holds(
+    todo: Todo,
+    facts: Sequence[Mapping[str, Any]],
+    proven_hosts: Collection[str],
+) -> Mapping[str, Any] | None:
+    """The fact that still proves a done TODO, or ``None`` (Tanda C, 5b)."""
+    for kind in todo.fact_types:
+        matched = _fact_for_type(
+            kind,
+            facts,
+            todo=todo,
+            proven_hosts=proven_hosts,
+            condition=todo.condition.get(kind),
+        )
+        if matched is not None:
+            return matched
+    return None
+
+
 def reconcile(
     plan: EngagementPlan | None,
     verified_facts: Iterable[Mapping[str, Any]],
     *,
     engagement_id: str | None = None,
+    revalidate: bool = False,
 ) -> tuple[EngagementPlan | None, list[str]]:
     """Tick every open TODO whose declared fact type is on the board.
 
@@ -721,6 +774,17 @@ def reconcile(
     object) when nothing moved, so callers can skip the disk write. Facts from a
     *different* engagement never tick anything: a plan outlives one run but not
     one engagement.
+
+    ``revalidate=True`` (Tanda C, 5b) also walks the TODOs the engine already
+    ticked and demotes to ``pending`` the ones whose claimed evidence no longer
+    satisfies their own condition. That is the only way back from the plan that
+    congratulated itself on DeadDrop (2026-10-22): ``apk-creds`` was closed by a
+    ``credential`` fact whose ``source`` was ``shadow_crack``, not the
+    ``apk_decompile`` the TODO asked for, so a resumed run kept 7/12 and treated
+    the decompilation step as done. A TODO the *model* closed (no
+    ``verified_by``, e.g. a ``report``) is never demoted: the engine did not
+    prove it, so the engine does not get to unprove it. Default ``False`` keeps
+    ``update_plan``'s behaviour byte-for-byte; only resume turns it on.
     """
     if plan is None:
         return None, []
@@ -732,17 +796,54 @@ def reconcile(
         if isinstance(fact, Mapping) and fact.get("verified") is True
     ]
     if not facts:
+        # An empty board is "nothing loaded", not "nothing happened": demoting
+        # every tick on it would erase a plan for a missing query.
         return plan, []
+    todos = list(plan.todos)
+    demoted: list[str] = []
+    if revalidate:
+        claims = {
+            todo.id: set(_IPV4_RE.findall(todo.verified_by))
+            for todo in todos
+            if todo.done and todo.verified_by
+        }
+        for index, todo in enumerate(todos):
+            if not todo.done or not todo.verified_by or not todo.fact_types:
+                continue
+            claimed_hosts = set().union(*claims.values()) if claims else set()
+            claimed_hosts -= claims.get(todo.id, set())
+            if _evidence_still_holds(todo, facts, claimed_hosts) is not None:
+                continue
+            closest = None
+            for kind in todo.fact_types:
+                closest = _fact_for_type(kind, facts, todo=todo, proven_hosts=claimed_hosts)
+                if closest is not None:
+                    break
+            expected = _condition_expectation(todo) or ", ".join(todo.fact_types)
+            observed = _fact_observation(todo, closest)
+            reason = (
+                f"condition not met: expected {expected}, got {observed}"
+                if todo.condition
+                else f"evidence not on the board: expected {expected}, got {observed}"
+            )
+            todos[index] = replace(
+                todo,
+                status=TODO_PENDING,
+                verified_by="",
+                reason=_one_line(reason, 300),
+            )
+            claims.pop(todo.id, None)
+            demoted.append(todo.id)
     ticks: list[str] = []
     updated: list[Todo] = []
     # Hosts already proved by the TODOs the plan carries plus the ones this pass
     # closes: a step that goes from a proved host to a new one is proved only by
     # the new one.
     proven_hosts: set[str] = set()
-    for todo in plan.todos:
+    for todo in todos:
         if todo.done and todo.verified_by:
             proven_hosts |= set(_IPV4_RE.findall(todo.verified_by))
-    for todo in plan.todos:
+    for todo in todos:
         if not todo.open or not todo.fact_types:
             updated.append(todo)
             continue
@@ -771,7 +872,7 @@ def reconcile(
             )
         )
         ticks.append(todo.id)
-    if not ticks:
+    if not ticks and not demoted:
         return plan, []
     return (
         replace(plan, todos=tuple(updated), updated_at=_now()),
