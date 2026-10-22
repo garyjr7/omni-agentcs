@@ -227,11 +227,18 @@ def test_explicit_timeout_overrides_profile_timeout():
     assert sandbox.calls[0][1] == 90
 
 
-def test_profile_description_warns_against_passing_ports():
+def test_the_profile_description_asks_for_ports_only_where_they_narrow():
+    # `service` ahora acota cuando se le pasa `-p`; `full_tcp` no. El texto del
+    # contrato tiene que decir las dos cosas o el modelo seguirá barriendo los
+    # 65535 puertos para pedir la versión de dos (medido en DeadDrop P1/P3).
     definition = nmap_definition()
     properties = definition.input_schema["properties"]
-    assert "NO pases" in properties["profile"]["description"]
-    assert "'-p'" in properties["flags"]["description"]
+    profile = properties["profile"]["description"]
+    assert "no pases '-p'" in profile
+    assert "Con 'service' pásalos" in profile
+    flags = properties["flags"]["description"]
+    assert "'-p <puertos>'" in flags
+    assert "sin '-p' el -sV -sC recorre los 65535" in definition.description
 
 
 def test_profile_flags_combine_with_explicit_flags():

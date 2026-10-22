@@ -323,11 +323,14 @@ def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
         name="Nmap scan",
         tenant_id=tenant_id,
         description=(
-            "Ejecuta nmap contra un target dentro del scope. Los perfiles "
-            "'full_tcp' y 'service' ya incluyen -p- (todos los puertos TCP): "
-            "no añadas flags '-p' con ellos. Si un barrido -p- sale vacío o "
-            "ciego (pocos abiertos, muchos filtered), se reintenta top-1000 "
-            "(-sS -Pn --min-rate 1000)."
+            "Ejecuta nmap contra un target dentro del scope. 'full_tcp' barre "
+            "los 65535 puertos TCP y 'service' añade -sV -sC a ese barrido: no "
+            "añadas '-p' con 'full_tcp'. Con 'service' sí: pásale los puertos "
+            "que ya descubriste (p. ej. flags=['-p','22,80','-sV','-sC']) y el "
+            "handler quita el -p- del perfil para hacer fingerprint solo de "
+            "esos; sin '-p' el -sV -sC recorre los 65535 y tarda minutos. Si un "
+            "barrido -p- sale vacío o ciego (pocos abiertos, muchos filtered), "
+            "se reintenta top-1000 (-sS -Pn --min-rate 1000)."
         ),
         input_schema={
             "type": "object",
@@ -337,11 +340,12 @@ def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
                     "type": "string",
                     "enum": sorted(NMAP_PROFILES),
                     "description": (
-                        "Perfil de escaneo predefinido. Usa 'full_tcp' para "
-                        "descubrimiento completo de puertos (-p-) y 'service' "
-                        "para detección de versiones sobre todos los puertos. "
-                        "'full_tcp' y 'service' ya incluyen -p-: NO pases flags "
-                        "'-p' ni '--top-ports' con esos perfiles (se ignoran)."
+                        "Perfil de escaneo predefinido. 'full_tcp' descubre los "
+                        "65535 puertos TCP (-p-) y 'service' añade detección de "
+                        "versiones. Con 'full_tcp' no pases '-p' ni "
+                        "'--top-ports' (se ignoran). Con 'service' pásalos si ya "
+                        "sabes los puertos: '-p 22,80' hace que -sV -sC corra "
+                        "solo ahí y el -p- del perfil se descarta."
                     ),
                 },
                 "flags": {
@@ -349,9 +353,9 @@ def nmap_definition(tenant_id: str = "system") -> ToolDefinition:
                     "items": {"type": "string", "maxLength": 64},
                     "maxItems": 20,
                     "description": (
-                        "Flags sueltos extra (p. ej. ['-sV']). Si usas el perfil "
-                        "'service' o 'full_tcp', no incluyas '-p': el perfil ya "
-                        "barre los 65535 puertos TCP."
+                        "Flags sueltos extra (p. ej. ['-sV']). Con 'service' "
+                        "incluye '-p <puertos>' para acotar el fingerprint a lo "
+                        "ya descubierto; con 'full_tcp' no incluyas '-p'."
                     ),
                 },
                 "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 1800},
