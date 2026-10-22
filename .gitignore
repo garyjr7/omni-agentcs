@@ -64,3 +64,21 @@ whatweb_run_*.json
 cred_run_*/
 ftp_run_*/
 docs/missions/evidence/raw-runs/
+
+# Artefactos de benchmark y diccionarios descargados (474 MB medidos el 2026-10-22)
+bench/results/*
+!bench/results/.gitkeep
+rockyou.txt
+ssh_pw.txt
+wl_*.txt
+*.hash
+listener_status_*.json
+
+# Salidas de herramienta que el agente deja en la raiz del workspace
+gobuster_out_*.txt
+sqlmap_out_*/
+crack_run_*/
+
+# Reconocimiento y evidencia de engagement (nunca commitear)
+recon/
+loot/
