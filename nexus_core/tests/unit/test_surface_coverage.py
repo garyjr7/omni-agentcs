@@ -780,6 +780,8 @@ def test_the_loop_injects_the_login_probe_hint_once(tmp_path):
     coordinator.login_hint = ""
     coordinator.login_hint_emitted = False
     coordinator.login_hints_sent = set()
+    coordinator.login_withheld = set()
+    coordinator.login_withheld_announced = False
     coordinator.actions = [
         {
             "tool_id": "nexus.web.request",
@@ -1111,3 +1113,73 @@ def test_the_loop_injects_the_pivot_hint_once(tmp_path):
         )
         == 1
     )
+
+
+def test_the_loop_withholds_the_directory_sweeps_until_the_login_is_probed(tmp_path):
+    """P9 (2026-10-22): el aviso llegó en la 6 y el run fue a gobuster en la 8.
+
+    Una orden en prosa no bastó dos veces (P1/P3 y P9), así que las tools de
+    barrido salen del catálogo mientras el formulario leído no reciba la sonda
+    canónica; vuelven en cuanto el bypass corre.
+    """
+    from nexus_core.agent.react_coordinator import ReActCoordinator
+    from nexus_core.kernel.audit import AuditWriter
+
+    store = ControlStore(tmp_path / "withhold.db")
+    store.initialize()
+    run = store.create_run(TENANT, {})
+    coordinator = ReActCoordinator.__new__(ReActCoordinator)
+    coordinator.tenant_id = TENANT
+    coordinator.engagement_id = ENGAGEMENT
+    coordinator.agent_id = "omni"
+    coordinator.active_subagent_id = "omni"
+    coordinator.store = store
+    coordinator.run_id = run["id"]
+    coordinator.iteration = 6
+    coordinator.plan = build_plan(counts={"service": 2})
+    coordinator.audit = AuditWriter(store)
+    coordinator.login_hint = ""
+    coordinator.login_hint_emitted = False
+    coordinator.login_hints_sent = set()
+    coordinator.login_withheld = set()
+    coordinator.login_withheld_announced = False
+    coordinator.actions = [
+        {
+            "tool_id": "nexus.web.request",
+            "arguments": {"url": f"http://{TARGET}/login"},
+            "tool_result": {
+                "output": {
+                    "body_preview": (
+                        '<form method="POST" action="/login">'
+                        '<input type="password" name="password"></form>'
+                    )
+                }
+            },
+        }
+    ]
+
+    coordinator._refresh_login_hint()
+
+    assert "nexus.recon.gobuster" in coordinator.login_withheld
+    assert "nexus.web.ffuf" in coordinator.login_withheld
+    events = [
+        event
+        for event in store.list_run_events(TENANT, run["id"])
+        if event.get("event_type") == "react.login_probe_withheld"
+    ]
+    assert len(events) == 1
+
+    # The canonical bypass lands: the sweeps come back.
+    coordinator.actions.append(
+        {
+            "tool_id": "nexus.web.request",
+            "arguments": {
+                "url": f"http://{TARGET}/login",
+                "method": "POST",
+                "data": "username=admin'-- -&password=x",
+            },
+            "tool_result": {"output": {"status": 302}},
+        }
+    )
+    coordinator._refresh_login_hint()
+    assert coordinator.login_withheld == set()

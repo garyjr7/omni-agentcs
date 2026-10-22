@@ -1003,6 +1003,15 @@ LOGIN_PROBE_CANONICAL: tuple[str, ...] = (
 #: matter how many operators the model invented.
 LOGIN_PROBE_BYPASS = LOGIN_PROBE_CANONICAL[1]
 
+#: Tools withheld while a read login form has no canonical probe. An order is not
+#: enough: P1 and P3 spent 5 and 30 minutes on directory wordlists, and P9
+#: (2026-10-22) received the order at iteration 6 and still went to gobuster at 8.
+#: The probes are three cheap POSTs through a tool that is never withheld, so the
+#: gate cannot deadlock; the sweep comes back as soon as the bypass has run.
+LOGIN_PROBE_WITHHELD_TOOLS: frozenset[str] = frozenset(
+    {"nexus.recon.gobuster", "nexus.web.ffuf"}
+)
+
 LOGIN_PROBE_PROMPT = (
     'FORMULARIO DE LOGIN SIN SONDEAR: {url} sirve un formulario con campo de '
     'contraseña y el run todavía no ha probado nada sobre él. Antes de '
@@ -1139,6 +1148,36 @@ def _action_target_host(action: Mapping[str, Any]) -> str:
         if match:
             return match.group(0)
     return ""
+
+
+def login_probe_pending(actions: Iterable[Any] | None = None) -> bool:
+    """True while a read login form has not received the bypass probe.
+
+    Same predicate as :func:`login_probe_hint`, exposed as a boolean so the loop
+    can withhold the directory sweeps instead of only asking for the probes.
+    """
+    history = [action for action in actions or () if isinstance(action, Mapping)]
+    form_url = ""
+    sent: set[str] = set()
+    for action in history:
+        arguments = action.get("arguments")
+        arguments = arguments if isinstance(arguments, Mapping) else {}
+        body = _action_body_preview(action)
+        if (
+            not form_url
+            and body
+            and "<form" in body.casefold()
+            and _PASSWORD_INPUT_RE.search(body)
+        ):
+            form_url = _action_url(action)
+        if str(arguments.get("method") or "").upper() == "POST":
+            data = str(arguments.get("data") or "")
+            if data:
+                sent.add(_payload_key(data))
+    if not form_url:
+        return False
+    canonical = {_payload_key(payload) for payload in LOGIN_PROBE_CANONICAL}
+    return _payload_key(LOGIN_PROBE_BYPASS) not in sent and not canonical <= sent
 
 
 def pivot_hint(actions: Iterable[Any] | None = None) -> str:

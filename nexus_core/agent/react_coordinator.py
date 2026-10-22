@@ -134,7 +134,9 @@ from .planner import (
     escalate_enumeration,
     escalate_session,
     established_msf_session,
+    LOGIN_PROBE_WITHHELD_TOOLS,
     login_probe_hint,
+    login_probe_pending,
     objective_completion,
     pivot_hint,
     robots_paths_hint,
@@ -599,6 +601,10 @@ class ReActCoordinator:
         self.login_hint = ""
         self.login_hint_emitted = False
         self.login_hints_sent = set()
+        #: Tools withheld while the login form has no canonical probe (P9: the
+        #: order arrived and the run still went to gobuster).
+        self.login_withheld: set[str] = set()
+        self.login_withheld_announced = False
         self.pivot_hint = ""
         self.pivot_hint_emitted = False
         #: ``host:port`` refs the *loop* closed with a barrier fact this run (see
@@ -1051,6 +1057,22 @@ class ReActCoordinator:
         unit-tested over the persisted action history); the loop only injects
         its text and audits it once.
         """
+        # A read form with no canonical probe also withholds the directory
+        # sweeps: asking twice was not enough (P9, 2026-10-22).
+        pending = login_probe_pending(self.actions)
+        self.login_withheld = set(LOGIN_PROBE_WITHHELD_TOOLS) if pending else set()
+        if pending and not self.login_withheld_announced:
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                "react.login_probe_withheld",
+                {
+                    "iteration": self.iteration,
+                    "withheld": sorted(self.login_withheld),
+                    "reason": "login_form_not_probed",
+                },
+            )
+            self.login_withheld_announced = True
         self.login_hint = login_probe_hint(self.actions)
         if not self.login_hint or self.login_hint in self.login_hints_sent:
             return
@@ -1660,6 +1682,7 @@ class ReActCoordinator:
             tool_id: entry
             for tool_id, entry in filter_catalog(self.subagent, self.catalog).items()
             if tool_id not in self.unavailable_tools
+            and tool_id not in getattr(self, "login_withheld", set())
         }
         if self.plan.current != self.last_phase:
             self.store.append_run_event(
