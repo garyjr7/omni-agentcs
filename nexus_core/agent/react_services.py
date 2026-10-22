@@ -299,6 +299,7 @@ class ContextBuilder:
         coverage_hint: str = "",
         robots_hint: str = "",
         login_hint: str = "",
+        pivot_hint: str = "",
         engagement_plan_summary: str = "",
     ) -> list[LLMMessage]:
         full_catalog = self.full_catalog_for(iteration=iteration, subagent=subagent)
@@ -376,6 +377,11 @@ class ContextBuilder:
         # lives in the planner (``login_probe_hint``, deterministic).
         if login_hint:
             system_prompt = f"{system_prompt}\n\n{login_hint}"
+        # The board proves access on one host and the run aims at another
+        # network: the order names the tunnel command, because a local tool has
+        # no route and its "filtered" is noise (DeadDrop P8, 19 iterations).
+        if pivot_hint:
+            system_prompt = f"{system_prompt}\n\n{pivot_hint}"
         # WP5: the objective's flags are in hand. The model still decides how to
         # close -the loop only forbids more exploration and orders the closure-;
         # if it ignores the order for the whole margin, the loop closes itself.

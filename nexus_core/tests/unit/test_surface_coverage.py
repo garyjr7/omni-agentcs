@@ -1041,3 +1041,73 @@ def test_every_status_renders_without_raising(status):
     )
     text = render_coverage(Coverage(entries=(entry,), counts={status: 1}))
     assert f"{TARGET}:22/tcp" in text
+
+
+def test_the_loop_injects_the_pivot_hint_once(tmp_path):
+    """The wiring of ``pivot_hint``: an internal host gets the tunnel order.
+
+    DeadDrop P8 (2026-10-22, iterations 51-69): with SSH access on
+    ``192.168.11.200`` and the DC at ``192.168.11.100``, the run kept running
+    local tools against the DC; nothing in the prompt named the tunnel.
+    """
+    from nexus_core.agent.react_coordinator import ReActCoordinator
+    from nexus_core.kernel.audit import AuditWriter
+
+    store = ControlStore(tmp_path / "pivot.db")
+    store.initialize()
+    run = store.create_run(TENANT, {})
+    coordinator = ReActCoordinator.__new__(ReActCoordinator)
+    coordinator.tenant_id = TENANT
+    coordinator.engagement_id = ENGAGEMENT
+    coordinator.agent_id = "omni"
+    coordinator.active_subagent_id = "omni"
+    coordinator.store = store
+    coordinator.run_id = run["id"]
+    coordinator.iteration = 12
+    coordinator.plan = build_plan(counts={"service": 2})
+    coordinator.audit = AuditWriter(store)
+    coordinator.pivot_hint = ""
+    coordinator.pivot_hint_emitted = False
+    coordinator.actions = [
+        {
+            "tool_id": "nexus.recon.nmap",
+            "arguments": {"target": "192.168.11.200"},
+            "tool_result": {"output": {"hosts": ["192.168.11.200"]}},
+        },
+        {
+            "tool_id": "nexus.post.ssh_exec",
+            "arguments": {
+                "target": "192.168.11.200",
+                "username": "svc-drop",
+                "command": "id",
+            },
+            "tool_result": {"output": {"stdout": "uid=1001(svc-drop)\n"}},
+        },
+        {
+            "tool_id": "nexus.recon.nmap",
+            "arguments": {"target": "192.168.11.100"},
+            "tool_result": {"output": {}},
+        },
+    ]
+
+    coordinator._refresh_pivot_hint()
+
+    assert "PIVOTE NECESARIO" in coordinator.pivot_hint
+    assert "svc-drop@192.168.11.200" in coordinator.pivot_hint
+    events = [
+        event
+        for event in store.list_run_events(TENANT, run["id"])
+        if event.get("event_type") == "react.pivot"
+    ]
+    assert len(events) == 1
+    coordinator._refresh_pivot_hint()
+    assert (
+        len(
+            [
+                event
+                for event in store.list_run_events(TENANT, run["id"])
+                if event.get("event_type") == "react.pivot"
+            ]
+        )
+        == 1
+    )

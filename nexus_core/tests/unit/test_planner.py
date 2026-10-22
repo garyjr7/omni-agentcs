@@ -18,6 +18,7 @@ from nexus_core.agent.planner import (
     enumeration_budget_hint,
     normalize_counts,
     login_probe_hint,
+    pivot_hint,
     plan_from_summary,
     robots_paths_hint,
     webshell_stall_hint,
@@ -332,6 +333,65 @@ def test_the_exact_bypass_payload_silences_the_rule():
         _post_action("http://192.168.11.200/login", "username=admin'-- -&password=x"),
     ]
     assert login_probe_hint(actions) == ""
+
+
+def _ssh_access(host: str, user: str = "svc-drop") -> dict:
+    return {
+        "tool_id": "nexus.post.ssh_exec",
+        "arguments": {"target": host, "username": user, "command": "id"},
+        "tool_result": {"output": {"stdout": "uid=1001\n", "exit_status": 0}},
+    }
+
+
+def test_the_pivot_hint_orders_the_tunnel_for_another_network():
+    """DeadDrop P8 (2026-10-22, iteraciones 51-69): 19 turnos sin ruta al DC.
+
+    Con `access` en 192.168.11.200 y el DC en 192.168.11.100, el run lanzó
+    `nxc smb 192.168.11.100` desde el operador y leyó el silencio como host
+    caído; la skill `pivot-socks` estaba en el catálogo y nunca se cargó.
+    """
+    actions = [
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.200"}},
+        _ssh_access("192.168.11.200"),
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.100"}},
+    ]
+
+    hint = pivot_hint(actions)
+
+    assert "PIVOTE NECESARIO" in hint
+    assert "192.168.11.200" in hint and "192.168.11.100" in hint
+    assert "svc-drop@192.168.11.200" in hint
+    assert "ssh -f -N -D 1080" in hint
+    assert "proxychains4" in hint and "-sT" in hint
+    assert 'nexus.skill.load(name="pivot-socks")' in hint
+
+
+def test_no_pivot_hint_for_a_host_the_operators_own_recon_reached():
+    """Un host plano no necesita túnel: el `nmap` local lo vio."""
+    actions = [
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.200"}},
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.51"}},
+        _ssh_access("192.168.11.200"),
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.51"}},
+    ]
+    assert pivot_hint(actions) == ""
+
+
+def test_no_pivot_hint_before_there_is_access():
+    actions = [{"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.100"}}]
+    assert pivot_hint(actions) == ""
+
+
+def test_a_tunnel_that_is_already_open_silences_the_pivot_hint():
+    actions = [
+        {
+            "tool_id": "nexus.shell.exec",
+            "arguments": {"command": "ssh -f -N -D 1080 svc-drop@192.168.11.200"},
+        },
+        _ssh_access("192.168.11.200"),
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.100"}},
+    ]
+    assert pivot_hint(actions) == ""
 
 
 def test_a_page_without_a_password_field_never_asks_for_probes():

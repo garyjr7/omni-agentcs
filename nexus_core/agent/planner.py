@@ -1038,6 +1038,9 @@ _PASSWORD_INPUT_RE = re.compile(r"type\s*=\s*[\"']?password", re.IGNORECASE)
 #: Datos de un POST que ya es una sonda de inyección (no una credencial).
 _INJECTION_PROBE_RE = re.compile(r"['\"]|\[\$ne\]|--", re.IGNORECASE)
 _WHITESPACE_RE = re.compile(r"\s+")
+#: An IPv4 literal inside a target, a host or a URL. The pivot rule compares only
+#: the /24, which is the granularity the engagement's subnets actually have.
+_IPV4_RE = re.compile(r"(?<!\d)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?!\d)")
 
 
 def _payload_key(data: str) -> str:
@@ -1103,6 +1106,107 @@ def login_probe_hint(actions: Iterable[Any] | None = None) -> str:
             payloads=" · ".join(f'data="{payload}"' for payload in missing),
         )
     return LOGIN_PROBE_PROMPT.format(url=form_url)
+
+
+PIVOT_PROMPT = (
+    'PIVOTE NECESARIO: tienes acceso en {access_host} y estás apuntando a '
+    '{target}, que está en otra red y **no** es alcanzable desde el operador. '
+    'Un `nmap`/`nxc` lanzado en local contra esa IP no tiene ruta: lo que '
+    'devuelve es ruido, no un host caído. El pivote no es opcional. Carga la '
+    'skill con nexus.skill.load(name="pivot-socks") y ejecuta, en este orden:\n'
+    '  1. túnel (nexus.shell.exec, con la credencial del vault):\n'
+    '     ssh -f -N -D 1080 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no '
+    '{access_user}@{access_host}\n'
+    '  2. proxychains en el workspace (loot/proxychains.conf): socks5 127.0.0.1 '
+    '1080, proxy_dns, strict_chain.\n'
+    '  3. recon por el túnel con `-sT` (un `-sS`/`-O` por SOCKS miente):\n'
+    '     proxychains4 -q -f loot/proxychains.conf nmap -sT -Pn -p '
+    '88,389,445,3389 {target}\n'
+    'El túnel vive en el sandbox de esa llamada: lánzalo con `nexus.post.job` si '
+    'necesita sobrevivir al turno, y no lo repitas en cada paso.'
+)
+
+
+def _action_target_host(action: Mapping[str, Any]) -> str:
+    """Return the IPv4 an action aims at, from its own arguments."""
+    arguments = action.get("arguments")
+    arguments = arguments if isinstance(arguments, Mapping) else {}
+    for key in ("target", "host", "url"):
+        value = arguments.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        match = _IPV4_RE.search(value)
+        if match:
+            return match.group(0)
+    return ""
+
+
+def pivot_hint(actions: Iterable[Any] | None = None) -> str:
+    """Order the SOCKS pivot when the run aims at a host it cannot route to.
+
+    Measured in DeadDrop P8 (2026-10-22, iterations 51-69): with a proven
+    ``access`` on ``192.168.11.200`` and the DC at ``192.168.11.100`` reachable
+    only from that host, the model ran ``shell.exec`` + ``ssh -i`` and then
+    ``nxc smb 192.168.11.100`` **from the operator**, which has no route, and
+    burned the last nineteen iterations. The ``pivot-socks`` skill existed and
+    was never loaded.
+
+    The trigger is deterministic from the history, and it is **not** "another
+    subnet": DeadDrop's DMZ (``192.168.11.200``) and its DC
+    (``192.168.11.100``) share the /24, and only the first is routable from the
+    operator. What separates them is *who found them*: a host the run's own
+    ``nmap`` reached needs no pivot, and a host it never saw while it holds an
+    SSH access is behind one. An engagement that already opened a tunnel
+    (``ssh -D`` in a command) never sees the order.
+    """
+    history = [action for action in actions or () if isinstance(action, Mapping)]
+    if not history:
+        return ""
+    access_host = ""
+    access_user = ""
+    scanned: set[str] = set()
+    if any(
+        "-D " in str((action.get("arguments") or {}).get("command") or "")
+        for action in history
+        if isinstance(action.get("arguments"), Mapping)
+    ):
+        return ""
+    # Pass 1: what the *operator's* recon saw before the shell existed. A host
+    # found by the run's own nmap needs no tunnel, so the order must not fire on
+    # it -and the scan that targets the internal host itself must not count as
+    # the proof that the internal host is reachable.
+    for action in history:
+        tool_id = str(action.get("tool_id") or "")
+        arguments = action.get("arguments")
+        arguments = arguments if isinstance(arguments, Mapping) else {}
+        host = _action_target_host(action)
+        if tool_id.endswith("ssh_exec") and str(arguments.get("command") or "") and host:
+            access_host, access_user = host, str(arguments.get("username") or "")
+            break
+        if tool_id == "nexus.recon.nmap" and host:
+            scanned.add(host)
+    if not access_host or not scanned:
+        return ""
+    # Pass 2: the first action after the shell that aims at a host the
+    # operator's recon never reached is a pivot attempt without a tunnel.
+    seen_access = False
+    for action in history:
+        tool_id = str(action.get("tool_id") or "")
+        arguments = action.get("arguments")
+        arguments = arguments if isinstance(arguments, Mapping) else {}
+        host = _action_target_host(action)
+        if not seen_access:
+            seen_access = tool_id.endswith("ssh_exec") and bool(
+                str(arguments.get("command") or "")
+            )
+            continue
+        if host and host not in scanned and host != access_host:
+            return PIVOT_PROMPT.format(
+                access_host=access_host,
+                access_user=access_user or "<usuario>",
+                target=host,
+            )
+    return ""
 
 
 def robots_paths_hint(actions: Iterable[Any] | None = None) -> str:

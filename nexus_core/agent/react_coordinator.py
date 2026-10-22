@@ -136,6 +136,7 @@ from .planner import (
     established_msf_session,
     login_probe_hint,
     objective_completion,
+    pivot_hint,
     robots_paths_hint,
     session_handover,
     verified_credential,
@@ -304,6 +305,9 @@ class ReActCoordinator:
     robots_hint_emitted: bool
     login_hint: str
     login_hint_emitted: bool
+    #: Order to open the SOCKS pivot (P8: nineteen iterations aimed at the DC
+    #: from a host with no route to it).
+    pivot_hint: str
     #: The exact texts already injected. The rule has two strengths ("nothing
     #: probed" and "probed with invented payloads"), and the second one must
     #: reach the model even though the first already fired -while neither may
@@ -595,6 +599,8 @@ class ReActCoordinator:
         self.login_hint = ""
         self.login_hint_emitted = False
         self.login_hints_sent = set()
+        self.pivot_hint = ""
+        self.pivot_hint_emitted = False
         #: ``host:port`` refs the *loop* closed with a barrier fact this run (see
         #: ``_close_stalled_branch``). Two reasons to keep them: never write the
         #: same barrier twice, and never let the loop's own reflex read as
@@ -782,6 +788,9 @@ class ReActCoordinator:
         # A login form read but never probed gets the three deterministic
         # probes, before any wordlist (DeadDrop P1/P3).
         self._refresh_login_hint()
+        # A host in another network reached from a proven access needs the SOCKS
+        # tunnel, not a local tool that has no route (DeadDrop P8).
+        self._refresh_pivot_hint()
         self.last_plan = self.plan
         return Transition.READY
 
@@ -1063,6 +1072,29 @@ class ReActCoordinator:
             decision="degrade",
         )
         self.login_hint_emitted = True
+
+    def _refresh_pivot_hint(self) -> None:
+        """Order the SOCKS pivot when the run aims at a host it cannot route to.
+
+        The rule lives in the planner (``pivot_hint``, deterministic over the
+        persisted action history); the loop injects its text once.
+        """
+        self.pivot_hint = pivot_hint(self.actions)
+        if not self.pivot_hint or self.pivot_hint_emitted:
+            return
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.pivot",
+            {
+                "iteration": self.iteration,
+                "phase": str(getattr(self.plan, "current", "") or ""),
+                "last_tools": self._last_tools(),
+                "hint": self.pivot_hint,
+            },
+        )
+        self.audit_step(iteration=self.iteration, action="pivot", decision="degrade")
+        self.pivot_hint_emitted = True
 
     def _stalled_branch(self, coverage: Any) -> Any | None:
         """The one service the recent actions were aimed at (``None`` if unclear).
@@ -1678,6 +1710,7 @@ class ReActCoordinator:
             coverage_hint=self.coverage_hint,
             robots_hint=self.robots_hint,
             login_hint=self.login_hint,
+            pivot_hint=self.pivot_hint,
             engagement_plan_summary=self.engagement_plan_text,
         )
         reservation = None
