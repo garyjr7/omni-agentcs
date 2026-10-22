@@ -88,6 +88,34 @@ def proc_argv0(pid: int) -> str:
     return raw.split(b"\0", 1)[0].decode("utf-8", "replace")
 
 
+def group_members(pgid: int) -> list[tuple[int, str]]:
+    """Return ``(pid, argv0)`` of every process whose group is ``pgid``."""
+    members: list[tuple[int, str]] = []
+    try:
+        entries = [item for item in Path("/proc").iterdir() if item.name.isdigit()]
+    except OSError:
+        return members
+    for entry in entries:
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        close = stat.rfind(")")
+        if close == -1:
+            continue
+        fields = stat[close + 1 :].split()
+        if len(fields) < 3:
+            continue
+        try:
+            if int(fields[2]) != pgid:
+                continue
+        except ValueError:
+            continue
+        pid = int(entry.name)
+        members.append((pid, proc_argv0(pid)))
+    return members
+
+
 def register(pid: int, argv: Iterable[Any], *, run_id: str = "") -> Path | None:
     """Record a process group so a later run can reap it. Never raises."""
     if int(pid) <= 0:
@@ -160,14 +188,34 @@ def reap_stale(
         if age < min_age_seconds:
             continue
         recorded_start = str(record.get("start_time") or "")
+        recorded_argv0 = str(record.get("argv0") or "")
         live_start = proc_start_time(pid)
-        if not live_start or live_start != recorded_start:
-            # Gone, or the pid now belongs to someone else: never signal it.
+        if not live_start:
+            # The leader is gone but the group may still have members: a wrapper
+            # (`sh -c ...`) exits and leaves the real tool running in the same
+            # group -that is exactly how the measured `gobuster` survived. Signal
+            # only when a member carries the recorded binary.
+            wanted = Path(recorded_argv0).name if recorded_argv0 else ""
+            members = group_members(pid)
+            matches = [
+                member
+                for member in members
+                if not wanted or Path(member[1]).name == wanted
+            ]
+            if matches and _kill_group(pid):
+                killed.append({**record, "members": len(matches)})
             path.unlink(missing_ok=True)
             continue
-        recorded_argv0 = str(record.get("argv0") or "")
-        if recorded_argv0 and proc_argv0(pid) not in {"", recorded_argv0}:
+        if live_start != recorded_start:
+            # The pid now belongs to someone else: never signal it.
             path.unlink(missing_ok=True)
+            continue
+        # ``execve`` keeps argv[0] verbatim, so a tool spawned as ``gobuster``
+        # shows ``gobuster`` while the same one resolved through PATH may show
+        # its absolute path. Compare the binary, not the string -and keep the
+        # record when they differ, because a mismatch is not proof of reuse.
+        live_argv0 = proc_argv0(pid)
+        if recorded_argv0 and live_argv0 and Path(live_argv0).name != Path(recorded_argv0).name:
             continue
         if age > max_age_seconds:
             path.unlink(missing_ok=True)
@@ -196,6 +244,7 @@ def _kill_group(pgid: int) -> bool:
 
 __all__ = [
     "REAP_MIN_AGE_SECONDS",
+    "group_members",
     "proc_argv0",
     "proc_start_time",
     "reap_stale",

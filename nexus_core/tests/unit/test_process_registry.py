@@ -145,3 +145,50 @@ def test_the_sandbox_records_and_forgets_the_group(tmp_path, monkeypatch):
     assert seen, "the group must be registered while it runs"
     time.sleep(0.1)
     assert not list((tmp_path / "procs").glob("*.json"))
+
+
+def test_a_wrapper_that_exited_still_gets_its_group_reaped():
+    """The measured shape: `sh -c gobuster …` exits, gobuster keeps running.
+
+    The leader's pid is gone, so the record can only be used through its *group*:
+    a member whose binary matches is proof the group is still the original one.
+    """
+    leader = subprocess.Popen(
+        ["bash", "-c", "sleep 120 & exit 0"], start_new_session=True
+    )
+    leader.wait(timeout=5)
+    time.sleep(0.2)
+    try:
+        assert registry.group_members(leader.pid), "the child must share the group"
+        registry.register(leader.pid, ["/usr/bin/sleep"])
+
+        killed = registry.reap_stale(min_age_seconds=0)
+
+        assert [entry["pid"] for entry in killed] == [leader.pid]
+        time.sleep(0.3)
+        assert registry.group_members(leader.pid) == []
+    finally:
+        for pid, _ in registry.group_members(leader.pid):
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+
+
+def test_a_group_whose_members_are_another_binary_is_left_alone():
+    leader = subprocess.Popen(
+        ["bash", "-c", "sleep 120 & exit 0"], start_new_session=True
+    )
+    leader.wait(timeout=5)
+    time.sleep(0.2)
+    try:
+        registry.register(leader.pid, ["/usr/bin/gobuster"])
+        assert registry.reap_stale(min_age_seconds=0) == []
+        assert registry.group_members(leader.pid), "the unrelated member survives"
+        assert not list(registry.registry_root().glob("*.json"))
+    finally:
+        for pid, _ in registry.group_members(leader.pid):
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
