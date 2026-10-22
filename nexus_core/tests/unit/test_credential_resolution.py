@@ -342,7 +342,12 @@ def test_the_prompt_shows_one_credential_and_the_count_of_the_rest():
           "username": "svc", "protocol": "smb"}]
     )
     assert AVAILABLE_CREDENTIALS_HEADER in one
-    assert f"- `{TARGET}`: `vault:{'a' * 32}` (username=`svc`, protocol=`smb`)" in one
+    # Family is part of the line since Tanda D: the model has to know that a
+    # credential proved in the web app is not an SSH account.
+    assert (
+        f"- `{TARGET}`: `vault:{'a' * 32}` "
+        "(username=`svc`, protocol=`smb`, family=`smb`)"
+    ) in one
 
     five = render_available_credentials(
         [

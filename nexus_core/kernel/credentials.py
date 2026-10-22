@@ -89,6 +89,21 @@ def protocol_matches(service: Any, protocol: Any) -> bool:
     return fact in PROTOCOL_FAMILIES.get(wanted, frozenset({wanted}))
 
 
+def credential_family(protocol: Any) -> str:
+    """The family label the prompt shows for one credential (``web``/``ssh``/…).
+
+    It is the corpus the credential was proved in, not the channel the model
+    happens to be using: a password hardcoded in the web app is ``web`` even
+    when the model tries it over SSH, which is exactly the confusion measured in
+    DeadDrop P12 (2026-10-22). ``http``/``https`` collapse to ``web``; the
+    Windows channels keep their own name because each is a different login.
+    """
+    name = normalize_protocol(protocol)
+    if not name:
+        return "unknown"
+    return "web" if name in _WEB else name
+
+
 def key_names_target(key: str, target: str) -> bool:
     """Whether a fact key names exactly ``target`` (not a longer address)."""
     if not key or not target:
@@ -218,6 +233,7 @@ def credential_entries_for(
                     if isinstance(value, dict)
                     else "",
                     "protocol": fact_protocol(fact),
+                    "family": credential_family(fact_protocol(fact)),
                     "source_fact_id": str(fact.get("key") or ""),
                     "recorded_at": str(fact.get("recorded_at") or ""),
                     "verified": bool(fact.get("verified")),
@@ -466,7 +482,8 @@ def credential_lines(entries: Iterable[Mapping[str, Any]]) -> list[str]:
         line = (
             f"- `{entry.get('host') or '?'}`: `{entry.get('handle')}` "
             f"(username=`{entry.get('username') or '?'}`, "
-            f"protocol=`{entry.get('protocol') or '?'}`)"
+            f"protocol=`{entry.get('protocol') or '?'}`, "
+            f"family=`{entry.get('family') or credential_family(entry.get('protocol'))}`)"
         )
         if entry.get("extra"):
             line += f" … y {int(entry['extra'])} más"
@@ -487,6 +504,7 @@ __all__ = [
     "credential_choice_message",
     "credential_entries",
     "credential_entries_for",
+    "credential_family",
     "credential_lines",
     "fact_names_host",
     "fact_names_user",

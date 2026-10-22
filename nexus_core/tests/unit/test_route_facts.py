@@ -206,6 +206,29 @@ def test_the_models_own_route_registration_never_counts():
     assert route_reaches([_route_fact()], from_host=DMZ, to_host=DC) is not None
 
 
+@pytest.mark.asyncio
+async def test_a_recorded_route_does_not_unarm_the_gate():
+    """The pivot order says it; this proves it. A ``record_fact(route)`` that the
+    model registered is a hypothesis, and the gate stays armed against the call.
+
+    Measured in DeadDrop P12 v2, iteration 73: the model wrote
+    ``record_fact(fact_type="route", value={socks: 0.0.0.0:1080})`` instead of
+    calling ``nexus.post.verify_route``, so the board never held a verified
+    route -it happened to have a working tunnel, which is luck, not evidence-.
+    """
+    recorded_by_the_model = _route_fact(verified=False, asserted_by="agent")
+
+    order = await pivot_gate(
+        "nexus.recon.nmap",
+        {"target": DC},
+        _pivot_history(),
+        probe=_unreachable_probe,
+        facts=[recorded_by_the_model],
+    )
+
+    assert "PIVOTE NECESARIO" in order
+
+
 def test_a_malformed_route_value_is_never_trusted():
     broken = _route_fact()
     broken["value"] = {"from_host": DMZ, "to_host": DC, "method": "carrier-pigeon"}

@@ -32,6 +32,11 @@ from .parser import (
     ACTION_TASK_COMPLETE,
     ReActParseError,
 )
+from .branch_discipline import (
+    BARRIER_ATTEMPT_WINDOW,
+    barrier_refusal,
+    closed_branch_refusal,
+)
 
 from .react_types import (
     BUDGET_EXEMPT_EVENT_TYPE,
@@ -634,6 +639,14 @@ class ReActCoordinator:
         #: same barrier twice, and never let the loop's own reflex read as
         #: progress -it would reset the streak that made it act.
         self.closed_branches: set[str] = set()
+        #: Iteration each of those branches was closed on. The name survives in
+        #: ``closed_branches`` for the code that only asks "was it closed?", but
+        #: the gate needs *when*, because a branch the loop closed stays refused
+        #: for :data:`branch_discipline.CLOSED_BRANCH_BLOCK_TURNS` turns instead
+        #: of being refused forever (measured in DeadDrop P12: the loop closed
+        #: ``192.168.11.200:80`` at iteration 44 and the model kept calling
+        #: ``web.*`` on it for fifteen more turns).
+        self.closed_branch_at: dict[str, int] = {}
         self.objective_complete = False
         self.objective_complete_emitted = False
         self.budget_exempt = False
@@ -1001,7 +1014,12 @@ class ReActCoordinator:
         tool: the model still chooses the branch and the gateway still governs
         it.
         """
-        from nexus_core.agent.coverage import focus_entry, parse_directive, pivot_hint
+        from nexus_core.agent.coverage import (
+            STATUS_CLOSED,
+            focus_entry,
+            parse_directive,
+            pivot_hint,
+        )
 
         coverage = getattr(self.snapshot, "coverage", None)
         arguments = getattr(getattr(self, "action", None), "arguments", None)
@@ -1010,6 +1028,27 @@ class ReActCoordinator:
         # ledger is a heuristic map. Parsed here (not stored) so a resumed run
         # reads the objective it was given, not a cached copy.
         directive = parse_directive(getattr(self, "objective", ""))
+        # A branch the ledger reports as closed is one the loop has already
+        # declared dead -and the pivot below is about to order the model off it-,
+        # so this is the moment to start the refusal window. The window needs a
+        # *when*, and ``closed_branch_at`` only knew the closures
+        # ``_close_stalled_branch`` wrote itself: the measured DeadDrop P12 v2 run
+        # resumed with a persisted ``barrier`` on ``192.168.11.200:80``, the pivot
+        # fired on iteration 4 and the model kept calling ``web.*`` on that host
+        # for 43 turns because nothing stamped it. An active directive is the
+        # exception: an objective that names the branch outranks the ledger.
+        #   It is stamped **once**: the window is five turns from the moment the
+        #   loop acknowledged the closure, not five turns from the last attempt -
+        #   re-stamping on every attempt would never expire while the model
+        #   insists, and ``branch_discipline`` already measured that the window
+        #   has to end so a real retry is still possible-.
+        if (
+            focus is not None
+            and focus.status == STATUS_CLOSED
+            and not directive.active
+            and focus.ref not in (getattr(self, "closed_branch_at", None) or {})
+        ):
+            self._mark_branch_closed(focus.ref)
         self.coverage_hint = pivot_hint(
             coverage,
             no_progress=self.consecutive_no_progress,
@@ -1235,6 +1274,7 @@ class ReActCoordinator:
         except Exception:  # noqa: BLE001 - memory must never abort a run
             return None
         self.closed_branches.add(entry.ref)
+        self._mark_branch_closed(entry.ref)
         self.store.append_run_event(
             self.tenant_id,
             self.run_id,
@@ -1256,6 +1296,24 @@ class ReActCoordinator:
             barren_turns=int(self.consecutive_no_progress),
         )
         return entry.ref
+
+    def _mark_branch_closed(self, ref: str) -> None:
+        """Start the refusal window of ``ref`` on this iteration.
+
+        Two callers, one rule: the loop's own stall barrier
+        (:meth:`_close_stalled_branch`) and the pivot's acknowledgement that the
+        ledger already marks the branch ``descartado``
+        (:meth:`_refresh_coverage_hint`). ``__init__`` owns the dict in a real run;
+        a coordinator rebuilt by a test (or resumed from an older object) must not
+        lose the closure, so the dict is created on demand.
+        """
+        name = str(ref or "").strip()
+        if not name:
+            return
+        closed_at = getattr(self, "closed_branch_at", None)
+        if closed_at is None:
+            closed_at = self.closed_branch_at = {}
+        closed_at[name] = int(self.iteration)
 
     def _note_completed_turn(self) -> None:
         """Record that the phase of this turn has been *current* once more (V1-46).
@@ -2661,6 +2719,113 @@ class ReActCoordinator:
             1 for entry in recent if entry.get("invocation_signature") == signature
         )
 
+    def _coverage_snapshot(self) -> Any:
+        """The ledger attached to this turn's snapshot (``None`` before recon)."""
+        return getattr(getattr(self, "snapshot", None), "coverage", None)
+
+    def _refuse_before_execution(
+        self, *, outcome: str, guidance: str, extra: dict[str, Any] | None = None
+    ) -> Transition:
+        """Answer a deterministic refusal as an observation the model can use.
+
+        Same shape as the pivot and replay gates: the call never reaches the
+        gateway, the model gets the exact next step, and the refusal is audited
+        and persisted as an event. It never aborts the run by itself; what stops
+        a run is insisting on a *failed* call, which is the existing governance.
+        """
+        tool_id = str(self.action.tool_id)
+        payload = dict(extra or {})
+        self.observation = {
+            "success": False,
+            "outcome": outcome,
+            "verified": False,
+            "refused_before_execution": True,
+            "tool_id": tool_id,
+            "guidance": guidance,
+            "available_tools": sorted(self.allowed_catalog),
+            **payload,
+        }
+        self.entry["tool_result"] = self.observation
+        self.actions.append(self.entry)
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            self.action,
+            self.observation,
+            subagent_id=self.active_subagent_id,
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.branch_refused",
+            {
+                "iteration": self.iteration,
+                "tool_id": tool_id,
+                "reason": outcome,
+                **payload,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=self.action.action,
+            decision="deny",
+            tool_id=tool_id,
+            reason=outcome,
+        )
+        return Transition.READY
+
+    def _refuse_closed_branch(self) -> Transition | None:
+        """Refuse ``web.*``/directory sweeps against a branch the loop closed.
+
+        ``react.branch_closed`` used to be descriptive: it wrote the barrier and
+        the model kept attacking the same ``host:port`` (DeadDrop P12, iteration
+        44, fifteen more turns). The window lives in
+        :data:`branch_discipline.CLOSED_BRANCH_BLOCK_TURNS` and coverage still
+        owns reopening through a newer ``vulnerability`` fact.
+        """
+        arguments = self.action.arguments if isinstance(self.action.arguments, dict) else None
+        guidance = closed_branch_refusal(
+            tool_id=self.action.tool_id,
+            arguments=arguments,
+            coverage=self._coverage_snapshot(),
+            closed_at=getattr(self, "closed_branch_at", {}),
+            iteration=self.iteration,
+        )
+        if not guidance:
+            return None
+        return self._refuse_before_execution(
+            outcome="branch_closed_recent",
+            guidance=guidance,
+            extra={"branch_closed_recent": True},
+        )
+
+    def _refuse_barrier_without_attempts(self) -> Transition | None:
+        """Refuse a ``barrier`` that one guess does not justify.
+
+        Two measured false verdicts motivate it: an executed ``/preview`` module
+        read as plain text (DeadDrop P12, iteration 21) and a sweep that never
+        ran reported as "no session" (HackPark V12, iteration 17). The second is
+        already handled by ``sweep_attempted`` in the ledger; this gate answers
+        before the fact is written, so the branch is not even marked.
+        """
+        arguments = self.action.arguments if isinstance(self.action.arguments, dict) else None
+        guidance = barrier_refusal(
+            self.actions, self._coverage_snapshot(), arguments
+        )
+        if not guidance:
+            return None
+        return self._refuse_before_execution(
+            outcome="barrier_refused",
+            guidance=guidance,
+            extra={
+                "barrier_refused": True,
+                "attempt_window": BARRIER_ATTEMPT_WINDOW,
+            },
+        )
+
     async def _correct_unroutable_sweep(self) -> Transition | None:
         """Refuse a sweep that has no route, instead of paying its timeout.
 
@@ -2812,6 +2977,12 @@ class ReActCoordinator:
         barren_tool = self._repeated_barren_action()
         if barren_tool is not None:
             return self._correct_repeated_action(barren_tool, barren=True)
+        closed = self._refuse_closed_branch()
+        if closed is not None:
+            return closed
+        premature_barrier = self._refuse_barrier_without_attempts()
+        if premature_barrier is not None:
+            return premature_barrier
         unroutable = await self._correct_unroutable_sweep()
         if unroutable is not None:
             return unroutable

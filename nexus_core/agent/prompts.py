@@ -69,22 +69,20 @@ LOGIN_RULE_PROMPT = (
 #: and then had no tool to obtain, read or adapt the PoC. Gated on the catalog so
 #: a subagent that cannot call the tool never sees the order.
 CMS_EXPLOIT_RULE_PROMPT = (
-    "- CMS CON VERSIÓN VULNERABLE: si identificas BlogEngine/WordPress/Joomla y una\n"
-    "  versión con CVE, no improvises el exploit: llama a\n"
-    "  nexus.exploit.find_and_prepare con el CVE o el nombre+versión. LEE el PoC y\n"
-    "  sigue su `next_steps`. Devuelve `{path, code}`: pasa ESE `path` como\n"
-    "  `exploit_path` (nunca el ID ni el CVE). Un `.ascx` (o un `.cs` con\n"
-    "  `<%@ Control %>`) es un tema ASP.NET, no un binario: súbelo con\n"
-    "  nexus.exploit.compile_and_upload (target_filename correcto, csrf_mode=true)\n"
-    "  y actívalo; un `.py` se ejecuta\n"
-    "  con nexus.shell.exec; un `.exe` se sube con nexus.web.upload o\n"
-    "  nexus.post.smb_upload. Verifica access/loot con la salida real.\n"
-    "- BLOGENGINE CVE-2019-6714: el tema `PostView.ascx` se sube al GESTOR DE\n"
-    "  TEMAS con POST /admin/app_themes.aspx (multipart con el campo\n"
-    "  ctl00$MainContent$UploadTheme$fuTheme y un theme_name único), nunca a\n"
-    "  /admin/app/editor/editpost.cshtml (ese es el editor de posts). Pasa el\n"
-    "  session_ref del panel: sin cookie el POST acaba en 302 a\n"
-    "  /Account/login.aspx y la tool lo reporta exploit_upload_rejected.\n"
+    "- CMS CON VERSIÓN VULNERABLE: si identificas BlogEngine/WordPress/Joomla con\n"
+    "  CVE, no improvises: llama a nexus.exploit.find_and_prepare con el CVE o\n"
+    "  nombre+versión, LEE el PoC y sigue `next_steps`. Devuelve `{path, code}`:\n"
+    "  pasa ESE `path` como `exploit_path` (nunca el ID ni el CVE). Un `.ascx`/`.cs`\n"
+    "  con\n"
+    "  `<%@ Control %>` es un tema ASP.NET: súbelo con\n"
+    "  nexus.exploit.compile_and_upload (target_filename, csrf_mode=true) y\n"
+    "  actívalo; un `.py` va con nexus.shell.exec; un `.exe` con nexus.web.upload\n"
+    "  o nexus.post.smb_upload. Verifica con la salida real.\n"
+    "- BLOGENGINE CVE-2019-6714: el tema va al GESTOR DE TEMAS (POST\n"
+    "  /admin/app_themes.aspx, multipart, campo\n"
+    "  ctl00$MainContent$UploadTheme$fuTheme), no a\n"
+    "  /admin/app/editor/editpost.cshtml. Pasa el session_ref del panel o el POST\n"
+    "  acaba en 302 a /Account/login.aspx (exploit_upload_rejected).\n"
 )
 
 #: PLAN-FIRST: the engagement is a contract, not a stream of reactive calls.
@@ -115,9 +113,39 @@ ENGAGEMENT_PLAN_RULE_PROMPT = (
 #: run closed at 45 iterations with 0 findings and no route it could prove.
 PIVOT_ROUTE_RULE_PROMPT = (
     "- PIVOTE: la cadena canónica es `ssh -D` (SOCKS) + proxychains4, no `ssh -L`\n"
-    "  por puerto suelto. Tras montar el túnel, verifica la ruta con\n"
-    "  nexus.post.verify_route (forwarder_ref = extremo local) ANTES de enumerar\n"
-    "  el destino: un túnel sin verificación es una hipótesis, no una ruta.\n"
+    "  por puerto. Verifica la ruta con nexus.post.verify_route (method=\"ssh_D\",\n"
+    "  forwarder_ref = extremo local) ANTES de enumerar: un túnel sin verificar es\n"
+    "  una hipótesis. NO uses nexus.knowledge.record_fact(fact_type=\"route\"): un\n"
+    "  route del modelo no cierra el TODO ni desarma el gate de pivote.\n"
+)
+
+#: The Node preview semantics. Gated on the two tools that reach a preview
+#: endpoint, so a subagent without them never reads the rule (same contract as
+#: :data:`LOGIN_RULE_PROMPT`). Measured origin: DeadDrop P12 (2026-10-22), where
+#: ``exec('id > /tmp/...')`` with no ``module.exports`` answered ``{}``, the
+#: model concluded "the preview serves text" and closed the working branch.
+PREVIEW_MODULE_RULE_PROMPT = (
+    "- PREVIEW DE .js (Node): un body exactamente `{}` en `/preview/<f>.js`\n"
+    "  significa que el módulo SE EJECUTÓ con `module.exports` vacío, NO que se\n"
+    "  sirva como texto plano. `exec(...)` es asíncrono y no devuelve salida;\n"
+    "  captura con `module.exports = require('child_process').execSync('cat\n"
+    "  /etc/shadow').toString()` o `fs.readFileSync('/etc/passwd').toString()`.\n"
+    "  Un body HTML con el código sí es texto plano. Nunca cierres la rama con\n"
+    "  un barrier por un `{}`.\n"
+)
+
+#: Credential families. Gated on a remote-auth tool: the rule only matters to a
+#: subagent that can try a system account. Measured origin: DeadDrop P12, where
+#: the web app's hardcoded ``admin``/``svc-backup`` were used over SSH (correctly
+#: refused by the protocol family) and the model never looked for the operating
+#: system's own corpus in ``/etc/shadow``.
+CREDENTIAL_FAMILIES_RULE_PROMPT = (
+    "- FAMILIAS DE CREDENCIALES: la credencial pertenece a la familia donde se\n"
+    "  probó (`web`, `ssh`, `smb`, `winrm`, `ldap`, `rdp`). La hardcodeada en la\n"
+    "  app web o en un `/preview/` es `web`: sirve para paneles/APIs/BD, no para\n"
+    "  el login SSH del SO. Para el SO: lee `/etc/shadow` (preview .js +\n"
+    "  `execSync`), crackea con `nexus.post.crack_hash` y entra con\n"
+    "  `nexus.post.ssh_exec`; o busca en `/home/*/`, `/opt/*/`, backups y configs.\n"
 )
 
 #: What the deny list actually refuses, and where (Tanda B, 3a.4). The honest
@@ -249,7 +277,7 @@ REGLAS:
   (hydra sin credenciales, un endpoint sin SQLi), no insistas más de 2 veces:
   registra un barrier para ese vector y PIVOTA al siguiente. Mapea todas las
   vulnerabilidades, no solo la primera que veas.
-{engagement_plan_rule}{passive_wait_rule}{pivot_route_rule}{denied_patterns}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
+{engagement_plan_rule}{passive_wait_rule}{pivot_route_rule}{preview_module_rule}{credential_family_rule}{denied_patterns}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
   enumeración → acceso inicial → escalada → post-explotación → reporte). El
   plan vigente se muestra más abajo: trabaja SIEMPRE la fase actual y usa su
   foco y su siguiente paso sugerido como guía. Cuando completes la fase, tus
@@ -382,12 +410,25 @@ HISTORIAL A RESUMIR:
 CATALOG_DESCRIPTION_CHARS = 64
 #: Cap on how many declared arguments are listed per tool.
 CATALOG_MAX_ARGUMENTS = 5
-#: The abbreviated catalog sent on most turns: the tool id and its required
-#: arguments only. The description is prose the model already used to pick the
-#: tool; the argument names are contract data (half of the measured schema
-#: rejections) and stay. Measured on the 72-tool catalog: 15 780 chars full vs
-#: 5 200 compact, ~2 600 tokens of the 10 600 Simple CTF paid per turn.
+#: The abbreviated catalog sent on most turns: the tool id and its contract.
+#: The description is prose the model already used to pick the tool; the
+#: argument names, their types and which are required are contract data (half of
+#: the measured schema rejections) and stay. Measured on the 72-tool catalog:
+#: 15 780 chars full vs 5 200 compact, ~2 600 tokens of the 10 600 Simple CTF
+#: paid per turn.
 COMPACT_MAX_ARGUMENTS = 4
+#: How many properties of a **required** object argument the compact line
+#: expands. Measured in DeadDrop P12 v2 (2026-10-22): ``nexus.web.upload``
+#: published ``upload:object*``, so the model sent ``content`` at the top level
+#: and ``field`` outside ``upload`` -four rejected turns on a schema it could not
+#: see-. Only the inner names the handler reads are listed, one level deep.
+COMPACT_MAX_NESTED = 4
+#: How many optional arguments the compact line lists when the tool requires
+#: none. Without it the line read ``req[-]`` ("this tool takes no arguments") for
+#: eighteen tools, including ``nexus.post.privesc_hints`` -which then answered
+#: "provide at least one of sudo_rules, suid or capabilities" after a wasted
+#: turn-.
+COMPACT_MAX_OPTIONAL = 3
 #: How often the full catalog is re-sent. Every turn it cost ~3 945 tokens of
 #: the measured 10 600 (Simple CTF, 2026-10-17) and the model never needed the
 #: argument hints of a tool it had already called. One turn in five (plus the
@@ -396,8 +437,9 @@ CATALOG_REFRESH_TURNS = 5
 #: Header line that tells the model *why* the argument hints are missing, so it
 #: re-reads the full catalog instead of guessing a schema it cannot see.
 COMPACT_CATALOG_NOTE = (
-    "(catálogo resumido: id, descripción y argumentos obligatorios; el catálogo "
-    f"completo se repite cada {CATALOG_REFRESH_TURNS} turnos y al cambiar de subagente)"
+    "(catálogo resumido: `arg:tipo*` obligatorio, `arg:tipo?` opcional, "
+    "`obj{a,b}` propiedades del objeto; el completo se repite cada "
+    f"{CATALOG_REFRESH_TURNS} turnos y al cambiar de subagente)"
 )
 
 
@@ -467,6 +509,27 @@ def _env_fixed_note(definition: Any) -> str:
     return f"{names} fijos por env {envs} (no ajustables)"
 
 
+#: Constraints a JSON Schema cannot state, per tool, published on the catalog
+#: line itself. Everything here was paid for with a rejected turn in DeadDrop
+#: P12 v2 (2026-10-22): an absolute ``cwd`` (3 turns), ``privesc_hints`` called
+#: with no argument at all (1), ``session_ref`` nested inside ``upload`` (1),
+#: ``post.job`` started with a bare ``command`` (1) and an ``artifact_`` handle
+#: addressed as a workspace path (1). A rule the model can only learn from a
+#: refusal costs the turn *and* the retry; six words here cost neither.
+CATALOG_CONTRACT_NOTES: dict[str, str] = {
+    "nexus.shell.exec": "cwd relativo al workspace (nunca /home/...)",
+    "nexus.post.job": "start exige tool_id + arguments (los args de esa tool)",
+    "nexus.post.privesc_hints": "al menos uno de los tres",
+    "nexus.web.upload": "session_ref en la raíz, junto a url",
+    "nexus.workspace.read": "path relativo, o artifact_<id> del CAS",
+}
+
+
+def _contract_note(tool_id: str) -> str:
+    """The declared constraint of ``tool_id`` as one short clause (``""`` when none)."""
+    return CATALOG_CONTRACT_NOTES.get(str(tool_id), "")
+
+
 def _schema_arguments(definition: Any) -> str:
     """Compact ``name:type`` list of a tool's declared arguments.
 
@@ -528,32 +591,89 @@ def _schema_arguments(definition: Any) -> str:
     return ", ".join(parts) or "-"
 
 
+def _object_properties(spec: Any) -> dict[str, Any]:
+    """Declared ``properties`` of an argument that is an object (``{}`` when not)."""
+    nested = spec.get("properties") if isinstance(spec, dict) else None
+    return nested if isinstance(nested, dict) else {}
+
+
+def _type_name(spec: Any) -> str:
+    """The single type of an argument, without a ``null`` alternation.
+
+    ``to_port`` declares ``["integer", "null"]``; publishing the pair spends
+    bytes and tells the model nothing it cannot infer from the ``?`` mark.
+    """
+    kind = spec.get("type") if isinstance(spec, dict) else None
+    if isinstance(kind, (list, tuple)):
+        kind = next((item for item in kind if item and item != "null"), None)
+    return str(kind or "any")
+
+
+def _compact_label(name: str, definition: Any, spec: Any, *, mark: str = "") -> str:
+    """One argument as ``name:type``, ``name∈{values}`` or ``name{sub:type,…}``.
+
+    ``mark`` is the ``*`` (required) or ``?`` (optional) suffix; nested leaves
+    carry none because the object is required as a whole.
+    """
+    nested = _object_properties(spec)
+    if nested:
+        # The object's own ``required`` first: ``upload`` needs ``field`` and
+        # ``path``, and both sat past the cap in declaration order (measured:
+        # the model sent ``filename`` and left ``path`` out).
+        inner_required = list(spec.get("required") or ()) if isinstance(spec, dict) else []
+        names = [item for item in inner_required if item in nested]
+        names += [item for item in nested if item not in names]
+        inner = [
+            _compact_label(sub_name, definition, nested[sub_name])
+            for sub_name in names[:COMPACT_MAX_NESTED]
+        ]
+        if len(names) > COMPACT_MAX_NESTED:
+            inner.append("…")
+        return f"{name}{{{', '.join(inner)}}}{mark}"
+    values = _enum_values(spec)
+    if values:
+        label = f"{name}∈{{{', '.join(values)}}}"
+    else:
+        label = f"{name}:{_type_name(spec)}"
+    forbidden = _forbidden_values(definition, name)
+    if forbidden:
+        label += f" ∉ {{{', '.join(forbidden)}}}"
+    return label + mark
+
+
 def _required_arguments(definition: Any) -> str:
-    """Compact ``name:type*`` list of only the required arguments.
+    """Compact contract of a tool: what it needs, and what it accepts.
 
     Required names are half of the schema rejections measured in
     run_abe04509c5064c6e8e475f46ba8f8c60, so they survive the trim; the legal
     values of an ``enum`` survive too, *only* when the argument is required (a
     rejected value costs more than the bytes saved).
+
+    Two shapes the trimmed line used to hide, both measured in DeadDrop P12 v2:
+    a **required object** publishes its inner property names (``upload{field,…}``
+    rather than ``upload:object``), and a tool that declares **no** required
+    argument lists its optional ones with ``?`` instead of reading as "takes no
+    arguments". A model cannot guess a key it has never seen, and one rejected
+    turn costs more than every line here together.
     """
     schema = getattr(definition, "input_schema", None) or {}
     properties = schema.get("properties") if isinstance(schema, dict) else None
-    if not isinstance(properties, dict):
-        return "-"
+    if not isinstance(properties, dict) or not properties:
+        return ""
     required = [name for name in (schema.get("required") or ()) if name in properties]
     parts: list[str] = []
-    for name in required[:COMPACT_MAX_ARGUMENTS]:
-        spec = properties[name]
-        values = _enum_values(spec)
-        if values:
-            label = f"{name}∈{{{', '.join(values)}}}"
-        else:
-            kind = spec.get("type") if isinstance(spec, dict) else None
-            label = f"{name}:{kind or 'any'}"
-        parts.append(label + "*")
-    if len(required) > COMPACT_MAX_ARGUMENTS:
+    if required:
+        for name in required[:COMPACT_MAX_ARGUMENTS]:
+            parts.append(_compact_label(name, definition, properties[name], mark="*"))
+        if len(required) > COMPACT_MAX_ARGUMENTS:
+            parts.append("…")
+        return ", ".join(parts)
+    optional = [name for name in properties if name not in required]
+    for name in optional[:COMPACT_MAX_OPTIONAL]:
+        parts.append(_compact_label(name, definition, properties[name], mark="?"))
+    if len(optional) > COMPACT_MAX_OPTIONAL:
         parts.append("…")
-    return ", ".join(parts) or "-"
+    return ", ".join(parts)
 
 
 def render_tool_catalog(catalog: dict[str, Any], *, compact: bool = False) -> str:
@@ -573,10 +693,14 @@ def render_tool_catalog(catalog: dict[str, Any], *, compact: bool = False) -> st
     lines: list[str] = []
     for tool_id in sorted(catalog):
         definition = catalog[tool_id][0] if isinstance(catalog[tool_id], tuple) else catalog[tool_id]
-        note = _env_fixed_note(definition)
+        note = " | ".join(
+            part for part in (_env_fixed_note(definition), _contract_note(tool_id)) if part
+        )
         owned = f" | {note}" if note else ""
         if compact:
-            lines.append(f"- {tool_id} | req[{_required_arguments(definition)}]{owned}")
+            contract = _required_arguments(definition)
+            tail = f" | {contract}" if contract else ""
+            lines.append(f"- {tool_id}{tail}{owned}")
             continue
         description = " ".join(str(getattr(definition, "description", "") or "").split())
         if len(description) > CATALOG_DESCRIPTION_CHARS:
@@ -664,6 +788,26 @@ def render_system_prompt(
         if "nexus.post.verify_route" in catalog
         else ""
     )
+    # The preview semantics are an order about a *result* the model already
+    # misread once; it travels with the two tools that can reach a preview.
+    preview_module_rule = (
+        PREVIEW_MODULE_RULE_PROMPT
+        if "nexus.web.request" in catalog and "nexus.web.upload" in catalog
+        else ""
+    )
+    # Only a subagent that can try a remote account needs the family rule.
+    credential_family_rule = (
+        CREDENTIAL_FAMILIES_RULE_PROMPT
+        if any(
+            tool_id in catalog
+            for tool_id in (
+                "nexus.post.ssh_exec",
+                "nexus.win.winrm_exec",
+                "nexus.recon.netexec",
+            )
+        )
+        else ""
+    )
     return REACT_SYSTEM_PROMPT.format(
         tool_catalog=catalog_text,
         black_box_rule=BLACK_BOX_PHILOSOPHY_PROMPT,
@@ -672,6 +816,8 @@ def render_system_prompt(
         cms_exploit_rule=cms_exploit_rule,
         engagement_plan_rule=plan_rule,
         pivot_route_rule=pivot_route_rule,
+        preview_module_rule=preview_module_rule,
+        credential_family_rule=credential_family_rule,
         # Built from the catalog that is actually being sent, so the block never
         # names a channel this model cannot call (subagent gating).
         denied_patterns=denied_patterns or render_denied_patterns(catalog),

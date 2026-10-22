@@ -185,10 +185,16 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # required arguments (from_host, to_host, method): measured 17,935 for 81
     # tools (221,4 per tool), so the per-tool bound still holds and only the
     # total moves, to 18,050.
+    # Tanda E: the catalog line now carries the *contract* of the tools whose
+    # schema the model could not see -the nested properties of a required object
+    # and the optional arguments of a tool that requires none- plus one clause per
+    # measured semantic constraint (relative ``cwd``, the artifact handle...). It
+    # is 209 characters for the whole 81-tool catalog, all of it inside the
+    # existing per-tool bound (224,0 < 225): capability data, not prose.
     assert len(catalog) == 81
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 18_050
+    assert len(text) < 18_250
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -261,7 +267,17 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # two blocked turns the dossier measured: a ``sudo`` typed into the local
     # sandbox, and a model that believed it could not escalate on a target it
     # owned. Ceiling 31_150.
-    assert len(_prompt(catalog)) < 31_150
+    # Tanda D (run v1 de DeadDrop P12) adds two orders about a result the model
+    # already misread: the Node preview semantics (an executed module that
+    # exported nothing answers ``{}``) and the credential families (the web
+    # app's hardcoded password is not the operating system's). They cost 900
+    # characters together -measured 32,001- and they buy the 30 turns the
+    # measured run spent on a vector that had already worked. Ceiling 32_060.
+    # Tanda E rewrites the PIVOTE order to forbid ``record_fact(route)`` (+33) and
+    # compresses the CMS order by 268 characters without dropping a single fact it
+    # exists for: the two PoC handoffs and the BlogEngine theme endpoint stay.
+    # Measured 32,090; ceiling 32_150.
+    assert len(_prompt(catalog)) < 32_150
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -289,7 +305,11 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # Tanda A adds the same 458 characters on top of the ad_acl measurement:
     # 30,609 + 576 measured 31,185; ceiling 31_300.
     # Tanda B moves with the static prompt (+532): measured 31,728; ceiling 31_780.
-    assert len(prompt) < 31_780
+    # Tanda D moves with the static prompt (+900): measured 32,628; ceiling
+    # 32_700. The block itself is unchanged.
+    # Tanda E moves with the static prompt (+30 over Tanda D): measured 32,717;
+    # ceiling 32_800. The block itself is unchanged.
+    assert len(prompt) < 32_800
     assert len(block) < 1_200
 
 
@@ -411,11 +431,13 @@ def test_compact_catalog_keeps_every_tool_id_and_its_required_arguments(catalog)
 
     text = render_tool_catalog(catalog, compact=True)
     assert len(text.splitlines()) == len(catalog)
-    for tool_id in catalog:
-        assert text.count(f"- {tool_id} ") == 1 and f"- {tool_id} " in text
+    # The id is the first token of the line: a tool that declares no argument at
+    # all has no `` | `` tail, so the id cannot be keyed on a trailing space.
+    listed = [line[2:].split(" ", 1)[0] for line in text.splitlines()]
+    assert sorted(listed) == sorted(catalog)
     nmap = next(line for line in text.splitlines() if line.startswith("- nexus.recon.nmap "))
     # Required names, and the legal values of a required enum, survive the trim.
-    assert "req[target:string*]" in nmap
+    assert "target:string*" in nmap
     sqlmap = next(line for line in text.splitlines() if line.startswith("- nexus.web.sqlmap "))
     assert "url:string*" in sqlmap
 
@@ -467,7 +489,12 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # ceiling 6_700 (the 6,600 target still holds for every other factor).
     # Tanda B's deny-list block lands on every turn: +136 tokens, measured 6,807;
     # ceiling 6_850 (250k still buys ~36 compact turns).
-    assert tokens < 6_850
+    # Tanda D's two orders land here too: measured 7,032, so the target moves to
+    # 7_080 (250k still buys ~35 compact turns).
+    # Tanda E's catalog contract lands here (+~200 tokens on the compact turn) and
+    # buys back the four rejected ``web.upload`` turns and the three ``cwd`` ones
+    # at ~11 000 tokens each: measured 7,208; ceiling 7_250 (250k buys ~34 turns).
+    assert tokens < 7_250
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -504,7 +531,11 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # Tanda A: measured 7,384 over the 22 iterations; ceiling 7_420.
     # Tanda B: the deny-list block is paid every turn: measured 7,520 average;
     # ceiling 7_560 (250k buys ~33 turns).
-    assert sum(totals) / len(totals) < 7_560
+    # Tanda D measured 7,745 average (the two new orders on every turn), so the
+    # ceiling moves to 7_800; 250k still buys ~32 turns.
+    # Tanda E measured 7,886 average (its own catalog contract +200/turn on the
+    # compact turns, +209 on the full ones); ceiling 7_930, ~31 turns.
+    assert sum(totals) / len(totals) < 7_930
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -530,7 +561,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # prompt plus all 80 lines), so the ceiling moves to 9_750.
     # Tanda A: the full-catalog turn measured 9,809; ceiling 9_850.
     # Tanda B: the same block on the refresh turn measured 9,944; ceiling 9_990.
-    assert max(totals) < 9_990
+    # Tanda D on the refresh turn: measured 10,169; ceiling 10_220.
+    # Tanda E on the refresh turn: measured 10,192; ceiling 10_250.
+    assert max(totals) < 10_250
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):
@@ -561,3 +594,151 @@ def test_the_prompt_names_the_blogengine_theme_endpoint(catalog):
     assert "editpost.cshtml" in flat
     assert "session_ref del panel" in flat
     assert "exploit_upload_rejected" in flat
+
+
+# ------------------------------- Tanda E: the contract travels in the catalog line
+def test_the_compact_catalog_carries_the_nested_upload_contract(catalog):
+    """DeadDrop P12 v2, iterations 6-20: four turns lost to one hidden object.
+
+    The line published ``upload:object*`` and nothing else, so the model sent
+    ``content`` at the top level, ``field`` next to ``upload``, and later
+    ``session_ref`` inside it. A key the model has never seen is a key it does not
+    guess: the required inner names have to be on the line, ahead of the cap.
+    """
+    from nexus_core.agent.prompts import render_tool_catalog
+
+    line = next(
+        line
+        for line in render_tool_catalog(catalog, compact=True).splitlines()
+        if line.startswith("- nexus.web.upload ")
+    )
+    assert "upload{" in line
+    assert "field:string" in line and "path:string" in line
+    assert "upload:object" not in line
+    # The whole argument is required, so it keeps the mark the trim documents.
+    assert "}*" in line
+
+
+def test_optional_arguments_are_marked_in_the_compact_catalog(catalog):
+    """``req[-]`` read as "this tool takes no arguments" for eighteen tools.
+
+    ``nexus.post.privesc_hints`` was called with none and answered "provide at
+    least one of sudo_rules, suid or capabilities" -one turn and its retry-.
+    """
+    from nexus_core.agent.prompts import render_tool_catalog
+
+    text = render_tool_catalog(catalog, compact=True)
+    hints = next(
+        line for line in text.splitlines() if line.startswith("- nexus.post.privesc_hints ")
+    )
+    assert "sudo_rules:array?" in hints
+    assert "suid:array?" in hints and "capabilities:array?" in hints
+    # The old placeholder is gone: no tool reads as "no arguments" any more.
+    assert "req[" not in text
+    # A tool that really declares nothing still says so, without inventing a list.
+    status = next(line for line in text.splitlines() if line.startswith("- nexus.system.status"))
+    assert " | " not in status
+
+
+def test_a_contract_note_names_the_constraints_a_schema_cannot_state(catalog):
+    """Each clause here was paid for with a rejected turn in DeadDrop P12 v2.
+
+    An absolute ``cwd`` (3 turns), ``session_ref`` nested inside ``upload``,
+    ``post.job`` started with a bare ``command``, ``privesc_hints`` with no
+    argument, and an ``artifact_`` handle addressed as a workspace path.
+    """
+    from nexus_core.agent.prompts import render_tool_catalog
+
+    lines = {
+        line.split(" ", 2)[1]: line
+        for line in render_tool_catalog(catalog, compact=True).splitlines()
+        if line.startswith("- ")
+    }
+    assert "cwd relativo al workspace" in lines["nexus.shell.exec"]
+    assert "session_ref en la raíz" in lines["nexus.web.upload"]
+    assert "tool_id + arguments" in lines["nexus.post.job"]
+    assert "al menos uno" in lines["nexus.post.privesc_hints"]
+    assert "artifact_<id>" in lines["nexus.workspace.read"]
+    # The full catalog carries them too: the first turn is when the call is planned.
+    full = render_tool_catalog(catalog)
+    assert "cwd relativo al workspace" in full
+    assert "artifact_<id>" in full
+
+
+def test_the_compact_catalog_carries_a_hard_ceiling(catalog):
+    """The contract is data, so it may not grow with the prose.
+
+    Carrying the nested/optional contract costs ~800 characters on the compact
+    block (5 251 -> 6 046) and buys back four rejected ``web.upload`` turns and
+    three ``cwd`` ones. A ceiling keeps the next addition from being free.
+    """
+    from nexus_core.agent.prompts import render_tool_catalog
+
+    compact = render_tool_catalog(catalog, compact=True)
+    full = render_tool_catalog(catalog)
+    assert len(compact) < 6_300
+    assert len(compact) < len(full) / 3
+
+
+#: Ceiling per prompt block, measured, so the next fix cannot eat the headroom in
+#: silence. The total ceiling in ``test_prompt_stays_within_the_reviewed_budget``
+#: says how big the prompt may be; these say *where* the next 100 characters can
+#: come from -and which block would have to give them up-.
+PROMPT_BLOCK_CEILINGS = {
+    "BLACK_BOX_PHILOSOPHY_PROMPT": 570,
+    "PASSIVE_WAIT_RULE_PROMPT": 230,
+    "LOGIN_RULE_PROMPT": 740,
+    "CMS_EXPLOIT_RULE_PROMPT": 900,
+    "ENGAGEMENT_PLAN_RULE_PROMPT": 730,
+    "PIVOT_ROUTE_RULE_PROMPT": 400,
+    "PREVIEW_MODULE_RULE_PROMPT": 490,
+    "CREDENTIAL_FAMILIES_RULE_PROMPT": 460,
+    "COMPACT_CATALOG_NOTE": 180,
+}
+
+
+def test_the_pivot_order_points_at_verify_route_and_forbids_record_fact(catalog):
+    """DeadDrop P12 v2, iteration 73: the model registered the route itself.
+
+    ``record_fact(fact_type="route")`` writes a *hypothesis* (asserted_by=agent),
+    so it closes no TODO and the pivot gate stays armed
+    (``test_a_recorded_route_does_not_unarm_the_gate``). The order has to say so:
+    the previous text named ``verify_route`` but never forbade the shortcut, and
+    the run took the shortcut.
+    """
+    from nexus_core.agent.prompts import PIVOT_ROUTE_RULE_PROMPT, render_system_prompt
+
+    flat = " ".join(_prompt(catalog).split())
+    assert "nexus.post.verify_route" in flat
+    assert 'record_fact(fact_type="route")' in flat
+    assert "no cierra el TODO ni desarma el gate" in flat
+    # Same contract as every other order: a catalog without the tool never names
+    # it, so the per-subagent gating cannot be contradicted by the prompt.
+    without = {
+        tool_id: entry
+        for tool_id, entry in catalog.items()
+        if tool_id != "nexus.post.verify_route"
+    }
+    gated = render_system_prompt(
+        catalog=without, objective="x", engagement_id="eng-1", scope_summary="s"
+    )
+    assert PIVOT_ROUTE_RULE_PROMPT not in gated
+    assert "record_fact(fact_type=\"route\")" not in gated
+
+
+def test_each_prompt_block_stays_under_its_own_ceiling():
+    """A block that grows silently consumes the room the next order needs.
+
+    Tanda E had 59 characters of headroom on the total and needed +33 for the
+    PIVOTE order, so it compressed the CMS order by 268 characters first. Without
+    this test that trade is invisible: the total would have absorbed the growth
+    and the next fix would have found nothing left.
+    """
+    from nexus_core.agent import prompts
+
+    over = {
+        name: (len(getattr(prompts, name)), ceiling)
+        for name, ceiling in PROMPT_BLOCK_CEILINGS.items()
+        if len(getattr(prompts, name)) > ceiling
+    }
+    assert over == {}

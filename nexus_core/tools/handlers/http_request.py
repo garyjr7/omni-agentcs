@@ -65,6 +65,43 @@ HTTP_MAX_FORM_FIELDS = 20
 HTTP_MAX_DATA_CHARS = 262_144
 HTTP_MAX_DATA_B64_CHARS = 524_288
 
+#: Path marker of the Node preview endpoint measured in DeadDrop P12
+#: (2026-10-22): an executed module answers with its ``module.exports``, so an
+#: empty export serializes to exactly ``{}``. The model read that as "the file
+#: is served as plain text", recorded a ``barrier`` and spent thirty turns on a
+#: vector that had already worked. The note below travels with the observation
+#: so the ambiguity is resolved where it is created.
+HTTP_PREVIEW_PATH_MARKER = "/preview/"
+HTTP_PREVIEW_EMPTY_MODULE_BODY = "{}"
+HTTP_PREVIEW_MODULE_NOTE = (
+    "El módulo Node.js de /preview SE EJECUTÓ y su `module.exports` estaba "
+    "vacío: `{}` es la respuesta correcta, NO significa que el fichero se "
+    "sirva como texto plano. `require('child_process').exec(...)` es "
+    "asíncrono y no devuelve salida; para capturarla reescribe el .js con "
+    "`module.exports = require('child_process').execSync('id').toString()` "
+    "(o `require('fs').readFileSync('/etc/shadow').toString()`), vuelve a "
+    "subirlo y repite la petición. No registres un barrier por este `{}`."
+)
+
+
+def _preview_module_annotation(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Mark an empty ``module.exports`` as *execution*, not as plain text.
+
+    Only the exact shape measured on the target is annotated: a ``/preview/``
+    path whose body is ``{}`` after stripping whitespace. An HTML body that
+    contains the file is the *other* case -the server really is serving text-,
+    so it is left untouched.
+    """
+    if HTTP_PREVIEW_PATH_MARKER not in urlsplit(str(url or "")).path:
+        return {}
+    body = payload.get("body_preview")
+    if not isinstance(body, str) or body.strip() != HTTP_PREVIEW_EMPTY_MODULE_BODY:
+        return {}
+    return {
+        "preview_executed": True,
+        "preview_note": HTTP_PREVIEW_MODULE_NOTE,
+    }
+
 #: stdlib client executed inside the sandbox. argv layout (after ``-c``):
 #: method url headers_json data_b64 upload_json follow max_bytes timeout save_path
 #: insecure download_limit staging csrf csrf_form_url.
@@ -930,6 +967,9 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
         "csrf": payload.get("csrf"),
         "error": payload.get("error"),
     }
+    # The empty-export case is annotated with the request URL (the payload's
+    # ``url`` is the one the sandbox echoed back, which is the same string).
+    output.update(_preview_module_annotation(url, payload))
     if issued_session_ref:
         # Handle for the session this response issued: pass it as
         # ``session_ref`` on the next call instead of the cookie value.

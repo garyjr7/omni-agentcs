@@ -230,8 +230,16 @@ def test_cli_and_execute_react_agree_on_provider(clean_env):
     assert llm_env.provider_summary() == ("groq/qwen/qwen3.8-27b", 1)
 
 
-def test_cli_process_publishes_real_provider_despite_stale_fake(clean_env):
-    """``omni.main`` publishes the real provider: the end-to-end regression."""
+def test_cli_process_publishes_real_provider_despite_stale_fake(clean_env, tmp_path):
+    """``omni.main`` publishes the real provider: the end-to-end regression.
+
+    The four XDG roots are redirected to ``tmp_path``: ``omni.main`` reads the
+    config *from disk*, and an operator's own ``config.toml`` (a different
+    provider, or a provider without a key) would decide the outcome instead of
+    the fixture. The test was green in CI and red on any machine with a config.
+    """
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        clean_env.setenv(f"XDG_{name}_HOME", str(tmp_path / name.lower()))
     clean_env.setenv("GROQ_API_KEY", "gsk_fixture")
     clean_env.setenv(llm_env.LEGACY_PROVIDER_ENV, "fake")
     with (
