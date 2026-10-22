@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from nexus_core.hooks import HookRunner
-from .coverage import Coverage, load_coverage, render_coverage
+from .coverage import Coverage, load_coverage, parse_directive, render_coverage
 from .planner import Plan
 from .subagents import SubAgentDefinition
 from .project_context import ProjectInstruction
@@ -319,7 +319,12 @@ class ContextBuilder:
             # reconciled against the board before this turn: every profile sees
             # the same checklist, so a subagent knows what the run still owes.
             engagement_plan_summary=engagement_plan_summary,
-            coverage_summary=render_coverage(snapshot.coverage),
+            # The operator's objective outranks the ledger: the frontier may only
+            # suggest a branch the objective allows (V15 obeyed the pivot into a
+            # service the same objective had excluded).
+            coverage_summary=render_coverage(
+                snapshot.coverage, directive=parse_directive(objective)
+            ),
             subagent_summary=subagent.describe(),
             project_summary=render_project_instruction(project_instruction),
             skills_summary=render_skills(active_skills, bodies=skill_bodies),

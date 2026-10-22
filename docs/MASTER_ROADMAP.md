@@ -731,6 +731,46 @@ endpoint es el único texto específico, y vive en el prompt/skill, no en el có
 Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **3 848 passed /
 53 skipped**; `make lint` limpio; `make typecheck` sin errores.
 
+### 5.15 Run V15 contra HackPark — el ledger deja de pisar la orden (2026-10-21) — **EJECUTADA**
+
+Run `run_e971fff78593498081567bdfc602d23a`. El objetivo pedía una cosa y el motor
+ordenó otra distinta, y el modelo obedeció al motor: 40 turnos, 540 641 tokens,
+0 hallazgos, parado en acceso inicial.
+
+| Muro medido | Evidencia | Fix implementado | Test de aceptación |
+|---|---|---|---|
+| El pivote ordenó una rama que el objetivo había excluido | Iteración 12, `react.coverage_pivot`: `Siguiente rama: 10.0.0.1:3389/tcp ms-wbt-server`, con un objetivo que decía «NO hagas pivoteo» y nombraba `POST /admin/app_themes.aspx` | `parse_directive` lee la orden (hosts, `host:puerto`, rutas de documento y frases de límite: `no hagas pivoteo`, `único host`, `sin pivoteo`…) y `pivot_hint` no puede ordenar una rama que la orden excluye | `test_the_pivot_never_orders_a_branch_the_objective_excluded` |
+| La orden desaparecía en cuanto había una racha sin hechos | `no_progress=5` en :80 con :3389 pendiente; el aviso sustituyó al objetivo | Con directiva activa, el aviso ordena **volver** a la rama nombrada y corregir el argumento (ruta, campo, credencial, sesión), no cambiar de servicio; cita la frase literal del operador | `test_a_directive_brings_a_wandered_run_back_to_the_named_branch` |
+| Incluso un ramal cerrado servía para pivotar fuera del alcance | El pivote sobre un servicio `descartado` apunta siempre a la siguiente rama abierta | Con directiva, un ramal cerrado no autoriza a salir del alcance: pide `request_clarification` y prohíbe cerrar ramas para «desbloquear» el ledger | `test_a_directive_does_not_order_a_pivot_out_of_a_dead_branch` |
+| La línea `Siguiente rama:` del prompt también proponía la rama excluida | `FRONTERA: 2/2 servicios sin veredicto. Siguiente rama: …:3389` | La frontera elige primero una rama nombrada por el objetivo y el bloque lleva `DIRECTIVA DEL OPERADOR (prioridad sobre este ledger)` | `test_the_frontier_line_does_not_point_at_an_excluded_branch`, `test_the_prompt_carries_the_directive_ahead_of_the_frontier` |
+| La decisión no era auditable | El evento sólo llevaba `hint`, `focus` y `open_work` | El payload publica `directive: {refs, paths, no_pivot}` (parseado desde `self.objective` en cada turno, no cacheado) | `test_the_coordinator_honours_the_objective_it_was_given` |
+
+**Por qué no es un parche de sala:** `parse_directive` no conoce HackPark ni
+BlogEngine. Lee direcciones, rutas de documento y frases de límite; con un
+objetivo genérico devuelve una directiva inactiva y el pivote conserva su texto
+medido (`test_without_a_directive_the_pivot_keeps_its_measured_order`).
+
+**Límites declarados:**
+
+- La directiva no convierte una rama muerta en viva: ordena corregir el argumento
+  y, si el alcance está limitado, preguntar. No sustituye la evidencia.
+- Es un parser de texto: una orden implícita no la activa, y un objetivo que
+  nombre un DNS no se cruza con la IP que descubre `nmap`.
+- El pivote sigue siendo un texto en el prompt; el modelo puede desobedecerlo. Lo
+  que cambia es que ya no recibe una orden que contradice al humano.
+- Cubre el ledger de cobertura; `budget_hint`, `webshell_hint` y `robots_hint` no
+  se han revisado contra la directiva.
+- El V15 no se ha re-ejecutado: la aceptación es unitaria y de prompt.
+- Queda abierto el fallo de `nexus.workspace.search` de la iteración 8
+  (`post-condition was not verified` con coincidencias en la salida): no se
+  reproduce con el árbol actual y ya existe
+  `test_workspace_search_keeps_the_matches_of_a_dirty_walk`.
+
+Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **3 857 passed /
+53 skipped**; `make lint` limpio; `make typecheck` sin errores.
+
+Detalle completo: `docs/missions/diag/hackpark_v15_2026-10-21.md`.
+
 ---
 
 ## 6. Criterios de cierre

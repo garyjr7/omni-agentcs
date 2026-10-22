@@ -386,6 +386,131 @@ def test_focus_reads_arguments_and_never_guesses_from_nothing():
 
 
 # --------------------------------------------------------------------------- #
+# The operator's directive outranks the ledger (measured in V15, HackPark)
+# --------------------------------------------------------------------------- #
+#: The objective of ``run_e971fff78593498081567bdfc602d23a`` (V15, 2026-10-21),
+#: verbatim in its decisive parts: it names the host, forbids pivoting and fixes
+#: the endpoint. The pivot at iteration 12 ordered ``3389/tcp ms-wbt-server``
+#: anyway and the agent obeyed it for 28 turns.
+V15_OBJECTIVE = (
+    "Realiza una prueba de penetración. Compromete el sistema, escala a root y "
+    "captura las flags. NOTA: El alcance es ÚNICO HOST (10.10.10.5). NO hagas "
+    "pivoteo. Para el exploit CVE-2019-6714 de BlogEngine, sube el tema "
+    "PostView.ascx a POST /admin/app_themes.aspx con theme_name='pwned'."
+)
+
+
+def _v15_surface():
+    return build_coverage(
+        [
+            service(80, "http"),
+            service(3389, "ms-wbt-server"),
+            fact("endpoint", f"http://{TARGET}/admin/", {"status": 302}),
+        ]
+    )
+
+
+def test_the_objective_is_read_for_the_branches_it_fixes():
+    from nexus_core.agent.coverage import parse_directive
+
+    directive = parse_directive(V15_OBJECTIVE)
+    assert directive.active and directive.no_pivot
+    assert directive.hosts == (TARGET,)
+    assert directive.paths == ("/admin/app_themes.aspx",)
+    coverage = _v15_surface()
+    # The route names the web service; the same host's RDP is not named.
+    assert directive.names(coverage.find(f"{TARGET}:80"))
+    assert not directive.names(coverage.find(f"{TARGET}:3389"))
+    # The objective is quoted back, so the model re-reads the order next to the
+    # heuristic that contradicts it.
+    assert "no hagas pivoteo" in directive.text.casefold()
+    assert "/admin/app_themes.aspx" in directive.text
+
+
+def test_an_empty_objective_leaves_the_ledger_alone():
+    from nexus_core.agent.coverage import parse_directive
+
+    for objective in ("", None, "   "):
+        assert parse_directive(objective).active is False
+    assert parse_directive("audita el objetivo").active is False
+
+
+def test_the_pivot_never_orders_a_branch_the_objective_excluded():
+    """The V15 inversion: the human's branch wins over the heuristic's."""
+    from nexus_core.agent.coverage import parse_directive
+
+    coverage = _v15_surface()
+    focus = focus_entry(coverage, {"url": f"http://{TARGET}/Account/login.aspx"})
+    assert focus is not None and focus.ref == f"{TARGET}:80"
+    hint = pivot_hint(
+        coverage,
+        no_progress=5,
+        threshold=5,
+        focus=focus,
+        directive=parse_directive(V15_OBJECTIVE),
+    )
+    assert "DIRECTIVA DEL OPERADOR" in hint
+    assert "FIN DE CALLEJÓN" not in hint
+    assert "Siguiente rama:" not in hint
+    # The excluded service cannot even be named as an option.
+    assert "3389" not in hint
+    assert f"{TARGET}:80" in hint
+    assert "/admin/app_themes.aspx" in hint
+
+
+def test_a_directive_brings_a_wandered_run_back_to_the_named_branch():
+    """The model already moved to RDP: the order is to go back, not onward."""
+    from nexus_core.agent.coverage import parse_directive
+
+    coverage = _v15_surface()
+    focus = focus_entry(coverage, {"target": f"{TARGET}:3389"})
+    hint = pivot_hint(
+        coverage,
+        no_progress=5,
+        threshold=5,
+        focus=focus,
+        directive=parse_directive(V15_OBJECTIVE),
+    )
+    assert f"{TARGET}:80" in hint
+    assert "reintenta" in hint
+
+
+def test_a_directive_does_not_order_a_pivot_out_of_a_dead_branch():
+    """Even a closed branch is not a licence to break the operator's limit."""
+    from nexus_core.agent.coverage import parse_directive
+
+    coverage = build_coverage(
+        [
+            service(80, "http"),
+            service(3389, "ms-wbt-server"),
+            fact("barrier", f"{TARGET}:80", {"reason": "el tema se rechaza"}),
+        ]
+    )
+    focus = focus_entry(coverage, {"url": f"http://{TARGET}/"})
+    hint = pivot_hint(coverage, focus=focus, directive=parse_directive(V15_OBJECTIVE))
+    assert "DIRECTIVA DEL OPERADOR" in hint
+    assert "desbloquear el ledger" in hint
+    assert "3389" not in hint
+    assert "request_clarification" in hint
+
+
+def test_without_a_directive_the_pivot_keeps_its_measured_order():
+    coverage = _v15_surface()
+    hint = pivot_hint(coverage, no_progress=5, threshold=5)
+    assert "FIN DE CALLEJÓN" in hint
+    assert f"Siguiente rama: {TARGET}:3389/tcp ms-wbt-server" in hint
+
+
+def test_the_frontier_line_does_not_point_at_an_excluded_branch():
+    from nexus_core.agent.coverage import parse_directive
+
+    rendered = render_coverage(_v15_surface(), directive=parse_directive(V15_OBJECTIVE))
+    assert "DIRECTIVA DEL OPERADOR (prioridad sobre este ledger)" in rendered
+    assert "/admin/app_themes.aspx" in rendered
+    assert f"Siguiente rama: {TARGET}:80/tcp http" in rendered
+
+
+# --------------------------------------------------------------------------- #
 # Wiring into the prompt and the durable board
 # --------------------------------------------------------------------------- #
 def test_the_prompt_carries_the_ledger_and_the_verdict_rule():
@@ -530,6 +655,103 @@ def test_the_coordinator_audits_the_pivot_once_and_keeps_the_order_in_the_hint(t
             if event.get("event_type") == COVERAGE_PIVOT_EVENT_TYPE
         ]
     ) == 1
+
+
+def test_the_prompt_carries_the_directive_ahead_of_the_frontier():
+    """A real render: the objective of the run reaches the ledger block."""
+    messages = ContextBuilder().render(
+        ContextSnapshot(
+            run_history=[],
+            history_summary="",
+            plan=build_plan(objective=V15_OBJECTIVE, engagement_id=ENGAGEMENT),
+            facts_text="",
+            coverage=_v15_surface(),
+        ),
+        allowed_catalog={},
+        objective=V15_OBJECTIVE,
+        engagement_id=ENGAGEMENT,
+        scope=None,
+        subagent=OMNI_PROFILE,
+        project_instruction=None,
+        active_skills=[],
+        store=None,
+        tenant_id=TENANT,
+    )
+    system = "\n".join(
+        str(message.content) for message in messages if message.role == "system"
+    )
+    assert "DIRECTIVA DEL OPERADOR (prioridad sobre este ledger)" in system
+    assert f"Siguiente rama: {TARGET}:80/tcp http" in system
+    assert "/admin/app_themes.aspx" in system
+
+
+def test_the_coordinator_honours_the_objective_it_was_given(tmp_path):
+    """The loop wiring: ``self.objective`` is parsed, not a stale snapshot."""
+    from nexus_core.agent.react_coordinator import ReActCoordinator
+    from nexus_core.agent.react_types import COVERAGE_PIVOT_EVENT_TYPE
+    from nexus_core.kernel.audit import AuditWriter
+    from nexus_core.kernel.blackboard import Blackboard
+
+    store = ControlStore(tmp_path / "directive.db")
+    store.initialize()
+    board = Blackboard(store)
+    for port, name in ((80, "http"), (3389, "ms-wbt-server")):
+        board.record(
+            tenant_id=TENANT,
+            engagement_id=ENGAGEMENT,
+            fact_type="service",
+            key=f"{TARGET}:{port}:tcp",
+            value={"port": port, "protocol": "tcp", "service": name},
+            source="nmap",
+            created_by="verifier",
+            verified=True,
+            asserted_by="verifier",
+            verification_method="nmap_xml_parsed",
+            invocation_id="inv-nmap",
+        )
+    coverage = load_coverage(store, TENANT, ENGAGEMENT)
+    run = store.create_run(TENANT, {})
+
+    coordinator = ReActCoordinator.__new__(ReActCoordinator)
+    coordinator.tenant_id = TENANT
+    coordinator.engagement_id = ENGAGEMENT
+    coordinator.agent_id = "omni"
+    coordinator.active_subagent_id = "omni"
+    coordinator.store = store
+    coordinator.run_id = run["id"]
+    coordinator.iteration = 12
+    coordinator.objective = V15_OBJECTIVE
+    coordinator.plan = build_plan(
+        objective=V15_OBJECTIVE, engagement_id=ENGAGEMENT, counts={"service": 2}
+    )
+    coordinator.audit = AuditWriter(store)
+    coordinator.snapshot = ContextSnapshot(
+        run_history=[],
+        history_summary="",
+        plan=coordinator.plan,
+        facts_text="",
+        coverage=coverage,
+    )
+    coordinator.action = SimpleNamespace(arguments={"url": f"http://{TARGET}/Account/login.aspx"})
+    coordinator.consecutive_no_progress = 5
+    coordinator.stuck_threshold = 5
+    coordinator.coverage_hint = ""
+    coordinator.coverage_hint_emitted = False
+
+    coordinator._refresh_coverage_hint()
+
+    assert "DIRECTIVA DEL OPERADOR" in coordinator.coverage_hint
+    assert "FIN DE CALLEJÓN" not in coordinator.coverage_hint
+    events = [
+        event
+        for event in store.list_run_events(TENANT, run["id"])
+        if event.get("event_type") == COVERAGE_PIVOT_EVENT_TYPE
+    ]
+    assert len(events) == 1
+    payload = events[0]["payload"]
+    assert payload["directive"]["no_pivot"] is True
+    assert payload["directive"]["paths"] == ["/admin/app_themes.aspx"]
+    assert payload["focus"] == f"{TARGET}:80"
 
 
 async def test_a_real_loop_turn_carries_the_ledger_from_the_store(tmp_path, lab_scope):

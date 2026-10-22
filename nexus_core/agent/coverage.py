@@ -84,6 +84,43 @@ DEFAULT_PIVOT_TURNS = 5
 #: recon parser rewrites services to their IPv4/hostname anyway).
 _SERVICE_KEY = re.compile(r"^(?P<host>.+?):(?P<port>\d{1,5})(?::(?P<proto>[A-Za-z]+))?$")
 
+#: A host (optionally with a port) written in the operator's objective. The
+#: lookbehind/lookahead keep an octet out of a longer number.
+_ADDRESS_IN_TEXT = re.compile(
+    r"(?<![\d.])(?P<host>(?:\d{1,3}\.){3}\d{1,3})(?::(?P<port>\d{1,5}))?(?![\d.])"
+)
+#: A document route named in the objective (``/admin/app_themes.aspx``). Only
+#: extension-bearing routes: a bare ``/admin`` is a directory the model can
+#: still explore, while a file route is the concrete step the operator fixed.
+_ROUTE_IN_TEXT = re.compile(
+    r"/[A-Za-z0-9_\-./]*[A-Za-z0-9_\-]\."
+    r"(?:aspx|ascx|ashx|asmx|axd|php\d?|jspx?|do|action|html?|cgi|pl|py)",
+    re.IGNORECASE,
+)
+#: Phrases with which the operator puts a service out of play. Matched against
+#: the accent-stripped, casefolded objective, so ``ÚNICO HOST`` and
+#: ``no hagas pivoteo`` are found regardless of how the line is typed.
+_NO_PIVOT_PHRASES: tuple[str, ...] = (
+    "no hagas pivoteo",
+    "no pivoteo",
+    "no pivotee",
+    "no pivotes",
+    "no pivotar",
+    "sin pivoteo",
+    "no pivot",
+    "unico host",
+    "un solo host",
+    "single host",
+    "solo este host",
+    "solo este objetivo",
+    "no movimiento lateral",
+    "no lateral movement",
+)
+#: Characters of the operator's own sentences quoted back in a hint. The quote
+#: exists so the model re-reads the order next to the heuristic that contradicts
+#: it; it is capped because it is paid on the turns the pivot fires.
+DIRECTIVE_QUOTE_CHARS = 300
+
 
 @dataclass(frozen=True)
 class SurfaceEntry:
@@ -140,6 +177,60 @@ class SurfaceEntry:
             "status": self.status,
             "verdict": self.verdict,
             "evidence": self.evidence,
+        }
+
+
+@dataclass(frozen=True)
+class Directive:
+    """The part of the operator's objective that outranks the ledger.
+
+    The objective is the human's order; this ledger is a breadth-first
+    heuristic. When the order names a service or a route, or takes a service out
+    of play, the pivot must not contradict it -that inversion is what made
+    ``run_e971fff78593498081567bdfc602d23a`` (V15, HackPark 2026-10-21) leave a
+    proven BlogEngine route at iteration 12 and spend its remaining budget on
+    RDP, a service the same objective had excluded.
+    """
+
+    #: ``host:port`` named by the objective, in the order it appears.
+    refs: tuple[str, ...] = ()
+    #: Hosts named by the objective (with or without a port in the sentence).
+    hosts: tuple[str, ...] = ()
+    #: Document routes named by the objective (``/admin/app_themes.aspx``).
+    paths: tuple[str, ...] = ()
+    #: The operator forbade pivoting / limited the engagement to one host.
+    no_pivot: bool = False
+    #: The operator's own sentences, quoted back in the hint (bounded).
+    text: str = ""
+
+    @property
+    def active(self) -> bool:
+        """Whether the objective constrains the branch set at all."""
+        return bool(self.refs or self.paths or self.no_pivot)
+
+    def names(self, entry: SurfaceEntry) -> bool:
+        """Whether the objective names this ledger entry."""
+        ref = entry.ref.lower()
+        if ref in {item.lower() for item in self.refs}:
+            return True
+        # An explicit ``host:port`` narrows the objective to those services: a
+        # mention of ``host:80`` is not a mention of the same host's RDP.
+        if self.refs:
+            return False
+        if entry.host.lower() not in {item.lower() for item in self.hosts}:
+            return False
+        # A document route (``/admin/app_themes.aspx``) names the *web* service
+        # of that host, not every port on it (V15: the objective named the theme
+        # endpoint and forbade pivoting; RDP on the same host stayed excluded).
+        if self.paths:
+            return _is_web(entry)
+        return True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "refs": list(self.refs),
+            "paths": list(self.paths),
+            "no_pivot": self.no_pivot,
         }
 
 
@@ -488,7 +579,124 @@ def load_coverage(store: Any, tenant_id: str, engagement_id: str | None) -> Cove
 # --------------------------------------------------------------------------- #
 # Prompt rendering
 # --------------------------------------------------------------------------- #
-def render_coverage(coverage: Coverage | None) -> str:
+def parse_directive(objective: Any) -> Directive:
+    """Read the operator's objective for the branches it fixes (deterministic).
+
+    Pure and cheap: two regular expressions over the objective plus a phrase
+    list. It never guesses intent -it only sees a literal address, a literal
+    document route and the literal phrases that forbid pivoting- and an empty
+    objective yields an inactive directive, so every existing caller keeps the
+    pre-directive behaviour.
+    """
+    text = " ".join(str(objective or "").split())
+    if not text:
+        return Directive()
+    refs: list[str] = []
+    hosts: list[str] = []
+    for match in _ADDRESS_IN_TEXT.finditer(text):
+        host = match.group("host")
+        if host not in hosts:
+            hosts.append(host)
+        port = match.group("port")
+        if port:
+            ref = f"{host}:{int(port)}"
+            if ref not in refs:
+                refs.append(ref)
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _ROUTE_IN_TEXT.finditer(text):
+        path = match.group(0).rstrip(".,;:)")
+        if path.casefold() in seen:
+            continue
+        seen.add(path.casefold())
+        paths.append(path)
+    flat = _unaccent(text).casefold()
+    no_pivot = any(phrase in flat for phrase in _NO_PIVOT_PHRASES)
+    return Directive(
+        refs=tuple(refs),
+        hosts=tuple(hosts),
+        paths=tuple(paths[:6]),
+        no_pivot=no_pivot,
+        text=_directive_quote(text, refs, paths, no_pivot),
+    )
+
+
+def _unaccent(text: str) -> str:
+    """Fold accents so ``ÚNICO HOST`` matches ``unico host``."""
+    import unicodedata
+
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(char)
+    )
+
+
+def _directive_quote(
+    text: str, refs: list[str], paths: list[str], no_pivot: bool
+) -> str:
+    """The operator's own sentences that carry the directive (bounded)."""
+    cues = [item.casefold() for item in paths]
+    cues.extend(item.casefold() for item in refs)
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?;])\s+|\n+", text)
+        if part.strip()
+    ]
+    # The sentence that fixes the *step* (a route, an address) comes first: it is
+    # the one that survives the truncation when the objective is long. The
+    # sentence that forbids pivoting follows, because it is the one the ledger
+    # would otherwise contradict.
+    specific = [
+        sentence for sentence in sentences if any(cue in sentence.casefold() for cue in cues)
+    ]
+    limiting = [
+        sentence
+        for sentence in sentences
+        if sentence not in specific
+        and no_pivot
+        and any(
+            phrase in _unaccent(sentence).casefold() for phrase in _NO_PIVOT_PHRASES
+        )
+    ]
+    # "NO hagas pivoteo" before "único host": the explicit prohibition is the
+    # sentence the coverage order contradicts.
+    limiting.sort(key=lambda sentence: 0 if "pivot" in _unaccent(sentence).casefold() else 1)
+    chosen = (specific[:1] + limiting[:2]) or specific or limiting
+    quote = " ".join(chosen) or text
+    quote = " ".join(quote.split())
+    return quote[:DIRECTIVE_QUOTE_CHARS].strip()
+
+
+def _is_web(entry: SurfaceEntry) -> bool:
+    """Whether the entry is the host's web service (the route's transport)."""
+    service = str(entry.service or "").casefold()
+    return entry.port in _SCHEME_PORTS or service.startswith(("http", "https", "www"))
+
+
+def _directive_scope(directive: Directive) -> str:
+    """Readable summary of what the objective fixes (for hints and the ledger)."""
+    parts: list[str] = []
+    if directive.refs:
+        parts.append("servicio(s) " + ", ".join(directive.refs))
+    elif directive.hosts:
+        parts.append("host " + ", ".join(directive.hosts))
+    if directive.paths:
+        parts.append("ruta(s) " + ", ".join(directive.paths))
+    return " · ".join(parts)
+
+
+def _directive_open(coverage: Coverage, directive: Directive) -> SurfaceEntry | None:
+    """The next branch the operator named and that still needs a verdict."""
+    for item in coverage.open_work:
+        if directive.names(item):
+            return item
+    return None
+
+
+def render_coverage(
+    coverage: Coverage | None, *, directive: Directive | None = None
+) -> str:
     """Render the ledger block for the prompt (``""`` when there is no surface).
 
     The header states the rule, not just the data: each open service needs a
@@ -507,8 +715,14 @@ def render_coverage(coverage: Coverage | None) -> str:
         lines.append(f"- … y {hidden} servicio(s) más (ordenados por estado y puerto)")
     open_count = len(coverage.open_work)
     total = len(coverage.entries)
+    bounds = directive if directive is not None and directive.active else None
     if open_count:
-        following = coverage.first_open()
+        # The branch the ledger suggests must not be one the operator excluded:
+        # the frontier line is read on every turn, before any pivot fires.
+        following = (
+            (_directive_open(coverage, bounds) if bounds is not None else None)
+            or coverage.first_open()
+        )
         target = f" Siguiente rama: {following.label}." if following else ""
         lines.append(
             f"FRONTERA: {open_count}/{total} servicios sin veredicto.{target}"
@@ -516,6 +730,15 @@ def render_coverage(coverage: Coverage | None) -> str:
     else:
         lines.append(
             f"FRONTERA: 0/{total} servicios sin veredicto (superficie cerrada)."
+        )
+    if bounds is not None:
+        lines.append(
+            "DIRECTIVA DEL OPERADOR (prioridad sobre este ledger): "
+            f"{_directive_scope(bounds) or 'alcance fijado en el objetivo'}"
+            f"{'; nada de pivoteo' if bounds.no_pivot else ''}. Una rama que el "
+            "objetivo nombra no se abandona ni se cierra para desbloquear el "
+            "ledger: si el paso falla, el arreglo está en el argumento. Las ramas "
+            "que el objetivo no nombra no autorizan un pivote."
         )
     # The *rule* travels with the data on purpose: it costs tokens only on the
     # turns that actually have a surface, and this is when the model can pick a
@@ -571,12 +794,45 @@ def _flatten(value: Any) -> Iterable[str]:
         yield str(value)
 
 
+def _directive_hint(coverage: Coverage, directive: Directive) -> str:
+    """The correction when the operator already fixed the branch to work.
+
+    Same wording contract as :func:`pivot_hint` -a concrete order, not "you are
+    stuck"- but inverted: the branch is *not* to be abandoned, because the human
+    named it. Measured in V15: the pivot ordered RDP while the objective said
+    "NO hagas pivoteo ... sube el tema a POST /admin/app_themes.aspx".
+    """
+    scope = _directive_scope(directive) or "el alcance fijado en el objetivo"
+    quote = (
+        f" Instrucción literal del operador: «{directive.text}»."
+        if directive.text
+        else ""
+    )
+    named = _directive_open(coverage, directive)
+    if named is not None:
+        return (
+            "DIRECTIVA DEL OPERADOR (manda sobre este ledger): el objetivo "
+            f"nombra {scope}. Esa rama NO se cierra ni se abandona por una racha "
+            "sin hechos nuevos: corrige el argumento del paso que falla (ruta, "
+            "campo, credencial, sesión) y reintenta "
+            f"{named.label} antes de tocar otra rama. Si el paso falla, el arreglo "
+            f"está en el argumento, no en cambiar de servicio.{quote}"
+        )
+    return (
+        "DIRECTIVA DEL OPERADOR (manda sobre este ledger): el objetivo limita el "
+        f"trabajo a {scope}. No cambies de servicio ni registres un barrier para "
+        "desbloquear el ledger: documenta el punto exacto que falló y pide "
+        f"aclaración al operador con request_clarification.{quote}"
+    )
+
+
 def pivot_hint(
     coverage: Coverage | None,
     *,
     no_progress: int = 0,
     threshold: int = DEFAULT_PIVOT_TURNS,
     focus: SurfaceEntry | None = None,
+    directive: Directive | None = None,
 ) -> str:
     """The correction injected when the run is stuck on a dead branch.
 
@@ -588,13 +844,20 @@ def pivot_hint(
     * ``no_progress`` reached the threshold and the ledger still has open work:
       the run is burning turns on one branch while another port is unexplored.
 
-    Returns ``""`` when neither holds. The text is an order with the concrete
-    next branch and the exact fact to record, because "you are stuck" alone was
+    The operator's objective outranks both: when it names a branch (or forbids
+    pivoting) the order changes branch only among the branches it allows. An
+    objective that names nothing leaves the historical behaviour untouched.
+
+    Returns ``""`` when none holds. The text is an order with the concrete next
+    branch and the exact fact to record, because "you are stuck" alone was
     measured to change nothing (run_abe04509…, 10 barren turns).
     """
     if coverage is None or not coverage.entries:
         return ""
+    bounds = directive if directive is not None and directive.active else None
     if focus is not None and focus.status == STATUS_CLOSED:
+        if bounds is not None:
+            return _directive_hint(coverage, bounds)
         following = coverage.first_open()
         where = (
             f"Pasa a: {following.label}." if following else "No quedan ramas abiertas."
@@ -610,6 +873,11 @@ def pivot_hint(
     open_items = coverage.open_work
     if not open_items:
         return ""
+    if bounds is not None:
+        # The directive replaces the branch order entirely: a barren streak is a
+        # reason to fix the argument on the branch the human named, not a reason
+        # to spend the budget on a service the objective left out of scope.
+        return _directive_hint(coverage, bounds)
     names = "; ".join(item.label for item in open_items[:3])
     following = coverage.first_open()
     order = f" Siguiente rama: {following.label}." if following else ""
@@ -626,6 +894,7 @@ def pivot_hint(
 __all__ = [
     "Coverage",
     "DEFAULT_PIVOT_TURNS",
+    "Directive",
     "MAX_LEDGER_ENTRIES",
     "OWNERSHIP_TYPES",
     "STATUS_CLOSED",
@@ -636,6 +905,7 @@ __all__ = [
     "build_coverage",
     "focus_entry",
     "load_coverage",
+    "parse_directive",
     "pivot_hint",
     "render_coverage",
 ]

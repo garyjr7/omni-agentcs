@@ -950,16 +950,21 @@ class ReActCoordinator:
         tool: the model still chooses the branch and the gateway still governs
         it.
         """
-        from nexus_core.agent.coverage import focus_entry, pivot_hint
+        from nexus_core.agent.coverage import focus_entry, parse_directive, pivot_hint
 
         coverage = getattr(self.snapshot, "coverage", None)
         arguments = getattr(getattr(self, "action", None), "arguments", None)
         focus = focus_entry(coverage, arguments if isinstance(arguments, dict) else None)
+        # The human's objective is the highest-order instruction the run has; the
+        # ledger is a heuristic map. Parsed here (not stored) so a resumed run
+        # reads the objective it was given, not a cached copy.
+        directive = parse_directive(getattr(self, "objective", ""))
         self.coverage_hint = pivot_hint(
             coverage,
             no_progress=self.consecutive_no_progress,
             threshold=self.stuck_threshold,
             focus=focus,
+            directive=directive,
         )
         if not self.coverage_hint or self.coverage_hint_emitted:
             return
@@ -975,6 +980,7 @@ class ReActCoordinator:
                 "focus_status": focus.status if focus is not None else None,
                 "counts": dict(getattr(coverage, "counts", {}) or {}),
                 "open_work": [item.ref for item in getattr(coverage, "open_work", ())][:12],
+                "directive": directive.to_dict(),
                 "hint": self.coverage_hint,
             },
         )
