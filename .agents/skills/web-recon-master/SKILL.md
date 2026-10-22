@@ -97,6 +97,16 @@ Prueba también las variantes que delatan un CMS o un framework: `/wp-login.php`
 
 ### 3. Gobuster con extensiones, no un barrido de directorios a medias
 
+**Antes de lanzarlo, mira el tamaño de la lista contra la latencia.** La tool
+corre en serie por hilo: `l íneas / hilos × RTT` es el tiempo mínimo. Con 200 ms
+de RTT y 20 hilos, `common.txt` (4 600 líneas) tarda ~1 min por extensión y
+`directory-list-2.3-small.txt` (87 664) tarda **más de una hora**, así que el
+handler lo corta por timeout y no devuelve nada (run DeadDrop P1, iteración 14:
+lanzó la lista de 87k con timeout de 1 800 s y hubo que matar el run). Regla:
+si no sabes la latencia, empieza por `common.txt`; solo sube a `raft-small-words`
+o `directory-list-2.3-small` si el objetivo responde rápido o el alcance es
+`127.0.0.1`.
+
 ```
 nexus.recon.gobuster(
     mode="dir",
@@ -220,10 +230,39 @@ sobre una copia en `loot/exploits/prepared/`, nunca sobre el original.
 
 #### Regla de login web (no negociable)
 
-Ante un **formulario de login** (`POST` con usuario y contraseña) tienes
-**prohibido** probar inyecciones SQL manuales con `nexus.web.request` —
-`admin' or '1'='1`, `' OR 1=1-- -`, etc.— como primer paso: es adivinar y quema
-los turnos que el login necesita. El primer intento es **siempre**
+Ante un **formulario de login** (`POST` con usuario y contraseña) el orden es
+fijo y barato: **tres sondas deterministas (un turno) y solo entonces la
+wordlist.** Lanzar `rockyou` sin haber leído la respuesta quema horas; pero
+prohibir la sonda de inyección también es un muro: en DeadDrop (2026-10-22) el
+login aceptaba `username=admin'-- -` con cualquier contraseña y devolvía `302`
+`Location: /dashboard` con sesión, y el run gastó sus turnos barriendo
+directorios que no existían porque esta regla lo mandaba a Hydra primero.
+
+#### Paso 1 — tres sondas, una petición cada una (leer, no adivinar)
+
+```
+# 1. ¿distingue usuario inexistente de contraseña mala? (enumeración)
+nexus.web.request(url="http://<host>/login", method="POST",
+                  data="username=nosuchuser&password=x")
+# 2. inyección: una comilla y un comentario con el usuario más probable
+nexus.web.request(url="http://<host>/login", method="POST",
+                  data="username=admin'-- -&password=x")
+# 3. si el backend parece Mongo/NoSQL: operador en lugar de valor
+nexus.web.request(url="http://<host>/login", method="POST",
+                  data="username[$ne]=x&password[$ne]=x")
+```
+
+- **La prueba de éxito es un `302` a un panel** (`Location: /dashboard`) con un
+  `Set-Cookie`, **nunca un `200` con el formulario**: un `200` es el login otra
+  vez. Guarda `set_cookie` y mándalo en la cabecera `Cookie` de cada petición
+  siguiente; sin esa cookie el panel te devuelve al login.
+- Un `500`, un error del driver o una traza son **señal de inyección**: anótala
+  y escálala a `nexus.web.sqlmap` con el `data` exacto del formulario.
+- Si las tres devuelven el mismo `Invalid credentials`, el login es sano: pasa
+  al paso 2 y no vuelvas a tocarlo.
+
+#### Paso 2 — el panel tiene una wordlist, el login sano se barre con Hydra
+
 `nexus.cred.bruteforce` con `service="http-post-form"` (o `http-get-form` si el
 formulario viaja por GET) y los tres campos que Hydra exige:
 
@@ -254,15 +293,39 @@ nexus.cred.bruteforce(
   (no la página de login entera): sin ese texto Hydra no distingue el éxito del
   fracaso y el barrido no prueba nada.
 - Es la **excepción documentada** a la regla de "la fuerza bruta es el último
-  recurso": en un login encontrado, el barrido del formulario *es* el primer
-  intento, porque el SQLi manual a mano no es ni una prueba de credenciales ni
-  un SQLi real. Una vez lanzado, se aplica el límite de siempre: un intento (el
-  handler ya acota los intentos y el tiempo) y, si no da credenciales, se pasa
-  al paso 7.
-- **Solo si Hydra falla, da error o no encuentra credenciales** puedes volver a
-  SQLi —con `nexus.web.sqlmap(url=..., data="user=admin&pass=x")`, **una**
-  inyección por parámetro, nunca a mano con `nexus.web.request`— o a los
-  backups del paso 7.
+  recurso", y va **después** de las tres sondas: el barrido del formulario solo
+  tiene sentido cuando el login responde distinto al usuario inexistente (hay
+  usuarios que enumerar) o cuando ya tienes un usuario válido. Un intento por
+  formulario: el handler ya acota intentos y tiempo; si no da credenciales, se
+  pasa al paso 3.
+- **Solo si las sondas del paso 1 insinúan inyección** escala a
+  `nexus.web.sqlmap(url=..., data="user=admin&pass=x")`, **una** inyección por
+  parámetro. Diez `web.request` a mano probando payloads distintos no son una
+  prueba: son diez turnos.
+
+#### Paso 3 — con sesión, cada fichero que el panel liste es una lectura
+
+Un panel que lista, previsualiza, descarga o "carga como módulo" ficheros es un
+candidato a **lectura arbitraria**: pide **todos** los ficheros que aparecen en
+la tabla, uno por petición, con la cookie de la sesión.
+
+```
+nexus.web.request(url="http://<host>/preview/<fichero>", headers={"Cookie": "<set_cookie del login>"})
+```
+
+- La respuesta puede tardar en llegar como **error del servidor que incluye el
+  contenido** (`Error loading module: ...`, una traza, un JSON de depuración):
+  si el cuerpo trae líneas de `/etc/passwd`, `/etc/shadow`, un `.env`, una
+  cadena de conexión o un hash, **eso es el hallazgo**, aunque el estado sea
+  `500`. Regístralo con `nexus.knowledge.record_fact` (`fact_type="credential"`
+  si hay usuario y hash) y sigue con `nexus.post.crack_hash`.
+- Prueba también el nombre del parámetro, no solo la ruta: `/preview?file=`,
+  `/download?file=`, `/view?f=`, `/api/file?name=`; y el traversal con `..%2f`
+  o `....//` si el nombre se concatena a un directorio (`File not found` con un
+  nombre plano y contenido con el traversal es la señal).
+- Un hash de `/etc/shadow` (`$6$…`, `$1$…`) se rompe con
+  `nexus.post.crack_hash(hash="…")`; la contraseña resultante suele ser la de
+  SSH del mismo usuario. No lo dejes "anotado": es el acceso.
 - Una API: pide `/swagger.json`, `/openapi.json`, `/api/docs`; prueba métodos
   (`OPTIONS`) y rutas sin autenticar.
 - Un CMS: `nexus.web.wp_enum`, versiones de plugins y `searchsploit`.
