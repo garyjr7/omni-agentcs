@@ -142,6 +142,23 @@ async def _reap_pty_sessions(context: Any) -> None:
         return
 
 
+async def _reap_stale_process_groups() -> None:
+    """Kill the sandbox groups a previous run left behind (P0.5, orphan wall).
+
+    A run killed by an external signal never reaches the kernel's cleanup, so
+    its children keep their own session and stay alive. Measured in the DeadDrop
+    campaign (2026-10-22): two ``nmap -p-`` sweeps kept attacking the target for
+    over an hour after their runs were stopped. The registry verifies pid *and*
+    start time before signalling, so a recycled pid is never touched.
+    """
+    try:
+        from nexus_core.kernel.process_registry import reap_stale
+
+        await asyncio.to_thread(reap_stale)
+    except BaseException:  # noqa: BLE001 - reaping must never block a run
+        return
+
+
 async def run_react_loop(
     *,
     context: Any,
@@ -195,6 +212,9 @@ async def run_react_loop(
         if hook_context is not None
         else None
     )
+    # Before the first tool: whatever an earlier run left running is no longer
+    # part of this engagement.
+    await _reap_stale_process_groups()
     try:
         result = await _run_react_loop_impl(
             context=context,

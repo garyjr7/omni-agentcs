@@ -18,6 +18,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .output_capture import BoundedCapture, StreamManifest
+from .process_registry import register as register_process_group
+from .process_registry import unregister as unregister_process_group
 from uuid import uuid4
 
 
@@ -387,9 +389,16 @@ class LocalSandbox:
             env=merge_extra_env(self._sandbox_env(home_dir), extra_env),
             start_new_session=True,
         )
-        return await _capture_process(process, self.max_output_bytes, timeout_seconds,
-                                      cancel_event, grace_seconds, started,
-                                      input_data=encoded)
+        # The command runs in its own session, so a run that dies by signal
+        # leaves the group behind; record it so the next run can reap it.
+        register_process_group(process.pid, argv)
+        try:
+            return await _capture_process(
+                process, self.max_output_bytes, timeout_seconds, cancel_event,
+                grace_seconds, started, input_data=encoded,
+            )
+        finally:
+            unregister_process_group(process.pid)
 
 
 
@@ -502,7 +511,10 @@ class OCISandbox:
             env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
             start_new_session=True,
         )
+        register_process_group(process.pid, argv)
+
         async def cleanup_container() -> None:
+            unregister_process_group(process.pid)
             cleanup = await asyncio.create_subprocess_exec(
                 self.runtime, "rm", "--force", argv[argv.index("--name") + 1],
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
