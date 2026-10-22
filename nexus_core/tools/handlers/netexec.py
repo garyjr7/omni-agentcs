@@ -20,6 +20,10 @@ import os
 import re
 from typing import Any
 
+from nexus_core.kernel.credentials import (
+    credential_choice_message,
+    resolve_credential_for,
+)
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.tools.parsers.netexec import parse_netexec_output
 
@@ -216,6 +220,16 @@ def netexec_definition(tenant_id: str = "system") -> ToolDefinition:
                 "domain": {"type": "string", "maxLength": 255},
                 "username": {"type": "string", "maxLength": 128},
                 "password": {"type": "string", "maxLength": 512},
+                "credential_ref": {
+                    "type": "string",
+                    "pattern": "^vault:[a-f0-9]{32}$",
+                    "description": (
+                        "Handle de una credencial del vault (V1-29). Preferido "
+                        "sobre `password`; se resuelve dentro de la tool. Si se "
+                        "omite junto a `password`, el motor usa la credencial "
+                        "que el engagement ya probó para ese usuario y host."
+                    ),
+                },
                 "hash": {"type": "string", "maxLength": 65},
                 "threads": {
                     "type": "integer",
@@ -296,6 +310,27 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
         raise ValueError("hash authentication requires a username")
     if password and not arguments.get("username"):
         raise ValueError("password authentication requires a username")
+    resolved_note = ""
+    if username and not password and not ntlm_hash:
+        # Fix 2.2: an *authenticated* enumeration (the call names an account)
+        # with no secret gets the one the engagement already proved. A call with
+        # no username at all is the anonymous/null-session fingerprint it has
+        # always been -there is no identity to resolve, and inventing one would
+        # turn a probe into a logged-in sweep.
+        resolved = resolve_credential_for(target, username, protocol, context=context)
+        if resolved is None:
+            raise ValueError(
+                credential_choice_message(
+                    tool_id="nexus.recon.netexec",
+                    host=target,
+                    username=username,
+                    protocol=protocol,
+                    context=context,
+                    purpose="autenticar la enumeración",
+                )
+            )
+        password = resolved.password
+        resolved_note = resolved.evidence_note()
 
     # Several netexec options take ``nargs='+'``/``'*'`` (``-u``, ``-p``,
     # ``--users``, ``--groups`` ...). The positional target must therefore be
@@ -340,6 +375,8 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
         "timeout_seconds": timeout_seconds,
         "flags": list(user_flags),
         "warnings": warnings,
+        # The engine resolved it, not the model: the handle is the audit trail.
+        **({"credential": resolved_note} if resolved_note else {}),
     }
     if result.timed_out:
         return ToolResult(
@@ -383,6 +420,7 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
             "operation": operation,
             "noise_level": noise_level,
             "count": len(parsed.entries),
+            **({"credential": resolved_note} if resolved_note else {}),
             **parsed.to_dict(),
         },
         verified=verified,

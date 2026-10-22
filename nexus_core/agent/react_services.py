@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, TypeVar
 from collections.abc import Awaitable, Mapping, Set
 from nexus_core.kernel.control_store import ControlStore
+from nexus_core.kernel.credentials import available_credentials_for
 from nexus_core.kernel.runtime import ExecutionContext
 from nexus_core.kernel.models import ToolDefinition
 from nexus_core.scope import EngagementScope
@@ -37,6 +38,7 @@ from .injection import render_for_model
 from .prompts import (
     CATALOG_REFRESH_TURNS,
     describe_scope,
+    render_available_credentials,
     render_system_prompt,
 )
 from .react_types import (
@@ -309,6 +311,13 @@ class ContextBuilder:
             snapshot.facts_text,
         )
         run_history = snapshot.run_history
+        # Fix 2.3: the handles the engine could inject, as data the model can
+        # copy into `credential_ref` instead of retyping a secret. Three per
+        # host, newest first; empty when the board has none (so a run without
+        # credentials pays nothing).
+        credential_hint = render_available_credentials(
+            available_credentials_for(store, tenant_id, str(engagement_id or ""))
+        )
         system_prompt = render_system_prompt(
             catalog=allowed_catalog,
             objective=objective,
@@ -316,6 +325,7 @@ class ContextBuilder:
             scope_summary=describe_scope(scope),
             history_summary=history_summary or "(sin historial previo)",
             facts_summary=facts_text,
+            available_credentials=credential_hint,
             plan_summary=plan.render(),
             # The engagement's own TODO contract (``loot/ENGAGEMENT_PLAN.md``),
             # reconciled against the board before this turn: every profile sees

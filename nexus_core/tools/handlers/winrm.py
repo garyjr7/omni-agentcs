@@ -26,6 +26,10 @@ import os
 import re
 from typing import Any
 
+from nexus_core.kernel.credentials import (
+    credential_choice_message,
+    resolve_credential_for,
+)
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 
 from ._ad import ad_sandbox, resolve_ad_binary, validate_domain, validate_host, validate_username
@@ -173,8 +177,27 @@ async def winrm_exec_handler(arguments: dict, context: RunContext) -> ToolResult
     username = validate_username(arguments["username"])
     password = str(arguments.get("password") or "")
     ntlm_hash = str(arguments.get("hash") or "")
+    resolved_note = ""
     if not password and not ntlm_hash:
-        raise ValueError("password or hash is required")
+        # Fix 2.2: the engine supplies the credential the engagement already
+        # proved for this account, instead of the handler refusing a call whose
+        # secret is on the board. Exactly one candidate resolves; zero or several
+        # are the caller's to disambiguate with `credential_ref`, and the refusal
+        # lists what the board holds so the next turn is not a guess.
+        resolved = resolve_credential_for(target, username, WINRM_PROTOCOL, context=context)
+        if resolved is None:
+            raise ValueError(
+                credential_choice_message(
+                    tool_id="nexus.win.winrm_exec",
+                    host=target,
+                    username=username,
+                    protocol=WINRM_PROTOCOL,
+                    context=context,
+                    purpose="ejecutar el comando",
+                )
+            )
+        password = resolved.password
+        resolved_note = resolved.evidence_note()
     command = str(arguments.get("command") or "").strip()
     if not command:
         raise ValueError("command is required")
@@ -232,6 +255,8 @@ async def winrm_exec_handler(arguments: dict, context: RunContext) -> ToolResult
         "shell": shell,
         "port": port,
         "timeout_seconds": timeout_seconds,
+        # The engine resolved it, not the model: the handle is the audit trail.
+        **({"credential": resolved_note} if resolved_note else {}),
     }
     if result.timed_out:
         return ToolResult(
@@ -262,6 +287,7 @@ async def winrm_exec_handler(arguments: dict, context: RunContext) -> ToolResult
         "executed": parsed["executed"],
         "stdout": parsed["output"],
         "error": parsed["failure"],
+        **({"credential": resolved_note} if resolved_note else {}),
     }
     if parsed["executed"]:
         return ToolResult(

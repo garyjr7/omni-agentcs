@@ -255,7 +255,13 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # step that proves it). It earns the room because it is what DeadDrop P11
     # lacked: 20 turns of ``ssh -L`` and a wrapper script, 0 findings, no route
     # anybody could prove. Measured 30,558; ceiling 30,650.
-    assert len(_prompt(catalog)) < 30_650
+    # Tanda B (Fix 3a.4) adds the deny-list block: what is refused, and *where*
+    # (the self-destructive list on both sides of the link; sudo/su only on the
+    # local channels). It costs 542 characters -measured 31,101- and it buys the
+    # two blocked turns the dossier measured: a ``sudo`` typed into the local
+    # sandbox, and a model that believed it could not escalate on a target it
+    # owned. Ceiling 31_150.
+    assert len(_prompt(catalog)) < 31_150
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -282,7 +288,8 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # The ad_acl catalog line measured 30,609 on the same block: ceiling 30_750.
     # Tanda A adds the same 458 characters on top of the ad_acl measurement:
     # 30,609 + 576 measured 31,185; ceiling 31_300.
-    assert len(prompt) < 31_300
+    # Tanda B moves with the static prompt (+532): measured 31,728; ceiling 31_780.
+    assert len(prompt) < 31_780
     assert len(block) < 1_200
 
 
@@ -458,7 +465,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # The ad_acl catalog line adds 19 characters: measured 6,569, ceiling 6_600.
     # Tanda A adds one compact catalog line and the PIVOTE order: measured 6,671,
     # ceiling 6_700 (the 6,600 target still holds for every other factor).
-    assert tokens < 6_700
+    # Tanda B's deny-list block lands on every turn: +136 tokens, measured 6,807;
+    # ceiling 6_850 (250k still buys ~36 compact turns).
+    assert tokens < 6_850
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -493,7 +502,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # The ad_acl line measured 7,272 on average (the mean is what grows with a
     # tool whose argument list is long): ceiling 7_350.
     # Tanda A: measured 7,384 over the 22 iterations; ceiling 7_420.
-    assert sum(totals) / len(totals) < 7_420
+    # Tanda B: the deny-list block is paid every turn: measured 7,520 average;
+    # ceiling 7_560 (250k buys ~33 turns).
+    assert sum(totals) / len(totals) < 7_560
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -518,7 +529,8 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # The ad_acl catalog line measured 9,665 on the refresh turn (the static
     # prompt plus all 80 lines), so the ceiling moves to 9_750.
     # Tanda A: the full-catalog turn measured 9,809; ceiling 9_850.
-    assert max(totals) < 9_850
+    # Tanda B: the same block on the refresh turn measured 9,944; ceiling 9_990.
+    assert max(totals) < 9_990
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):

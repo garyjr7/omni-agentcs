@@ -98,8 +98,13 @@ async def _pty_command(
         )
 
     # The channel can reach the target with any command, so it keeps the same
-    # lexical gates as the PTY tool: no local privilege/destructive command and
-    # no fetch to a host outside the signed scope.
+    # lexical gates as the PTY tool. Note *where* this pane lives: ``raw``/``pty``
+    # are tmux sessions started **on the operator's machine** (the listener spawns
+    # them locally and a reverse shell connects into the pane), and the handler
+    # cannot prove that a remote prompt is in the foreground when it types. It
+    # therefore keeps the local-privilege block -fail closed-; the target's
+    # ``sudo`` goes through ``nexus.post.ssh_exec`` or the msf/sliver channels,
+    # which are unambiguously remote and do allow it (HIGH approval).
     denial = command_denial(context, request.command)
     if denial is not None:
         return ToolResult(

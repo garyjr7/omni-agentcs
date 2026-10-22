@@ -51,6 +51,13 @@ from dataclasses import dataclass, field, replace
 from functools import wraps
 from typing import Any
 
+from nexus_core.kernel.credentials import (
+    best_credential_for,
+    board_facts,
+    key_names_target,
+    key_names_user,
+    vault_reference,
+)
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.redaction import redact_secret_values
 from nexus_core.kernel.sandbox import sandbox_for_environment
@@ -447,6 +454,30 @@ def _forbidden_command(command: str) -> str | None:
     if match:
         return match.group("command")
     return None
+
+
+def _remote_denial(command: str):
+    """The shared self-destructive rules, as a *remote* channel applies them.
+
+    Fix 3a.3: ``ssh_exec`` used to carry only its own substring list, so an
+    ``rm -rf /`` spelled in a way that list did not cover ran on the target.
+    ``local_privileges=False`` is the whole difference between this channel and
+    the local shell: ``sudo``/``su`` over the target are the escalation step and
+    the HIGH approval gate is what asks the human, while the destructive list is
+    the same on both sides of the link. Imported lazily because
+    ``shell_exec_local`` pulls the sandbox/workspace layer and this module is
+    also imported at registry build time.
+    """
+    from .shell_exec_local import denied_command
+
+    return denied_command(command, local_privileges=False)
+
+
+def _ssh_stderr_tail(context: RunContext, stderr: str, arguments: dict) -> str:
+    """Three redacted lines of the remote stderr (3b), or ``""``."""
+    from .shell_exec_local import redacted_stderr_tail
+
+    return redacted_stderr_tail(context, stderr, arguments)
 
 
 #: What to use instead, per refusal. A refusal that does not name the way out
@@ -926,21 +957,14 @@ def _verified_ssh_access(context: RunContext, target: str, username: str) -> boo
     return False
 
 
-def _board_facts(context: RunContext, fact_type: str) -> list[dict[str, Any]]:
-    """Facts of ``fact_type`` on the engagement board (never raises)."""
-    store = getattr(context, "store", None)
-    engagement_id = str(getattr(context, "engagement_id", "") or "")
-    if store is None or not engagement_id:
-        return []
-    from nexus_core.kernel.blackboard import Blackboard
-
-    try:
-        facts = Blackboard(store).list_facts(
-            getattr(context, "tenant_id", "system"), engagement_id, fact_type=fact_type
-        )
-    except Exception:  # noqa: BLE001 - an unreadable board never breaks a tool
-        return []
-    return [fact for fact in facts if isinstance(fact, dict)]
+#: The board scan and the structural credential match live in
+#: ``kernel.credentials`` (Fix 2), so ``ssh_exec``, ``winrm_exec`` and
+#: ``nexus.recon.netexec`` answer the same question with the same code. These
+#: aliases keep the module's own call sites reading the same way.
+_board_facts = board_facts
+_key_names_target = key_names_target
+_key_names_user = key_names_user
+_vault_reference = vault_reference
 
 
 def _board_port(value: Any) -> int | None:
@@ -990,68 +1014,6 @@ def _known_ssh_port(context: RunContext, target: str, username: str = "") -> int
     return None
 
 
-def _key_names_target(key: str, target: str) -> bool:
-    """Whether a fact key names exactly ``target`` (not a longer address)."""
-    if not key or not target:
-        return False
-    if key == target:
-        return True
-    boundary = rf"(?<![0-9A-Za-z.]){re.escape(target)}(?![0-9A-Za-z.])"
-    return re.search(boundary, key) is not None
-
-
-def _key_names_user(key: str, username: str) -> bool:
-    """Whether a fact key carries ``username`` as its user part."""
-    if not key or not username:
-        return False
-    if key == username:
-        return True
-    return re.search(rf"(?:^|[:/@]){re.escape(username)}(?=[@:/]|$)", key) is not None
-
-
-def _vault_reference(value: Any) -> str:
-    """The vault handle a ``credential``/``access`` fact carries, or ``""``.
-
-    The plaintext is never on the board (``blackboard`` redacts secret keys by
-    design); the usable shape is a ``vault:<hex>`` reference under any of the
-    fields the handlers and the verifier have used over time.
-    """
-    from nexus_core.kernel.secret_store import is_secret_ref
-
-    if not isinstance(value, dict):
-        return ""
-    for name in ("secret_ref", "credential_ref", "vault_ref", "password", "secret"):
-        candidate = value.get(name)
-        if isinstance(candidate, str) and is_secret_ref(candidate.strip()):
-            return candidate.strip()
-    return ""
-
-
-def _fact_matches_identity(fact: dict[str, Any], target: str, username: str) -> bool:
-    """Whether *fact* describes ``username@target`` (structural, not key-exact).
-
-    Measured in the Simple CTF run of 2026-10-18 02:35 UTC (iteration 29): the
-    model called ``ssh_exec`` with only ``target``/``username`` and the old
-    lookup only accepted the literal key ``cred:ssh:<user>@<host>``. The board
-    kept the same credential under other shapes (``<user>@<host>``, the user and
-    host inside the value, an ``access`` fact), and every mismatch cost a turn.
-    """
-    value = fact.get("value") if isinstance(fact, dict) else None
-    if not isinstance(value, dict):
-        return False
-    key = str(fact.get("key") or "")
-    named_target = str(
-        value.get("target") or value.get("host") or value.get("address") or ""
-    ).strip()
-    if named_target:
-        if named_target != target:
-            return False
-    elif not _key_names_target(key, target):
-        return False
-    named_user = str(value.get("username") or value.get("user") or "").strip()
-    if named_user:
-        return named_user == username
-    return _key_names_user(key, username)
 
 
 def _board_ssh_credential(
@@ -1068,31 +1030,17 @@ def _board_ssh_credential(
     is not replaying a password the model guessed. A fact without a handle (the
     hash a model copied, a redacted plaintext) is never used -and the caller's
     error says so, which is what the measured turn needed.
-    """
-    from nexus_core.kernel.blackboard import is_verified_fact
-    from nexus_core.kernel.secret_store import default_secret_store
 
-    candidates: list[tuple[bool, str]] = []
-    for fact_type in ("credential", "access"):
-        for fact in _board_facts(context, fact_type):
-            if not _fact_matches_identity(fact, target, username):
-                continue
-            ref = _vault_reference(fact.get("value"))
-            if not ref:
-                continue
-            candidates.append((not is_verified_fact(fact), ref))
-    # Verified first; the list order is the board's (newest first), so within one
-    # provenance the most recent handle wins.
-    candidates.sort(key=lambda item: item[0])
-    tenant_id = getattr(context, "tenant_id", "system")
-    for _unverified, ref in candidates:
-        try:
-            plaintext = default_secret_store().get(ref, tenant_id=tenant_id).decode("utf-8")
-        except Exception:  # noqa: BLE001 - an unreadable handle is not a credential
-            continue
-        if plaintext:
-            return plaintext, ref
-    return "", ""
+    The scan itself is :func:`nexus_core.kernel.credentials.best_credential_for`
+    (Fix 2.1): the same code answers ``winrm_exec`` and ``netexec``, so the three
+    channels cannot drift apart. SSH keeps "the newest usable one" instead of
+    requiring a unique match because its channel verifies the credential on
+    every call.
+    """
+    resolved = best_credential_for(target, username, "ssh", context=context)
+    if resolved is None:
+        return "", ""
+    return resolved.password, resolved.handle
 
 
 def _credential_lead_hint(context: RunContext, target: str, username: str) -> str:
@@ -1344,6 +1292,31 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
             f"command contains a forbidden token: {forbidden!r}"
             + (f" - {guidance}" if guidance else "")
         )
+    # Fix 3a.3: the *shared* destructive list, which is not the same as this
+    # module's substring list. A command it refuses is a determinate ``denied``
+    # result (not a raised ValueError), because the call decided before running.
+    denial = _remote_denial(command)
+    if denial is not None:
+        return ToolResult(
+            output={
+                "target": target,
+                "command": command,
+                "error": "command refused by the shared deny list",
+                "kind": denial.kind,
+                "reason": denial.reason,
+                "rule": denial.rule,
+            },
+            verified=False,
+            outcome="denied",
+            verification_method="ssh_command_denied",
+            evidence={
+                "target": target,
+                "username": username,
+                "deny_kind": denial.kind,
+                "deny_reason": denial.reason,
+                "deny_rule": denial.rule,
+            },
+        )
     # V9 (Hijack): waiting burns the turn on the remote host too. The refusal is
     # determinate (``denied``), not an engine failure, and it names the tools
     # that replace each legitimate reason to wait.
@@ -1385,21 +1358,38 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         max(10, int(requested_timeout) if requested_timeout else SSH_DEFAULT_TIMEOUT_SECONDS),
     )
 
-    result = await _run_ssh_client(
-        mode="exec",
-        host=target,
-        port=port,
-        username=username,
-        password=password,
-        payload={
-            "command": remote_command,
-            "command_timeout": min(60, timeout_seconds),
-            "stdin": stdin_data,
-            "private_key": auth["private_key"],
-            "passphrase": auth["passphrase"],
-        },
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        result = await _run_ssh_client(
+            mode="exec",
+            host=target,
+            port=port,
+            username=username,
+            password=password,
+            payload={
+                "command": remote_command,
+                "command_timeout": min(60, timeout_seconds),
+                "stdin": stdin_data,
+                "private_key": auth["private_key"],
+                "passphrase": auth["passphrase"],
+            },
+            timeout_seconds=timeout_seconds,
+        )
+    except PermissionError as exc:
+        # The sandbox refused to start the client: a policy decision, not a
+        # broken target. Named, so the model does not retry the same call.
+        reason = (
+            "program not allowed in sandbox: python3"
+            if "not allowed" in str(exc)
+            else f"sandbox denied the invocation: {exc}"
+        )
+        return ToolResult(
+            output={"target": target, "command": command, "error": reason,
+                    "reason": reason},
+            verified=False,
+            outcome="denied",
+            verification_method="ssh_program_denied",
+            evidence={"target": target, "username": username, "reason": reason},
+        )
     evidence = {
         "mode": "exec",
         "command": command,
@@ -1413,11 +1403,27 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         # get the credential, and why.
         evidence["sudo_stdin_skipped"] = sudo_stdin_skipped
     if result.timed_out:
+        # 3b: the budget that expired travels with the answer, so "timed out" is
+        # never a generic label the model cannot act on.
+        timeout_tail = _ssh_stderr_tail(context, result.stderr, arguments)
+        timeout_output = {
+            "error": "ssh command timed out",
+            "reason": "ssh command timed out",
+            "target": target,
+            "command": command,
+            "timeout_seconds": timeout_seconds,
+            **({"stderr_tail": timeout_tail} if timeout_tail else {}),
+        }
         return ToolResult(
-            output={"error": "ssh command timed out", "target": target},
+            output=timeout_output,
             verified=False,
+            outcome="timeout",
             verification_method="ssh_exec_timeout",
-            evidence=evidence,
+            evidence={
+                **evidence,
+                "timeout_seconds": timeout_seconds,
+                **({"stderr_tail": timeout_tail} if timeout_tail else {}),
+            },
             exit_code=result.exit_code,
             accepted_exit_codes=(0,),
             stdout=result.stdout,
@@ -1562,6 +1568,14 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         # V1-32: the reason the command failed belongs in the observation.
         output["error"] = detail
         evidence["error_detail"] = detail
+    # 3b: the remote stderr is the diagnostic (``sudo: a password is required``);
+    # three redacted lines of it, bounded, instead of a bare status number.
+    command_tail = _ssh_stderr_tail(
+        context, str(output.get("stderr") or ""), {**arguments, "command": command}
+    )
+    if command_tail:
+        output["stderr_tail"] = command_tail
+        evidence["stderr_tail"] = command_tail
     evidence["exit_status"] = exit_status
     # The *real* streams of the remote command, not the JSON envelope of the
     # client: the model has to read `sudo: a password is required` to pivot.

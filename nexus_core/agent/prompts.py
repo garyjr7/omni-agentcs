@@ -7,7 +7,12 @@ context without touching the response contract.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable, Mapping
+
+from nexus_core.kernel.credentials import (
+    MAX_CREDENTIALS_PER_HOST,
+    credential_lines,
+)
 
 #: The default authorization philosophy of every engagement. It is *always*
 #: rendered (it is the policy of the loop, not a capability of a subagent):
@@ -115,6 +120,79 @@ PIVOT_ROUTE_RULE_PROMPT = (
     "  el destino: un túnel sin verificación es una hipótesis, no una ruta.\n"
 )
 
+#: What the deny list actually refuses, and where (Tanda B, 3a.4). The honest
+#: part is the asymmetry: the same destructive list applies on both sides of the
+#: link, but ``sudo`` is refused only on the operator's machine. A prompt that
+#: says "sudo is denied" makes the model stop enumerating a target it owns; one
+#: that says "sudo is allowed" makes it type it into a local sandbox that will
+#: never answer. Both halves cost turns, so both are stated.
+DENIED_PATTERNS_DESTRUCTIVE = (
+    "EN TODOS los canales: `rm -rf /` (y `~`, `$HOME`, `/*`), fork bomb, "
+    "`mkfs.*`, `dd of=/dev/sd|nvme|vd|hd`, `> /dev/sd*`, `chmod -R 777 /`."
+)
+DENIED_PATTERNS_LOCAL = (
+    "En los canales LOCALES ({tools}, tu máquina) se rechaza además "
+    "`sudo`/`doas`/`su`: ahí no escalas nada. `shutdown`/`reboot` no están en "
+    "esa lista (el sandbox es efímero)."
+)
+DENIED_PATTERNS_REMOTE = (
+    "Sobre el OBJETIVO ({tools}) `sudo`/`su` NO se rechazan: son la escalada y "
+    "pasan por aprobación HIGH (usa `sudo -S` o `sudo -l`)."
+)
+
+
+def render_denied_patterns(catalog: Mapping[str, Any]) -> str:
+    """The deny list as a prompt block, naming only tools the catalog offers.
+
+    A subagent that cannot call a tool must not read its name (the gating rule
+    of the per-subagent prompt), so each half of the asymmetry is appended only
+    when at least one of its channels is in the catalog.
+    """
+    parts = [f"- DENY-LIST (qué se niega y dónde): {DENIED_PATTERNS_DESTRUCTIVE}"]
+    local = [
+        tool_id
+        for tool_id in ("nexus.shell.exec", "nexus.session.pty")
+        if tool_id in catalog
+    ]
+    remote = [
+        tool_id
+        for tool_id in ("nexus.post.ssh_exec", "nexus.post.shell_exec")
+        if tool_id in catalog
+    ]
+    if local:
+        parts.append(DENIED_PATTERNS_LOCAL.format(tools="`" + "`/`".join(local) + "`"))
+    if remote:
+        parts.append(DENIED_PATTERNS_REMOTE.format(tools="`" + "`/`".join(remote) + "`"))
+    return "\n".join(parts) + "\n"
+
+
+#: Header of the handle list (Fix 2.3). Rendered only when the board has one, so
+#: a run without credentials pays nothing for it.
+AVAILABLE_CREDENTIALS_HEADER = (
+    "CREDENCIALES DISPONIBLES (handles del vault; pásalos como `credential_ref`, "
+    "nunca la contraseña. Si omites `password` en winrm/netexec/ssh_exec el motor "
+    "usa la única que coincida):"
+)
+
+
+def render_available_credentials(
+    credentials: Iterable[Mapping[str, Any]] | None,
+    *,
+    per_host: int = MAX_CREDENTIALS_PER_HOST,
+) -> str:
+    """The ``- <host>: <handle> (username=…, protocol=…)`` block, or ``""``.
+
+    ``per_host`` is applied by :func:`nexus_core.kernel.credentials.available_credentials`;
+    the ``… y N más`` tail of the last line tells the model there are more
+    handles for that host, so a truncated list never reads as an exhaustive one.
+    """
+    entries = [entry for entry in (credentials or ()) if entry.get("handle")]
+    if not entries:
+        return ""
+    lines = credential_lines(entries)
+    return AVAILABLE_CREDENTIALS_HEADER + "\n" + "\n".join(lines) + "\n"
+
+
 REACT_SYSTEM_PROMPT = """Eres OmniAgent, un agente autónomo de
 ciberseguridad ofensiva operando dentro de un engagement autorizado.
 
@@ -171,7 +249,7 @@ REGLAS:
   (hydra sin credenciales, un endpoint sin SQLi), no insistas más de 2 veces:
   registra un barrier para ese vector y PIVOTA al siguiente. Mapea todas las
   vulnerabilidades, no solo la primera que veas.
-{engagement_plan_rule}{passive_wait_rule}{pivot_route_rule}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
+{engagement_plan_rule}{passive_wait_rule}{pivot_route_rule}{denied_patterns}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
   enumeración → acceso inicial → escalada → post-explotación → reporte). El
   plan vigente se muestra más abajo: trabaja SIEMPRE la fase actual y usa su
   foco y su siguiente paso sugerido como guía. Cuando completes la fase, tus
@@ -286,7 +364,7 @@ CONTEXTO DE SESIÓN:
 - Hallazgos registrados en el blackboard (usa esto para decidir el siguiente
   paso y no repetir trabajo):
 {facts_summary}
-"""
+{available_credentials}"""
 
 # Prompt used when the loop has to fold a long history into one message.
 REACT_SUMMARY_PROMPT = """Resume el historial de acciones de un agente de
@@ -555,6 +633,8 @@ def render_system_prompt(
     skills_summary: str = "(sin skills activas)",
     skill_index: str = "(sin skills disponibles)",
     playbook_summary: str = "(ningún playbook aplica todavía)",
+    available_credentials: str = "",
+    denied_patterns: str = "",
     full_catalog: bool = True,
 ) -> str:
     """Fill :data:`REACT_SYSTEM_PROMPT` for one iteration.
@@ -592,6 +672,10 @@ def render_system_prompt(
         cms_exploit_rule=cms_exploit_rule,
         engagement_plan_rule=plan_rule,
         pivot_route_rule=pivot_route_rule,
+        # Built from the catalog that is actually being sent, so the block never
+        # names a channel this model cannot call (subagent gating).
+        denied_patterns=denied_patterns or render_denied_patterns(catalog),
+        available_credentials=available_credentials,
         engagement_plan_summary=(
             engagement_plan_summary
             or "(sin plan de engagement: si el objetivo es un engagement, "

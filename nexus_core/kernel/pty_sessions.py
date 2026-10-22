@@ -341,6 +341,7 @@ class PtySessionManager:
 __all__ = [
     "PTY_ALLOWED_PROGRAMS",
     "PTY_CAPTURE_RING",
+    "PTY_COMMAND_TIMEOUT_SECONDS",
     "PTY_MAX_LINES",
     "PTY_MAX_NAME",
     "PTY_MAX_WAIT_SECONDS",

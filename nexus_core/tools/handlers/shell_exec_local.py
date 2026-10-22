@@ -25,10 +25,11 @@ What it guarantees (and what it does not)
   the (never arriving) output. The OCI sandbox refuses it explicitly: an
   ephemeral container cannot keep the job alive.
 * **A lexical deny list** (``NEXUS_SHELL_DENY`` can extend it) blocks the
-  obviously destructive local commands. It is a guard-rail, not a security
-  boundary: an arbitrary argv cannot be validated against the engagement
-  scope. The compensating controls are the signed engagement, the confined
-  workspace and the audit chain.
+  obviously destructive commands, and —because this channel runs on the
+  operator's machine— a local ``sudo``/``su``/``doas``. It is a guard-rail, not
+  a security boundary: an arbitrary argv cannot be validated against the
+  engagement scope. The compensating controls are the signed engagement, the
+  confined workspace and the audit chain.
 * **Fetch destinations are validated against the signed scope.** An arbitrary
   argv cannot be validated, but the destination of ``curl``/``wget``/``nc``
   can: the command is split into simple commands and the first argument of each
@@ -48,6 +49,7 @@ import re
 import shlex
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -58,6 +60,12 @@ from nexus_core.kernel.artifacts import configured_artifact_store
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.fact_verification import sshpass_channels
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
+from nexus_core.kernel.redaction import (
+    redact_result,
+    redact_secret_values,
+    sanitize_text,
+    secrets_for_redaction,
+)
 from nexus_core.kernel.sandbox import OCISandbox, sandbox_for_environment
 from nexus_core.kernel.scope_loader import scope_signing_secret
 from nexus_core.kernel.sessions import validate_session_scope
@@ -193,29 +201,58 @@ def background_log_path(root: str | Path, run_id: str) -> Path:
     stamp = re.sub(r"[^A-Za-z0-9_-]", "", str(run_id or "run"))[:32] or "run"
     return base / f"{stamp}-{int(time.time() * 1000)}.log"
 
-#: Local guard-rail patterns; ``NEXUS_SHELL_DENY`` can only add more.
+#: Self-destructive patterns: they destroy the machine or the workspace, and no
+#: engagement needs them. ``NEXUS_SHELL_DENY`` can only add more.
+#:
+#: Coherence (Tanda B, 3a.1): this list is the **same** one every channel applies
+#: —local shell, local PTY, ``ssh_exec``, ``nexus.post.shell_exec``— because an
+#: rm of the root is not a policy question on either side of the link. What used
+#: to live here and does not belong: ``sudo``/``doas``/``su`` (authorization, and
+#: on a remote target the documented escalation step), ``find / -delete`` (a
+#: targeted delete, not a wipe) and ``shutdown``/``reboot``/``poweroff``/``halt``
+#: (irrelevant inside the ephemeral sandbox, and on the target a *policy* call
+#: that the RoE and the approval gate make -not a lexical one).
 _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        # Local privilege changes are not part of a remote engagement and the
-        # sandbox has no password channel (the plan's "sin sudo" mitigation).
-        r"(?:^|[;&|]\s*)(?:sudo|doas)\b",
-        r"(?:^|[;&|]\s*)su\s",
         # Recursive deletion of the workspace root or the host root.
         r"\brm\s+(?:-[A-Za-z]*[rf][A-Za-z]*\s+)+(?:/|/\*|~|\$HOME)(?:\s|$|;)",
-        r"\bfind\s+/(?:\s|$).*-delete\b",
         # Raw device writes and filesystem formatting.
         r"\bmkfs(?:\.\w+)?\b",
         r"\bdd\b[^\n;|]*\bof=/dev/(?:sd|nvme|vd|hd)",
         r">\s*/dev/(?:sd|nvme|vd|hd)",
-        # Host power management.
-        r"(?:^|[;&|]\s*)(?:shutdown|reboot|poweroff|halt)\b",
         # Classic fork bomb.
         r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:",
         # Blanket permissions on the host root.
         r"\bchmod\s+-R\s+777\s+/(?:\s|$|;)",
     )
 )
+
+#: Local privilege escalation. Refused **only** where the command runs on the
+#: operator's machine (``nexus.shell.exec``, ``nexus.session.pty``): the sandbox
+#: has no password channel and a local ``sudo`` is not part of a remote
+#: engagement (the plan's "sin sudo" mitigation). Over the target it is the
+#: documented escalation step, so ``nexus.post.ssh_exec`` and
+#: ``nexus.post.shell_exec`` do not apply it -they are HIGH risk and the approval
+#: gate is what asks the human.
+_LOCAL_PRIVILEGE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:^|[;&|]\s*)(?:sudo|doas)\b",
+        r"(?:^|[;&|]\s*)su\s",
+    )
+)
+
+#: What the observation says when a local privilege change was refused. Stable
+#: text: the acceptance test and the model both read it.
+LOCAL_PRIVILEGE_REASON = "local privilege escalation not allowed"
+
+#: What the observation says when a self-destructive command was refused.
+DESTRUCTIVE_REASON = "self-destructive command not allowed"
+
+#: How many stderr lines travel with a failed command. Three is what the model
+#: reads to choose the next step; the full stream stays in the artifact.
+STDERR_TAIL_LINES = 3
 
 
 class ShellExecRequest(BaseModel):
@@ -254,25 +291,91 @@ def shell_exec_definition(tenant_id: str = "system") -> ToolDefinition:
     )
 
 
-def prohibited_reason(command: str) -> str | None:
-    """Return the deny-list rule a command matches, or ``None``.
+@dataclass(frozen=True)
+class DeniedCommand:
+    """Why a command was refused: the rule, its class and the honest reason.
 
-    ``NEXUS_SHELL_DENY`` appends operator rules separated by ``;;`` so a regex
-    can contain ``|`` without ambiguity. Additional rules can only *widen* the
-    guard-rail, never remove a built-in one.
+    ``kind`` is what the model needs (a local privilege change is a different
+    mistake from an ``rm -rf /``) and ``reason`` is the sentence the observation
+    carries, so nothing downstream has to re-derive policy from a regex.
     """
-    extra = os.getenv("NEXUS_SHELL_DENY", "")
-    patterns = list(_DENY_PATTERNS)
-    for raw in extra.split(";;"):
+
+    kind: str
+    rule: str
+    reason: str
+
+
+def _operator_patterns() -> list[re.Pattern[str]]:
+    """Operator rules from ``NEXUS_SHELL_DENY`` (separator ``;;``)."""
+    patterns: list[re.Pattern[str]] = []
+    for raw in os.getenv("NEXUS_SHELL_DENY", "").split(";;"):
         text = raw.strip()
         if not text:
             continue
         with suppress(re.error):
             patterns.append(re.compile(text, re.IGNORECASE))
-    for pattern in patterns:
+    return patterns
+
+
+def denied_command(command: str, *, local_privileges: bool = True) -> DeniedCommand | None:
+    """The deny rule *command* matches, with its class and reason, or ``None``.
+
+    ``local_privileges=False`` is what a **remote** channel passes: ``sudo``/``su``
+    over the target are allowed (HIGH risk, approval gate). Everything else —the
+    self-destructive list and whatever the operator added through
+    ``NEXUS_SHELL_DENY``— applies on both sides of the link.
+
+    Additional rules can only *widen* the guard-rail, never remove a built-in one.
+    """
+    for pattern in _DENY_PATTERNS:
         if pattern.search(command):
-            return pattern.pattern
+            return DeniedCommand("destructive", pattern.pattern, DESTRUCTIVE_REASON)
+    if local_privileges:
+        for pattern in _LOCAL_PRIVILEGE_PATTERNS:
+            if pattern.search(command):
+                return DeniedCommand(
+                    "local_privilege", pattern.pattern, LOCAL_PRIVILEGE_REASON
+                )
+    for pattern in _operator_patterns():
+        if pattern.search(command):
+            return DeniedCommand("operator", pattern.pattern, DESTRUCTIVE_REASON)
     return None
+
+
+def prohibited_reason(command: str, *, local_privileges: bool = True) -> str | None:
+    """Return the deny-list rule a command matches, or ``None``.
+
+    Kept as the narrow form of :func:`denied_command` for the callers that only
+    need the rule itself (audit fields and the PTY adapter).
+    """
+    denied = denied_command(command, local_privileges=local_privileges)
+    return denied.rule if denied is not None else None
+
+
+def stderr_tail(stderr: str, *, lines: int = STDERR_TAIL_LINES) -> str:
+    """Last ``lines`` lines of *stderr*, trimmed (the fix's bounded diagnostic)."""
+    text = (stderr or "").strip()
+    if not text:
+        return ""
+    return "\n".join(text.splitlines()[-max(1, int(lines)):])
+
+
+def redacted_stderr_tail(
+    context: RunContext, stderr: str, arguments: dict[str, Any] | None = None
+) -> str:
+    """*stderr* tail through ``redaction.py`` before it is persisted (3b).
+
+    Both halves of the redaction layer run, in this order: the *known values* of
+    this invocation (the vault handle it resolved, a manual ``password``) and the
+    named fields of the text itself (``password=…``). A secret the command printed
+    must not survive in an observation just because it arrived on stderr.
+    """
+    text = stderr_tail(stderr)
+    if not text:
+        return ""
+    return sanitize_text(
+        redact_secret_values(text, secrets_for_redaction(context, arguments))
+    )
 
 
 #: The package-manager call the agent reaches for when a tool is missing. The
@@ -748,21 +851,45 @@ async def _launch_background(
             )
     except (FileNotFoundError, PermissionError) as exc:
         duration_ms = int((time.monotonic() - started) * 1000)
+        # A ``PermissionError`` is the sandbox refusing the invocation (program
+        # not allowlisted, path escaping the workspace): a policy decision, so it
+        # is ``denied`` and names the program. A missing binary is not -the
+        # backend is not there, which is ``unavailable`` (Fase 3b).
+        refused = isinstance(exc, PermissionError)
+        reason = (
+            f"program not allowed in sandbox: {program}"
+            if refused and "not allowed" in str(exc)
+            else f"sandbox denied the invocation: {exc}"
+            if refused
+            else f"shell binary not available: {program}"
+        )
         _audit(
             context, command=request.command, cwd=cwd_relative,
             exit_code=None, duration_ms=duration_ms, bytes_written=0,
-            timed_out=False, decision="deny", reason=type(exc).__name__,
+            timed_out=False, decision="deny" if refused else "allow",
+            reason=type(exc).__name__,
         )
         return ToolResult(
-            output={"error": f"shell unavailable: {type(exc).__name__}", "cwd": cwd_relative},
+            output={
+                "error": reason,
+                "reason": reason,
+                "command": request.command,
+                "cwd": cwd_relative,
+            },
             verified=False,
-            outcome="unavailable",
-            verification_method="shell_unavailable",
+            outcome="denied" if refused else "unavailable",
+            verification_method=(
+                "shell_program_denied" if refused else "shell_unavailable"
+            ),
+            evidence={"cwd": cwd_relative, "program": program, "reason": reason},
         )
 
     duration_ms = int((time.monotonic() - started) * 1000)
     match = _BACKGROUND_PID_RE.search(launch.stdout or "")
     pid = int(match.group(1)) if match else None
+    launcher_tail = redacted_stderr_tail(
+        context, launch.stderr, {"command": request.command}
+    )
     content = _combined_output(
         request.command, launch.stdout, launch.stderr, launch.exit_code, launch.timed_out
     )
@@ -804,7 +931,12 @@ async def _launch_background(
             "sha256": artifact.get("sha256"),
             "exit_code": launch.exit_code,
             "timed_out": launch.timed_out,
+            "timeout_seconds": min(
+                request.timeout_seconds, BACKGROUND_LAUNCH_TIMEOUT_SECONDS
+            ),
             "duration_ms": duration_ms,
+            **({"stderr_tail": launcher_tail} if launcher_tail else {}),
+            **({"reason": "background launch timed out"} if launch.timed_out else {}),
             "cwd": cwd_relative,
         },
         verified=launched,
@@ -817,6 +949,10 @@ async def _launch_background(
             "pid": pid,
             "log": log_relative,
             "cwd": cwd_relative,
+            "timeout_seconds": min(
+                request.timeout_seconds, BACKGROUND_LAUNCH_TIMEOUT_SECONDS
+            ),
+            **({"stderr_tail": launcher_tail} if launcher_tail else {}),
             "sha256": artifact.get("sha256"),
             "artifact_ref": artifact.get("id"),
         },
@@ -860,28 +996,41 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             evidence={"cwd": cwd_relative, "wait": wait_reason},
         )
 
-    reason = prohibited_reason(request.command)
-    if reason is not None:
+    denied = denied_command(request.command)
+    if denied is not None:
         duration_ms = int((time.monotonic() - started) * 1000)
         _audit(
             context, command=request.command, cwd=cwd_relative,
             exit_code=None, duration_ms=duration_ms, bytes_written=0,
-            timed_out=False, decision="deny", reason=reason,
+            timed_out=False, decision="deny", reason=denied.rule,
         )
         return ToolResult(
             output={
                 "error": "command refused by the local shell deny list",
-                "rule": reason,
+                "kind": denied.kind,
+                "reason": denied.reason,
+                "rule": denied.rule,
                 "command": request.command,
                 "guidance": (
                     "Reformula sin privilegios locales ni operaciones destructivas; "
                     "el comando no se ha ejecutado."
+                    if denied.kind == "destructive"
+                    else (
+                        "Este shell corre en TU máquina, no en el objetivo: no "
+                        "escalas privilegios aquí. El `sudo` del objetivo va por "
+                        "nexus.post.ssh_exec (aprobación HIGH)."
+                    )
                 ),
             },
             verified=False,
             outcome="denied",
             verification_method="shell_command_denied",
-            evidence={"cwd": cwd_relative, "deny_rule": reason},
+            evidence={
+                "cwd": cwd_relative,
+                "deny_kind": denied.kind,
+                "deny_reason": denied.reason,
+                "deny_rule": denied.rule,
+            },
         )
 
     violation = out_of_scope_fetch_target(request.command, context.scope)
@@ -936,16 +1085,37 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             )
     except (FileNotFoundError, PermissionError) as exc:
         duration_ms = int((time.monotonic() - started) * 1000)
+        # A ``PermissionError`` is the sandbox refusing the invocation (program
+        # not allowlisted, path escaping the workspace): a policy decision, so it
+        # is ``denied`` and names the program. A missing binary is not -the
+        # backend is not there, which is ``unavailable`` (Fase 3b).
+        refused = isinstance(exc, PermissionError)
+        reason = (
+            f"program not allowed in sandbox: {program}"
+            if refused and "not allowed" in str(exc)
+            else f"sandbox denied the invocation: {exc}"
+            if refused
+            else f"shell binary not available: {program}"
+        )
         _audit(
             context, command=request.command, cwd=cwd_relative,
             exit_code=None, duration_ms=duration_ms, bytes_written=0,
-            timed_out=False, decision="deny", reason=type(exc).__name__,
+            timed_out=False, decision="deny" if refused else "allow",
+            reason=type(exc).__name__,
         )
         return ToolResult(
-            output={"error": f"shell unavailable: {type(exc).__name__}", "cwd": cwd_relative},
+            output={
+                "error": reason,
+                "reason": reason,
+                "command": request.command,
+                "cwd": cwd_relative,
+            },
             verified=False,
-            outcome="unavailable",
-            verification_method="shell_unavailable",
+            outcome="denied" if refused else "unavailable",
+            verification_method=(
+                "shell_program_denied" if refused else "shell_unavailable"
+            ),
+            evidence={"cwd": cwd_relative, "program": program, "reason": reason},
         )
 
     duration_ms = int((time.monotonic() - started) * 1000)
@@ -964,7 +1134,15 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             "timed_out": result.timed_out,
         },
     )
-    summary = summarize(result.stdout, result.stderr)
+    # The observation boundary is redacted **before** it is composed: the summary
+    # embeds stderr, so redacting only ``stderr_tail`` would leave the same secret
+    # in ``output["summary"]`` -the text the model actually reads-. The artifact
+    # keeps the raw capture (it is the evidence, never the prompt).
+    invocation_secrets = secrets_for_redaction(
+        context, {"command": request.command, "stdin": request.stdin}
+    )
+    safe_stderr = sanitize_text(redact_secret_values(result.stderr, invocation_secrets))
+    summary = summarize(result.stdout, safe_stderr)
     if apt_install_permission_denied(
         request.command, result.stdout, result.stderr, result.exit_code
     ):
@@ -1028,7 +1206,13 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
         not verified and not result.timed_out and not result.cancelled
         and result.exit_code is not None
     )
-    return ToolResult(
+    # 3b: a failure names its cause. The tail of stderr is the one diagnostic the
+    # model needs (``bash: line 1: sudo: command not found``), it is bounded to
+    # three lines and it passes through ``redaction.py`` before it is persisted.
+    tail = redacted_stderr_tail(
+        context, result.stderr, {"command": request.command, "stdin": request.stdin}
+    )
+    observation = ToolResult(
         output={
             "summary": summary,
             "artifact": artifact,
@@ -1036,11 +1220,14 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             "sha256": artifact.get("sha256"),
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,
+            "timeout_seconds": request.timeout_seconds,
             "cancelled": result.cancelled,
             "duration_ms": duration_ms,
             "output_bytes": len(content),
             "stdout_lines": result.stdout.count("\n") + (1 if result.stdout else 0),
             "stderr_lines": result.stderr.count("\n") + (1 if result.stderr else 0),
+            **({"stderr_tail": tail} if tail else {}),
+            **({"reason": "command timed out"} if result.timed_out else {}),
             "cwd": cwd_relative,
             # Absolute sandbox root: the model can never guess it, and a guessed
             # absolute path (``/home/<user>/omni-agentcs/workspace/pass.txt`` in
@@ -1061,6 +1248,9 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             "exit_code": result.exit_code,
             "duration_ms": duration_ms,
             "timed_out": result.timed_out,
+            "timeout_seconds": request.timeout_seconds,
+            **({"stderr_tail": tail} if tail else {}),
+            **({"reason": "command timed out"} if result.timed_out else {}),
             "sha256": artifact.get("sha256"),
             "artifact_ref": artifact.get("id"),
             **(
@@ -1076,13 +1266,20 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
         stderr="",
         timed_out=result.timed_out,
     )
+    # Last boundary: a command can print a vault secret on stdout too (the same
+    # value this invocation resolved). Nothing leaves this handler unredacted.
+    return redact_result(observation, invocation_secrets)
 
 
 __all__ = [
     "APT_INSTALL_DENIED_GUIDANCE",
     "BACKGROUND_LOG_DIRNAME",
+    "DESTRUCTIVE_REASON",
+    "DeniedCommand",
+    "LOCAL_PRIVILEGE_REASON",
     "SHELL_SCOPE_DENIED_GUIDANCE",
     "SHELL_ALLOWED_PROGRAMS",
+    "STDERR_TAIL_LINES",
     "SHELL_MAX_OUTPUT_BYTES",
     "SHELL_MAX_STDIN_BYTES",
     "SHELL_MAX_TIMEOUT_SECONDS",
@@ -1093,15 +1290,18 @@ __all__ = [
     "background_body",
     "background_log_path",
     "background_script",
+    "denied_command",
     "fetch_targets",
     "has_background_operator",
     "is_background_command",
     "out_of_scope_fetch_target",
     "passive_wait_reason",
     "prohibited_reason",
+    "redacted_stderr_tail",
     "resolve_cwd",
     "shell_code",
     "shell_exec_definition",
     "shell_exec_handler",
+    "stderr_tail",
     "summarize",
 ]

@@ -33,6 +33,7 @@ from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.fact_verification import FLAG_RE
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.pty_sessions import (
+    PTY_COMMAND_TIMEOUT_SECONDS,
     PTY_MAX_LINES,
     PTY_MAX_NAME,
     PTY_MAX_WAIT_SECONDS,
@@ -127,13 +128,23 @@ def _audit(
     )
 
 
-def command_denial(context: RunContext, text: str) -> dict[str, str] | None:
+def command_denial(
+    context: RunContext, text: str, *, local_scope: bool = True
+) -> dict[str, str] | None:
     """Refuse a PTY command with the same lexical rules as the local shell.
 
     ``send`` types into a live shell, so a ``sleep`` is the same non-action and a
     ``curl`` is the same egress attempt as in ``nexus.shell.exec``. The checks run
     before ``tmux send-keys``: nothing reaches the pane when the command is
     refused.
+
+    ``local_scope`` is *where the pane lives*, not which tool drove it. The tmux
+    session of ``nexus.session.pty`` runs on the operator's machine, so a
+    ``sudo`` typed there is a local privilege change and stays refused. The
+    ``pty``/``raw`` transports of ``nexus.post.shell_exec`` drive a pane **on the
+    target** —a reverse shell bridged by the listener— and there ``sudo -l`` is
+    the enumeration step, not the threat: the call is HIGH risk and the approval
+    gate is what asks the human. Same code, one flag, no drift between channels.
     """
     wait_reason = passive_wait_reason(text)
     if wait_reason is not None:
@@ -148,20 +159,28 @@ def command_denial(context: RunContext, text: str) -> dict[str, str] | None:
     # parser, and duplicating either here would let the two channels drift.
     from .shell_exec_local import (
         SHELL_SCOPE_DENIED_GUIDANCE,
+        denied_command,
         out_of_scope_fetch_target,
-        prohibited_reason,
     )
 
-    rule = prohibited_reason(text)
-    if rule is not None:
+    denied = denied_command(text, local_privileges=local_scope)
+    if denied is not None:
         return {
             "kind": "deny_list",
-            "reason": rule,
+            "reason": denied.reason,
+            "rule": denied.rule,
+            "denial_kind": denied.kind,
             "method": "pty_command_denied",
             "outcome": "denied",
             "guidance": (
-                "Reformula sin privilegios locales ni operaciones destructivas; "
-                "el comando no se ha enviado al PTY."
+                "Reformula sin operaciones autodestructivas; el comando no se ha "
+                "enviado al PTY."
+                if denied.kind == "destructive"
+                else (
+                    "Este PTY corre en TU máquina: el `sudo` local no forma parte "
+                    "del engagement. Sobre el objetivo usa nexus.post.ssh_exec "
+                    "(aprobación HIGH)."
+                )
             ),
         }
     violation = out_of_scope_fetch_target(text, context.scope)
@@ -202,6 +221,8 @@ def _denied_result(
             "action": request.action,
             "error": "command refused before reaching the PTY",
             "reason": denial["reason"],
+            **({"rule": denial["rule"]} if denial.get("rule") else {}),
+            **({"denial_kind": denial["denial_kind"]} if denial.get("denial_kind") else {}),
             "command": text,
             "guidance": denial["guidance"],
         },
@@ -218,6 +239,43 @@ def _denied_result(
 
 def _has_evidence(text: str) -> bool:
     return bool(FLAG_RE.search(text) or _ROOT_IDENTITY.search(text))
+
+
+def _failure_reason(result: Any) -> str:
+    """Specific cause of a failed PTY operation, never a generic label (3b).
+
+    ``result.error`` already carries the tmux diagnostic (the first line of its
+    stderr: ``no server running``, ``can't find session``) or the manager's own
+    code (``wait_timeout``, ``session_not_found``); it is passed through instead
+    of being flattened into "the PTY failed".
+    """
+    if result.timed_out:
+        return "pty operation timed out"
+    if result.error:
+        return str(result.error)
+    if result.exit_code not in (None, 0):
+        return f"tmux exited with status {result.exit_code}"
+    return "pty operation failed"
+
+
+def _outcome_fields(result: Any, request: PtyRequest) -> tuple[str, dict[str, Any]]:
+    """Outcome plus the fields that explain it (``timeout``, ``command_failed``)."""
+    if result.error is None and (result.alive or request.action == "kill"):
+        return "", {}
+    fields: dict[str, Any] = {"reason": _failure_reason(result)}
+    if result.timed_out:
+        # The budget that expired: the wait the model asked for, or the manager's
+        # own per-operation ceiling.
+        fields["timeout_seconds"] = (
+            request.timeout_seconds
+            if request.action == "wait"
+            else PTY_COMMAND_TIMEOUT_SECONDS
+        )
+        return "timeout", fields
+    if result.exit_code not in (None, 0):
+        fields["exit_code"] = result.exit_code
+        return "command_failed", fields
+    return "error", fields
 
 
 def _capture_summary(text: str) -> str:
@@ -294,7 +352,8 @@ def _observation_result(
         # flag/root line was found, so the verifier must not invent a fact.
         payload["observation_status"] = _NO_EVIDENCE
     verified = result.error is None and (result.alive or request.action == "kill")
-    outcome = "" if verified else ("timeout" if result.timed_out else "error")
+    outcome, failure = _outcome_fields(result, request)
+    payload.update(failure)
     _audit(
         context,
         action=request.action,
@@ -321,6 +380,7 @@ def _observation_result(
             "duration_ms": duration_ms,
             "artifact_ref": payload["artifact_ref"],
             "sha256": digest,
+            **failure,
         },
         exit_code=result.exit_code,
         stdout=summary,
@@ -423,13 +483,14 @@ async def session_pty_handler(arguments: dict[str, Any], context: RunContext) ->
         detail=detail,
     )
     verified = result.error is None and (result.alive or request.action == "kill")
-    outcome = "" if verified else ("timeout" if result.timed_out else "error")
+    outcome, failure = _outcome_fields(result, request)
     return ToolResult(
         output={
             "action": request.action,
             **result.as_dict(),
             "duration_ms": duration_ms,
             "lines": len((result.output or "").splitlines()),
+            **failure,
         },
         verified=verified,
         outcome=outcome,
@@ -439,6 +500,7 @@ async def session_pty_handler(arguments: dict[str, Any], context: RunContext) ->
             "session_id": result.session_id,
             "alive": result.alive,
             "duration_ms": duration_ms,
+            **failure,
         },
         exit_code=result.exit_code,
         stdout=(result.output or "")[:65536],
