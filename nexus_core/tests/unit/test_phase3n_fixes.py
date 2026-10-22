@@ -646,6 +646,37 @@ def test_detect_hash_type_names_the_common_shapes():
     assert detect_hash_type("definitely not a hash") == ""
 
 
+def test_a_shadow_line_is_read_as_its_hash_field():
+    """DeadDrop P4 (2026-10-22): el preview filtró `svc-drop:$6$…:19700:0:…`.
+
+    La autodetección fallaba porque miraba el campo del usuario y los campos de
+    envejecimiento; el handler ya sabía romper sha512crypt, pero la línea
+    completa no se reconocía y el run se quedó sin la credencial.
+    """
+    from nexus_core.tools.handlers.crack_hash import detect_hash_type
+
+    shadow = (
+        "svc-drop:$6$f1331af25300c7f3$7twueSf8eUyvgYnPWElPYpspGgBuYJ."
+        "TMGrPZ2OBC6pGq18ZGkkPke9S0tRlQ3EpiRLWEqhgnqkh2BOHfdCCH0:19700:0:99999:7:::"
+    )
+    assert detect_hash_type(shadow) == "sha512crypt"
+    assert detect_hash_type("$6$abc$def:19700:0:99999:7:::") == "sha512crypt"
+
+
+def test_the_hash_type_enum_admits_every_format_the_handler_supports():
+    """El schema rechazaba `sha512crypt` que el propio handler listaba como válido."""
+    from nexus_core.tools.handlers.crack_hash import (
+        CRACK_CHOICES,
+        CRACK_FORMATS,
+        crack_hash_definition,
+    )
+
+    enum = crack_hash_definition().input_schema["properties"]["hash_type"]["enum"]
+    assert set(CRACK_FORMATS) <= set(enum)
+    assert set(enum) == set(CRACK_CHOICES)
+    assert "sha512crypt" in enum
+
+
 def test_crack_hash_rejects_an_unrecognisable_shape():
     from nexus_core.tools.handlers.crack_hash import crack_hash_handler
 

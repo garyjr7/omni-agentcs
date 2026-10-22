@@ -44,11 +44,6 @@ CRACK_ALLOWED_PROGRAMS: tuple[str, ...] = ("python3",)
 CRACK_TOOL_TIMEOUT_SECONDS = 900
 CRACK_DEFAULT_TIMEOUT_SECONDS = 600
 
-#: What the model may name explicitly. Autodetection covers the crypt(3) prefix
-#: formats, so the enum stays short (it is paid in every turn's catalog line) and
-#: the rest is reachable by shape or by asking for the common name.
-CRACK_CHOICES = ("auto", "md5", "sha1", "sha256", "bcrypt", "ssh")
-
 #: Our vocabulary → ``john --format``. ``auto`` is resolved by shape before this
 #: table is consulted.
 CRACK_FORMATS = {
@@ -65,6 +60,13 @@ CRACK_FORMATS = {
     "argon2": "argon2",
     "ssh": "ssh",
 }
+
+#: What the model may name explicitly. The enum used to be a short list
+#: (auto/md5/sha1/sha256/bcrypt/ssh) while the table above supported the
+#: crypt(3) family, so the schema rejected ``sha512crypt`` with "is not one of"
+#: in run P4 of DeadDrop (2026-10-22) right after the handler had listed it as
+#: valid. An enum the handler cannot honour is a wall.
+CRACK_CHOICES = ("auto", *CRACK_FORMATS)
 
 #: Shapes john can name without help. Order matters: a crypt(3) prefix wins over
 #: a length, because ``$1$…`` is not a 34-character raw hash.
@@ -190,14 +192,33 @@ except Exception as exc:
 '''
 
 
+def _hash_field(material: str) -> str:
+    """The hash itself, out of whatever line carried it.
+
+    A ``/etc/shadow`` line is ``user:$6$…:19700:0:99999:7:::``: the hash is the
+    field after the user, and the trailing ageing fields are not part of it.
+    Pasting the whole line is what the model does when a file preview leaks one
+    (DeadDrop P4, 2026-10-22: autodetection failed on ``svc-drop:$6$…:19700``),
+    so the field is extracted before the shape is read.
+    """
+    text = material.strip()
+    if text.startswith(tuple(prefix for prefix, _ in _CRYPT_PREFIXES)):
+        return text
+    for field in text.split(":"):
+        candidate = field.strip()
+        if candidate.startswith(tuple(prefix for prefix, _ in _CRYPT_PREFIXES)):
+            return candidate
+    return text
+
+
 def detect_hash_type(material: str) -> str:
     """Name the hash by its shape, or ``""`` when it is not recognisable.
 
     Only unambiguous shapes are named: a wrong format makes ``john`` answer
     ``No password hashes loaded`` and the run would read it as "not cracked".
     """
-    text = material.strip()
-    if _PEM_RE.search(text):
+    text = _hash_field(material)
+    if _PEM_RE.search(material):
         return "ssh"
     for prefix, name in _CRYPT_PREFIXES:
         if text.startswith(prefix):
