@@ -397,6 +397,26 @@ def test_needs_port_fallback_only_for_an_empty_or_blind_full_sweep():
     assert needs_port_fallback(["-p", "21,80"], 2, 65_533) is False
 
 
+def test_a_timed_out_full_sweep_is_retried_with_top_ports():
+    """DeadDrop P5 (2026-10-22): ``-p- -T4`` agotó los 600 s y el run quedó a cero.
+
+    Un barrido que expira es el mismo fallo que uno vacío (el host o el enlace se
+    auto-limitaron), así que se reintenta top-1000 con tasa explícita en vez de
+    devolver un timeout sin hechos que dejó sin superficie a todas las fases.
+    """
+    primary = SandboxResult(124, "", "timed out", timed_out=True)
+    fallback = SandboxResult(0, _scan_xml(["22", "80"]), "")
+    with _sequence_sandbox(primary, fallback) as sandbox:
+        result = _run({"target": "10.64.128.102", "profile": "full_tcp"})
+
+    assert result.verified is True
+    assert len(sandbox.calls) == 2
+    second = sandbox.calls[1][0]
+    assert "--top-ports" in second and "1000" in second
+    assert "-p-" not in second
+    assert any("timed out" in warning for warning in result.evidence["warnings"])
+
+
 def test_a_blind_full_sweep_is_retried_even_when_it_found_ports():
     # 21/80/3306 open and 65 532 filtered: nmap cannot tell whether 2222 was
     # closed or dropped, so the cheap top-1000 pass runs anyway.

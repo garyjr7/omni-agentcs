@@ -441,6 +441,26 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
     sandbox = sandbox_for_environment(workspace_root, allowed_programs=NMAP_ALLOWED_PROGRAMS)
     result = await _run_nmap(sandbox, argv, timeout_seconds)
 
+    if result.timed_out and "-p-" in flags:
+        # A full sweep that runs out of wall clock is the same failure mode as
+        # the empty/blind one: the host (or the link) paced itself out. DeadDrop
+        # P5 (2026-10-22): ``-p- -T4`` hit its 600 s cap on a contended VPN, the
+        # run got zero facts and every later phase starved. Retrying top-1000 at
+        # an explicit rate costs ~15 s and saves the reconnaissance.
+        fallback_argv = ["nmap", *NMAP_FALLBACK_FLAGS, "-oX", "-", target]
+        fallback_result = await _run_nmap(
+            sandbox, fallback_argv, NMAP_FALLBACK_TIMEOUT_SECONDS
+        )
+        if not fallback_result.timed_out and fallback_result.exit_code in {0, 1}:
+            result = fallback_result
+            # The scan that produced the facts is the top-1000 one: dropping
+            # ``-p-`` also stops ``needs_port_fallback`` from repeating it.
+            flags = [flag for flag in flags if flag != "-p-"]
+            warnings.add(
+                "full port sweep timed out: retried with --top-ports 1000 "
+                "--min-rate 1000 and reported from that scan"
+            )
+
     if result.timed_out:
         return ToolResult(
             output={"error": "nmap scan timed out", "target": target},
