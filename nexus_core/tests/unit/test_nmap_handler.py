@@ -216,7 +216,9 @@ def test_full_tcp_profile_scans_all_ports_with_its_own_timeout():
         result = _run({"target": "203.0.113.10", "profile": "full_tcp"})
     argv, timeout = sandbox.calls[0]
     assert "-p-" in argv
-    assert timeout == 600
+    # 600 s menos el rescate top-1000 (180 s) y un margen: con el presupuesto
+    # entero el gateway cancelaba el reintento antes de que corriera (P6).
+    assert timeout == 600 - 180 - 15
     assert result.output["profile"] == "full_tcp"
     assert result.evidence["profile"] == "full_tcp"
 
@@ -415,6 +417,9 @@ def test_a_timed_out_full_sweep_is_retried_with_top_ports():
     assert "--top-ports" in second and "1000" in second
     assert "-p-" not in second
     assert any("timed out" in warning for warning in result.evidence["warnings"])
+    # The primary sweep must leave room for the rescue inside the tool's own
+    # budget: with 600 s it was cancelled before the retry started (P6).
+    assert sandbox.calls[0][1] <= 600 - 180 - 15
 
 
 def test_a_blind_full_sweep_is_retried_even_when_it_found_ports():

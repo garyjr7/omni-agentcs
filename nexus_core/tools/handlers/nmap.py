@@ -436,6 +436,16 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
     else:
         timeout_seconds = NMAP_DEFAULT_TIMEOUT_SECONDS
 
+    if "-p-" in flags:
+        # Leave room for the top-1000 rescue inside the same tool call: with the
+        # whole 600 s spent on the sweep, the gateway cancels the fallback the
+        # moment it starts (measured in DeadDrop P6: 600.2 s and zero facts, the
+        # retry never ran).
+        timeout_seconds = min(
+            timeout_seconds,
+            NMAP_MAX_TIMEOUT_SECONDS - NMAP_FALLBACK_TIMEOUT_SECONDS - 15,
+        )
+
     argv = ["nmap", *flags, "-oX", "-", target]
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
     sandbox = sandbox_for_environment(workspace_root, allowed_programs=NMAP_ALLOWED_PROGRAMS)
