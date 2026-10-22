@@ -193,6 +193,9 @@ STATUS_FAILED = "failed"
 STATUS_PREMATURE_COMPLETION = "premature_completion"
 STATUS_CANCELLED = "cancelled"
 STATUS_SCOPE_VIOLATION = "scope_violation_aborted"
+#: The run needs something only the operator can give it: an approval to replay
+#: an unconfirmed invocation, or the tunnel that makes the next hop routable.
+STATUS_BLOCKED = "blocked"
 STATUS_BUDGET_EXCEEDED = "budget_exceeded"
 #: A subagent exhausted its own iteration/token allowance. In the WP2 default
 #: loop this status is unreachable (the limits are soft); it stays for the

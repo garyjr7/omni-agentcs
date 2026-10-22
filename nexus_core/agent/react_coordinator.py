@@ -13,7 +13,11 @@ from nexus_core.llm.abstraction import LLMMessage, is_invalid_json_error
 from nexus_core.scope import ScopeViolation
 
 from . import memory
-from nexus_core.kernel.errors import ApprovalRequired, ProviderFailure
+from nexus_core.kernel.errors import (
+    ApprovalRequired,
+    ProviderFailure,
+    ReplayApprovalRequired,
+)
 from .preflight import unavailable_tools_from_env
 from .project_context import load_project_instruction
 from .skills import activate_skills
@@ -56,6 +60,7 @@ from .react_types import (
     STATUS_PREMATURE_COMPLETION,
     STATUS_CANCELLED,
     STATUS_SCOPE_VIOLATION,
+    STATUS_BLOCKED,
     STATUS_BUDGET_EXCEEDED,
     STATUS_SUBAGENT_BUDGET,
     SUBAGENT_EVENT_TYPE,
@@ -99,6 +104,7 @@ from .react_support import (
     unavailable_guidance,
     timeout_guidance,
     command_failed_guidance,
+    replay_guidance,
     repeated_action_correction,
     barren_repeat_correction,
     _invocation_signature,
@@ -138,7 +144,9 @@ from .planner import (
     login_probe_hint,
     login_probe_pending,
     objective_completion,
+    pivot_gate,
     pivot_hint,
+    pivot_target_host,
     robots_paths_hint,
     session_handover,
     verified_credential,
@@ -211,6 +219,13 @@ class Transition(str, Enum):
 #: ``https://bit.ly/...`` lookup aborted the run with exit code 4). Only a model
 #: that insists on the *same* target this many turns in a row closes the run.
 MAX_CONSECUTIVE_SCOPE_DENIALS = 3
+#: Sweeps refused in a row because the operator has no route to their target,
+#: and replays refused in a row because their effect is unconfirmed. Each is a
+#: correction; insisting on the same blocked move this many turns ends the run as
+#: ``blocked`` (the operator has to open the tunnel or approve the replay), never
+#: as a silent failure.
+MAX_CONSECUTIVE_PIVOT_GATES = 3
+MAX_REPLAY_REFUSALS = 3
 
 
 class ReActCoordinator:
@@ -607,6 +622,13 @@ class ReActCoordinator:
         self.login_withheld_announced = False
         self.pivot_hint = ""
         self.pivot_hint_emitted = False
+        #: Sweeps refused *before* running because the operator has no route to
+        #: their target (P10: the order arrived after 600 s of nmap). Refusals in
+        #: a row close the run; a single one is a correction.
+        self.pivot_gate_streak = 0
+        #: Replays of an invocation whose effect is unconfirmed (P10 iteration 47:
+        #: the fence was right, ending the run was not). Same counting.
+        self.replay_refusals = 0
         #: ``host:port`` refs the *loop* closed with a barrier fact this run (see
         #: ``_close_stalled_branch``). Two reasons to keep them: never write the
         #: same barrier twice, and never let the loop's own reflex read as
@@ -2639,6 +2661,142 @@ class ReActCoordinator:
             1 for entry in recent if entry.get("invocation_signature") == signature
         )
 
+    async def _correct_unroutable_sweep(self) -> Transition | None:
+        """Refuse a sweep that has no route, instead of paying its timeout.
+
+        Measured in DeadDrop P10 (2026-10-22): with SSH on ``192.168.11.200`` and
+        no tunnel, ``nmap`` against the DC ``192.168.11.100`` ran its whole 600 s
+        budget and returned nothing -the order to pivot only arrived *after* it,
+        because ``pivot_hint`` reads the history-. The same rule applied to the
+        pending call, plus a one-second TCP probe, answers before the budget is
+        committed. The refusal is an observation (the model gets the exact tunnel
+        command); only insisting ``MAX_CONSECUTIVE_PIVOT_GATES`` times closes the
+        run, and then as ``blocked`` on the tunnel, not as a failure.
+        """
+        tool_id = str(self.action.tool_id)
+        target = pivot_target_host(tool_id, self.action.arguments)
+        if not target:
+            return None
+        hint = await pivot_gate(tool_id, self.action.arguments, self.actions)
+        if not hint:
+            return None
+        self.pivot_gate_streak += 1
+        aborted = self.pivot_gate_streak >= MAX_CONSECUTIVE_PIVOT_GATES
+        self.observation = {
+            "success": False,
+            "outcome": "unroutable_target",
+            "verified": False,
+            "target": target,
+            "tool_id": tool_id,
+            "refused_before_execution": True,
+            "pivot_gate_streak": self.pivot_gate_streak,
+            "guidance": hint,
+            "available_tools": sorted(self.allowed_catalog),
+        }
+        if aborted:
+            self.status = STATUS_BLOCKED
+            self.final_summary = (
+                f"blocked on the pivot: {self.pivot_gate_streak} sweeps aimed at "
+                f"{target} with no route from the operator and no tunnel opened"
+            )
+            self.observation["aborted"] = True
+        self.entry["tool_result"] = self.observation
+        self.actions.append(self.entry)
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            self.action,
+            self.observation,
+            subagent_id=self.active_subagent_id,
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.pivot_gate",
+            {
+                "iteration": self.iteration,
+                "tool_id": tool_id,
+                "target": target,
+                "streak": self.pivot_gate_streak,
+                "aborted": aborted,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=self.action.action,
+            decision="deny",
+            tool_id=tool_id,
+            reason="unroutable_target",
+        )
+        return Transition.STOP if aborted else Transition.READY
+
+    def _correct_replayed_invocation(self, exc: Exception) -> Transition:
+        """Answer a fenced replay with what to do instead of closing the run.
+
+        Measured in DeadDrop P10 (2026-10-22, iteration 47): an ``ssh_exec``
+        timed out, the journal kept it ``unknown`` and the model's identical
+        retry met ``unknown invocation requires human approval``. The refusal is
+        correct -the effect may have happened-, but it closed the run as
+        ``blocked`` (exit 2) with the room still reachable: a refusal is an
+        observation, exactly like a scope denial. The streak is what stops a
+        model that keeps asking for the same replay.
+        """
+        self.replay_refusals += 1
+        aborted = self.replay_refusals >= MAX_REPLAY_REFUSALS
+        tool_id = str(self.action.tool_id)
+        self.observation = {
+            "success": False,
+            "outcome": "replay_refused",
+            "verified": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:500],
+            "failure_kind": "replay_requires_approval",
+            "replay_refusals": self.replay_refusals,
+            "guidance": replay_guidance(tool_id),
+            "available_tools": sorted(self.allowed_catalog),
+        }
+        if aborted:
+            self.status = STATUS_BLOCKED
+            self.final_summary = (
+                f"blocked: {self.replay_refusals} replays of an invocation whose "
+                f"effect is unconfirmed ({tool_id}) and no approval to replay them"
+            )
+            self.observation["aborted"] = True
+        self.entry["tool_result"] = self.observation
+        self.actions.append(self.entry)
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            self.action,
+            self.observation,
+            subagent_id=self.active_subagent_id,
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.replay_refused",
+            {
+                "iteration": self.iteration,
+                "tool_id": tool_id,
+                "streak": self.replay_refusals,
+                "aborted": aborted,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=self.action.action,
+            decision="deny",
+            tool_id=tool_id,
+            reason="replay_requires_approval",
+        )
+        return Transition.STOP if aborted else Transition.READY
+
     async def _execute_tool(self) -> Transition:
         repeated_tool = self._repeated_failed_action()
         if repeated_tool is not None:
@@ -2646,6 +2804,9 @@ class ReActCoordinator:
         barren_tool = self._repeated_barren_action()
         if barren_tool is not None:
             return self._correct_repeated_action(barren_tool, barren=True)
+        unroutable = await self._correct_unroutable_sweep()
+        if unroutable is not None:
+            return unroutable
         self.last_tool_elapsed_ms = 0
         tool_started = time.perf_counter()
         scope_aborted = False
@@ -2733,9 +2894,13 @@ class ReActCoordinator:
                 success=False,
                 error_type=type(exc).__name__,
             )
+            if isinstance(exc, ReplayApprovalRequired):
+                return self._correct_replayed_invocation(exc)
             if isinstance(exc, PermissionError):
                 self.status = (
-                    "blocked" if isinstance(exc, ApprovalRequired) else "governance_denial"
+                    STATUS_BLOCKED
+                    if isinstance(exc, ApprovalRequired)
+                    else "governance_denial"
                 )
                 self.final_summary = str(exc)
                 self.observation = {
@@ -2829,6 +2994,10 @@ class ReActCoordinator:
                     self._note_tool_failure(str(self.action.tool_id))
             self.consecutive_failures += 1
         else:
+            # The call ran: whatever the model was insisting on no longer applies,
+            # so the pivot-gate and replay streaks start over.
+            self.pivot_gate_streak = 0
+            self.replay_refusals = 0
             # The insistence streak is decided below: a successful turn or a
             # failure that is not a scope denial breaks it, while a handler that
             # returned ``scope_denied`` (``nexus.shell.exec`` validating the

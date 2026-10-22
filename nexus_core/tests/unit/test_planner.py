@@ -18,6 +18,7 @@ from nexus_core.agent.planner import (
     enumeration_budget_hint,
     normalize_counts,
     login_probe_hint,
+    pivot_gate,
     pivot_hint,
     plan_from_summary,
     robots_paths_hint,
@@ -501,3 +502,120 @@ def test_the_robots_hint_reads_a_sitemap_and_ignores_non_indexes():
 def test_active_phase_matches_build_plan():
     counts = {"service": 1, "user": 1}
     assert active_phase(counts) == build_plan(counts=counts).current
+
+
+async def _unreachable(host: str, ports) -> bool:
+    return False
+
+
+async def _reachable(host: str, ports) -> bool:
+    return True
+
+
+def _pivot_history() -> list[dict]:
+    """Access on the DMZ host, recon of the operator before that shell existed."""
+    return [
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.200"}},
+        _ssh_access("192.168.11.200"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_gate_refuses_a_sweep_the_operator_cannot_route_to():
+    """DeadDrop P10 (2026-10-22, iteración 41): 600 s de `nmap` y cero datos.
+
+    El aviso de pivote llega cuando la regla ya leyó el historial, así que el
+    presupuesto del barrido se paga antes de saber que no había ruta. El gate
+    evalúa la llamada **pendiente**: sin ruta, se niega con la orden del túnel.
+    """
+    order = await pivot_gate(
+        "nexus.recon.nmap", {"target": "192.168.11.100"}, _pivot_history(),
+        probe=_unreachable,
+    )
+
+    assert "PIVOTE NECESARIO" in order
+    assert "192.168.11.100" in order and "svc-drop@192.168.11.200" in order
+    assert "ssh -f -N -D 1080" in order
+
+
+@pytest.mark.asyncio
+async def test_the_gate_lets_the_call_run_when_a_port_answers():
+    """Un host alcanzable no necesita túnel: la sonda decide, no la subred."""
+    order = await pivot_gate(
+        "nexus.recon.nmap", {"target": "192.168.11.100"}, _pivot_history(),
+        probe=_reachable,
+    )
+    assert order == ""
+
+
+@pytest.mark.asyncio
+async def test_the_gate_ignores_the_access_host_and_the_recon_hosts():
+    history = _pivot_history()
+    for target in ("192.168.11.200",):
+        assert await pivot_gate(
+            "nexus.recon.nmap", {"target": target}, history, probe=_unreachable
+        ) == ""
+    # A host the operator's own recon reached before the shell needs no pivot.
+    reached = [
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.51"}},
+        *_pivot_history(),
+    ]
+    assert await pivot_gate(
+        "nexus.recon.nmap", {"target": "192.168.11.51"}, reached, probe=_unreachable
+    ) == ""
+
+
+@pytest.mark.asyncio
+async def test_the_gate_never_consults_the_probe_without_access_or_a_tunnel_free_run():
+    """Sin SSH probado no hay pivote posible, y con el túnel abierto no hace falta."""
+    asked: list[tuple[str, tuple[int, ...]]] = []
+
+    async def spy(host: str, ports) -> bool:
+        asked.append((host, tuple(ports)))
+        return False
+
+    # No access yet: the rule cannot apply, so the probe is not even called.
+    assert await pivot_gate(
+        "nexus.recon.nmap",
+        {"target": "192.168.11.100"},
+        [{"tool_id": "nexus.recon.nmap", "arguments": {"target": "192.168.11.200"}}],
+        probe=spy,
+    ) == ""
+    # A tunnel already open: there is nothing to order.
+    assert await pivot_gate(
+        "nexus.recon.nmap",
+        {"target": "192.168.11.100"},
+        [
+            {
+                "tool_id": "nexus.shell.exec",
+                "arguments": {"command": "ssh -f -N -D 1080 svc-drop@192.168.11.200"},
+            },
+            *_pivot_history(),
+        ],
+        probe=spy,
+    ) == ""
+    assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_the_gate_covers_sweeps_only_and_probes_the_ports_the_call_names():
+    seen: list[tuple[int, ...]] = []
+
+    async def spy(host: str, ports) -> bool:
+        seen.append(tuple(ports))
+        return False
+
+    # A tool that fails in two seconds is not worth a gate.
+    assert await pivot_gate(
+        "nexus.web.request", {"url": "http://192.168.11.100/"}, _pivot_history(),
+        probe=spy,
+    ) == ""
+    assert seen == []
+
+    # The call's own ports are probed first, then the pivot defaults.
+    await pivot_gate(
+        "nexus.recon.nmap", {"target": "192.168.11.100", "ports": "88,389,445"},
+        _pivot_history(), probe=spy,
+    )
+    assert seen and seen[0][:3] == (88, 389, 445)
+    assert 22 in seen[0] and 3389 in seen[0]

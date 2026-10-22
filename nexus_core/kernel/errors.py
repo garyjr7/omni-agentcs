@@ -31,6 +31,23 @@ class ToolInputError(ValueError):
 PROVIDER_FAILURE_KINDS = frozenset({"unavailable", "fatal"})
 
 
+class ReplayApprovalRequired(ApprovalRequired):
+    """A replay of an invocation whose effect is unconfirmed, refused fail-closed.
+
+    The invocation journal keeps a call that timed out or was cut ``unknown``: it
+    may have had an effect, so the same step cannot run a second time without a
+    durable human decision. That refusal is correct and stays.
+
+    What it must not be is the end of the run. Measured in DeadDrop P10
+    (2026-10-22, iteration 47): an ``ssh_exec`` to ``192.168.11.200`` timed out,
+    the model retried the identical command, and the refusal closed the whole run
+    as ``blocked`` (exit 2) with the room still reachable and five routes unused.
+    A refusal is an observation -the loop can hand the model what to do instead-,
+    which is why the distinction from a governance denial (a policy that says no,
+    where stopping *is* the answer) is modelled as its own type.
+    """
+
+
 class ProviderFailure(RuntimeError):
     """The LLM or the backend of a tool failed.
 

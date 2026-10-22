@@ -12,7 +12,7 @@ from uuid import uuid4
 from typing import Any, Awaitable, Callable, Dict
 
 from .approvals import ApprovalService
-from .errors import ApprovalRequired, ToolInputError
+from .errors import ApprovalRequired, ReplayApprovalRequired, ToolInputError
 from .audit import AuditWriter
 from .models import (
     PROVIDER_UNAVAILABLE_SUFFIXES,
@@ -232,7 +232,13 @@ class ToolGateway:
                 decision="allow",
             )
             return invocation_id
-        raise ApprovalRequired('unknown invocation requires human approval: ' + action)
+        # The refusal itself is not negotiable (the effect is unconfirmed); its
+        # *consequence* is: measured in DeadDrop P10, this line closed a live run
+        # as ``blocked`` when the model retried a timed-out ``ssh_exec``. The
+        # dedicated type lets the loop answer with what to do instead.
+        raise ReplayApprovalRequired(
+            'unknown invocation requires human approval: ' + action
+        )
 
     def register(self, definition: ToolDefinition, handler: ToolHandler) -> None:
         if definition.tool_id in self._definitions:

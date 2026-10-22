@@ -177,6 +177,30 @@ def timeout_guidance(tool_id: Any) -> str:
     )
 
 
+def replay_guidance(tool_id: Any) -> str:
+    """Model-facing sentence for a retry the journal fenced (P10, iteration 47).
+
+    The replay is refused because the previous invocation with those exact
+    arguments never confirmed its effect (an ``ssh_exec`` that timed out), and
+    the fence cannot tell an idempotent read from a second execution. The model
+    has to learn three things: the refusal is about *that invocation*, the effect
+    is unknown rather than failed, and a different argument set is a different
+    intent that runs normally. Measured in DeadDrop P10 (2026-10-22): the retry
+    of ``id; hostname; cat /etc/hostname`` closed the whole run as ``blocked``
+    with the room still reachable.
+    """
+    return (
+        f"'{tool_id}' no se ha vuelto a ejecutar: su invocación anterior con los "
+        "mismos argumentos quedó sin confirmar (timeout o corte) y repetirla exige "
+        "una aprobación humana que este run no tiene. El efecto de aquella llamada "
+        "es DESCONOCIDO, no fallido. No repitas la misma invocación tal cual: "
+        "cambia los argumentos (otro comando, otro fichero), que es una intención "
+        "distinta y corre sin aprobación; o comprueba antes el canal con otra tool "
+        "(nexus.recon.nmap, nexus.web.request, nexus.post.enum_system) y sigue por "
+        "la otra ruta de la fase."
+    )
+
+
 def command_failed_guidance(tool_id: Any) -> str:
     """Model-facing guidance for a command that ran and exited non-zero.
 

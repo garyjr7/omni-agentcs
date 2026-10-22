@@ -1180,6 +1180,165 @@ def login_probe_pending(actions: Iterable[Any] | None = None) -> bool:
     return _payload_key(LOGIN_PROBE_BYPASS) not in sent and not canonical <= sent
 
 
+#: Tools whose *whole* budget is a network sweep. Aimed at a host the operator
+#: cannot reach they spend their full timeout and answer nothing, which is what
+#: P10 measured (600 s in ``nmap -sS -Pn 192.168.11.100``). They are the ones the
+#: pre-scan gate refuses; a tool that fails in two seconds needs no gate.
+PIVOT_GATED_TOOLS: frozenset[str] = frozenset(
+    {
+        "nexus.recon.nmap",
+        "nexus.recon.gobuster",
+        "nexus.recon.httpx",
+        "nexus.recon.netexec",
+        "nexus.recon.nikto",
+        "nexus.web.ffuf",
+        "nexus.web.nuclei",
+        "nexus.cred.bruteforce",
+    }
+)
+
+#: Ports a reachability probe tries when the call itself names none. They are the
+#: services a LAN pivot is opened for (SSH in, HTTP, SMB, LDAP-less DC ports,
+#: RDP); any answer means the operator has a route and no pivot is needed.
+PIVOT_PROBE_PORTS: tuple[int, ...] = (22, 80, 443, 445, 389, 3389, 8080)
+
+
+@dataclass(frozen=True)
+class PivotState:
+    """What the history says about the run's ability to route to new hosts."""
+
+    #: Host the run holds a proven interactive ``ssh_exec`` on.
+    access_host: str
+    access_user: str
+    #: Hosts the operator's own recon reached *before* that shell existed.
+    scanned: frozenset[str]
+
+
+def pivot_state(actions: Iterable[Any] | None = None) -> PivotState | None:
+    """Return the pivot state, or ``None`` when the rule cannot apply.
+
+    ``None`` means one of the three preconditions is missing: no proven SSH
+    access, no recon of the operator (nothing to compare against) or a tunnel
+    already open (``ssh -D`` in a command), in which case there is nothing to
+    order. The scan set stops at the *first* ``ssh_exec`` on purpose: a host the
+    operator's recon found needs no tunnel, and a scan launched after the shell
+    existed is not evidence of reachability -it is the mistake this rule exists
+    to prevent-.
+    """
+    history = [action for action in actions or () if isinstance(action, Mapping)]
+    if not history:
+        return None
+    for action in history:
+        arguments = action.get("arguments")
+        if not isinstance(arguments, Mapping):
+            continue
+        command = str(arguments.get("command") or "")
+        if "-D " in command or "-D1080" in command:
+            return None
+    access_host = ""
+    access_user = ""
+    scanned: set[str] = set()
+    for action in history:
+        tool_id = str(action.get("tool_id") or "")
+        arguments = action.get("arguments")
+        arguments = arguments if isinstance(arguments, Mapping) else {}
+        host = _action_target_host(action)
+        if tool_id.endswith("ssh_exec") and str(arguments.get("command") or "") and host:
+            access_host, access_user = host, str(arguments.get("username") or "")
+            break
+        if tool_id == "nexus.recon.nmap" and host:
+            scanned.add(host)
+    if not access_host or not scanned:
+        return None
+    return PivotState(
+        access_host=access_host,
+        access_user=access_user,
+        scanned=frozenset(scanned),
+    )
+
+
+def _pivot_order(state: PivotState, target: str) -> str:
+    """The tunnel order, filled with this run's own access host."""
+    return PIVOT_PROMPT.format(
+        access_host=state.access_host,
+        access_user=state.access_user or "<usuario>",
+        target=target,
+    )
+
+
+def pivot_target_host(tool_id: str, arguments: Mapping[str, Any] | None) -> str:
+    """The IPv4 an unexecuted call aims at, when the pre-scan gate covers it."""
+    if tool_id not in PIVOT_GATED_TOOLS:
+        return ""
+    return _action_target_host({"tool_id": tool_id, "arguments": arguments or {}})
+
+
+def _scan_ports(arguments: Mapping[str, Any]) -> tuple[int, ...]:
+    """Ports to probe for a call: the ones it names, then the pivot defaults."""
+    ports: list[int] = []
+    for key in ("port", "ports", "target_port"):
+        value = arguments.get(key)
+        candidates: list[Any]
+        if isinstance(value, int):
+            candidates = [value]
+        elif isinstance(value, str):
+            candidates = [piece for piece in re.split(r"[,\s-]+", value) if piece.isdigit()]
+        else:
+            candidates = []
+        for candidate in candidates:
+            number = int(candidate)
+            if 0 < number < 65536 and number not in ports:
+                ports.append(number)
+    url = arguments.get("url")
+    if isinstance(url, str):
+        match = re.search(r"^https?://[^/:]+:(\d+)", url)
+        if match and int(match.group(1)) not in ports:
+            ports.append(int(match.group(1)))
+    for number in PIVOT_PROBE_PORTS:
+        if number not in ports:
+            ports.append(number)
+    return tuple(ports)
+
+
+async def pivot_gate(
+    tool_id: str,
+    arguments: Mapping[str, Any] | None,
+    actions: Iterable[Any] | None = None,
+    *,
+    probe: Any = None,
+) -> str:
+    """Refuse a sweep the operator has no route to, *before* it burns its budget.
+
+    :func:`pivot_hint` reads the history, so it fires once the useless scan has
+    already spent its timeout (P10: 600 s of ``nmap`` against ``.100`` and the
+    order only at iteration 42). This is the same rule evaluated on the *pending*
+    call: when the run holds an SSH access, has no tunnel open and the call aims
+    at a host its own recon never reached, a cheap TCP probe decides. If any of
+    the target's ports answers from the operator the call proceeds untouched -no
+    pivot is needed and the rule stays silent-; if nothing answers, no scan of
+    that host can produce a result, and the call is refused with the exact tunnel
+    order instead of paying the timeout.
+
+    Returns the order text to hand the model, or ``""`` to let the call run.
+    ``probe`` is the async ``(host, ports) -> bool`` used to decide; ``None``
+    uses :func:`nexus_core.agent.reachability.host_reachable`.
+    """
+    state = pivot_state(actions)
+    if state is None:
+        return ""
+    target = pivot_target_host(tool_id, arguments)
+    if not target or target == state.access_host or target in state.scanned:
+        return ""
+    ports = _scan_ports(arguments if isinstance(arguments, Mapping) else {})
+    if probe is None:
+        from nexus_core.agent.reachability import host_reachable
+
+        probe = host_reachable
+    if await probe(target, ports):
+        return ""
+    return _pivot_order(state, target)
+
+
 def pivot_hint(actions: Iterable[Any] | None = None) -> str:
     """Order the SOCKS pivot when the run aims at a host it cannot route to.
 
@@ -1198,36 +1357,12 @@ def pivot_hint(actions: Iterable[Any] | None = None) -> str:
     SSH access is behind one. An engagement that already opened a tunnel
     (``ssh -D`` in a command) never sees the order.
     """
-    history = [action for action in actions or () if isinstance(action, Mapping)]
-    if not history:
-        return ""
-    access_host = ""
-    access_user = ""
-    scanned: set[str] = set()
-    if any(
-        "-D " in str((action.get("arguments") or {}).get("command") or "")
-        for action in history
-        if isinstance(action.get("arguments"), Mapping)
-    ):
-        return ""
-    # Pass 1: what the *operator's* recon saw before the shell existed. A host
-    # found by the run's own nmap needs no tunnel, so the order must not fire on
-    # it -and the scan that targets the internal host itself must not count as
-    # the proof that the internal host is reachable.
-    for action in history:
-        tool_id = str(action.get("tool_id") or "")
-        arguments = action.get("arguments")
-        arguments = arguments if isinstance(arguments, Mapping) else {}
-        host = _action_target_host(action)
-        if tool_id.endswith("ssh_exec") and str(arguments.get("command") or "") and host:
-            access_host, access_user = host, str(arguments.get("username") or "")
-            break
-        if tool_id == "nexus.recon.nmap" and host:
-            scanned.add(host)
-    if not access_host or not scanned:
+    state = pivot_state(actions)
+    if state is None:
         return ""
     # Pass 2: the first action after the shell that aims at a host the
     # operator's recon never reached is a pivot attempt without a tunnel.
+    history = [action for action in actions or () if isinstance(action, Mapping)]
     seen_access = False
     for action in history:
         tool_id = str(action.get("tool_id") or "")
@@ -1239,12 +1374,8 @@ def pivot_hint(actions: Iterable[Any] | None = None) -> str:
                 str(arguments.get("command") or "")
             )
             continue
-        if host and host not in scanned and host != access_host:
-            return PIVOT_PROMPT.format(
-                access_host=access_host,
-                access_user=access_user or "<usuario>",
-                target=host,
-            )
+        if host and host not in state.scanned and host != state.access_host:
+            return _pivot_order(state, host)
     return ""
 
 
