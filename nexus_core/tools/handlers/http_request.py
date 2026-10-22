@@ -454,10 +454,13 @@ def http_request_definition(tenant_id: str = "system") -> ToolDefinition:
                     "type": "string",
                     "pattern": "^vault:[a-f0-9]{32}$",
                     "description": (
-                        "Handle de una sesión guardada en el vault (lo devuelve "
-                        "nexus.cred.bruteforce al validar un login de formulario). "
-                        "El motor lo resuelve y envía la cabecera Cookie; el "
-                        "valor no entra en el contexto del modelo."
+                        "Handle de una sesión guardada en el vault. Lo devuelve "
+                        "nexus.cred.bruteforce al validar un login de formulario, "
+                        "y también esta misma tool en `session_ref` cuando la "
+                        "respuesta trae Set-Cookie: manda ese handle en la "
+                        "siguiente petición en vez de copiar la cookie. El motor "
+                        "lo resuelve y envía la cabecera Cookie; el valor no "
+                        "entra en el contexto del modelo."
                     ),
                 },
                 "data": {"type": "string", "maxLength": HTTP_MAX_DATA_CHARS},
@@ -672,6 +675,36 @@ def _cookie_pairs(set_cookie: Any) -> dict[str, str]:
     return cookies
 
 
+def _store_session(
+    cookies: dict[str, str],
+    context: RunContext,
+    current_ref: str,
+    cookie_sent: str,
+) -> str | None:
+    """Store a session the response just issued and return its ``vault:`` handle.
+
+    A manual login is the normal way in (DeadDrop 2026-10-22: ``admin'-- -``
+    returned ``302`` with ``connect.sid``). Until now the only way to reuse that
+    cookie was to paste it into ``cookie``, which puts a live session value in
+    the model's context and loses it on restart. Storing it here closes the loop:
+    the next call passes ``session_ref`` and the value never leaves the vault.
+
+    Returns ``current_ref`` unchanged when the response issued nothing new, so a
+    caller that already had a handle keeps it across the ``Set-Cookie`` refresh a
+    real login performs.
+    """
+    if not cookies:
+        return current_ref or None
+    header = "; ".join(f"{name}={value}" for name, value in sorted(cookies.items()))
+    if not header or header == cookie_sent.strip():
+        return current_ref or None
+    from nexus_core.kernel.secret_store import default_secret_store
+
+    return default_secret_store().put(
+        header, kind="session", tenant_id=context.tenant_id
+    )
+
+
 async def _http_request_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     """Send one scoped HTTP(S) request through the sandbox and parse the result."""
     from nexus_core.kernel.schema_validation import validate
@@ -838,6 +871,19 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
 
     ok = bool(payload.get("ok")) and result.exit_code == 0
     response_cookies = _cookie_pairs(payload.get("set_cookie"))
+    # The response may have handed out a session (a login that worked). Keep it
+    # in the vault and return the handle so the next call does not need the value.
+    stored_session_ref = (
+        _store_session(response_cookies, context, session_ref, cookie_sent) if ok else None
+    )
+    # ``evidence["session_ref"]`` keeps naming the handle this request *used*;
+    # the new one is reported apart so a replay can tell them apart.
+    issued_session_ref = (
+        stored_session_ref
+        if stored_session_ref and stored_session_ref != session_ref
+        else None
+    )
+    evidence["session_ref_issued"] = issued_session_ref
     if ok:
         evidence.update(
             {
@@ -863,28 +909,33 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
     else:
         evidence["error"] = payload.get("error")
 
+    output: dict[str, Any] = {
+        "url": url,
+        "method": payload.get("method", method),
+        "status": payload.get("status"),
+        "reason": payload.get("reason"),
+        "headers": payload.get("headers") or {},
+        "set_cookie": payload.get("set_cookie") or [],
+        # Same values, parsed: what a follow-up call sends in ``cookie``.
+        "response_cookies": response_cookies,
+        "content_type": payload.get("content_type"),
+        "body_complete": payload.get("body_complete"),
+        "body_bytes": payload.get("body_bytes"),
+        "body_sha256": payload.get("body_sha256"),
+        "body_preview": payload.get("body_preview"),
+        "preview_truncated": payload.get("preview_truncated"),
+        "elapsed_ms": payload.get("elapsed_ms"),
+        "uploaded": payload.get("uploaded"),
+        "saved": payload.get("saved"),
+        "csrf": payload.get("csrf"),
+        "error": payload.get("error"),
+    }
+    if issued_session_ref:
+        # Handle for the session this response issued: pass it as
+        # ``session_ref`` on the next call instead of the cookie value.
+        output["session_ref"] = issued_session_ref
     return ToolResult(
-        output={
-            "url": url,
-            "method": payload.get("method", method),
-            "status": payload.get("status"),
-            "reason": payload.get("reason"),
-            "headers": payload.get("headers") or {},
-            "set_cookie": payload.get("set_cookie") or [],
-            # Same values, parsed: what a follow-up call sends in ``cookie``.
-            "response_cookies": response_cookies,
-            "content_type": payload.get("content_type"),
-            "body_complete": payload.get("body_complete"),
-            "body_bytes": payload.get("body_bytes"),
-            "body_sha256": payload.get("body_sha256"),
-            "body_preview": payload.get("body_preview"),
-            "preview_truncated": payload.get("preview_truncated"),
-            "elapsed_ms": payload.get("elapsed_ms"),
-            "uploaded": payload.get("uploaded"),
-            "saved": payload.get("saved"),
-            "csrf": payload.get("csrf"),
-            "error": payload.get("error"),
-        },
+        output=output,
         verified=ok,
         verification_method="http_response_received" if ok else "http_request_failed",
         evidence=evidence,

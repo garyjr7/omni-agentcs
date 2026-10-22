@@ -341,6 +341,65 @@ def test_repeated_set_cookie_headers_are_preserved_in_output():
     assert result.evidence["set_cookie_count"] == 2
 
 
+# --------------------------------------------------- session issued by a login
+def test_a_login_response_returns_a_session_ref_stored_in_the_vault(tmp_path, monkeypatch):
+    """A manual bypass hands out a cookie: keep it and return the handle."""
+    from nexus_core.kernel.secret_store import default_secret_store
+
+    monkeypatch.setenv("NEXUS_VAULT_ROOT", str(tmp_path / "vault"))
+    cookies = ["connect.sid=s%3Adeadbeef.sig; Path=/; HttpOnly"]
+    with _fake_sandbox(_sandbox_for(_ok_payload(set_cookie=cookies))):
+        result = _run({
+            "url": "http://203.0.113.10/login",
+            "method": "POST",
+            "data": "username=admin'-- -&password=x",
+        })
+    ref = result.output["session_ref"]
+    assert ref.startswith("vault:")
+    # The request used no handle; the one it issued is reported apart from it.
+    assert result.evidence["session_ref"] is None
+    assert result.evidence["session_ref_issued"] == ref
+    stored = default_secret_store().get(ref).decode()
+    assert stored == "connect.sid=s%3Adeadbeef.sig"
+
+
+def test_the_issued_session_ref_is_sent_back_as_the_cookie_header(tmp_path, monkeypatch):
+    from nexus_core.kernel.secret_store import default_secret_store
+
+    monkeypatch.setenv("NEXUS_VAULT_ROOT", str(tmp_path / "vault"))
+    ref = default_secret_store().put("connect.sid=abc123", kind="session")
+    with _fake_sandbox(_sandbox_for(_ok_payload())) as sandbox:
+        result = _run({"url": "http://203.0.113.10/preview/rev.js", "session_ref": ref})
+    headers = json.loads(sandbox.calls[0][0][5])
+    assert headers["Cookie"] == "connect.sid=abc123"
+    assert result.evidence["cookie_sent"] is True
+    assert result.evidence["session_ref"] == ref
+    # A response with no ``Set-Cookie`` issues nothing new.
+    assert "session_ref" not in result.output
+    assert result.evidence["session_ref_issued"] is None
+
+
+def test_a_response_without_cookies_issues_no_session_ref():
+    with _fake_sandbox(_sandbox_for(_ok_payload())):
+        result = _run({"url": "http://203.0.113.10/"})
+    assert "session_ref" not in result.output
+    assert result.evidence["session_ref_issued"] is None
+
+
+def test_refreshing_the_same_cookie_keeps_the_existing_handle(tmp_path, monkeypatch):
+    from nexus_core.kernel.secret_store import default_secret_store
+
+    monkeypatch.setenv("NEXUS_VAULT_ROOT", str(tmp_path / "vault"))
+    ref = default_secret_store().put("connect.sid=abc123", kind="session")
+    with _fake_sandbox(
+        _sandbox_for(_ok_payload(set_cookie=["connect.sid=abc123; Path=/"]))
+    ):
+        result = _run({"url": "http://203.0.113.10/dashboard", "session_ref": ref})
+    assert "session_ref" not in result.output
+    assert result.evidence["session_ref"] == ref
+    assert result.evidence["session_ref_issued"] is None
+
+
 class _TwoCookieHandler(http.server.BaseHTTPRequestHandler):
     """Sets two cookies the way a login response does (JSESSIONID + csrf)."""
 

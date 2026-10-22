@@ -39,6 +39,9 @@ CLI_RECIPES = {
     "impacket_getuserspns": "impacket",
     "impacket_psexec": "impacket",
     "impacket_changepasswd": "impacket",
+    # DACL read/write and owner change ship inside impacket
+    # (``impacket-dacledit`` / ``impacket-owneredit``).
+    "ad_acl": "impacket",
     "nopac": "impacket",
 }
 PYTHON_HANDLERS = frozenset(

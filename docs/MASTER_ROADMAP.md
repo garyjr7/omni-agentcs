@@ -801,15 +801,22 @@ parte por `:` buscando un prefijo crypt. Nada nombra DeadDrop.
 
 - El foothold SSH no lo ejecutó OMNI: lo validó el operador con la password
   crackeada a mano. El run P4 se quedó en registrar el hash como hecho.
-- No hay primitiva de abuso de ACL: `bloodhound_python` necesita DNS del dominio
-  y el túnel SOCKS rechaza el DNS sobre TCP; la fase 5 sigue dependiendo de
-  `shell.exec` + `proxychains4`.
-- `nexus.web.request` acepta `session_ref` pero sólo `cred.bruteforce` escribe
-  ese handle: una sesión obtenida por bypass manual obliga a copiar la cookie.
+- ~~No hay primitiva de abuso de ACL~~ **cerrado 2026-10-22**:
+  `nexus.attack.ad_acl` (`read`/`write`/`take_ownership`) sobre
+  `impacket-dacledit` y `impacket-owneredit`, con el parser escrito contra el
+  formato real de Impacket 0.13 y `Object type (GUID)` → `ResetPassword` /
+  `DCSync` / `AddMember`. 21 tests, catálogo a 80 tools, perfiles `common`,
+  `post` y `lateral`. Sigue fuera `bloodyAD`/`net rpc group addmem`.
+- ~~`nexus.web.request` sólo aceptaba `session_ref`~~ **cerrado 2026-10-22**:
+  una respuesta con `Set-Cookie` se guarda en el vault y se devuelve como
+  `session_ref`; `evidence.session_ref_issued` distingue el handle nuevo del
+  usado, y un refresco de la misma cookie conserva el que ya había.
 - `cred.bruteforce` dejó `hydra` huérfanos al matar el run desde fuera y devolvió
   `partial` a los 571 s con 300 s de presupuesto.
 - La sala dejó de responder a las 03:12 UTC: los runs P5/P6 miden la caída del
-  objetivo, no un defecto del motor.
+  objetivo, no un defecto del motor. Volvió a las 04:00 UTC y las cinco
+  respuestas quedaron cerradas (la escalada del DC es **membership**:
+  `synthetic-user` → `ITSupport-Admins` → `Domain Admins`, no un ACE sobre el equipo).
 
 Detalle completo: `docs/missions/diag/deaddrop_campaign_2026-10-22.md` y
 `docs/missions/diag/deaddrop_p1_2026-10-22.md`.

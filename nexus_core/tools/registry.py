@@ -71,6 +71,7 @@ def durable_tool_definitions(
         impacket_changepasswd_definition,
         impacket_changepasswd_handler,
     )
+    from .handlers.ad_acl import ad_acl_definition, ad_acl_handler
     from .handlers.nopac import nopac_definition, nopac_handler
     from .handlers.sqlmap import sqlmap_definition, sqlmap_handler
     from .handlers.gobuster import gobuster_definition, gobuster_handler
@@ -214,6 +215,7 @@ def durable_tool_definitions(
             impacket_changepasswd_definition(tenant_id),
             impacket_changepasswd_handler,
         ),
+        "nexus.attack.ad_acl": (ad_acl_definition(tenant_id), ad_acl_handler),
         "nexus.attack.nopac": (nopac_definition(tenant_id), nopac_handler),
         "nexus.recon.subfinder": (subfinder_definition(tenant_id), subfinder_handler),
         "nexus.recon.httpx": (httpx_definition(tenant_id), httpx_handler),

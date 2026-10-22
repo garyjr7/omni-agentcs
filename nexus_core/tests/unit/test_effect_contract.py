@@ -39,6 +39,7 @@ HANDLERS_DIR = Path(__file__).resolve().parents[3] / "nexus_core" / "tools" / "h
 #: hereda el default ``read_only`` o alguien reetiqueta una existente, este
 #: conjunto cambia y el test falla hasta que se revise la decisión.
 EXPECTED_ACTIVE = frozenset({
+    "nexus.attack.ad_acl",
     "nexus.attack.impacket_changepasswd",
     "nexus.attack.impacket_getuserspns",
     "nexus.attack.impacket_psexec",
@@ -176,6 +177,7 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # it reads the local DB and writes only inside the workspace): 78 - 46 = 32.
     # V11 adds one active uploader (nexus.exploit.compile_and_upload writes to
     # the target): 79 - 47 = 32, so the read-only count is unchanged.
+    # V12 adds one active directory writer (nexus.attack.ad_acl): 80 - 48 = 32.
     assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 32
 
 
