@@ -155,6 +155,46 @@ def test_ssh_exec_rejects_destructive_command():
         )
 
 
+def test_ssh_exec_reads_etc_passwd_and_still_refuses_a_password_change():
+    """DeadDrop P8 (2026-10-22, iteraciones 25-30): seis turnos rechazados.
+
+    El token prohibido era `passwd ` como substring, así que `cat /etc/passwd`
+    -el primer fichero que lee un run al aterrizar- devolvía el mismo error que
+    una contraseña rechazada, y el modelo reescribió el mismo comando seis
+    veces. La lectura pasa; el cambio de contraseña (y solo eso) se rechaza, y
+    el mensaje dice qué usar en su lugar.
+    """
+    payload = {
+        "ok": True,
+        "connected": True,
+        "stdout": "lin:x:1000:1000::/home/lin:/bin/bash\n",
+        "stderr": "",
+        "exit_status": 0,
+    }
+    with _fake_sandbox(_sandbox_for(payload)) as sandbox:
+        result = _run(
+            ssh_exec_handler,
+            {
+                "target": "10.65.151.43",
+                "username": "lin",
+                "password": "pw",
+                "command": "cat /etc/passwd | grep lin",
+            },
+        )
+    assert sandbox.calls and result.verified is True
+
+    with pytest.raises(ValueError, match="enum_system"):
+        _run(
+            ssh_exec_handler,
+            {
+                "target": "10.65.151.43",
+                "username": "lin",
+                "password": "pw",
+                "command": "sudo passwd lin",
+            },
+        )
+
+
 def test_ssh_exec_reports_paramiko_missing():
     payload = {"ok": False, "connected": False, "error": "ssh_unavailable", "detail": "no paramiko"}
     with _fake_sandbox(_sandbox_for(payload)):

@@ -118,8 +118,20 @@ SSH_FORBIDDEN_TOKENS: tuple[str, ...] = (
     "> /dev/sd",
     "iptables -f",
     "userdel",
-    "passwd ",
     "chmod 777 /",
+)
+
+#: Commands that *change* an account's password. Kept out of the substring list
+#: above on purpose: ``passwd `` matched ``cat /etc/passwd``, and DeadDrop P8
+#: (2026-10-22, iterations 25-30) spent six turns being refused while reading the
+#: file every run reads first -the refusal looked like the credential being
+#: rejected, so the model kept rewriting the same harmless command. The check is
+#: on the command word of a shell segment, so a path or an argument never trips it.
+SSH_FORBIDDEN_PASSWORD_COMMANDS: tuple[str, ...] = ("passwd", "chpasswd")
+_PASSWORD_COMMAND_RE = re.compile(
+    r"(?:^|[;&|]\s*)(?:sudo\s+(?:-\S+\s+)*)?(?P<command>"
+    + "|".join(SSH_FORBIDDEN_PASSWORD_COMMANDS)
+    + r")\b"
 )
 
 _SUDO_RULE_RE = re.compile(r"^\s*\((?P<who>[^)]*)\)\s+(?P<command>\S.*)$")
@@ -431,7 +443,22 @@ def _forbidden_command(command: str) -> str | None:
     for token in SSH_FORBIDDEN_TOKENS:
         if token in lowered:
             return token
+    match = _PASSWORD_COMMAND_RE.search(lowered)
+    if match:
+        return match.group("command")
     return None
+
+
+#: What to use instead, per refusal. A refusal that does not name the way out
+#: costs a turn per retry (P8: six rewrites of the same command).
+FORBIDDEN_COMMAND_GUIDANCE: dict[str, str] = {
+    "passwd": (
+        "cambiar la contraseña de una cuenta no es el objetivo y rompe el acceso: "
+        "para usar la credencial con privilegios, `sudo -S` se alimenta solo desde "
+        "el vault (`nexus.post.enum_system` o `ssh_exec` con `sudo -l`); lee "
+        "`/etc/passwd` o `/etc/shadow` sin miedo, solo se rechaza el comando."
+    ),
+}
 
 
 def parse_sudo_rules(text: str) -> list[dict[str, str]]:
@@ -1305,7 +1332,18 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         raise ValueError("command is required")
     forbidden = _forbidden_command(command)
     if forbidden is not None:
-        raise ValueError(f"command contains a forbidden token: {forbidden!r}")
+        guidance = next(
+            (
+                text
+                for key, text in FORBIDDEN_COMMAND_GUIDANCE.items()
+                if forbidden.startswith(key)
+            ),
+            "",
+        )
+        raise ValueError(
+            f"command contains a forbidden token: {forbidden!r}"
+            + (f" - {guidance}" if guidance else "")
+        )
     # V9 (Hijack): waiting burns the turn on the remote host too. The refusal is
     # determinate (``denied``), not an engine failure, and it names the tools
     # that replace each legitimate reason to wait.
