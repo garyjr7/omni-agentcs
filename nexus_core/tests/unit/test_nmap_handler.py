@@ -281,14 +281,38 @@ def test_profile_all_ports_ignores_an_explicit_port_list():
     assert any("ignored redundant port flags" in warning for warning in result.evidence["warnings"])
 
 
-def test_service_profile_ignores_inline_port_selection():
+def test_service_profile_narrows_to_the_ports_the_model_named():
+    # DeadDrop (2026-10-22): tras un full_tcp con 22/80 abiertos, el modelo pidió
+    # profile="service" + -p 22,80 -sV -sC y el handler volvió a barrer 65 535
+    # puertos con -sV: 600 s de timeout y cero hechos. El fingerprint de los
+    # puertos descubiertos es el paso siguiente correcto, así que acota.
+    with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
+        result = _run(
+            {"target": "203.0.113.10", "profile": "service", "flags": ["-p", "22,80", "-sV"]}
+        )
+    argv = sandbox.calls[0][0]
+    assert "-p-" not in argv
+    assert "-p" in argv and "22,80" in argv and "-sV" in argv
+    assert "ignored_flags" not in result.output
+    assert any("narrowed" in warning for warning in result.evidence["warnings"])
+
+
+def test_service_profile_narrows_an_inline_port_selection():
     with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
         result = _run(
             {"target": "203.0.113.10", "profile": "service", "flags": ["-p=21,80", "-sV"]}
         )
     argv = sandbox.calls[0][0]
-    assert "-p=21,80" not in argv and "-sV" in argv
-    assert result.output["ignored_flags"] == ["-p=21,80"]
+    assert "-p-" not in argv
+    assert "-p" in argv and "21,80" in argv and "-sV" in argv
+    assert "ignored_flags" not in result.output
+
+
+def test_service_profile_without_a_port_selection_still_sweeps_every_port():
+    with _fake_sandbox(SandboxResult(0, _read("scan_single_host.xml"), "")) as sandbox:
+        _run({"target": "203.0.113.10", "profile": "service", "flags": ["-sV"]})
+    argv = sandbox.calls[0][0]
+    assert "-p-" in argv and "-sV" in argv
 
 
 def test_profiles_leave_the_port_selection_alone_without_all_ports():

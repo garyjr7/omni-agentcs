@@ -104,10 +104,12 @@ NMAP_STDOUT_MAX_BYTES = 500
 # El perfil se expande server-side, así que el modelo nunca inventa flags: pide
 # un nombre conocido. ``full_tcp`` y ``service`` cubren los 65535 puertos TCP
 # (-p-), que es el paso que descubre servicios fuera de la lista "común" (p. ej.
-# FTP en 21). Por eso, cuando el perfil ya trae ``-p-``, un ``-p`` del modelo no
-# puede acotar nada: se descarta (ver ``drop_redundant_port_flags``) en lugar de
-# romper la llamada, que es lo que le costó una iteración al run de Simple CTF
-# (``profile="service"`` + ``flags=["-p", ...]``).
+# FTP en 21). Cuando el perfil trae ``-p-`` y el modelo manda además un ``-p``,
+# hay dos casos medidos: en ``full_tcp`` la selección no puede acotar nada y se
+# descarta (``drop_redundant_port_flags``); en ``service`` sí acota, porque el
+# paso natural tras un barrido es pedir versión sólo de los puertos abiertos
+# (ver ``selects_ports``). Descartarla ahí costaba 600 s de timeout y cero
+# hechos: ``-p- -sV -sC`` sobre 65 535 puertos no termina en 10 minutos.
 NMAP_PROFILES: dict[str, dict[str, Any]] = {
     "quick": {"flags": ["-Pn", "-n", "-F", "-T4"], "timeout_seconds": 120},
     "full_tcp": {"flags": ["-Pn", "-n", "-p-", "-T4", "--open"], "timeout_seconds": 600},
@@ -173,6 +175,23 @@ def validate_and_canonicalize_flags(raw_flags: list[str]) -> tuple[list[str], st
     if "-sS" in canonical:
         warnings.add("SYN scan may require elevated privileges inside the sandbox")
     return canonical, NOISE_NAMES[noise_rank], warnings
+
+
+def selects_ports(raw_flags: list[str]) -> bool:
+    """Whether the model's flags choose ports themselves (not the ``-p-`` sweep).
+
+    ``-p-`` is explicitly *not* a selection: it is the full sweep the profile
+    already means. ``-p 22,80``, ``-p=22,80``, ``--top-ports 1000`` and
+    ``--top-ports=1000`` are. Used to decide whether a ``service`` scan should
+    fingerprint the named ports instead of all 65 535.
+    """
+    for token in raw_flags:
+        candidate = str(token).strip()
+        if candidate in {"-p", "--top-ports"}:
+            return True
+        if candidate.startswith(("-p=", "--top-ports=")):
+            return True
+    return False
 
 
 def drop_redundant_port_flags(
@@ -375,15 +394,28 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
         base_flags = list(spec["flags"])
         profile_timeout = int(spec["timeout_seconds"])
 
-    raw_flags, dropped_port_flags = drop_redundant_port_flags(
-        list(arguments.get("flags") or []), base_flags
-    )
+    model_flags = list(arguments.get("flags") or [])
+    narrowed_service = False
+    if profile_name == "service" and "-p-" in base_flags and selects_ports(model_flags):
+        # DeadDrop (2026-10-22): tras un ``full_tcp`` con 22/80 abiertos, el
+        # modelo pidió ``profile="service"`` + ``-p 22,80 -sV -sC`` y el handler
+        # volvió a barrer 65 535 puertos con version detection: 600 s de timeout
+        # y ningún hecho. El fingerprint de los puertos ya descubiertos es el
+        # paso siguiente correcto, así que la selección manda sobre el ``-p-``.
+        base_flags = [flag for flag in base_flags if flag != "-p-"]
+        narrowed_service = True
+    raw_flags, dropped_port_flags = drop_redundant_port_flags(model_flags, base_flags)
     flags, noise_level, warnings = validate_and_canonicalize_flags([*base_flags, *raw_flags])
     if "-p-" in flags and "-p" in flags:
         raise ValueError("conflicting nmap flags: '-p-' (all ports) and '-p <ports>'")
     warnings = set(warnings)
     if profile_name:
         warnings.add(f"profile: {profile_name}")
+    if narrowed_service:
+        warnings.add(
+            "service scan narrowed to the port selection in flags: -p- dropped "
+            "so -sV/-sC only touch the ports named"
+        )
     if dropped_port_flags:
         # The call succeeds; tell the model why its port selection had no effect.
         warnings.add(
