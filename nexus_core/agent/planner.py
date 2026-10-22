@@ -13,9 +13,11 @@ unit-test, exactly like the tool parsers.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlsplit
 
 #: Statuses of one phase inside a plan.
 STATUS_DONE = "done"
@@ -1150,6 +1152,50 @@ def _action_target_host(action: Mapping[str, Any]) -> str:
     return ""
 
 
+#: A host name or an IPv6 literal an action can aim at. The pivot rules used to
+#: read the target with :func:`_action_target_host` only, which understands IPv4:
+#: in an engagement addressed by name (``dc01.corp.local``) the access host read
+#: as empty, so the gate never armed at all. Only the pivot rules use the wider
+#: reader below, so no other rule changes meaning.
+_PIVOT_HOST_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+
+
+def _pivot_host(action: Mapping[str, Any]) -> str:
+    """The host an action aims at: IPv4, IPv6 or a name (lower-cased).
+
+    A URL is reduced to its host, ``host:port`` to its host, and brackets are
+    stripped so ``[2001:db8::1]`` and ``2001:db8::1`` compare equal. Anything
+    that is not an address or a plausible host name -a path, a bare word- returns
+    ``""``, which keeps the gate silent instead of guessing.
+    """
+    host = _action_target_host(action)
+    if host:
+        return host
+    arguments = action.get("arguments")
+    arguments = arguments if isinstance(arguments, Mapping) else {}
+    for key in ("target", "host", "url"):
+        value = arguments.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        candidate = value.strip()
+        if "://" in candidate:
+            candidate = urlsplit(candidate).hostname or ""
+        else:
+            candidate = candidate.split("/", 1)[0]
+            if candidate.count(":") == 1:
+                candidate = candidate.split(":", 1)[0]
+        candidate = candidate.strip("[]").strip().lower()
+        if not candidate:
+            continue
+        try:
+            return str(ipaddress.ip_address(candidate))
+        except ValueError:
+            pass
+        if _PIVOT_HOST_RE.fullmatch(candidate):
+            return candidate
+    return ""
+
+
 def login_probe_pending(actions: Iterable[Any] | None = None) -> bool:
     """True while a read login form has not received the bypass probe.
 
@@ -1241,7 +1287,7 @@ def pivot_state(actions: Iterable[Any] | None = None) -> PivotState | None:
         tool_id = str(action.get("tool_id") or "")
         arguments = action.get("arguments")
         arguments = arguments if isinstance(arguments, Mapping) else {}
-        host = _action_target_host(action)
+        host = _pivot_host(action)
         if tool_id.endswith("ssh_exec") and str(arguments.get("command") or "") and host:
             access_host, access_user = host, str(arguments.get("username") or "")
             break
@@ -1269,7 +1315,7 @@ def pivot_target_host(tool_id: str, arguments: Mapping[str, Any] | None) -> str:
     """The IPv4 an unexecuted call aims at, when the pre-scan gate covers it."""
     if tool_id not in PIVOT_GATED_TOOLS:
         return ""
-    return _action_target_host({"tool_id": tool_id, "arguments": arguments or {}})
+    return _pivot_host({"tool_id": tool_id, "arguments": arguments or {}})
 
 
 def _scan_ports(arguments: Mapping[str, Any]) -> tuple[int, ...]:
@@ -1401,7 +1447,7 @@ def pivot_hint(
         tool_id = str(action.get("tool_id") or "")
         arguments = action.get("arguments")
         arguments = arguments if isinstance(arguments, Mapping) else {}
-        host = _action_target_host(action)
+        host = _pivot_host(action)
         if not seen_access:
             seen_access = tool_id.endswith("ssh_exec") and bool(
                 str(arguments.get("command") or "")

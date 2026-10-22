@@ -438,3 +438,185 @@ async def test_a_failed_probe_asserts_nothing():
         outcome="unavailable",
     )
     assert derive_assertions(VERIFY_ROUTE_TOOL_ID, {}, failed, _Ctx) == []
+
+
+# ------------------------------------------------ generalidad: no es DeadDrop
+# The pivot primitive is checked against addresses that are not the room it was
+# written on: a public range, a name-addressed engagement and an IPv6 literal.
+
+
+@pytest.mark.asyncio
+async def test_the_gate_arms_for_a_public_address():
+    """Nothing in the rule may assume RFC1918: a public target is gated too."""
+    history = [
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "203.0.113.10"}},
+        _ssh_access("203.0.113.10"),
+    ]
+    asked: list[str] = []
+
+    async def unreachable(host: str, ports) -> bool:
+        asked.append(host)
+        return False
+
+    order = await pivot_gate(
+        "nexus.recon.nmap", {"target": "198.51.100.5"}, history, probe=unreachable
+    )
+
+    assert "PIVOTE NECESARIO" in order and "198.51.100.5" in order
+    assert "198.51.100.5" in " ".join(asked)
+
+
+@pytest.mark.asyncio
+async def test_the_gate_arms_when_the_engagement_is_addressed_by_name():
+    """An engagement by FQDN used to disarm the gate: the host read as empty."""
+    history = [
+        {"tool_id": "nexus.recon.nmap", "arguments": {"target": "dmz01.corp.local"}},
+        {
+            "tool_id": "nexus.post.ssh_exec",
+            "arguments": {"target": "dmz01.corp.local", "username": "svc",
+                          "command": "id"},
+        },
+    ]
+
+    order = await pivot_gate(
+        "nexus.recon.nmap", {"target": "dc01.corp.local"}, history,
+        probe=_unreachable_probe,
+    )
+
+    assert "PIVOTE NECESARIO" in order and "dc01.corp.local" in order
+
+    # ...and a route fact between names disarms it, exactly like an IP route.
+    named = _route_fact(from_host="dmz01.corp.local", to_host="dc01.corp.local")
+    assert await pivot_gate(
+        "nexus.recon.nmap", {"target": "dc01.corp.local"}, history,
+        probe=_unreachable_probe, facts=[named],
+    ) == ""
+
+
+@pytest.mark.asyncio
+async def test_a_route_assertion_is_independent_of_the_method():
+    """The board matches hosts and ports; it never branches on the transport."""
+    for method in ("direct", "ssh_L", "ssh_D", "socks", "ligolo"):
+        fact = _route_fact(method=method)
+        assert route_reaches([fact], from_host=DMZ, to_host=DC) is not None, method
+
+
+@pytest.mark.asyncio
+async def test_verify_route_dials_the_destination_for_a_direct_route():
+    server = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        result = await verify_route_handler(
+            {"from_host": DMZ, "to_host": "127.0.0.1", "to_port": port,
+             "method": "direct"},
+            None,
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert result.verified is True and result.evidence["probe"] == "tcp"
+    assert result.evidence["dialled"] == f"127.0.0.1:{port}"
+
+
+@pytest.mark.asyncio
+async def test_verify_route_accepts_a_host_name_and_a_v6_destination():
+    """A name or an IPv6 literal is a destination, not a validation error."""
+    v4 = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
+    port = v4.sockets[0].getsockname()[1]
+    try:
+        by_name = await verify_route_handler(
+            {"from_host": DMZ, "to_host": "localhost", "to_port": port,
+             "method": "direct"},
+            None,
+        )
+    finally:
+        v4.close()
+        await v4.wait_closed()
+    assert by_name.verified is True
+
+    try:
+        v6 = await asyncio.start_server(lambda r, w: w.close(), "::1", 0)
+    except OSError:
+        pytest.skip("no IPv6 loopback in this environment")
+    port6 = v6.sockets[0].getsockname()[1]
+    try:
+        by_v6 = await verify_route_handler(
+            {"from_host": DMZ, "to_host": "::1", "to_port": port6,
+             "method": "direct"},
+            None,
+        )
+    finally:
+        v6.close()
+        await v6.wait_closed()
+    assert by_v6.verified is True
+
+
+@pytest.mark.asyncio
+async def test_a_declared_method_without_a_probe_is_unavailable_not_an_error():
+    """``chisel`` tomorrow must answer honestly, not raise nor assert a route."""
+    result = await verify_route_handler(
+        {"from_host": DMZ, "to_host": DC, "to_port": 445, "method": "chisel"}, None
+    )
+
+    assert result.verified is False
+    assert result.outcome == "unavailable"
+    assert result.evidence["cause"] == "method_not_implemented"
+    assert "chisel" in result.evidence["detail"]
+
+    class _Ctx:
+        invocation_id = "inv-x"
+        run_id = "run-x"
+
+    assert derive_assertions(VERIFY_ROUTE_TOOL_ID, {}, result, _Ctx) == []
+
+
+@pytest.mark.asyncio
+async def test_a_route_registered_by_the_model_seeds_nothing(tmp_path):
+    """Acceptance 2 (second half): through the real tool, not a hand-made dict."""
+    from types import SimpleNamespace
+
+    from nexus_core.kernel.blackboard import Blackboard
+    from nexus_core.kernel.control_store import ControlStore
+    from nexus_core.kernel.models import Identity, RunContext
+    from nexus_core.tools.handlers.knowledge_facts import record_fact_handler
+
+    store = ControlStore(tmp_path / "control.db")
+    store.initialize()
+    context = RunContext(
+        "system",
+        Identity("operator-1", "system", roles=("operator",)),
+        scope=SimpleNamespace(engagement_id="eng-route"),
+        store=store,
+    )
+    result = await record_fact_handler(
+        {
+            "fact_type": "route",
+            "key": route_key(DMZ, DC),
+            "verified": True,
+            "source": "deterministic-verifier",
+            "value": {
+                "from_host": DMZ, "to_host": DC, "to_port": None,
+                "method": "socks", "forwarder_ref": "127.0.0.1:1080",
+                "verified_by": "inv-invented",
+            },
+        },
+        context,
+    )
+
+    assert result.output["verified"] is False
+    facts = Blackboard(store).list_facts("system", "eng-route")
+    assert facts and all(fact["verified"] is False for fact in facts)
+    assert route_reaches(facts, from_host=DMZ, to_host=DC) is None
+
+    plan = new_plan("o", "eng-route", [
+        todo_from_mapping({"id": "pivot-lan", "description": "Pivote a la LAN",
+                           "fact_types": ["route"]}),
+    ])
+    assert reconcile(plan, facts)[1] == []
+
+    order = await pivot_gate(
+        "nexus.recon.nmap", {"target": DC}, _pivot_history(),
+        probe=_unreachable_probe, facts=facts,
+    )
+    assert "PIVOTE NECESARIO" in order

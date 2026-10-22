@@ -42,11 +42,21 @@ VERIFY_ROUTE_MAX_TIMEOUT_SECONDS = 30
 #: ``host:port`` of a local forward (``127.0.0.1:1080``, ``[::1]:1080``).
 _ENDPOINT_RE = re.compile(r"^\[?(?P<host>[^\]\s:/]+|::1)\]?:(?P<port>\d{1,5})$")
 
-#: Methods whose verification needs the destination port: they forward one port.
-_PORT_METHODS = frozenset({"direct", "ssh_L"})
+#: How each declared method is probed. A method declared in the schema but
+#: missing here is answered as ``unavailable`` ("method not implemented") instead
+#: of raising or, worse, emitting a route nobody proved: adding ``chisel`` is one
+#: entry in this table, and until that entry exists the honest answer is "I
+#: cannot verify this yet".
+_PROBES: dict[str, str] = {
+    "direct": "tcp",
+    "ssh_L": "tcp",
+    "ligolo": "tcp",
+    "ssh_D": "socks5",
+    "socks": "socks5",
+}
 #: Methods that speak SOCKS5: the proxy decides the destination, so the probe is
 #: a CONNECT through it and `to_port` is required for that CONNECT.
-_SOCKS_METHODS = frozenset({"ssh_D", "socks"})
+_SOCKS_METHODS = frozenset(name for name, kind in _PROBES.items() if kind == "socks5")
 
 
 def verify_route_definition(tenant_id: str = "system") -> ToolDefinition:
@@ -196,8 +206,7 @@ async def verify_route_handler(arguments: dict, context: RunContext) -> ToolResu
     from_host = _validate_host(arguments.get("from_host"), "from_host")
     to_host = _validate_host(arguments.get("to_host"), "to_host")
     method = str(arguments.get("method") or "direct").strip()
-    if method not in ROUTE_METHODS:
-        raise ValueError(f"unknown method {method!r}; use one of {list(ROUTE_METHODS)}")
+    probe_kind = _PROBES.get(method)
 
     raw_port = arguments.get("to_port")
     to_port: int | None = None
@@ -234,10 +243,22 @@ async def verify_route_handler(arguments: dict, context: RunContext) -> ToolResu
         "noise_level": "none",
     }
 
+    # Declared in the vocabulary but not yet probed: say so. ``unavailable``
+    # means "this was not observed", which is exactly the truth, and it is not a
+    # fact either (no route is asserted).
+    if probe_kind is None:
+        cause = f"method not implemented: {method}"
+        return ToolResult(
+            output={**evidence, "error": cause},
+            verified=False,
+            verification_method="route_probe_failed",
+            evidence={**evidence, "cause": "method_not_implemented", "detail": cause},
+            outcome="unavailable",
+        )
     # A socks route without its proxy cannot be verified: dialing to_host:to_port
     # from here would answer a different question (the direct path) and could
     # report a working route the SOCKS proxy does not provide.
-    if method in _SOCKS_METHODS and endpoint is None:
+    if probe_kind == "socks5" and endpoint is None:
         return ToolResult(
             output={**evidence, "error": "the SOCKS route needs forwarder_ref host:port"},
             verified=False,
@@ -245,7 +266,7 @@ async def verify_route_handler(arguments: dict, context: RunContext) -> ToolResu
             evidence={**evidence, "cause": "missing_forwarder"},
             outcome="unavailable",
         )
-    if to_port is None and method not in _SOCKS_METHODS and endpoint is None:
+    if to_port is None and probe_kind != "socks5" and endpoint is None:
         return ToolResult(
             output={**evidence, "error": "a direct/L route needs to_port"},
             verified=False,
@@ -253,7 +274,7 @@ async def verify_route_handler(arguments: dict, context: RunContext) -> ToolResu
             evidence={**evidence, "cause": "missing_port"},
             outcome="unavailable",
         )
-    if to_port is None and method in _SOCKS_METHODS:
+    if to_port is None and probe_kind == "socks5":
         return ToolResult(
             output={**evidence, "error": "a SOCKS CONNECT needs to_port"},
             verified=False,
@@ -263,7 +284,7 @@ async def verify_route_handler(arguments: dict, context: RunContext) -> ToolResu
         )
 
     started = time.monotonic()
-    if method in _SOCKS_METHODS:
+    if probe_kind == "socks5":
         assert endpoint is not None and to_port is not None
         ok, cause = await _socks5_reaches(endpoint, to_host, to_port, timeout)
         probe = "socks5"
