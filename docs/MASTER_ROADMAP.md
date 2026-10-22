@@ -791,6 +791,8 @@ bloqueada cuando la instancia de la sala dejó de responder a las 03:12 UTC.
 | El schema de `crack_hash` rechazaba lo que el handler soporta | P4 iteración 44: `sha512crypt` «is not one of» | El enum pasa a ser `CRACK_FORMATS` + `auto` | `test_the_hash_type_enum_admits_every_format_the_handler_supports` |
 | Un `full_tcp` expirado devolvía un timeout sin hechos | P5: 600 s, 0 hechos, todas las fases a ciegas | Un barrido que expira reintenta top-1000 `--min-rate 1000` | `test_a_timed_out_full_sweep_is_retried_with_top_ports` |
 | El rescate no cabía en el presupuesto de la tool | P6: 600,2 s y el reintento cancelado al arrancar | Con `-p-` el barrido reserva `600 - 180 - 15` s | `test_full_tcp_profile_scans_all_ports_with_its_own_timeout` |
+| Una sonda «parecida» silenciaba el aviso del login | P7 iteraciones 6-11: `username[$ne]=invalid`, `username=admin&password[$ne]=x`; el bypass no corrió y el run volvió a gobuster | Sólo cuentan los tres payloads canónicos; si hay paráfrasis, segunda orden con los que faltan verbatim | `test_a_paraphrased_probe_does_not_count_and_the_hint_names_the_exact_payload` |
+| `passwd ` como substring prohibía leer `/etc/passwd` | P8 iteraciones 25-30: seis turnos reescribiendo `cat /etc/passwd`, el rechazo parecía credencial rechazada | La lista prohíbe el comando `passwd`/`chpasswd` (palabra de comando) y el error nombra `enum_system` | `test_ssh_exec_reads_etc_passwd_and_still_refuses_a_password_change` |
 
 **Por qué no son parches de sala:** `selects_ports` y el reparto de presupuesto
 son de `nmap`; `proven_hosts` cruza IPv4 del TODO con IPv4 del hecho;
@@ -810,7 +812,19 @@ parte por `:` buscando un prefijo crypt. Nada nombra DeadDrop.
 - ~~`nexus.web.request` sólo aceptaba `session_ref`~~ **cerrado 2026-10-22**:
   una respuesta con `Set-Cookie` se guarda en el vault y se devuelve como
   `session_ref`; `evidence.session_ref_issued` distingue el handle nuevo del
-  usado, y un refresco de la misma cookie conserva el que ya había.
+  usado, y un refresco de la misma cookie conserva el que ya había. Verificado
+  en P8: el bypass devolvió el handle y las cuatro peticiones del panel lo usaron
+  tal cual.
+- **Pivote sin primitiva gobernada** (abierto, medido en P8, iteraciones 51-69):
+  con un `access` probado y un objetivo en otra subred, el modelo usa
+  `shell.exec` + `ssh -i` y lanza `nxc` **desde el operador**, que no tiene ruta;
+  la skill `pivot-socks` existe y no se carga. Falta el aviso determinista
+  (tablero con `access` + objetivo fuera de la subred del operador → `ssh -D` y
+  `proxychains4`).
+- **Grupos de proceso huérfanos** (abierto): al matar el run desde fuera, los
+  hijos del sandbox sobreviven porque crean sesión propia. Medido: dos `nmap -p-`
+  vivos 1 h 04 min y 1 h 18 min después de P5/P6, y dos `hydra` en el ciclo
+  anterior. Falta un reaper de grupos al arrancar el run.
 - `cred.bruteforce` dejó `hydra` huérfanos al matar el run desde fuera y devolvió
   `partial` a los 571 s con 300 s de presupuesto.
 - La sala dejó de responder a las 03:12 UTC: los runs P5/P6 miden la caída del
