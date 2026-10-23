@@ -31,6 +31,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlsplit
 
 #: A service is *open work*: no fact says anything about what it exposes yet.
 STATUS_PENDING = "pendiente"
@@ -73,6 +74,9 @@ _SCHEME_PORTS = frozenset({80, 443})
 #: Ledger lines rendered per prompt. The rest is summarized: a /24 scan can put
 #: hundreds of services on the board and the prompt is paid on every turn.
 MAX_LEDGER_ENTRIES = 24
+#: Paths rendered under one service. The rest are summarized: the ledger is read
+#: every turn and a target with twenty routes cannot own the prompt.
+MAX_VECTOR_LINES = 3
 
 #: Completed turns without a new verified fact before the pivot is injected.
 #: Matches the loop's own stuck threshold, so both signals agree.
@@ -123,6 +127,43 @@ DIRECTIVE_QUOTE_CHARS = 300
 
 
 @dataclass(frozen=True)
+class VectorEntry:
+    """One *path* inside a service, with its own verdict.
+
+    A service is not a vector. Measured on a web target with four routes into the
+    same ``:80``: the ledger had one item, so a ``barrier`` recorded after the
+    first dead end closed the service and the other three paths disappeared from
+    the map. ``vectors`` keeps them visible and lets a barrier close the path it
+    actually names.
+
+    States are the three the engine can *prove*: ``pendiente`` (no attempt
+    recorded), ``sondeado`` (something else on the board mentions this path) and
+    ``descartado`` (a conclusive barrier names it). A vector is never marked
+    ``comprometido`` on its own: ownership is a property of the service, and
+    inventing per-path ownership from a host-wide ``access`` fact would be the
+    same lie the ledger exists to prevent.
+    """
+
+    ref: str
+    label: str
+    status: str = STATUS_PENDING
+    verdict: str = ""
+
+    def render(self) -> str:
+        """One sub-line under its service."""
+        if self.status == STATUS_CLOSED:
+            reason = self.verdict or "sin vector demostrado"
+            return f"    ↳ {self.label} → descartado: {reason}"
+        if self.status == STATUS_PROBED:
+            return f"    ↳ {self.label} → sondeado"
+        return f"    ↳ {self.label} → pendiente"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ref": self.ref, "label": self.label,
+                "status": self.status, "verdict": self.verdict}
+
+
+@dataclass(frozen=True)
 class SurfaceEntry:
     """One open service and the best verdict the board supports for it."""
 
@@ -136,11 +177,23 @@ class SurfaceEntry:
     status: str = STATUS_PENDING
     verdict: str = ""
     evidence: int = 0
-    #: ``vulnerability`` facts that name this service (verified or not). A branch
-    #: with a vector is not "closed for lack of a way in": the loop refuses to
-    #: write a ``barrier`` over it (see ``ReActCoordinator._close_stalled_branch``),
-    #: because hiding a proven vector behind a dead branch is worse than stalling.
-    vectors: int = 0
+    #: The paths the board proved inside this service (one per vulnerability
+    #: fact), each with its own verdict. A branch with a pending vector is not
+    #: "closed for lack of a way in": the loop refuses to write a ``barrier``
+    #: over it (see ``ReActCoordinator._close_stalled_branch``), because hiding a
+    #: proven vector behind a dead branch is worse than stalling.
+    vectors: tuple[VectorEntry, ...] = ()
+    #: ``vulnerability`` facts that name this service, whether or not they carry
+    #: a path. The loop refuses to write a ``barrier`` over a service with any.
+    #: Kept apart from ``vector_count`` on purpose: a fact keyed on the service
+    #: ("this port has a vulnerability") is a reason to keep the branch open but
+    #: names no path, so it cannot appear in the per-path ledger.
+    vulnerabilities: int = 0
+
+    @property
+    def vector_count(self) -> int:
+        """Number of known paths (kept for the readers that only need a count)."""
+        return len(self.vectors)
 
     @property
     def ref(self) -> str:
@@ -155,16 +208,38 @@ class SurfaceEntry:
         return f"{base} {detail}".strip()
 
     def render(self) -> str:
-        """One ledger line with its verdict."""
+        """One ledger line with its verdict, plus its paths when it has any."""
         if self.status == STATUS_CLOSED:
             reason = self.verdict or "sin vector demostrado"
-            return f"- {self.label} → descartado: {reason}"
-        if self.status == STATUS_OWNED:
-            return f"- {self.label} → comprometido"
-        if self.status == STATUS_PROBED:
+            line = f"- {self.label} → descartado: {reason}"
+        elif self.status == STATUS_OWNED:
+            line = f"- {self.label} → comprometido"
+        elif self.status == STATUS_PROBED:
             suffix = f" ({self.evidence} hecho{'s' if self.evidence != 1 else ''})"
-            return f"- {self.label} → sondeado{suffix}"
-        return f"- {self.label} → pendiente"
+            line = f"- {self.label} → sondeado{suffix}"
+        else:
+            line = f"- {self.label} → pendiente"
+        if not self.vectors:
+            return line
+        visible = self.vectors[:MAX_VECTOR_LINES]
+        lines = [line, *(item.render() for item in visible)]
+        hidden = self.vectors[len(visible):]
+        if hidden:
+            # The summary names the verdicts it hides: a closed path that falls
+            # out of the cap must still say "descartado", or the model retries
+            # the only route it was told not to retry.
+            words = {STATUS_PENDING: "pendiente", STATUS_PROBED: "sondeado",
+                     STATUS_CLOSED: "descartado"}
+            counts: dict[str, int] = {}
+            for item in hidden:
+                word = words.get(item.status, item.status)
+                counts[word] = counts.get(word, 0) + 1
+            detail = ", ".join(
+                f"{count} {word}{'s' if count != 1 else ''}"
+                for word, count in sorted(counts.items())
+            )
+            lines.append(f"    ↳ … y {len(hidden)} camino(s) más ({detail})")
+        return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -177,6 +252,9 @@ class SurfaceEntry:
             "status": self.status,
             "verdict": self.verdict,
             "evidence": self.evidence,
+            "vulnerabilities": self.vulnerabilities,
+            "vector_count": self.vector_count,
+            "vectors": [item.to_dict() for item in self.vectors],
         }
 
 
@@ -450,6 +528,112 @@ def _barrier_reason(fact: Mapping[str, Any]) -> str:
     return "documentado sin vector por el agente"
 
 
+def _vector_needles(fact: Mapping[str, Any], entry_ref: str = "") -> tuple[str, ...]:
+    """Strings that identify *this path*, never the host it lives on.
+
+    A bare host is excluded on purpose: it is a substring of the service ref
+    (``10.0.0.5`` inside ``10.0.0.5:80``), so accepting it would attribute every
+    service-level barrier to every path and the ledger would stop closing
+    anything. For the same reason a fact keyed on the service itself
+    (``10.10.10.5:80``) carries no path needle: it says "this service has a
+    vulnerability", not *which route* is vulnerable.
+    """
+    entry_ref = str(entry_ref or "").strip().lower()
+    raw_value = fact.get("value")
+    value: Mapping[str, Any] = raw_value if isinstance(raw_value, Mapping) else {}
+    needles: set[str] = set()
+    key = str(fact.get("key") or "").strip()
+    if key and ("/" in key or ":" in key) and len(key) >= 4:
+        needles.add(key)
+    for name in ("id", "cve", "endpoint"):
+        text = str(value.get(name) or "").strip()
+        if len(text) >= 4:
+            needles.add(text)
+    url = str(value.get("url") or "").strip()
+    for path in (urlsplit(url).path if url else "", str(value.get("path") or "")):
+        if len(path) > 1:
+            needles.add(path)
+    if entry_ref:
+        needles = {item for item in needles if item.lower() != entry_ref}
+    return tuple(sorted(needles, key=len, reverse=True))
+
+
+def _mentions_any(blob: str, needles: Iterable[str]) -> bool:
+    """Whether a flattened fact names one of the vector's needles."""
+    return any(needle and needle in blob for needle in needles)
+
+
+def _vector_label(fact: Mapping[str, Any]) -> str:
+    """Readable name for a path: ``CVE-2019-6714 (/admin/app_themes.aspx)``."""
+    raw_value = fact.get("value")
+    value: Mapping[str, Any] = raw_value if isinstance(raw_value, Mapping) else {}
+    name = ""
+    for candidate in ("id", "cve", "class"):
+        text = str(value.get(candidate) or "").strip()
+        if text:
+            name = text
+            break
+    url = str(value.get("url") or "").strip()
+    path = urlsplit(url).path if url else ""
+    if not name:
+        name = str(fact.get("key") or "camino")
+    if path and len(path) > 1 and path not in name:
+        name = f"{name} ({path})"
+    return " ".join(name.split())[:140]
+
+
+def _vector_entries(
+    vectors: list[Mapping[str, Any]],
+    barriers: list[Mapping[str, Any]],
+    related: list[tuple[Mapping[str, Any], str]],
+    entry_ref: str = "",
+) -> tuple[VectorEntry, ...]:
+    """One entry per distinct path, with the verdict its own facts support."""
+    by_ref: dict[str, VectorEntry] = {}
+    strength = {
+        STATUS_PENDING: 1,
+        STATUS_PROBED: 2,
+        STATUS_CLOSED: 3,
+    }
+    for fact in vectors:
+        needles = _vector_needles(fact, entry_ref)
+        if not needles:
+            continue
+        ref = str(fact.get("key") or "") or _vector_label(fact)
+        # Only a barrier recorded *after* the path was found can close it: a
+        # newer vulnerability reopens its own path, exactly like the service
+        # rule above (measured in run_3d90f7f3…).
+        closing = [
+            item for item in barriers
+            if _mentions_any(_fact_blob(item), needles)
+            and _recorded_at(item) >= _recorded_at(fact)
+        ]
+        probed = any(
+            other is not fact
+            and str(other.get("fact_type") or "") != "barrier"
+            and _mentions_any(blob, needles)
+            for other, blob in related
+        )
+        status = (
+            STATUS_CLOSED if closing
+            else STATUS_PROBED if probed
+            else STATUS_PENDING
+        )
+        newest = _newest(closing) if closing else None
+        candidate = VectorEntry(
+            ref=ref[:160],
+            label=_vector_label(fact),
+            status=status,
+            verdict=_barrier_reason(newest) if newest is not None else "",
+        )
+        current = by_ref.get(ref)
+        if current is None or strength.get(status, 0) > strength.get(current.status, 0):
+            by_ref[ref] = candidate
+    return tuple(
+        sorted(by_ref.values(), key=lambda item: (_STATUS_RANK.get(item.status, 9), item.label))
+    )
+
+
 def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
     """Build the ledger of one engagement from its blackboard facts.
 
@@ -506,13 +690,29 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
                 vectors.append(fact)
             evidence += 1
 
+        known_paths = [
+            needles for vector in vectors
+            if (needles := _vector_needles(vector, entry.ref))
+        ]
+        vector_entries = _vector_entries(vectors, barriers, related, entry.ref)
+        # A barrier that names a path closes *that path*; one that names only the
+        # service keeps the historical meaning (the whole route is dead). Keeping
+        # the two apart is what stops the first dead end from hiding the other
+        # three routes of the same port.
+        named_barriers = [
+            item for item in barriers
+            if any(_mentions_any(_fact_blob(item), needles) for needles in known_paths)
+        ]
+        named_ids = {id(item) for item in named_barriers}
+        service_barriers = [item for item in barriers if id(item) not in named_ids]
+
         status = STATUS_PENDING
         verdict = ""
         if owned:
             # Access, a validated credential, a session, a privilege or loot
             # proves the service was reached: a later barrier cannot hide it.
             status = STATUS_OWNED
-        elif barriers:
+        elif service_barriers:
             # The *newest* verdict wins. A barrier is the agent's decision to
             # stop on this route, but it is not infallible: a vulnerability
             # found afterwards reopens the branch. Measured in
@@ -521,7 +721,7 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
             # kept ordering it to abandon the only working vector because
             # ``pivot_hint`` promises "si aparece un vector nuevo, regístralo
             # como hecho antes de retomarlo" and nothing honoured it.
-            chosen = _newest(barriers)
+            chosen = _newest(service_barriers)
             latest_vector = _newest(vectors)
             reopened = (
                 chosen is not None
@@ -532,7 +732,19 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
                 status = STATUS_PROBED
             else:
                 status = STATUS_CLOSED
-                verdict = _barrier_reason(chosen if chosen is not None else barriers[0])
+                verdict = _barrier_reason(
+                    chosen if chosen is not None else service_barriers[0]
+                )
+        elif named_barriers:
+            # The service stays open work while any of its paths has no verdict.
+            if any(item.status != STATUS_CLOSED for item in vector_entries):
+                status = STATUS_PROBED
+            else:
+                chosen = _newest(named_barriers)
+                status = STATUS_CLOSED
+                verdict = _barrier_reason(
+                    chosen if chosen is not None else named_barriers[0]
+                )
         elif evidence:
             status = STATUS_PROBED
         resolved.append(
@@ -547,7 +759,8 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
                 status=status,
                 verdict=verdict,
                 evidence=evidence,
-                vectors=len(vectors),
+                vulnerabilities=len(vectors),
+                vectors=vector_entries,
             )
         )
 
@@ -748,10 +961,12 @@ def render_coverage(
     lines.append(
         "REGLA DE COBERTURA: trabaja UNA rama a la vez y no más de 3 turnos "
         "seguidos sobre la misma sin un hecho nuevo; si el vector está parcheado "
-        "o no existe, ciérrala con nexus.knowledge.record_fact fact_type=\"barrier\" "
-        "(key \"<host>:<puerto>\", value con la razón) y pasa a la siguiente. Un "
-        "servicio sin veredicto es una rama pendiente, no un callejón: no repitas "
-        "trabajo sobre un descartado."
+        "o no existe, ciérralo con nexus.knowledge.record_fact fact_type=\"barrier\" "
+        "(key \"<host>:<puerto>\" cierra el servicio entero; key "
+        "\"<host>:<puerto><ruta>\" o una razón que nombre la ruta cierra solo ese "
+        "camino; value con la razón) y pasa al siguiente camino. Un servicio con "
+        "caminos pendientes no está cerrado: no repitas el que ya tiene veredicto, "
+        "y no repitas trabajo sobre un descartado."
     )
     return "\n".join(lines)
 
@@ -870,6 +1085,18 @@ def pivot_hint(
         )
     if int(no_progress or 0) < int(threshold or 0):
         return ""
+    # A service kept open by its own paths is not a dead end: ordering a pivot
+    # here would abandon the two routes the board already proved.
+    if focus is not None and focus.status != STATUS_CLOSED:
+        pending = [item for item in focus.vectors if item.status == STATUS_PENDING]
+        if pending:
+            names = "; ".join(item.label for item in pending[:3])
+            return (
+                f"CAMINOS PENDIENTES en {focus.label}: {names}. No cierres el "
+                "servicio ni cambies de rama: ataca el siguiente camino y, si no "
+                "cede, documéntalo con un barrier que nombre esa ruta (no el "
+                "servicio) para que los demás sigan abiertos."
+            )
     open_items = coverage.open_work
     if not open_items:
         return ""
@@ -896,12 +1123,14 @@ __all__ = [
     "DEFAULT_PIVOT_TURNS",
     "Directive",
     "MAX_LEDGER_ENTRIES",
+    "MAX_VECTOR_LINES",
     "OWNERSHIP_TYPES",
     "STATUS_CLOSED",
     "STATUS_OWNED",
     "STATUS_PENDING",
     "STATUS_PROBED",
     "SurfaceEntry",
+    "VectorEntry",
     "build_coverage",
     "focus_entry",
     "load_coverage",

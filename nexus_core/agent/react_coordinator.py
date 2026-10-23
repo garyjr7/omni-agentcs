@@ -1238,7 +1238,7 @@ class ReActCoordinator:
         entry = self._stalled_branch(getattr(snapshot, "coverage", None))
         if entry is None or entry.status == STATUS_CLOSED:
             return None
-        if entry.ref in self.closed_branches or entry.vectors:
+        if entry.ref in self.closed_branches or entry.vector_count:
             return None
         if not self.engagement_id or not getattr(self, "store", None):
             return None

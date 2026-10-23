@@ -17,7 +17,8 @@
 | Ejecución V11 (HackPark: PoC en el objetivo) | commit de V11 (`HEAD` al cerrar esa entrega) |
 | Ingesta de evidencia web + identidades (B0/B1) | §5.17 — `html_evidence` + `identity_derivation` (2026-10-23) |
 | Validación de identidad sin contraseña (B1) | §5.18 — `nexus.attack.ad_user_enum` |
-| Suite tras B0/B1 | **4 172 passed / 53 skipped** |
+| Ledger por camino (B2) | §5.19 — `VectorEntry` en `agent/coverage.py` |
+| Suite tras B0/B1/B2 | **4 184 passed / 53 skipped** |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
 | Regla de esta entrega | **V11**: el PoC tiene que llegar al objetivo (form_params reales, next_steps y subida de temas) sin tocar `ToolGateway` |
@@ -167,8 +168,10 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
   comportamiento antiguo).
 - `agent/supervisor.py`: auto-spawn opt-in por cambio de familia de fase, con
   raíz durable y ledger de reservas (`FASE2 P2-C`).
-- **No hay selección multi-vector**: el plan elige una fase, no un conjunto de
-  vectores alternativos con coste/beneficio (V0-12).
+- **Selección multi-vector parcial**: el ledger ya da veredicto por *camino*
+  (B2, §5.19) y el pivote ordena el siguiente cuando el actual está cerrado, pero
+  el plan sigue eligiendo **una fase** y no compara vectores con coste/beneficio
+  ni mantiene ramas en paralelo (V0-12 sigue abierta).
 - **No hay bus tipado ni workers dinámicos**: los subagentes son un árbol
   supervisor, no un bus de eventos (WP5).
 
@@ -356,7 +359,7 @@ son una fase nueva: son la capa entre la observación y la acción.
 | Ingesta de evidencia HTML (B0) | Medido HackPark | **[HECHO]** | `kernel/html_evidence.py`: emails, personas con rol, enlaces, tecnología, corte a 200 KB. El handler `nexus.web.request` publica `extracted` y `next_steps` con las rutas sin visitar (`/about.html` deja de depender de que el modelo lo note). |
 | Derivación de identidades (B1) | Medido HackPark | **[HECHO]** | `kernel/identity_derivation.py`: convención confirmada por una dirección publicada, candidatos con `confidence` (1.0 observada / 0.9 nombre+correo / 0.6 convención / 0.3 conjetura), `priority_targets` por rol. Sin dominio no se inventa ninguna cuenta. |
 | Validación barata antes de la contraseña (B1) | Medido HackPark | **[HECHO]** | `nexus.attack.ad_user_enum` (§5.18): kerbrute si está (veredicto por cuenta, `attribution=full`) o `GetNPUsers -no-pass` si no (`partial`: prueba las que nombra y deja el resto `unknown`). No envía contraseña, así que no mueve el contador de bloqueo (`lockout_risk: none`). Los hashes AS-REP van al vault y `crack_hash` gana `krb5asrep`/`krb5tgs`. |
-| Ledger por camino `servicio × técnica` (B2) | Requisito de la v1 | **[PENDIENTE]** | `agent/coverage.py` tiene veredicto **por servicio** (un `:80` con cuatro vectores es un ítem). Sin esta granularidad, cerrar el servicio cierra los cuatro caminos. |
+| Ledger por camino `servicio × técnica` (B2) | Requisito de la v1 | **[HECHO]** | `VectorEntry` en `agent/coverage.py` (§5.19): cada `vulnerability` que nombra una ruta (CVE/id/path) es un ítem con su veredicto; un `barrier` que nombra la ruta cierra **solo** ese camino y el servicio sigue abierto mientras queden pendientes. El pivote ordena el siguiente camino en vez de abandonar el servicio. |
 | Reflexión auditable por turno (B3) | Requisito de la v1 | **[PENDIENTE]** | Hoy la corrección es determinista por hints (`login_probe_hint`, `pivot_hint`, `budget_hint`). Falta el evento que obligue a citar hechos nuevos sin usar antes de actuar. |
 
 ---
@@ -945,6 +948,47 @@ del objetivo.
 
 ---
 
+### 5.19 B2 — un puerto con cuatro caminos deja de ser un solo veredicto (2026-10-23) — **EJECUTADA**
+
+Origen medido (requisito explícito de producto): «algunas pruebas tienen un solo
+vector vulnerable, otras cuatro, y el vector puede estar en la web o en otro
+puerto». El ledger tenía un ítem por servicio (`coverage.py:1`, «one verdict per
+discovered service»): un `barrier` escrito tras el primer callejón cerraba el
+`:80` y los otros tres caminos desaparecían del mapa, incluso si ya estaban
+probados como hechos.
+
+| Paso | Cambio | Ficheros | Test de aceptación |
+|---|---|---|---|
+| B2.1 | `VectorEntry` (ref, label, status, verdict) y `SurfaceEntry.vectors`; `vulnerabilities` conserva el contador histórico de hechos para el gate del bucle | `agent/coverage.py` | `test_four_routes_on_one_port_are_four_paths` |
+| B2.2 | Atribución: un `barrier` cierra un camino solo si **nombra** su ruta (id, CVE, path o key con `/`/`:`) y es **posterior** al hecho; nunca por el host desnudo ni por una key igual al servicio | `agent/coverage.py` (`_vector_needles`, `_vector_entries`) | `test_a_barrier_closes_the_path_it_names_not_the_whole_service`, `test_a_barrier_older_than_the_path_does_not_close_it`, `test_a_fact_keyed_on_the_service_names_no_path` |
+| B2.3 | Estado del servicio: con barreras que nombran rutas, sigue `sondeado` mientras quede un camino sin veredicto; se cierra cuando todos lo tienen. Una barrera que solo nombra el servicio conserva la semántica anterior | `agent/coverage.py` | `test_the_service_closes_once_every_path_has_a_verdict`, `test_a_barrier_that_names_only_the_service_keeps_its_old_meaning` |
+| B2.4 | Render: sub-líneas `↳` (máx. 3) y resumen de las ocultas **con su veredicto** («1 descartado»), para que un camino cerrado no se lea como pendiente | `agent/coverage.py` (`MAX_VECTOR_LINES`) | `test_the_ledger_shows_the_paths_and_still_orders_the_service`, `test_a_hidden_path_still_reports_its_verdict` |
+| B2.5 | El pivote distingue «servicio con caminos pendientes» de «ramal cerrado» y ordena el siguiente camino sin abandonar el servicio | `agent/coverage.py` (`pivot_hint`) | `test_the_pivot_orders_the_next_path_instead_of_abandoning_the_service` |
+| B2.6 | Lectores actualizados al contador explícito (`vulnerabilities`/`vector_count`) en disciplina de rama y coordinador | `agent/branch_discipline.py`, `agent/react_coordinator.py` | Suite de `test_branch_discipline` y `test_surface_coverage` |
+
+**Por qué no es un parche de sala:** no hay un host, un CMS ni una ruta
+concreta. La atribución es textual sobre el hecho (`id`/`cve`/`path`) y el orden
+sale de `recorded_at`; cualquier target con dos rutas en el mismo puerto se
+comporta igual.
+
+**Límites declarados:**
+
+- Un `vulnerability` sin ruta (key = servicio, sin `id`/`cve`/`path`) mantiene la
+  rama abierta pero **no** crea camino: el ledger no puede inventar qué ruta es.
+- La atribución es textual: una barrera cuya razón cite una ruta cierra ese
+  camino aunque el intento fuera en otro. Se declara; la alternativa (exigir un
+  campo `vector_ref` en el esquema de `barrier`) queda como decisión de esquema.
+- No hay propiedad por camino: `comprometido` sigue siendo del servicio. Marcar
+  los cuatro caminos como comprometidos porque hay `access` en el host sería la
+  misma mentira que el ledger evita.
+- El trabajo sigue siendo **secuencial**: cuatro caminos pendientes se atacan de
+  uno en uno; B2 da el mapa, no paralelismo.
+- Los `endpoint` de gobuster/ffuf no son caminos por sí solos: una ruta escaneada
+  se convierte en camino cuando un `vulnerability` la nombra.
+- No se ha re-ejecutado una sala con cuatro vectores reales: la aceptación es
+  unitaria sobre hechos sintéticos con las formas que produce el verificador.
+
+
 ## 6. Criterios de cierre
 
 | Fase | Criterio duro | Lo que **no** cuenta |
@@ -967,7 +1011,7 @@ sola que falle en campo bloquea la release:
 | # | Invariante | Dónde se comprueba |
 |---|---|---|
 | 1 | **Cero éxito falso**: ninguna tool declara `success` con señal ambigua (302 a login, 200 sin efecto, cuerpo sin confirmación) | `exploit_upload` (V14), `cred.bruteforce` (§5.12), `http_request` |
-| 2 | **Cero fallo silencioso**: cada servicio y cada camino acaba con veredicto y motivo, y el reporte lo publica | `coverage.py` al cerrar; B2 lo extiende a caminos |
+| 2 | **Cero fallo silencioso**: cada servicio y cada camino acaba con veredicto y motivo, y el reporte lo publica | `coverage.py` al cerrar (servicio y camino desde B2) |
 | 3 | **Toda afirmación cita `invocation_id`** y hecho verificado | StopVerifier + `annotate_findings` |
 | 4 | **Scope y RoE antes de tocar el target** (HMAC, peer-first, callback por host) | tests de scope y `listener` |
 | 5 | **Coste publicado**: tokens por hallazgo, iteraciones por rama, presupuesto que no se agota en documentación | `run.complete` |

@@ -307,7 +307,7 @@ def closed_branch_refusal(
     # Coverage owns reopening. The snapshot may predate the loop's own barrier
     # (it is gathered at the start of the turn), so a stale ``pendiente`` is not
     # evidence of reopening: only a registered vector is, and coverage counts it.
-    if focus.status != STATUS_CLOSED and focus.vectors > 0:
+    if focus.status != STATUS_CLOSED and focus.vulnerabilities > 0:
         return None
     remaining = int(closed_iteration) + int(window) - int(iteration) + 1
     if remaining <= 0:
