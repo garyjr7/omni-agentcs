@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from nexus_core.kernel import blackboard as blackboard_module
 from nexus_core.kernel.blackboard import Blackboard
 from nexus_core.kernel.control_store import ControlStore
 from nexus_core.kernel.models import Identity, RunContext
@@ -72,6 +73,90 @@ def test_list_filters_by_type(board):
                       key="lin", value={}, source="x", created_by="op")
     assert len(blackboard.list_facts(TENANT, ENGAGEMENT, fact_type="user")) == 1
     assert len(blackboard.list_facts(TENANT, ENGAGEMENT)) == 2
+
+
+# ------------------------------------------------------- ceiling before merge
+def test_a_key_rerecorded_many_times_does_not_evict_other_facts(board, monkeypatch):
+    """V0-2: the read window is per key, not per row.
+
+    With a row ceiling applied first, twelve versions of one key filled the
+    window and every neighbour disappeared from the board while the merge still
+    looked successful. The ceiling is shrunk here to make that window reachable
+    in a unit test.
+    """
+    blackboard, _ = board
+    monkeypatch.setattr(blackboard_module, "FACT_ROWS_CEILING", 4)
+    blackboard.record(tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="service",
+                      key="10.0.0.5:22/tcp", value={}, source="x", created_by="op")
+    blackboard.record(tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="user",
+                      key="lin", value={}, source="x", created_by="op")
+    # The neighbours above are the *oldest* rows on purpose: a row window of 4
+    # now holds only versions of this key, exactly what erased them in V0-2.
+    for attempt in range(12):
+        blackboard.record(
+            tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="service",
+            key="10.0.0.5:21/tcp", value={"attempt": attempt},
+            source="nexus.recon.nmap", created_by="op",
+        )
+
+    facts = blackboard.list_facts(TENANT, ENGAGEMENT)
+
+    assert {fact["key"] for fact in facts} == {"10.0.0.5:21/tcp", "10.0.0.5:22/tcp", "lin"}
+
+
+def test_a_verified_fact_survives_many_newer_agent_versions(board, monkeypatch):
+    """The key cap cannot hide the row V1-33 exists to protect."""
+    blackboard, _ = board
+    monkeypatch.setattr(blackboard_module, "MAX_VERSIONS_PER_KEY", 3)
+    blackboard.record(
+        tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="credential",
+        key="cred:ssh:lin", value={"username": "lin"}, source="ssh_exec",
+        created_by="verifier", verified=True, asserted_by="verifier",
+        verification_method="shellpass", invocation_id="inv-1",
+    )
+    for attempt in range(6):
+        blackboard.record(
+            tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="credential",
+            key="cred:ssh:lin", value={"username": f"lin{attempt}"},
+            source="agent", created_by="agent",
+        )
+
+    facts = blackboard.list_facts(TENANT, ENGAGEMENT)
+
+    assert len(facts) == 1
+    assert facts[0]["verified"] is True
+    assert facts[0]["value"]["username"] == "lin"
+
+
+def test_the_limit_counts_keys_not_versions(board):
+    blackboard, _ = board
+    for key in ("k1", "k2", "k3", "k4", "k5"):
+        for version in range(3):
+            blackboard.record(
+                tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="service",
+                key=key, value={"version": version}, source="x", created_by="op",
+            )
+
+    facts = blackboard.list_facts(TENANT, ENGAGEMENT, limit=3)
+
+    assert [fact["key"] for fact in facts] == ["k5", "k4", "k3"]
+    assert facts[0]["value"]["version"] == 2
+
+
+def test_the_summary_sees_the_board_past_the_default_page(board):
+    """A page of 100 keys must not be read as the whole board."""
+    blackboard, _ = board
+    for index in range(120):
+        blackboard.record(
+            tenant_id=TENANT, engagement_id=ENGAGEMENT, fact_type="service",
+            key=f"10.0.0.9:{index}/tcp", value={"port": index},
+            source="nexus.recon.nmap", created_by="op",
+        )
+
+    summary = blackboard.summary(TENANT, ENGAGEMENT)
+
+    assert summary["total"] == 120
+    assert sum(summary["leads"].values()) == 120
 
 
 def test_unknown_fact_type_is_rejected(board):

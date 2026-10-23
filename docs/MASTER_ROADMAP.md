@@ -21,6 +21,8 @@
 | Reflexión auditable (B3) | §5.20 — `agent/reflection.py` + evento `react.reflection` |
 | Suite tras B0/B1/B2 | **4 184 passed / 53 skipped** |
 | Suite tras B3 | **4 195 passed / 53 skipped** |
+| Techo del blackboard por clave (V0-2) | §5.21 — `kernel/blackboard.py` |
+| Suite tras V0-2 | **4 199 passed / 53 skipped** |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
 | Regla de esta entrega | **V11**: el PoC tiene que llegar al objetivo (form_params reales, next_steps y subida de temas) sin tocar `ToolGateway` |
@@ -282,7 +284,7 @@ encendarlas sin abrir una puerta lateral al gateway.
 | Cancelación remota reconciliada | `V0-28` | **[PENDIENTE]** | No hay camino de cancelación de una invocación en vuelo en el gateway; el journal marca `unknown` y exige aprobación de retry, que es contención, no cancelación. |
 | Webshell y escalada gobernados | `V0-3` | **[PENDIENTE]** | `web.upload` y `wp_exec` existen; la escalada sigue siendo payload del operador y no hay cadena acreditada de webshell→sesión→privesc. |
 | C2 autónomo acreditado | `V1-5` | **[PENDIENTE]** | Sliver está entregado (generate/deploy/loot), pero no hay cadena autónoma medida en un lab multi-host. |
-| Blackboard sin duplicados ni capturas sin acreditar | `V0-2` | **[PENDIENTE]** | El merge «verified wins» está hecho (`blackboard.py:160-205`), pero el `LIMIT` se aplica **antes** del merge: con muchas versiones, hechos distintos pueden quedar fuera. Falta paginar/priorizar por clave antes del techo. |
+| Blackboard sin duplicados ni capturas sin acreditar | `V0-2` | **[HECHO]** | §5.21: la ventana se aplica a **claves**, no a filas (una clave reescrita ya no desaloja a sus vecinos); `limit` cuenta claves, y una clave con más de 20 versiones se relee entera para que el «verified wins» de V1-33 siga valiendo. `summary`, `verified_fact` y `_blackboard_facts` piden el techo en vez del page de 100. La acreditación de capturas Windows es V0-13 y sigue parcial en `RUN_sala09`. |
 | Planificador con selección multi-vector | `V0-12` | **[PENDIENTE]** | El planner elige una fase; no compara vectores alternativos con coste/beneficio ni mantiene ramas paralelas. |
 
 ### 3.2 P1 — deuda de producto
@@ -1028,6 +1030,46 @@ código sirve para un AD, un panel web o un SSH.
   borraría entera (medido en el evento: `credential: [REDACTED]`).
 - No se ha re-ejecutado una sala con LLM real: la aceptación es unitaria sobre
   hechos con la forma que produce el verificador.
+
+### 5.21 V0-2 — el techo del tablero se aplica a claves, no a filas (2026-10-23) — **EJECUTADA**
+
+Origen: `Blackboard.list_facts` leía `ORDER BY created_at DESC LIMIT 10 000`
+**antes** de fusionar versiones. Cada contenido distinto de una clave es una fila
+(`KnowledgeStore.ingest` solo deduplica el contenido idéntico), así que una clave
+reescrita muchas veces llenaba la ventana y borraba del tablero a sus vecinos sin
+que el merge pudiera notarlo: el resultado seguía pareciendo una lectura
+completa. El segundo recorte, `[:limit]` sobre la lista ya fusionada, dejaba el
+defecto en 100 claves por defecto mientras `_blackboard_facts` documentaba «every
+fact of the engagement» y `summary.total` contaba como mucho 100.
+
+| Paso | Cambio | Ficheros | Test de aceptación |
+|---|---|---|---|
+| V0-2.1 | Las claves se eligen primero: `GROUP BY source_uri` con `MAX(created_at)` y `LIMIT` sobre claves, ordenadas de más nueva a más vieja | `kernel/blackboard.py` (`_fact_keys`, `FACT_KEYS_CEILING = 500`) | `test_a_key_rerecorded_many_times_does_not_evict_other_facts` |
+| V0-2.2 | Las filas se leen después y acotadas **por clave** con `ROW_NUMBER() OVER (PARTITION BY source_uri)`; la clave que llega al tope de versiones se relee entera (tope de filas aparte) para que un verificado antiguo siga ganando | `kernel/blackboard.py` (`_fact_rows`, `MAX_VERSIONS_PER_KEY = 20`) | `test_a_verified_fact_survives_many_newer_agent_versions` |
+| V0-2.3 | `limit` cuenta **claves**, no versiones, y el orden es «clave más nueva primero» en vez de depender del orden de inserción de un diccionario | `kernel/blackboard.py` (`list_facts`) | `test_the_limit_counts_keys_not_versions` |
+| V0-2.4 | Los lectores que prometen el tablero completo piden el techo: `summary`, `verified_fact` y el `_blackboard_facts` del bucle | `kernel/blackboard.py`, `agent/react_coordinator.py` | `test_the_summary_sees_the_board_past_the_default_page` |
+
+**Por qué no es un parche de sala:** no hay host ni tipo de hecho concreto. La
+regla es estructural —claves antes que filas— y sirve igual para un engagement de
+cuatro hechos que para uno de miles.
+
+**Límites declarados:**
+
+- El techo son **500 claves**: más allá se pierden las más antiguas, por edad y
+  no por número de reescrituras, y la truncación **no se señala** en el retorno
+  (sigue siendo una lista). Declararlo con un flag es un cambio de API pendiente.
+- La relectura de una clave pesada es una sola consulta con `LIMIT 10 000` global:
+  una clave con más de 10 000 contenidos distintos podría dejar sin filas a otra
+  clave pesada. No se ha medido; el deduplicado por `sha256` lo hace inalcanzable
+  en la práctica.
+- `ROW_NUMBER()` exige SQLite ≥ 3.25 o PostgreSQL; no se ha probado contra el
+  backend Postgres (la suite corre sobre SQLite).
+- El orden depende de `created_at` (texto ISO con microsegundos); dos filas del
+  mismo microsegundo quedan en orden indeterminado, igual que antes.
+- No se ha re-ejecutado una sala: la aceptación es unitaria. Los tests de
+desalojo y de `summary` fallan contra la implementación anterior (comprobado con
+`git stash`); el de la clave pesada cubre el camino de relectura, que antes no
+existía.
 
 
 ## 6. Criterios de cierre

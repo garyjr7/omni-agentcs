@@ -1551,13 +1551,22 @@ class ReActCoordinator:
         self._refresh_target_reached()
 
     def _blackboard_facts(self) -> list[dict[str, Any]]:
-        """Every fact of the engagement (never raises)."""
+        """Every fact of the engagement, up to the board's key ceiling.
+
+        The ceiling is passed explicitly: with the default page (100 keys) a
+        large board silently dropped facts from coverage, reflection and the
+        planner (V0-2). Most recent keys win when the ceiling is reached.
+        """
         if not self.engagement_id or not getattr(self, "store", None):
             return []
         try:
-            from nexus_core.kernel.blackboard import Blackboard
+            from nexus_core.kernel.blackboard import FACT_KEYS_CEILING, Blackboard
 
-            return list(Blackboard(self.store).list_facts(self.tenant_id, self.engagement_id))
+            return list(
+                Blackboard(self.store).list_facts(
+                    self.tenant_id, self.engagement_id, limit=FACT_KEYS_CEILING
+                )
+            )
         except Exception:  # noqa: BLE001 - a missing board must not abort a run
             return []
 

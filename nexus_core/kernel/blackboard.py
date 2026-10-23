@@ -56,10 +56,20 @@ FACT_TYPES = (
 
 SOURCE_URI_PREFIX = "blackboard"
 
-#: Safety ceiling on the rows one engagement's fact merge will scan. Each fact
-#: maps to one row per distinct content (a re-record adds a row, an identical
-#: re-record is deduplicated by ``KnowledgeStore.ingest``), so an engagement
-#: reaches this only after thousands of distinct re-writes.
+#: Safety ceiling on the *distinct keys* one engagement's fact read considers.
+#: The ceiling is applied to keys before any row is read: a row ceiling read
+#: first (the previous behaviour) let one key re-recorded many times push every
+#: other fact out of the window while the merge still reported a full board
+#: (V0-2).
+FACT_KEYS_CEILING = 500
+
+#: Versions of one key read in the first pass. Each distinct content of a key is
+#: a row (an identical re-record is deduplicated by ``KnowledgeStore.ingest``),
+#: and "verified wins" may need an *old* verified row shadowed by newer agent
+#: re-registrations, so a key that reaches this pass is re-read whole.
+MAX_VERSIONS_PER_KEY = 20
+
+#: Safety ceiling on the rows the fallback read of those heavy keys will scan.
 FACT_ROWS_CEILING = 10_000
 
 
@@ -165,6 +175,14 @@ class Blackboard:
         the engine proved (verifier + method + invocation) can never be shadowed
         by a later re-registration of the same key by the agent.
 
+        ``limit`` counts **distinct keys**, not rows, and the ceiling is applied
+        to keys too (V0-2): rows are read only after the keys are chosen, so a
+        key rewritten twenty times cannot evict its neighbours. Keys are ordered
+        newest-first and a key that exceeds ``MAX_VERSIONS_PER_KEY`` versions is
+        re-read whole, so an old verified row still wins. Beyond
+        ``FACT_KEYS_CEILING`` keys the board is truncated by age, never by
+        re-record count.
+
         Measured in rerun 9 (``run_8f23f9…``): the verifier wrote the validated
         credential ``cred:ssh:lin@10.0.0.1`` (``verified=true``) and the
         agent re-registered the same key one iteration later (``verified=false``,
@@ -178,32 +196,89 @@ class Blackboard:
         prefix = f"{SOURCE_URI_PREFIX}/{engagement_id}/"
         if fact_type is not None:
             prefix = f"{prefix}{fact_type}/"
+        wanted = max(1, min(int(limit), FACT_KEYS_CEILING))
         with self.store.connect() as conn:
-            rows = conn.execute(
-                """SELECT source_uri, content, created_at
-                FROM kernel_knowledge_documents
-                WHERE tenant_id=? AND source_uri LIKE ?
-                ORDER BY created_at DESC LIMIT ?""",
-                (tenant_id, prefix + "%", FACT_ROWS_CEILING),
-            ).fetchall()
-        # Newest row per source_uri, then overridden by the newest *verified* row
-        # when one exists (rows arrive newest-first, so the first hit per bucket
-        # is the latest of that provenance).
+            keys = self._fact_keys(conn, tenant_id, prefix, wanted)
+            rows_by_key = self._fact_rows(conn, tenant_id, keys)
+        # Newest row per key, then overridden by the newest *verified* row when
+        # one exists (rows arrive newest-first, so the first hit per bucket is
+        # the latest of that provenance).
         latest: dict[str, dict[str, Any]] = {}
         verified: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            uri = row["source_uri"]
-            if uri in verified:
-                continue
-            try:
-                fact = sanitized_object(json.loads(row["content"]))
-            except (TypeError, ValueError, RecursionError):
-                continue
-            latest.setdefault(uri, fact)
-            if is_verified_fact(fact):
-                verified[uri] = fact
+        for key in keys:
+            for content in rows_by_key.get(key, ()):
+                try:
+                    fact = sanitized_object(json.loads(content))
+                except (TypeError, ValueError, RecursionError):
+                    continue
+                latest.setdefault(key, fact)
+                if is_verified_fact(fact):
+                    verified[key] = fact
+                    break
         merged = {**latest, **verified}
-        return list(merged.values())[: max(1, min(int(limit), 500))]
+        return [merged[key] for key in keys if key in merged]
+
+    def _fact_keys(
+        self, conn, tenant_id: str, prefix: str, wanted: int
+    ) -> list[str]:
+        """Newest ``wanted`` keys under ``prefix`` (one row per key)."""
+        rows = conn.execute(
+            """SELECT source_uri, MAX(created_at) AS newest
+            FROM kernel_knowledge_documents
+            WHERE tenant_id=? AND source_uri LIKE ?
+            GROUP BY source_uri
+            ORDER BY newest DESC, source_uri
+            LIMIT ?""",
+            (tenant_id, prefix + "%", wanted),
+        ).fetchall()
+        return [str(row["source_uri"]) for row in rows]
+
+    def _fact_rows(
+        self, conn, tenant_id: str, keys: list[str]
+    ) -> dict[str, list[str]]:
+        """Contents of the selected keys, newest first, bounded per key."""
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        rows = conn.execute(
+            f"""SELECT source_uri, content, version_rank FROM (
+                SELECT source_uri, content,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY source_uri ORDER BY created_at DESC
+                       ) AS version_rank
+                FROM kernel_knowledge_documents
+                WHERE tenant_id=? AND source_uri IN ({placeholders})
+            ) versions WHERE version_rank <= ?""",
+            (tenant_id, *keys, MAX_VERSIONS_PER_KEY),
+        ).fetchall()
+        grouped: dict[str, list[str]] = {key: [] for key in keys}
+        cut: set[str] = set()
+        for row in rows:
+            uri = str(row["source_uri"])
+            if uri not in grouped:
+                continue
+            grouped[uri].append(str(row["content"]))
+            if int(row["version_rank"]) >= MAX_VERSIONS_PER_KEY:
+                cut.add(uri)
+        if cut:
+            # A key with more versions than the first pass read: re-read that
+            # key whole so an old verified row is not shadowed by the cap.
+            heavy = sorted(cut)
+            heavy_placeholders = ",".join("?" for _ in heavy)
+            full = conn.execute(
+                f"""SELECT source_uri, content
+                FROM kernel_knowledge_documents
+                WHERE tenant_id=? AND source_uri IN ({heavy_placeholders})
+                ORDER BY created_at DESC LIMIT ?""",
+                (tenant_id, *heavy, FACT_ROWS_CEILING),
+            ).fetchall()
+            for key in heavy:
+                grouped[key] = []
+            for row in full:
+                uri = str(row["source_uri"])
+                if uri in cut:
+                    grouped[uri].append(str(row["content"]))
+        return grouped
 
     def verified_fact(
         self,
@@ -223,7 +298,9 @@ class Blackboard:
         wanted = sanitize_text(str(key).strip())
         if not wanted:
             return None
-        for fact in self.list_facts(tenant_id, engagement_id, fact_type=fact_type):
+        for fact in self.list_facts(
+            tenant_id, engagement_id, fact_type=fact_type, limit=FACT_KEYS_CEILING
+        ):
             if is_verified_fact(fact) and str(fact.get("key") or "") == wanted:
                 return fact
         return None
@@ -267,7 +344,7 @@ class Blackboard:
         ``user`` never reaches the credential profile and the chain dead-ends in
         enumeration.
         """
-        facts = self.list_facts(tenant_id, engagement_id)
+        facts = self.list_facts(tenant_id, engagement_id, limit=FACT_KEYS_CEILING)
         counts: dict[str, int] = {}
         leads: dict[str, int] = {}
         for fact in facts:
