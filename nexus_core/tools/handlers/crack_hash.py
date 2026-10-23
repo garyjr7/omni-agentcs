@@ -59,6 +59,11 @@ CRACK_FORMATS = {
     "yescrypt": "yescrypt",
     "argon2": "argon2",
     "ssh": "ssh",
+    # B1: a Kerberos hash keeps its own format. ``krb5asrep`` is what
+    # ``GetNPUsers -format john`` prints (no preauthentication) and ``krb5tgs``
+    # is the service ticket a Kerberoast returns; ``john`` has a format for each.
+    "krb5asrep": "krb5asrep",
+    "krb5tgs": "krb5tgs",
 }
 
 #: What the model may name explicitly. The enum used to be a short list
@@ -81,6 +86,9 @@ _CRYPT_PREFIXES = (
     ("$argon2", "argon2"),
 )
 _HEX_LENGTHS = {32: "md5", 40: "sha1", 64: "sha256", 128: "sha512"}
+#: Kerberos hash lines carry ``:`` inside (``user@realm:hash``), so they must be
+#: read whole and never split as a shadow-style line.
+_KERBEROS_PREFIXES = ("$krb5asrep$", "$krb5tgs$")
 _PEM_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 #: The key itself, out of whatever page carried it: an exposed panel prints it
 #: inside ``<pre>``/``<textarea>``, and ``ssh2john`` only accepts the armour.
@@ -202,6 +210,8 @@ def _hash_field(material: str) -> str:
     so the field is extracted before the shape is read.
     """
     text = material.strip()
+    if text.startswith(_KERBEROS_PREFIXES):
+        return text
     if text.startswith(tuple(prefix for prefix, _ in _CRYPT_PREFIXES)):
         return text
     for field in text.split(":"):
@@ -220,6 +230,8 @@ def detect_hash_type(material: str) -> str:
     text = _hash_field(material)
     if _PEM_RE.search(material):
         return "ssh"
+    if text.startswith(_KERBEROS_PREFIXES):
+        return "krb5asrep" if text.startswith("$krb5asrep$") else "krb5tgs"
     for prefix, name in _CRYPT_PREFIXES:
         if text.startswith(prefix):
             return name

@@ -105,4 +105,6 @@ def test_check_env_registered_in_catalog():
     # 79 with nexus.exploit.compile_and_upload (V11: ship the PoC).
     # 82 with nexus.post.verify_route (Tanda A) and nexus.post.http_server
     # (Tanda G: host the payload an SSRF has to fetch back).
-    assert len(catalog) == 82
+    # 83 with nexus.attack.ad_user_enum (B1: confirm an account without a
+    # password, before spending a lockout attempt on it).
+    assert len(catalog) == 83

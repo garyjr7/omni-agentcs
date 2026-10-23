@@ -74,8 +74,10 @@ Reglas:
 1. Un correo publicado fija el dominio y la convención; úsalo para derivar el
    resto de nombres, no para inventar cuentas sueltas.
 2. Una identidad derivada es **hipótesis**: confirma que existe con
-   enumeración que no consume intento (AS-REP/kerbrute, sonda de login) antes
-   de gastar una contraseña. Un intento por cuenta; nada de rockyou contra AD.
+   `nexus.attack.ad_user_enum` (kerbrute o `GetNPUsers -no-pass`; no envía
+   contraseña, no bloquea cuentas) antes de gastar un intento. Si devuelve
+   `roastable`, lleva su hash a `nexus.post.crack_hash` con
+   `hash_type=krb5asrep`. Un intento por cuenta; nada de rockyou contra AD.
 3. El rol manda en la prioridad: IT/Admin/Security primero, la cola después.
    `identities.priority_targets` ya viene ordenado.
 4. Si `extracted` está vacío, la página no publica identidades: sigue con el

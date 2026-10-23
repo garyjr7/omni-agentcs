@@ -136,6 +136,7 @@ def durable_tool_definitions(
         getuserspns_definition,
         impacket_getuserspns_handler,
     )
+    from .handlers.ad_user_enum import ad_user_enum_handler, user_enum_definition
     from .handlers.impacket_psexec import psexec_definition, impacket_psexec_handler
     from .handlers.sliver_server import (
         sliver_server_definition,
@@ -314,6 +315,10 @@ def durable_tool_definitions(
         "nexus.attack.impacket_getuserspns": (
             getuserspns_definition(tenant_id),
             impacket_getuserspns_handler,
+        ),
+        "nexus.attack.ad_user_enum": (
+            user_enum_definition(tenant_id),
+            ad_user_enum_handler,
         ),
         "nexus.attack.impacket_psexec": (
             psexec_definition(tenant_id),

@@ -369,7 +369,15 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
         focus="enumerar cada servicio hallado (FTP, SMB, HTTP…) y registrar usuarios y pistas",
         tools=_with_common(
             WEB_ENUM_TOOLS
-            | {"nexus.recon.ftp", "nexus.recon.nfs", "nexus.recon.netexec", "nexus.pwn.analyze"}
+            | {
+                "nexus.recon.ftp",
+                "nexus.recon.nfs",
+                "nexus.recon.netexec",
+                "nexus.pwn.analyze",
+                # B1: an account name is a lead until the directory confirms it,
+                # and this oracle sends no password (no lockout).
+                "nexus.attack.ad_user_enum",
+            }
             # Enumerating the *application boundary* includes touching it: probing
             # a panel and staging a component against it are part of phase 2 of
             # red_team_base, which starts while the phase is still `enumeration`.
@@ -390,6 +398,8 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.web.wp_bruteforce",
                 "nexus.recon.netexec",
                 "nexus.recon.ftp",
+                # B1: confirm the account before spending a password on it.
+                "nexus.attack.ad_user_enum",
             }
         ),
         token_budget=60_000,

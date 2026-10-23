@@ -95,6 +95,12 @@ SQLI_ERROR_METHOD = "http_sql_error"
 #: the observation as candidates, ranked, until a directory answers.
 WEB_IDENTITY_METHOD = "web_identity_extracted"
 
+#: ``verification_method`` values of the unauthenticated user enumeration. Both
+#: answer "this account exists in the directory"; only kerbrute also proves
+#: absence, and absence is never written as a fact (there is no negative type,
+#: and a branch closes with a ``barrier`` that states its reason).
+USER_ENUM_METHODS = ("userenum_kerbrute_parsed", "userenum_asrep_parsed")
+
 #: Error text only the database produces when an injected expression executed.
 #: Each entry names the engine and the literal that identifies it -never the
 #: leaked value- so the fact can say "this is injectable, MySQL" without copying
@@ -1199,6 +1205,34 @@ def derive_assertions(tool_id, arguments, result, context):
                     {'account': username, 'domain': domain or None,
                      'host': target, 'source': 'secretsdump:rid500'},
                     f'admin:{username}@{target}')
+    elif (tool_id == 'nexus.attack.ad_user_enum'
+          and result.verification_method in USER_ENUM_METHODS):
+        # A Kerberos answer is the directory saying the account exists: no
+        # password was sent, so no lockout counter moved (``lockout_risk`` is
+        # published in the evidence). The AS-REP hash goes to the vault and the
+        # fact keeps only the handle -the same rule as every other secret.
+        domain = str((arguments or {}).get('domain') or output.get('domain') or '')
+        for username in output.get('existing') or ():
+            name = str(username).strip()
+            if not name:
+                continue
+            add('user', name,
+                {'username': name, 'domain': domain or None, 'exists': True,
+                 'source': 'kerberos', 'lockout_risk': 'none'},
+                method=result.verification_method)
+        tenant = str(getattr(context, 'tenant_id', 'system'))
+        for item in output.get('roastable') or ():
+            entry = item if isinstance(item, dict) else {}
+            name = str(entry.get('username') or '').strip()
+            asrep_hash = str(entry.get('hash') or '').strip()
+            if not name or not asrep_hash:
+                continue
+            handle = _secret_handle(asrep_hash, kind='krb5asrep', tenant_id=tenant)
+            add('credential', f'{name}@{domain}' if domain else name,
+                {'username': name, 'domain': domain or None,
+                 'secret_ref': handle or None, 'hash_type': 'krb5asrep',
+                 'source': 'kerberos_asrep', 'service': 'kerberos'},
+                f'krb5asrep:{name}', method=result.verification_method)
     elif (tool_id == 'nexus.attack.impacket_psexec'
           and result.verification_method == 'psexec_output_parsed'):
         # psexec uploads a service binary and runs it as SYSTEM, so a successful

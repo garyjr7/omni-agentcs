@@ -40,6 +40,9 @@ HANDLERS_DIR = Path(__file__).resolve().parents[3] / "nexus_core" / "tools" / "h
 #: conjunto cambia y el test falla hasta que se revise la decisión.
 EXPECTED_ACTIVE = frozenset({
     "nexus.attack.ad_acl",
+    # B1: unauthenticated Kerberos enumeration. It changes nothing on the target,
+    # but it is an active query to a DC (like netexec), so it is not read_only.
+    "nexus.attack.ad_user_enum",
     "nexus.attack.impacket_changepasswd",
     "nexus.attack.impacket_getuserspns",
     "nexus.attack.impacket_psexec",
@@ -186,6 +189,7 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # Tanda G adds one *active* tool (nexus.post.http_server serves a payload but
     # starts a network service, so it is post_exploitation): 82 - 49 = 33, the
     # read-only count is unchanged.
+    # B1 adds one *active* enum tool (nexus.attack.ad_user_enum): 83 - 50 = 33.
     assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 33
 
 

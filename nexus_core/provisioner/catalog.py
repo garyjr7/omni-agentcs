@@ -37,6 +37,9 @@ CLI_RECIPES = {
     "smb": "impacket",
     "impacket_secretsdump": "impacket",
     "impacket_getuserspns": "impacket",
+    # B1: the guaranteed oracle is GetNPUsers (impacket); kerbrute, when present,
+    # only improves attribution from partial to full.
+    "ad_user_enum": "impacket",
     "impacket_psexec": "impacket",
     "impacket_changepasswd": "impacket",
     # DACL read/write and owner change ship inside impacket

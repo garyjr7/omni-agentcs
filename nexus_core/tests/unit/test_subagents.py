@@ -36,7 +36,9 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # turns on tunnels nobody could verify).
     # + nexus.post.http_server (Tanda G: the SSRF/OpenManage PoC needs the target
     # to fetch a file back from us, and no tool could serve it).
-    assert len(catalog) == 82
+    # + nexus.attack.ad_user_enum (B1: an account derived from a page is a
+    # hypothesis until Kerberos confirms it, and this oracle sends no password).
+    assert len(catalog) == 83
 
 
 def test_read_only_profiles_list_no_active_tool():

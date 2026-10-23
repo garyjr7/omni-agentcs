@@ -16,7 +16,8 @@
 | Ejecución V10 (HackPark: PoC + CSRF) | `88f1210` |
 | Ejecución V11 (HackPark: PoC en el objetivo) | commit de V11 (`HEAD` al cerrar esa entrega) |
 | Ingesta de evidencia web + identidades (B0/B1) | §5.17 — `html_evidence` + `identity_derivation` (2026-10-23) |
-| Suite tras B0/B1 | **4 159 passed / 53 skipped** |
+| Validación de identidad sin contraseña (B1) | §5.18 — `nexus.attack.ad_user_enum` |
+| Suite tras B0/B1 | **4 172 passed / 53 skipped** |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
 | Regla de esta entrega | **V11**: el PoC tiene que llegar al objetivo (form_params reales, next_steps y subida de temas) sin tocar `ToolGateway` |
@@ -26,7 +27,7 @@
 | Suite tras P1.5 | **3 776 passed / 53 skipped** |
 | Suite tras V10 | **3 801 passed / 53 skipped** |
 | Suite tras V11 | **3 814 passed / 53 skipped** |
-| Catálogo | **79 tools durables**, **21 parsers** nativos |
+| Catálogo | **83 tools durables**, **22 parsers** nativos |
 
 ---
 
@@ -110,7 +111,7 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 
 ### 1.1 Ingesta
 
-- **79 tools durables** en `tools/registry.py`, registradas por tenant y con
+- **83 tools durables** en `tools/registry.py`, registradas por tenant y con
   `effect`, `scope_required`, `sandbox_required` y permisos explícitos.
 - Ninguna tool se invoca fuera de `execute_tool` → `ToolGateway`; el bucle ReAct
   no tiene una segunda vía de ejecución.
@@ -123,7 +124,7 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 
 ### 1.2 Transformación
 
-- **21 parsers nativos** en `tools/parsers/` con `PARSERS_VERSION`; la salida de
+- **22 parsers nativos** en `tools/parsers/` con `PARSERS_VERSION`; la salida de
   una tool solo se promueve si el parser y el método de verificación coinciden.
 - **Ingesta de evidencia web (B0/B1, §5.17)**: `kernel/html_evidence.py`
   convierte una respuesta HTML en emails, personas con rol, enlaces same-origin
@@ -354,7 +355,7 @@ son una fase nueva: son la capa entre la observación y la acción.
 |---|---|---|---|
 | Ingesta de evidencia HTML (B0) | Medido HackPark | **[HECHO]** | `kernel/html_evidence.py`: emails, personas con rol, enlaces, tecnología, corte a 200 KB. El handler `nexus.web.request` publica `extracted` y `next_steps` con las rutas sin visitar (`/about.html` deja de depender de que el modelo lo note). |
 | Derivación de identidades (B1) | Medido HackPark | **[HECHO]** | `kernel/identity_derivation.py`: convención confirmada por una dirección publicada, candidatos con `confidence` (1.0 observada / 0.9 nombre+correo / 0.6 convención / 0.3 conjetura), `priority_targets` por rol. Sin dominio no se inventa ninguna cuenta. |
-| Validación barata antes de la contraseña | B1 | **[PENDIENTE]** | El motor ya sugiere AS-REP/kerbrute en `next_steps` y en la skill `methodology-senior`; falta una tool gobernada que tome `candidates` y devuelva existencia, con presupuesto de 1 intento por cuenta y política de bloqueo. |
+| Validación barata antes de la contraseña (B1) | Medido HackPark | **[HECHO]** | `nexus.attack.ad_user_enum` (§5.18): kerbrute si está (veredicto por cuenta, `attribution=full`) o `GetNPUsers -no-pass` si no (`partial`: prueba las que nombra y deja el resto `unknown`). No envía contraseña, así que no mueve el contador de bloqueo (`lockout_risk: none`). Los hashes AS-REP van al vault y `crack_hash` gana `krb5asrep`/`krb5tgs`. |
 | Ledger por camino `servicio × técnica` (B2) | Requisito de la v1 | **[PENDIENTE]** | `agent/coverage.py` tiene veredicto **por servicio** (un `:80` con cuatro vectores es un ítem). Sin esta granularidad, cerrar el servicio cierra los cuatro caminos. |
 | Reflexión auditable por turno (B3) | Requisito de la v1 | **[PENDIENTE]** | Hoy la corrección es determinista por hints (`login_probe_hint`, `pivot_hint`, `budget_hint`). Falta el evento que obligue a citar hechos nuevos sin usar antes de actuar. |
 
@@ -903,9 +904,44 @@ pedir.
 - No hay todavía validación de existencia ni control de bloqueo de cuentas: el
   spray sigue siendo una decisión del operador (B1 pendiente).
 
-Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **4 159 passed
-/ 53 skipped**; `make lint` limpio; `make typecheck` sin errores en los 7
-ficheros tocados.
+Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **4 172 passed
+/ 53 skipped** (B0/B1 juntos); `make lint` limpio; `make typecheck` sin errores.
+
+### 5.18 B1 — la identidad derivada se confirma sin gastar una contraseña (2026-10-23) — **EJECUTADA**
+
+Cierra el paso 2b de `methodology-senior`: `j.rock (0.6, IT Staff)` era una
+hipótesis que el motor dejaba al modelo y que ningún tool podía validar sin
+credenciales. `cred.bruteforce` no sirve para eso: gasta un intento por prueba y
+bloquea cuentas. Faltaba el oráculo de Kerberos.
+
+| Paso | Cambio | Ficheros | Test de aceptación |
+|---|---|---|---|
+| B1.1 | Parser de los dos oráculos: kerbrute (valida existencia **y** ausencia) y `GetNPUsers -no-pass -usersfile` (valida los que nombra y deja el resto `unknown`; la ausencia no se atribuye porque Impacket imprime `KDC_ERR_C_PRINCIPAL_UNKNOWN` sin nombre) | `tools/parsers/impacket_asrep.py` | `test_kerbrute_decides_existence_and_absence`, `test_getnpusers_proves_the_accounts_it_names_and_nothing_else` |
+| B1.2 | Tool gobernado `nexus.attack.ad_user_enum` (LOW, `recon`, scope en `dc_ip`, lista 1–500 validada): escribe la lista en el workspace, prefiere kerbrute y cae a Impacket; sin ninguno devuelve `unavailable` con instrucciones | `handlers/ad_user_enum.py` | 8 tests de handler (argv sin `-p`, lista 600, dedupe, sin respuesta → `negative`) |
+| B1.3 | Hechos: `user` verificado para cada cuenta confirmada; AS-REP guardado en el vault y un hecho `credential` con `hash_type: krb5asrep` y solo el handle | `kernel/fact_verification.py` (`USER_ENUM_METHODS`) | `test_the_verifier_confirms_accounts_and_vaults_the_asrep_hash` |
+| B1.4 | `crack_hash` entiende `krb5asrep`/`krb5tgs` (formato john y detección por prefijo; la línea no se parte por `:` como un shadow) | `handlers/crack_hash.py` | `test_an_asrep_hash_is_a_known_crack_format` |
+| B1.5 | El perfil `services` y `cred` pueden invocarla; catálogo a 83 y `catalog.json` actualizado | `agent/subagents.py`, `tools/registry.py`, `docs/missions/audit-v1/catalog.json` | Ledger AST/runtime/JSON y límites de prompt |
+
+**Por qué no es un parche de sala:** no contiene un dominio, un DC ni un nombre.
+El oráculo es Kerberos; el parseo depende del formato documentado de las dos
+herramientas, y la diferencia `full`/`partial` es una propiedad del binario, no
+del objetivo.
+
+**Límites declarados:**
+
+- Sin kerbrute, la ausencia no se prueba: esas cuentas quedan `unknown` y el
+  `next_steps` lo dice. Un run no puede cerrar una rama de identidad con
+  «no existe» si el oráculo no lo demostró.
+- El oráculo no distingue una cuenta deshabilitada: existe en el directorio. La
+  deshabilitación (UAC) no está en la salida de ninguno de los dos.
+- Kerberos necesita el 88/tcp alcanzable. Detrás de un túnel, el handler debe
+  ejecutarse con el proxy del contrato (§5.16, Tanda F); `ad_user_enum` no lleva
+  proxy propio todavía.
+- El hash AS-REP se guarda como `krb5asrep` y `crack_hash` lo ataca con `john`;
+  el crackeo puede fallar por wordlist, no por formato, y eso se reporta como
+  `negative` del crack, no como credencial.
+- No se ha ejecutado contra un DC real en esta entrega: la aceptación es unitaria
+  con salidas reales de formato (kerbrute 1.0.3 e Impacket 0.13).
 
 ---
 
