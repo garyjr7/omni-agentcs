@@ -14,7 +14,9 @@
 | Ejecución P1 (`session_ref`) | `07e3cdc` |
 | Ejecución P1.5 (productor `webshell`) | `2d5b318` |
 | Ejecución V10 (HackPark: PoC + CSRF) | `88f1210` |
-| Ejecución V11 (HackPark: PoC en el objetivo) | commit de esta entrega (`HEAD` al cerrar) |
+| Ejecución V11 (HackPark: PoC en el objetivo) | commit de V11 (`HEAD` al cerrar esa entrega) |
+| Ingesta de evidencia web + identidades (B0/B1) | §5.17 — `html_evidence` + `identity_derivation` (2026-10-23) |
+| Suite tras B0/B1 | **4 159 passed / 53 skipped** |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
 | Regla de esta entrega | **V11**: el PoC tiene que llegar al objetivo (form_params reales, next_steps y subida de temas) sin tocar `ToolGateway` |
@@ -123,6 +125,13 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
 
 - **21 parsers nativos** en `tools/parsers/` con `PARSERS_VERSION`; la salida de
   una tool solo se promueve si el parser y el método de verificación coinciden.
+- **Ingesta de evidencia web (B0/B1, §5.17)**: `kernel/html_evidence.py`
+  convierte una respuesta HTML en emails, personas con rol, enlaces same-origin
+  y tecnología; `kernel/identity_derivation.py` detecta la convención
+  (`j.doe` + `Joanne Doe` ⇒ `initial.last`) y devuelve candidatos ordenados por
+  confianza y prioridad del rol. `derive_assertions` promueve **solo** la
+  dirección publicada (`email` y su parte local como `user`); lo derivado viaja
+  como hipótesis en la observación (`extracted.identities`).
 - `kernel/fact_verification.py:746` (`derive_assertions`) deriva `host`,
   `service`, `endpoint`, `access`, `credential`, `privilege`, `loot`, `session`
   y hechos de superficie a partir de la observación.
@@ -335,6 +344,20 @@ encendarlas sin abrir una puerta lateral al gateway.
 | Evidencia tipada P3 (parser + assertions) | `AUD_MCP_PTY §5.2` | **[BLOQUEADO]** | Sin parser declarado, `mcp_unverified` es el estado correcto; no se permite que un servidor declare hechos. |
 | MCP de red P4 (masscan/rustscan) | `AUD_MCP_PTY §5.2` | **[BLOQUEADO]** | Requiere `oci_network` o broker de red gobernado. No empezar antes. |
 
+### 3.6 Evidencia, identidad y cobertura por camino (B0–B3)
+
+Nacen del run de HackPark en el que el correo `j.doe@services.local` y el equipo
+(`Jack Rock - IT Staff`) estaban en páginas que el motor descargó y no leyó. No
+son una fase nueva: son la capa entre la observación y la acción.
+
+| Feature / Fix | Origen | Estado | Notas / bloqueadores |
+|---|---|---|---|
+| Ingesta de evidencia HTML (B0) | Medido HackPark | **[HECHO]** | `kernel/html_evidence.py`: emails, personas con rol, enlaces, tecnología, corte a 200 KB. El handler `nexus.web.request` publica `extracted` y `next_steps` con las rutas sin visitar (`/about.html` deja de depender de que el modelo lo note). |
+| Derivación de identidades (B1) | Medido HackPark | **[HECHO]** | `kernel/identity_derivation.py`: convención confirmada por una dirección publicada, candidatos con `confidence` (1.0 observada / 0.9 nombre+correo / 0.6 convención / 0.3 conjetura), `priority_targets` por rol. Sin dominio no se inventa ninguna cuenta. |
+| Validación barata antes de la contraseña | B1 | **[PENDIENTE]** | El motor ya sugiere AS-REP/kerbrute en `next_steps` y en la skill `methodology-senior`; falta una tool gobernada que tome `candidates` y devuelva existencia, con presupuesto de 1 intento por cuenta y política de bloqueo. |
+| Ledger por camino `servicio × técnica` (B2) | Requisito de la v1 | **[PENDIENTE]** | `agent/coverage.py` tiene veredicto **por servicio** (un `:80` con cuatro vectores es un ítem). Sin esta granularidad, cerrar el servicio cierra los cuatro caminos. |
+| Reflexión auditable por turno (B3) | Requisito de la v1 | **[PENDIENTE]** | Hoy la corrección es determinista por hints (`login_probe_hint`, `pivot_hint`, `budget_hint`). Falta el evento que obligue a citar hechos nuevos sin usar antes de actuar. |
+
 ---
 
 ## 4. Veredicto MCP y PTY
@@ -511,6 +534,8 @@ cableado), condicionada a la decisión de red.
 |---|---|---|
 | Añadir tools para cubrir técnicas | **[DESCARTADO]** hasta cerrar 4/6 salas | 31/68 tools ya no las usa nadie; el problema es selección/ejecución. |
 | RAG de writeups de THM | **[DESCARTADO]** | Sobreajuste, leakage y se rompe al cambiar de sala. |
+| Consultar MITRE ATT&CK en vivo | **[DESCARTADO]** | Convierte cada decisión en una llamada lenta y cara; las técnicas se codifican como hints deterministas con el ID como metadato, no como consulta. |
+| Paralelismo multi-agente en la v1 | **[DESCARTADO]** para v1 | El supervisor es un árbol secuencial (profundidad 2, 4 hijos); prometer un enjambre antes del ledger por camino multiplica el coste y diluye la procedencia. |
 | Vector DB para todo | **[DESCARTADO]** | FTS5 + ripgrep cubren journal y artefactos; embeddings solo >10k docs. |
 | Más subagentes por fase | **[DESCARTADO]** | Es la causa de `rerun6`/`rerun13`; workers solo para fan-out. |
 | Planificador más listo | **[DESCARTADO]** | El planner determinista es el cuello; se convierte en `plan_hint`. |
@@ -835,6 +860,53 @@ parte por `:` buscando un prefijo crypt. Nada nombra DeadDrop.
 Detalle completo: `docs/missions/diag/deaddrop_campaign_2026-10-22.md` y
 `docs/missions/diag/deaddrop_p1_2026-10-22.md`.
 
+### 5.17 B0/B1 — la página deja de ser HTML y empieza a ser evidencia (2026-10-23) — **EJECUTADA**
+
+Origen medido: en el run de HackPark, la iteración 30 pidió `index.html`, cuyo
+pie imprimía `j.doe@services.local`, y nunca pidió `/about.html`, enlazada en el
+nav y con el equipo y sus roles. El motor no podía registrar ninguna de las dos
+cosas: `user` y `email` son tipos de hecho legales (`blackboard.py:32-33`,
+`planner.py:92`) y el único productor de `user` era `nexus.web.wp_enum`
+(`fact_verification.py:1012`); ningún handler leía un `href` ni una dirección.
+
+| Paso | Cambio | Ficheros | Test de aceptación |
+|---|---|---|---|
+| B0.1 | Extractor determinista de página: emails, personas con rol, enlaces resueltos (interno/externo, navegable), tecnología, corte a 200 KB y listas acotadas | `kernel/html_evidence.py` | `test_html_evidence.py` (8 tests: correo, roles, «IT Staff» no es persona, enlaces, tecnología, corte) |
+| B0.2 | El handler publica `extracted` y `next_steps` (rutas enlazadas sin visitar + candidatos a validar) sin tocar la frontera del gateway | `handlers/http_request.py` | `test_web_identity_evidence.py::test_the_observation_names_the_page_nobody_asked_for` |
+| B1.1 | Derivación pura: convención confirmada por dirección publicada, candidatos con confianza y prioridad por rol; sin dominio no hay cuentas | `kernel/identity_derivation.py` | `test_identity_derivation.py` (8 tests) |
+| B1.2 | Hechos: `email` (dirección publicada) y `user` (parte local) con `confidence: observed`; lo derivado **no** entra al tablero | `kernel/fact_verification.py` (`WEB_IDENTITY_METHOD`) | `test_the_verifier_asserts_the_printed_address_and_the_local_part`, `test_a_page_with_names_but_no_address_asserts_no_identity` |
+| B1.3 | La skill `methodology-senior` enseña a leer `extracted` y prohíbe spray antes de confirmar existencia | `.agents/skills/methodology-senior/SKILL.md` | Manual (skill, no prompt estático: no consume presupuesto por turno) |
+
+**Por qué no es un parche de sala:** el extractor no conoce HackPark ni
+BlogEngine. Lee HTML; en cualquier plantilla el pie lleva un correo y la página
+de equipo lleva nombres con rol. La derivación es aritmética de cadenas: no hay
+una lista de empresas ni de salas. El único texto específico es la skill, que
+nombra `/about.html`, `/contact.html` y `/team.html` como *ejemplos* de rutas a
+pedir.
+
+**Límites declarados:**
+
+- La dirección en una página prueba que está **publicada**, no que la cuenta
+  exista en el directorio: el hecho lleva `confidence: observed` y la validación
+  sigue siendo un paso aparte (B1, pendiente de tool).
+- La extracción de personas es heurística (nombre capitalizado en un heading o
+  junto a un rol). Un nombre sin rol fuera de un heading se descarta: preferimos
+  perder un nombre a inventar una persona.
+- `next_steps` no garantiza que la ruta exista: propone las que el HTML enlaza.
+  Un 404 se registra como endpoint sondeado, no como hallazgo.
+- El extractor trabaja sobre `body_preview` (64 KB por defecto): un equipo
+  listado solo en JavaScript no se ve; para eso hace falta ejecutar el cliente o
+  leer el `.js`, que hoy es una lectura de workspace, no de página.
+- La convención se detecta con **una** dirección y **un** nombre que encajen;
+  con dos convenciones posibles gana la primera de `CONVENTIONS`
+  (`initial.last`), y la evidencia lo dice (`convention_matches`).
+- No hay todavía validación de existencia ni control de bloqueo de cuentas: el
+  spray sigue siendo una decisión del operador (B1 pendiente).
+
+Verificación: `.venv/bin/python -m pytest nexus_core/tests -q` → **4 159 passed
+/ 53 skipped**; `make lint` limpio; `make typecheck` sin errores en los 7
+ficheros tocados.
+
 ---
 
 ## 6. Criterios de cierre
@@ -850,6 +922,30 @@ Detalle completo: `docs/missions/diag/deaddrop_campaign_2026-10-22.md` y
 **Gate V2 (heredado de audit-v1):** cero P0 abiertas y 12 cadenas de referencia
 revalidadas con reporte/manifest. El score 38,77 es histórico y no se usa como
 medida actual.
+
+### 6.1 Gate de release v1 (producto público)
+
+El lanzamiento no se mide por salas resueltas sino por cinco invariantes, y una
+sola que falle en campo bloquea la release:
+
+| # | Invariante | Dónde se comprueba |
+|---|---|---|
+| 1 | **Cero éxito falso**: ninguna tool declara `success` con señal ambigua (302 a login, 200 sin efecto, cuerpo sin confirmación) | `exploit_upload` (V14), `cred.bruteforce` (§5.12), `http_request` |
+| 2 | **Cero fallo silencioso**: cada servicio y cada camino acaba con veredicto y motivo, y el reporte lo publica | `coverage.py` al cerrar; B2 lo extiende a caminos |
+| 3 | **Toda afirmación cita `invocation_id`** y hecho verificado | StopVerifier + `annotate_findings` |
+| 4 | **Scope y RoE antes de tocar el target** (HMAC, peer-first, callback por host) | tests de scope y `listener` |
+| 5 | **Coste publicado**: tokens por hallazgo, iteraciones por rama, presupuesto que no se agota en documentación | `run.complete` |
+
+**Corpus de release (heterogéneo, 6–8 objetivos):** web-only con un vector, web
+con cuatro vectores en un mismo `:80`, servicio-only (FTP/SSH), AD con DC,
+multi-red con pivote, y un objetivo moderno (API/SPA) que **debe fallar
+limpiamente**. Ese último es el test de honestidad: si un run inventa un
+hallazgo ahí, la release no sale.
+
+**Promesa de la v1:** web + foothold + AD en una red, con cobertura declarada y
+cero afirmaciones sin evidencia. Fuera de la v1: MCP de red, C2 autónomo,
+OOB/DAST ciego, cloud/Kubernetes/API, egress aislado en `oci` y paralelismo
+multi-agente.
 
 ---
 

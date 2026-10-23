@@ -56,6 +56,31 @@ nexus.exploit.searchsploit(query="<producto> <version>")
   ruta de log) para lanzarlos en segundo plano y seguir enumerando; lee el log
   con `tail` cuando toque.
 
+### 2b. Identidades: la web te dice quién existe
+
+Cada respuesta de `nexus.web.request` trae ahora un bloque `extracted`. Si está,
+léelo antes de elegir el siguiente paso:
+
+- `emails`: direcciones publicadas (hechos `email`/`user` ya registrados).
+- `people`: nombres con su rol (`Jack Rock - IT Staff`).
+- `identities.convention`: la convención que confirma el correo (p. ej.
+  `initial.last`), y `identities.candidates` ordenados por confianza.
+- `next_steps`: las rutas enlazadas sin visitar, empezando por `/about.html`,
+  `/contact.html`, `/team.html`. **Pídelas**: ahí suele estar el resto del
+  equipo.
+
+Reglas:
+
+1. Un correo publicado fija el dominio y la convención; úsalo para derivar el
+   resto de nombres, no para inventar cuentas sueltas.
+2. Una identidad derivada es **hipótesis**: confirma que existe con
+   enumeración que no consume intento (AS-REP/kerbrute, sonda de login) antes
+   de gastar una contraseña. Un intento por cuenta; nada de rockyou contra AD.
+3. El rol manda en la prioridad: IT/Admin/Security primero, la cola después.
+   `identities.priority_targets` ya viene ordenado.
+4. Si `extracted` está vacío, la página no publica identidades: sigue con el
+   resto de la enumeración en vez de suponer que no hay usuarios en el entorno.
+
 ### 3. FTP anónimo: descargar, pero buscar credenciales cruzadas
 
 ```

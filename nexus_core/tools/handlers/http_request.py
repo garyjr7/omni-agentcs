@@ -34,6 +34,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from nexus_core.kernel.html_evidence import extract_page_evidence, next_pages
+from nexus_core.kernel.identity_derivation import derive_identities
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.redaction import redact_result, secrets_for_redaction
 from nexus_core.kernel.sandbox import sandbox_for_environment
@@ -48,6 +50,12 @@ HTTP_MAX_TIMEOUT_SECONDS = 300
 #: Response bytes carried back in the observation (before the sha256 pass).
 HTTP_DEFAULT_MAX_RESPONSE_BYTES = 65_536
 HTTP_MAX_RESPONSE_BYTES = 1_000_000
+
+#: Bounds on the extracted lists inside one observation. The extractor caps at
+#: 50; the model needs the leads, not the sitemap.
+HTTP_MAX_LISTED_ITEMS = 10
+#: Linked pages the observation names as next steps.
+HTTP_MAX_NEXT_PAGES = 5
 
 #: Methods the operator may invoke. ``DELETE`` is included because it is a
 #: legitimate part of some web chains, but it is not destructive at the file
@@ -82,6 +90,74 @@ HTTP_PREVIEW_MODULE_NOTE = (
     "(o `require('fs').readFileSync('/etc/shadow').toString()`), vuelve a "
     "subirlo y repite la petición. No registres un barrier por este `{}`."
 )
+
+
+def _page_evidence(payload: dict[str, Any], url: str) -> dict[str, Any] | None:
+    """Extract identity and surface from an HTML response, or ``None``.
+
+    Measured (HackPark V15 family): the footer carried ``j.doe@services.local``
+    and the team page listed the staff with their roles, and the engine recorded
+    nothing because no HTTP-path tool ever read an address, a person or a link.
+    This is the deterministic half of that fix -the verifier turns the result
+    into ``email``/``user`` facts, the handler only reports the observation.
+
+    Only markup is mined: a JSON API or a binary download costs one content-type
+    check and returns ``None``.
+    """
+    content_type = str(payload.get("content_type") or "").lower()
+    body = payload.get("body_preview")
+    if not isinstance(body, str) or not body.strip():
+        return None
+    looks_like_html = "html" in content_type or body.lstrip().startswith("<")
+    if not looks_like_html:
+        return None
+    extracted = extract_page_evidence(body, url)
+    identities = derive_identities(
+        extracted.get("emails") or (),
+        extracted.get("people") or (),
+        max_candidates=HTTP_MAX_LISTED_ITEMS,
+    )
+    extracted["emails"] = extracted["emails"][:HTTP_MAX_LISTED_ITEMS]
+    extracted["people"] = extracted["people"][:HTTP_MAX_LISTED_ITEMS]
+    extracted["links"] = extracted["links"][:HTTP_MAX_LISTED_ITEMS]
+    extracted["technologies"] = extracted["technologies"][:HTTP_MAX_LISTED_ITEMS]
+    extracted["identities"] = identities
+    return extracted
+
+
+def _identity_next_steps(extracted: dict[str, Any], url: str) -> list[str]:
+    """Name the pages and accounts the response just handed over.
+
+    The observation is the instruction: a run that does not notice ``about.html``
+    in the nav is not helped by a better prompt, it is helped by the tool saying
+    which URLs are one hop away and which three accounts are worth validating
+    first. Validating existence is explicitly cheaper than spending a password.
+    """
+    steps: list[str] = []
+    pages = next_pages(extracted, url, limit=HTTP_MAX_NEXT_PAGES)
+    if pages:
+        steps.append(
+            "rutas enlazadas sin visitar (pídelas con nexus.web.request): "
+            + ", ".join(pages)
+        )
+    identities = extracted.get("identities") or {}
+    candidates = [
+        item for item in identities.get("candidates") or ()
+        if isinstance(item, dict) and item.get("basis") != "observed_email"
+    ]
+    if candidates:
+        top = ", ".join(
+            f"{item.get('username')} ({item.get('confidence')}"
+            + (f", {item['title']}" if item.get("title") else "")
+            + ")"
+            for item in candidates[:3]
+        )
+        steps.append(
+            "identidades derivadas: " + top
+            + "; confirma cuáles existen (AS-REP / kerbrute o una sonda de login "
+              "que no consuma intento) antes de probar contraseñas"
+        )
+    return steps
 
 
 def _preview_module_annotation(url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -921,6 +997,7 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
         else None
     )
     evidence["session_ref_issued"] = issued_session_ref
+    page_evidence: dict[str, Any] | None = None
     if ok:
         evidence.update(
             {
@@ -943,6 +1020,11 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
             csrf_payload = payload.get("csrf") or {}
             evidence["csrf_form_status"] = csrf_payload.get("status")
             evidence["csrf_fields"] = csrf_payload.get("fields") or []
+        page_evidence = _page_evidence(payload, url)
+        if page_evidence:
+            evidence["emails_found"] = len(page_evidence.get("emails") or ())
+            evidence["people_found"] = len(page_evidence.get("people") or ())
+            evidence["links_found"] = len(page_evidence.get("links") or ())
     else:
         evidence["error"] = payload.get("error")
 
@@ -966,10 +1048,17 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
         "saved": payload.get("saved"),
         "csrf": payload.get("csrf"),
         "error": payload.get("error"),
+        # Markup only: emails, people + roles, same-origin links, technology and
+        # the derived identity candidates. Absent on a non-HTML response.
+        "extracted": page_evidence,
     }
     # The empty-export case is annotated with the request URL (the payload's
     # ``url`` is the one the sandbox echoed back, which is the same string).
     output.update(_preview_module_annotation(url, payload))
+    if page_evidence:
+        steps = _identity_next_steps(page_evidence, url)
+        if steps:
+            output["next_steps"] = steps
     if issued_session_ref:
         # Handle for the session this response issued: pass it as
         # ``session_ref`` on the next call instead of the cookie value.

@@ -87,6 +87,14 @@ WEB_SHELL_METHOD = "web_command_completed"
 #: caller's payload ran only if the engine answered with its own error text.
 SQLI_ERROR_METHOD = "http_sql_error"
 
+#: ``verification_method`` of an identity a page *printed*. The parser read an
+#: address out of the body, so the fact is verified for what it says -this string
+#: is published- and carries ``confidence: observed`` because an address on a
+#: page is not proof that the directory holds the account. Derived usernames
+#: (name + convention) never reach the board through this path: they travel in
+#: the observation as candidates, ranked, until a directory answers.
+WEB_IDENTITY_METHOD = "web_identity_extracted"
+
 #: Error text only the database produces when an injected expression executed.
 #: Each entry names the engine and the literal that identifies it -never the
 #: leaked value- so the fact can say "this is injectable, MySQL" without copying
@@ -969,6 +977,31 @@ def derive_assertions(tool_id, arguments, result, context):
         remote = web_command_from_url(url)
         host = urlsplit(url).hostname or ''
         body = str(output.get('body_preview') or '')
+        # What the page publishes about identity. Measured (HackPark): the run
+        # downloaded a footer with ``j.doe@services.local`` and a team page with
+        # the staff list, and the engine recorded neither, so it kept asking for
+        # users with the users already on screen. Only the address is asserted;
+        # the convention-derived usernames stay a ranked hypothesis in the
+        # observation (``extracted.identities``) until a directory confirms them.
+        extracted = output.get('extracted')
+        if isinstance(extracted, dict):
+            for address in extracted.get('emails') or ():
+                text_address = str(address).strip()
+                local, _, email_domain = text_address.partition('@')
+                if not local or not email_domain:
+                    continue
+                # The key is the address / the local part on purpose: the
+                # planner reads ``key`` to build the identity list, so a
+                # prefixed key would put "web:user:j.doe" on the board instead
+                # of a username a tool can use.
+                add('email', text_address,
+                    {'email': text_address, 'domain': email_domain,
+                     'source': 'page', 'confidence': 'observed'},
+                    method=WEB_IDENTITY_METHOD)
+                add('user', local,
+                    {'username': local, 'domain': email_domain,
+                     'source': 'web_email', 'confidence': 'observed'},
+                    method=WEB_IDENTITY_METHOD)
         if host and remote:
             http_channel_assertions(
                 add, target=host, command=remote,
