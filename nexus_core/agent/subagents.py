@@ -117,6 +117,9 @@ ACTIVE_TOOLS: frozenset[str] = frozenset(
         "nexus.post.pivot_bruteforce",
         "nexus.post.pivot_http",
         "nexus.post.ntlm_capture",
+        # Tanda G: hosting the payload the victim has to fetch back (SSRF).
+        # A network service on the operator's side, so active by classification.
+        "nexus.post.http_server",
         "nexus.attack.impacket_changepasswd",
         "nexus.attack.ad_acl",
         "nexus.attack.nopac",
@@ -412,6 +415,9 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 # step that turns the CVE into access.
                 "nexus.exploit.compile_and_upload",
                 "nexus.recon.netexec",
+                # Tanda G: the SSRF PoC (Dell OpenManage) only works once the
+                # target can download the payload from us.
+                "nexus.post.http_server",
                 "nexus.pwn.analyze",
                 "nexus.pwn.ret2libc",
                 "nexus.web.wp_bruteforce",
@@ -471,6 +477,9 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.post.ntlm_capture",
                 "nexus.post.dns_update",
                 "nexus.post.tftp",
+                # Tanda G: the same governed way to hand a file to the target
+                # over HTTP when TFTP/SMB are not the vector an SSRF needs.
+                "nexus.post.http_server",
                 "nexus.post.dpapi",
                 "nexus.attack.impacket_changepasswd",
                 "nexus.attack.ad_acl",

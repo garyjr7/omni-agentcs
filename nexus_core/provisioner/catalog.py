@@ -177,6 +177,14 @@ def assess_tool_catalog(
                 "requires tmux and a run-owned socket in the sandbox",
             )
             binaries = ("tmux",)
+        elif module == "http_server":
+            # The stdlib file server lives in a tmux pane (the handler has no
+            # other way to outlive the call that started it).
+            transport, state, detail = (
+                "tmux", "unverified",
+                "requires tmux, python3 and a workspace directory to publish",
+            )
+            binaries = ("tmux", "python3")
         elif module == "crack_hash":
             # ``john`` is the cracker and ``ssh2john`` the key converter; the
             # handler reaches both through the stdlib client, so the transport

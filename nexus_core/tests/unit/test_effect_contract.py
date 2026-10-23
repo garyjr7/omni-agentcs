@@ -66,6 +66,9 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.post.dpapi",
     "nexus.post.enum_system",
     "nexus.post.listener",
+    # Tanda G: starts a network service on the operator's side to serve the
+    # payload an SSRF/exploit has to fetch back, so it is not read_only.
+    "nexus.post.http_server",
     "nexus.post.job",
     "nexus.post.shell_exec",
     "nexus.post.ntlm_capture",
@@ -180,6 +183,9 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # V12 adds one active directory writer (nexus.attack.ad_acl): 80 - 48 = 32.
     # Tanda A adds one read-only prober (nexus.post.verify_route opens sockets and
     # changes nothing): 81 - 48 = 33.
+    # Tanda G adds one *active* tool (nexus.post.http_server serves a payload but
+    # starts a network service, so it is post_exploitation): 82 - 49 = 33, the
+    # read-only count is unchanged.
     assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 33
 
 

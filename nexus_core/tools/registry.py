@@ -80,6 +80,7 @@ def durable_tool_definitions(
     from .handlers.whatweb import whatweb_definition, whatweb_handler
     from .handlers.http_request import http_request_definition, http_request_handler
     from .handlers.listener import listener_definition, listener_handler
+    from .handlers.http_server import http_server_definition, http_server_handler
     from .handlers.ntlm_capture import ntlm_capture_definition, ntlm_capture_handler
     from .handlers.winrm import winrm_exec_definition, winrm_exec_handler
     from .handlers.searchsploit import searchsploit_definition, searchsploit_handler
@@ -268,6 +269,14 @@ def durable_tool_definitions(
         "nexus.recon.whatweb": (whatweb_definition(tenant_id), whatweb_handler),
         "nexus.web.request": (http_request_definition(tenant_id), http_request_handler),
         "nexus.post.listener": (listener_definition(tenant_id), listener_handler),
+        # Tanda G: the target has to be able to *fetch* something back (SSRF,
+        # ``targetmachine``). The run de HackSmarter had the OpenManage PoC in the
+        # workspace and no governed way to serve it, so it curled 127.0.0.1 for
+        # thirteen turns.
+        "nexus.post.http_server": (
+            http_server_definition(tenant_id),
+            http_server_handler,
+        ),
         "nexus.post.ntlm_capture": (
             ntlm_capture_definition(tenant_id),
             ntlm_capture_handler,

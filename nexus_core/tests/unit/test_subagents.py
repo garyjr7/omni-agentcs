@@ -34,7 +34,9 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # + nexus.post.verify_route (Tanda A: a tunnel is a hypothesis until a TCP /
     # SOCKS CONNECT proves it reaches the destination; DeadDrop P11 spent twenty
     # turns on tunnels nobody could verify).
-    assert len(catalog) == 81
+    # + nexus.post.http_server (Tanda G: the SSRF/OpenManage PoC needs the target
+    # to fetch a file back from us, and no tool could serve it).
+    assert len(catalog) == 82
 
 
 def test_read_only_profiles_list_no_active_tool():

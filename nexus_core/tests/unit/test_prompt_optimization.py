@@ -191,10 +191,13 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # measured semantic constraint (relative ``cwd``, the artifact handle...). It
     # is 209 characters for the whole 81-tool catalog, all of it inside the
     # existing per-tool bound (224,0 < 225): capability data, not prose.
-    assert len(catalog) == 81
+    # Tanda G adds ``nexus.post.http_server`` (the 82nd tool): one capability
+    # line with its two arguments. Measured 18,301 for 82 tools (223,2 per
+    # tool), still inside the per-tool bound, so only the total moves.
+    assert len(catalog) == 82
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 18_250
+    assert len(text) < 18_400
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -281,7 +284,10 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # the pivot, and wrapping ``nxc``/``secretsdump`` in ``shell.exec`` is what
     # made the DeadDrop run close with ``grounded: 0``. Measured 32,375;
     # ceiling 32,450.
-    assert len(_prompt(catalog)) < 32_450
+    # Tanda G adds the SSRF order (+443: the victim fetches the payload back, so
+    # ``127.0.0.1`` never works) and the http_server catalog line. Measured
+    # 32,968; ceiling 33_050.
+    assert len(_prompt(catalog)) < 33_050
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -315,7 +321,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # ceiling 32_800. The block itself is unchanged.
     # Tanda F moves with the static prompt (+285): measured 33,002; ceiling
     # 33_100. The block itself is unchanged.
-    assert len(prompt) < 33_100
+    # Tanda G moves with the static prompt (+596): measured 33,711; ceiling
+    # 33_800. The block itself is unchanged.
+    assert len(prompt) < 33_800
     assert len(block) < 1_200
 
 
@@ -502,7 +510,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # at ~11 000 tokens each: measured 7,208; ceiling 7_250 (250k buys ~34 turns).
     # Tanda F's AD tunnel order lands here too (+72 tokens): measured 7,280;
     # ceiling 7_330 (250k buys ~34 turns).
-    assert tokens < 7_330
+    # Tanda G's SSRF order lands here too (+121 tokens): measured 7,401;
+    # ceiling 7_450 (250k buys ~33 turns).
+    assert tokens < 7_450
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -545,7 +555,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # compact turns, +209 on the full ones); ceiling 7_930, ~31 turns.
     # Tanda F measured 7,958 average (the AD tunnel order on every turn where the
     # catalog offers ``netexec``): ceiling 8_010, ~31 turns.
-    assert sum(totals) / len(totals) < 8_010
+    # Tanda G measured 8,085 average (the SSRF order and the new catalog line on
+    # every turn): ceiling 8_130, ~30 turns.
+    assert sum(totals) / len(totals) < 8_130
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -574,7 +586,8 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # Tanda D on the refresh turn: measured 10,169; ceiling 10_220.
     # Tanda E on the refresh turn: measured 10,192; ceiling 10_250.
     # Tanda F on the refresh turn: measured 10,263; ceiling 10_330.
-    assert max(totals) < 10_330
+    # Tanda G on the refresh turn: measured 10,413; ceiling 10_470.
+    assert max(totals) < 10_470
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):
@@ -700,12 +713,39 @@ PROMPT_BLOCK_CEILINGS = {
     "PASSIVE_WAIT_RULE_PROMPT": 230,
     "LOGIN_RULE_PROMPT": 740,
     "CMS_EXPLOIT_RULE_PROMPT": 900,
+    "SSRF_HTTP_SERVER_RULE_PROMPT": 480,
     "ENGAGEMENT_PLAN_RULE_PROMPT": 730,
     "PIVOT_ROUTE_RULE_PROMPT": 400,
     "PREVIEW_MODULE_RULE_PROMPT": 490,
     "CREDENTIAL_FAMILIES_RULE_PROMPT": 460,
     "COMPACT_CATALOG_NOTE": 180,
 }
+
+
+def test_the_ssrf_order_points_at_the_http_server_and_forbids_localhost(catalog):
+    """Tanda G: the target fetches the payload back, so ``127.0.0.1`` is wrong.
+
+    Measured in the run de HackSmarter (2026-10-23): thirteen turns of hand-made
+    ``curl`` with ``targetmachine=127.0.0.1`` while no server of ours existed.
+    """
+    from nexus_core.agent.prompts import SSRF_HTTP_SERVER_RULE_PROMPT
+
+    flat = " ".join(_prompt(catalog).split())
+    assert "nexus.post.http_server" in flat
+    assert "NO uses 127.0.0.1" in flat
+    assert "attacker_ip" in flat
+    # Same contract as every other order: a catalog without the tool never names
+    # it, so the per-subagent gating cannot be contradicted by the prompt.
+    without = {
+        tool_id: entry
+        for tool_id, entry in catalog.items()
+        if tool_id != "nexus.post.http_server"
+    }
+    gated = render_system_prompt(
+        catalog=without, objective="x", engagement_id="eng-1", scope_summary="s"
+    )
+    assert SSRF_HTTP_SERVER_RULE_PROMPT not in gated
+    assert "nexus.post.http_server" not in gated
 
 
 def test_the_pivot_order_points_at_verify_route_and_forbids_record_fact(catalog):

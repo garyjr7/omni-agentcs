@@ -85,6 +85,21 @@ CMS_EXPLOIT_RULE_PROMPT = (
     "  acaba en 302 a /Account/login.aspx (exploit_upload_rejected).\n"
 )
 
+#: The SSRF order (Tanda G). Measured in the run de HackSmarter (2026-10-23):
+#: the Dell OpenManage PoC needs the victim to fetch a file back through
+#: ``targetmachine``, and the model pointed it at ``127.0.0.1`` and at its own
+#: address while curling by hand -thirteen turns without a server that answered.
+#: Gated on the tool that *is* the answer, so a subagent that cannot start it
+#: never reads the order (same rule as :data:`LOGIN_RULE_PROMPT`).
+SSRF_HTTP_SERVER_RULE_PROMPT = (
+    "- SSRF / EXPLOIT QUE PIDE UN SERVIDOR: si el PoC o el objetivo tiene que\n"
+    "  DESCARGAR un fichero de vuelta (SSRF, `targetmachine`, `lhost`, URL de\n"
+    "  callback), NO uses 127.0.0.1 ni localhost: la víctima se descargaría el\n"
+    "  fichero a sí misma. Levanta nexus.post.http_server con el directorio del\n"
+    "  payload y pon la IP que devuelve (`attacker_ip`, tu tun0) en el parámetro\n"
+    "  que corresponda; comprueba que responde ANTES de disparar el exploit.\n"
+)
+
 #: PLAN-FIRST: the engagement is a contract, not a stream of reactive calls.
 #: Appended only when the catalog offers ``nexus.orchestrator.create_plan``, so a
 #: prompt shown to a subagent that cannot create one never names it (same rule as
@@ -282,7 +297,7 @@ REGLAS:
   antes de decidir el siguiente paso.
 - WEB (80/443): carga la skill web-recon-master (nexus.skill.load) y sigue su
   checklist ANTES de atacar; un login no es una invitación a probar contraseñas.
-{login_rule}{cms_exploit_rule}- BRUTEFORCE = ÚLTIMO RECURSO: sin pista de credenciales débiles ni
+{login_rule}{cms_exploit_rule}{ssrf_http_server_rule}- BRUTEFORCE = ÚLTIMO RECURSO: sin pista de credenciales débiles ni
   enumeración agotada, no lo lances; registra un barrier y cambia de rama.
 - ENFOQUE MULTI-VECTOR (CYBER KILL CHAIN): auditas un entorno, no un puzzle
   lineal. Revisa los hechos (query_facts): con varios servicios o endpoints
@@ -790,6 +805,13 @@ def render_system_prompt(
         if "nexus.exploit.find_and_prepare" in catalog
         else ""
     )
+    # The SSRF order names the only tool that can host the payload; a catalog
+    # without it must not mention it either (per-subagent gating).
+    ssrf_http_server_rule = (
+        SSRF_HTTP_SERVER_RULE_PROMPT
+        if "nexus.post.http_server" in catalog
+        else ""
+    )
     passive_wait_rule = PASSIVE_WAIT_RULE_PROMPT
     plan_rule = (
         ENGAGEMENT_PLAN_RULE_PROMPT
@@ -830,6 +852,7 @@ def render_system_prompt(
         passive_wait_rule=passive_wait_rule,
         login_rule=login_rule,
         cms_exploit_rule=cms_exploit_rule,
+        ssrf_http_server_rule=ssrf_http_server_rule,
         engagement_plan_rule=plan_rule,
         pivot_route_rule=pivot_route_rule,
         ad_tunnel_rule=ad_tunnel_rule,
