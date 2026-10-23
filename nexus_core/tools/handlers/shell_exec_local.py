@@ -138,6 +138,53 @@ def shell_code(command: str) -> str:
     return "".join(out)
 
 
+#: Consumers that cannot fail on their own and report only **their** status, so
+#: a pipeline through them is 0 even when the producer died. Measured in DeadDrop
+#: (2026-10-23, iteration 71): ``proxychains4 … | head -60`` answered
+#: ``outcome: success`` for a command that never reached the DC, and the run read
+#: that as "the tunnel works". ``grep``/``wc``/``sort`` are deliberately **not**
+#: here: a predicate's non-zero exit is a real answer about the filter.
+PIPEFAIL_CONSUMERS: frozenset[str] = frozenset(
+    {"head", "tail", "tee", "less", "more", "column"}
+)
+
+#: A single ``|`` (the ``||`` operator is not a pipeline).
+_PIPE_SPLIT_RE = re.compile(r"(?<!\|)\|(?!\|)")
+
+
+#: What the observation says when the pipeline could not be made honest (the OCI
+#: backend runs ``sh``, which is not guaranteed to support ``pipefail``).
+PIPELINE_STATUS_NOTE = (
+    "el exit code es el del consumidor de la tubería, no el del comando que la "
+    "alimenta: comprueba el productor por separado"
+)
+
+
+def pipeline_consumer(command: str) -> str:
+    """Program of the last stage of the command's last pipeline (``""`` = none).
+
+    Reads the quote-blanked projection of the command, so ``echo 'a | b'`` is not
+    a pipeline and ``cmd|head`` (no spaces) is.
+    """
+    stages = _PIPE_SPLIT_RE.split(shell_code(command))
+    if len(stages) < 2:
+        return ""
+    last = stages[-1].strip()
+    if not last:
+        return ""
+    return os.path.basename(last.split()[0]).lower()
+
+
+def needs_pipefail(command: str) -> bool:
+    """Whether the command ends in a pipeline whose exit code would lie."""
+    return pipeline_consumer(command) in PIPEFAIL_CONSUMERS
+
+
+def shell_script(command: str, *, pipefail: bool) -> str:
+    """The command as bash runs it, with ``pipefail`` when it is needed."""
+    return f"set -o pipefail; {command}" if pipefail else command
+
+
 def has_background_operator(command: str) -> bool:
     """Whether the command ends a list with ``&`` (not ``&&``, ``&>`` or ``>&``)."""
     code = shell_code(command)
@@ -1066,6 +1113,17 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
     with suppress(AttributeError):
         sandbox.max_output_bytes = SHELL_MAX_OUTPUT_BYTES
     program = "sh" if isinstance(sandbox, OCISandbox) else "bash"
+    # F2: ``… | head`` hides the producer's exit code. Only bash is asked for
+    # ``pipefail`` (``sh`` may be dash, where the option aborts the script); the
+    # OCI backend gets the same fact as a note instead.
+    consumer = pipeline_consumer(request.command)
+    pipefail = consumer in PIPEFAIL_CONSUMERS and program == "bash"
+    pipeline_evidence: dict[str, Any] = (
+        {"pipeline": {"consumer": consumer, "pipefail": pipefail}}
+        if consumer else {}
+    )
+    if consumer and not pipefail:
+        pipeline_evidence["pipeline"]["note"] = PIPELINE_STATUS_NOTE
     if is_background_command(request.command):
         # ``nohup ... &`` used to block until the timeout: the detached child
         # inherited the handler's pipes. A background request is answered at
@@ -1077,7 +1135,7 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
         async with _run_lock(context.run_id):
             result = await run_in_sandbox(
                 sandbox,
-                [program, "-lc", request.command],
+                [program, "-lc", shell_script(request.command, pipefail=pipefail)],
                 timeout_seconds=request.timeout_seconds,
                 image_env="NEXUS_SHELL_IMAGE",
                 default_image="python:3.12-alpine",
@@ -1228,6 +1286,7 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             "stderr_lines": result.stderr.count("\n") + (1 if result.stderr else 0),
             **({"stderr_tail": tail} if tail else {}),
             **({"reason": "command timed out"} if result.timed_out else {}),
+            **pipeline_evidence,
             "cwd": cwd_relative,
             # Absolute sandbox root: the model can never guess it, and a guessed
             # absolute path (``/home/<user>/omni-agentcs/workspace/pass.txt`` in
@@ -1251,6 +1310,7 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
             "timeout_seconds": request.timeout_seconds,
             **({"stderr_tail": tail} if tail else {}),
             **({"reason": "command timed out"} if result.timed_out else {}),
+            **pipeline_evidence,
             "sha256": artifact.get("sha256"),
             "artifact_ref": artifact.get("id"),
             **(
@@ -1279,6 +1339,8 @@ __all__ = [
     "LOCAL_PRIVILEGE_REASON",
     "SHELL_SCOPE_DENIED_GUIDANCE",
     "SHELL_ALLOWED_PROGRAMS",
+    "PIPEFAIL_CONSUMERS",
+    "PIPELINE_STATUS_NOTE",
     "STDERR_TAIL_LINES",
     "SHELL_MAX_OUTPUT_BYTES",
     "SHELL_MAX_STDIN_BYTES",
@@ -1294,14 +1356,17 @@ __all__ = [
     "fetch_targets",
     "has_background_operator",
     "is_background_command",
+    "needs_pipefail",
     "out_of_scope_fetch_target",
     "passive_wait_reason",
+    "pipeline_consumer",
     "prohibited_reason",
     "redacted_stderr_tail",
     "resolve_cwd",
     "shell_code",
     "shell_exec_definition",
     "shell_exec_handler",
+    "shell_script",
     "stderr_tail",
     "summarize",
 ]

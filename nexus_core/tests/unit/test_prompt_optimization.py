@@ -277,7 +277,11 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # compresses the CMS order by 268 characters without dropping a single fact it
     # exists for: the two PoC handoffs and the BlogEngine theme endpoint stay.
     # Measured 32,090; ceiling 32_150.
-    assert len(_prompt(catalog)) < 32_150
+    # Tanda F adds the AD tunnel order (+285): the DC is reachable only through
+    # the pivot, and wrapping ``nxc``/``secretsdump`` in ``shell.exec`` is what
+    # made the DeadDrop run close with ``grounded: 0``. Measured 32,375;
+    # ceiling 32,450.
+    assert len(_prompt(catalog)) < 32_450
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -309,7 +313,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # 32_700. The block itself is unchanged.
     # Tanda E moves with the static prompt (+30 over Tanda D): measured 32,717;
     # ceiling 32_800. The block itself is unchanged.
-    assert len(prompt) < 32_800
+    # Tanda F moves with the static prompt (+285): measured 33,002; ceiling
+    # 33_100. The block itself is unchanged.
+    assert len(prompt) < 33_100
     assert len(block) < 1_200
 
 
@@ -494,7 +500,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # Tanda E's catalog contract lands here (+~200 tokens on the compact turn) and
     # buys back the four rejected ``web.upload`` turns and the three ``cwd`` ones
     # at ~11 000 tokens each: measured 7,208; ceiling 7_250 (250k buys ~34 turns).
-    assert tokens < 7_250
+    # Tanda F's AD tunnel order lands here too (+72 tokens): measured 7,280;
+    # ceiling 7_330 (250k buys ~34 turns).
+    assert tokens < 7_330
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -535,7 +543,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # ceiling moves to 7_800; 250k still buys ~32 turns.
     # Tanda E measured 7,886 average (its own catalog contract +200/turn on the
     # compact turns, +209 on the full ones); ceiling 7_930, ~31 turns.
-    assert sum(totals) / len(totals) < 7_930
+    # Tanda F measured 7,958 average (the AD tunnel order on every turn where the
+    # catalog offers ``netexec``): ceiling 8_010, ~31 turns.
+    assert sum(totals) / len(totals) < 8_010
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -563,7 +573,8 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # Tanda B: the same block on the refresh turn measured 9,944; ceiling 9_990.
     # Tanda D on the refresh turn: measured 10,169; ceiling 10_220.
     # Tanda E on the refresh turn: measured 10,192; ceiling 10_250.
-    assert max(totals) < 10_250
+    # Tanda F on the refresh turn: measured 10,263; ceiling 10_330.
+    assert max(totals) < 10_330
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):

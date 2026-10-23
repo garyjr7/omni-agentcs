@@ -28,6 +28,7 @@ from ._ad import (
 )
 from ._exec import run_in_sandbox, safe_run_id
 from ._impacket_resolver import resolve_impacket_binary
+from ._proxy import ensure_proxy_in_scope, parse_proxy, resolve_proxychains, wrap_argv
 
 SECRETSDUMP_METHODS = ("all", "ntds", "ntds_ntlm")
 
@@ -109,6 +110,17 @@ def impacket_secretsdump_definition(tenant_id: str = "system") -> ToolDefinition
                     "type": "integer",
                     "minimum": 60,
                     "maximum": SECRETSDUMP_MAX_TIMEOUT_SECONDS,
+                },
+                "proxy": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "description": (
+                        "Túnel SOCKS por el que sale secretsdump (ej. "
+                        "socks5://127.0.0.1:1080). Se ejecuta con proxychains4 "
+                        "dentro de la tool: la salida se parsea y las cuentas "
+                        "volcadas se registran como hechos. Sin credenciales en "
+                        "la URL."
+                    ),
                 },
                 "flags": {
                     "type": "array",
@@ -198,6 +210,31 @@ async def impacket_secretsdump_handler(
         return ToolResult(verification_method="secretsdump_unavailable")
 
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
+    # F1: the SOCKS tunnel is applied by the handler, not by a ``shell.exec``
+    # wrapper, so the dump files are still parsed and every recovered account is
+    # recorded (DeadDrop could not certify the DC for exactly this reason).
+    proxy_value = arguments.get("proxy")
+    proxy = parse_proxy(proxy_value) if proxy_value else None
+    proxychains = ""
+    if proxy is not None:
+        ensure_proxy_in_scope(proxy, getattr(context, "scope", None))
+        proxychains = resolve_proxychains() or ""
+        if not proxychains:
+            return ToolResult(
+                output={
+                    "error": "proxychains4 is not installed",
+                    "proxy": proxy.address,
+                    "guidance": (
+                        "Instala proxychains4 (`sudo apt install proxychains4`) "
+                        "o exporta NEXUS_PROXYCHAINS_BINARY=<ruta>."
+                    ),
+                },
+                verified=False,
+                outcome="unavailable",
+                verification_method="proxychains_unavailable",
+                evidence={"proxy": proxy.describe()},
+            )
+
     run_id = safe_run_id(context)
     prefix = str(Path(workspace_root).resolve() / f"sd_{run_id}")
 
@@ -229,7 +266,12 @@ async def impacket_secretsdump_handler(
         )
     )
 
-    sandbox = ad_sandbox(workspace_root, binary)
+    sandbox = ad_sandbox(workspace_root, binary, proxychains)
+    proxy_evidence: dict[str, Any] = {}
+    if proxy is not None:
+        argv, proxy_evidence = wrap_argv(
+            argv, proxy, binary=proxychains, root=workspace_root, run_id=run_id
+        )
     result = await run_in_sandbox(
         sandbox,
         argv,
@@ -246,6 +288,7 @@ async def impacket_secretsdump_handler(
         "timeout_seconds": timeout_seconds,
         "flags": list(user_flags),
         "output_prefix": prefix,
+        **proxy_evidence,
     }
     if result.timed_out:
         return ToolResult(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
+from nexus_core.kernel.workspace_hygiene import spoiler_report
 
 
 def system_status_definition(tenant_id: str = "system") -> ToolDefinition:
@@ -26,7 +27,16 @@ async def system_status_handler(arguments: dict, context: RunContext) -> ToolRes
             " WHERE tenant_id=? AND status='queued'",
             (context.tenant_id,),
         ).fetchone()["value"]
-    output = {"status": "healthy", "queued_tasks": queued, "worker_id": context.worker_id}
+    # F3: a workspace that already holds the walkthrough cannot produce a run
+    # that proves discovery. The operator asks here; nothing is blocked or moved
+    # (and the model is never told which files they are).
+    isolation = spoiler_report(getattr(context, "project_root", "") or None)
+    output = {
+        "status": "healthy",
+        "queued_tasks": queued,
+        "worker_id": context.worker_id,
+        **isolation,
+    }
     return ToolResult(
         output=output,
         verified=True,

@@ -25,8 +25,9 @@ from ._ad import (
     validate_host,
     validate_username,
 )
-from ._exec import run_in_sandbox
+from ._exec import run_in_sandbox, safe_run_id
 from ._impacket_resolver import resolve_impacket_binary
+from ._proxy import ensure_proxy_in_scope, parse_proxy, resolve_proxychains, wrap_argv
 
 PSEXEC_ALLOWED_FLAGS: dict[str, bool] = {
     "-hashes": True,
@@ -88,6 +89,16 @@ def psexec_definition(tenant_id: str = "system") -> ToolDefinition:
                     "type": "integer",
                     "minimum": 30,
                     "maximum": PSEXEC_MAX_TIMEOUT_SECONDS,
+                },
+                "proxy": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "description": (
+                        "Túnel SOCKS por el que sale psexec (ej. "
+                        "socks5://127.0.0.1:1080). Se ejecuta con proxychains4 "
+                        "dentro de la tool: la salida se parsea y el canal queda "
+                        "verificado. Sin credenciales en la URL."
+                    ),
                 },
                 "flags": {
                     "type": "array",
@@ -170,7 +181,41 @@ async def impacket_psexec_handler(arguments: dict, context: RunContext) -> ToolR
     argv.extend([positional, command])
 
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
-    sandbox = ad_sandbox(workspace_root, binary)
+    # F1: the tunnel is applied here so the handler still parses the remote
+    # command's output (a ``shell.exec`` wrapper derives no fact).
+    proxy_value = arguments.get("proxy")
+    proxy = parse_proxy(proxy_value) if proxy_value else None
+    proxychains = ""
+    if proxy is not None:
+        ensure_proxy_in_scope(proxy, getattr(context, "scope", None))
+        proxychains = resolve_proxychains() or ""
+        if not proxychains:
+            return ToolResult(
+                output={
+                    "error": "proxychains4 is not installed",
+                    "proxy": proxy.address,
+                    "guidance": (
+                        "Instala proxychains4 (`sudo apt install proxychains4`) "
+                        "o exporta NEXUS_PROXYCHAINS_BINARY=<ruta>."
+                    ),
+                },
+                verified=False,
+                outcome="unavailable",
+                verification_method="proxychains_unavailable",
+                evidence={"proxy": proxy.describe()},
+            )
+
+    proxy_evidence: dict[str, Any] = {}
+    if proxy is not None:
+        argv, proxy_evidence = wrap_argv(
+            argv,
+            proxy,
+            binary=proxychains,
+            root=workspace_root,
+            run_id=safe_run_id(context),
+        )
+
+    sandbox = ad_sandbox(workspace_root, binary, proxychains)
     result = await run_in_sandbox(
         sandbox,
         argv,
@@ -186,6 +231,7 @@ async def impacket_psexec_handler(arguments: dict, context: RunContext) -> ToolR
         "command": command,
         "timeout_seconds": timeout_seconds,
         "flags": list(user_flags),
+        **proxy_evidence,
     }
     if result.timed_out:
         return ToolResult(

@@ -35,7 +35,8 @@ from ._ad import (
     validate_host,
     validate_username,
 )
-from ._exec import run_in_sandbox
+from ._exec import run_in_sandbox, safe_run_id
+from ._proxy import ensure_proxy_in_scope, parse_proxy, resolve_proxychains, wrap_argv
 
 NETEXEC_PROTOCOLS = ("smb", "ldap")
 
@@ -241,6 +242,16 @@ def netexec_definition(tenant_id: str = "system") -> ToolDefinition:
                     "minimum": 30,
                     "maximum": NETEXEC_MAX_TIMEOUT_SECONDS,
                 },
+                "proxy": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "description": (
+                        "Túnel SOCKS por el que sale netexec (ej. "
+                        "socks5://127.0.0.1:1080). Se ejecuta con proxychains4 "
+                        "dentro de la tool, así que la salida se parsea y el "
+                        "hecho se verifica. Sin credenciales en la URL."
+                    ),
+                },
                 "flags": {
                     "type": "array",
                     "items": {"type": "string", "maxLength": 256},
@@ -300,6 +311,34 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
             verification_method="netexec_unavailable",
         )
 
+    # F1: a SOCKS tunnel is a transport, not a different channel. The wrapper
+    # runs *here*, so the handler still parses nxc's output and the verifier
+    # still records the fact (DeadDrop closed grounded:0 because the only route
+    # to the DC was a proxychains4 command inside ``shell.exec``).
+    workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
+    proxy_value = arguments.get("proxy")
+    proxy = parse_proxy(proxy_value) if proxy_value else None
+    proxychains = ""
+    if proxy is not None:
+        ensure_proxy_in_scope(proxy, getattr(context, "scope", None))
+        proxychains = resolve_proxychains() or ""
+        if not proxychains:
+            return ToolResult(
+                output={
+                    "error": "proxychains4 is not installed",
+                    "proxy": proxy.address,
+                    "guidance": (
+                        "Instala proxychains4 (`sudo apt install proxychains4`) "
+                        "o exporta NEXUS_PROXYCHAINS_BINARY=<ruta>. Sin el wrapper "
+                        "netexec no puede salir por el túnel."
+                    ),
+                },
+                verified=False,
+                outcome="unavailable",
+                verification_method="proxychains_unavailable",
+                evidence={"proxy": proxy.describe()},
+            )
+
     domain = validate_domain(arguments["domain"]) if arguments.get("domain") else ""
     username = (
         validate_username(arguments["username"]) if arguments.get("username") else ""
@@ -356,8 +395,17 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
     if noise_level == "high":
         warnings.append(f"high noise profile: {threads} threads")
 
-    workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
-    sandbox = ad_sandbox(workspace_root, binary)
+    proxy_evidence: dict[str, Any] = {}
+    if proxy is not None:
+        argv, proxy_evidence = wrap_argv(
+            argv,
+            proxy,
+            binary=proxychains,
+            root=workspace_root,
+            run_id=safe_run_id(context),
+        )
+
+    sandbox = ad_sandbox(workspace_root, binary, proxychains)
     result = await run_in_sandbox(
         sandbox,
         argv,
@@ -377,6 +425,7 @@ async def netexec_handler(arguments: dict, context: RunContext) -> ToolResult:
         "warnings": warnings,
         # The engine resolved it, not the model: the handle is the audit trail.
         **({"credential": resolved_note} if resolved_note else {}),
+        **proxy_evidence,
     }
     if result.timed_out:
         return ToolResult(

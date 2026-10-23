@@ -137,6 +137,36 @@ def _runtime_preconditions(tools, rpc) -> list[dict]:
     return entries
 
 
+def _workspace_isolation() -> list[dict]:
+    """Warn when the workspace already holds the report the run must produce.
+
+    Measured in DeadDrop (2026-10-23): the campaign document with the flag, the
+    ``Administrator`` NT hash and the exact recipe sat in ``docs/missions/diag``
+    nine hours before the run, and the run's ``shell.exec`` greps that tree by
+    design. The result was indistinguishable from discovery, so it could certify
+    nothing. This is a *warning*: the operator may be running a re-test on a box
+    they own, and nothing here is deleted.
+    """
+    from nexus_core.kernel.workspace_hygiene import scan_spoilers
+
+    scan = scan_spoilers()
+    if not scan.contaminated:
+        return []
+    return [
+        {
+            "service": "workspace",
+            "missing_env": [],
+            "severity": "warning",
+            "action": (
+                f"mueve esos {scan.total} ficheros fuera de {scan.root} antes de "
+                "un run que deba demostrar descubrimiento (el motor puede leerlos)"
+            ),
+            "observed": f"spoilers={scan.total}",
+            "files": list(scan.files),
+        }
+    ]
+
+
 def _audit(path):
     if not path.is_file():
         return []
@@ -213,7 +243,9 @@ def run_doctor(paths, config, *, as_json=False) -> int:
         "msfrpcd": rpc,
         # Operator config the tools need at run time (never a secret: only the
         # *names* of unset variables and what to do about them).
-        "runtime_preconditions": _runtime_preconditions(tools, rpc),
+        "runtime_preconditions": (
+            _runtime_preconditions(tools, rpc) + _workspace_isolation()
+        ),
         "audit": [] if postgres else _audit(db),
     }
     # Protect against a secret accidentally echoed by a local version command.

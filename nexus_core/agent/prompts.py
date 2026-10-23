@@ -119,6 +119,19 @@ PIVOT_ROUTE_RULE_PROMPT = (
     "  route del modelo no cierra el TODO ni desarma el gate de pivote.\n"
 )
 
+#: How the tunnel reaches the AD tools (Tanda F1). Measured origin: DeadDrop
+#: (2026-10-23), where the run wrapped ``nxc``/``secretsdump`` in ``proxychains4``
+#: inside ``nexus.shell.exec``: the DC answered, the wrapper channel parsed
+#: nothing and ``grounded`` stayed at 0. Gated on ``nexus.recon.netexec``, the
+#: tool the order is about, so a recon subagent that cannot call it never reads
+#: the line (and every subagent that has netexec also has ``shell.exec``).
+AD_TUNNEL_RULE_PROMPT = (
+    "- TÚNEL A AD: si el DC solo responde por el pivote, el túnel va DENTRO de la\n"
+    "  tool: netexec, secretsdump y psexec aceptan proxy=\"socks5://127.0.0.1:1080\"\n"
+    "  y salen por proxychains4. Envueltas en nexus.shell.exec su salida no se\n"
+    "  parsea, no hay hechos y el run no puede cerrar el DC.\n"
+)
+
 #: The Node preview semantics. Gated on the two tools that reach a preview
 #: endpoint, so a subagent without them never reads the rule (same contract as
 #: :data:`LOGIN_RULE_PROMPT`). Measured origin: DeadDrop P12 (2026-10-22), where
@@ -277,7 +290,7 @@ REGLAS:
   (hydra sin credenciales, un endpoint sin SQLi), no insistas más de 2 veces:
   registra un barrier para ese vector y PIVOTA al siguiente. Mapea todas las
   vulnerabilidades, no solo la primera que veas.
-{engagement_plan_rule}{passive_wait_rule}{pivot_route_rule}{preview_module_rule}{credential_family_rule}{denied_patterns}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
+{engagement_plan_rule}{passive_wait_rule}{pivot_route_rule}{ad_tunnel_rule}{preview_module_rule}{credential_family_rule}{denied_patterns}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
   enumeración → acceso inicial → escalada → post-explotación → reporte). El
   plan vigente se muestra más abajo: trabaja SIEMPRE la fase actual y usa su
   foco y su siguiente paso sugerido como guía. Cuando completes la fase, tus
@@ -788,6 +801,9 @@ def render_system_prompt(
         if "nexus.post.verify_route" in catalog
         else ""
     )
+    ad_tunnel_rule = (
+        AD_TUNNEL_RULE_PROMPT if "nexus.recon.netexec" in catalog else ""
+    )
     # The preview semantics are an order about a *result* the model already
     # misread once; it travels with the two tools that can reach a preview.
     preview_module_rule = (
@@ -816,6 +832,7 @@ def render_system_prompt(
         cms_exploit_rule=cms_exploit_rule,
         engagement_plan_rule=plan_rule,
         pivot_route_rule=pivot_route_rule,
+        ad_tunnel_rule=ad_tunnel_rule,
         preview_module_rule=preview_module_rule,
         credential_family_rule=credential_family_rule,
         # Built from the catalog that is actually being sent, so the block never

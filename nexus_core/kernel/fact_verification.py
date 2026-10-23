@@ -436,6 +436,14 @@ _WIN_ADMIN_GROUPS = frozenset(
 #: A single-token Windows account name, e.g. ``tom`` or ``WINDOMAIN\\tom``.
 _WIN_ACCOUNT_RE = re.compile(r"^[^\s()]{1,64}$")
 
+#: NetExec's admin marker: ``CORP\\administrator:Passw0rd (Pwn3d!)``. The printed
+#: credential is never copied into a fact -only the account name is- so the
+#: password cannot reach the board by this path.
+_PWN3D_RE = re.compile(r"(?P<credential>[^\s()]+)\s+\(Pwn3d!\)", re.IGNORECASE)
+
+#: ``NT AUTHORITY\SYSTEM`` printed by the remote command of psexec/winrm.
+_SYSTEM_ACCOUNT_RE = re.compile(r"nt\s+authority\\system", re.IGNORECASE)
+
 #: ``Get-Content <path>`` / ``type <path>`` / ``cat <path>`` reading exactly one
 #: literal file: no pipes, no wildcards, no loops, no redirections. Only this
 #: shape lets the verifier attribute a flag to the path that was read.
@@ -620,6 +628,35 @@ def _net_group_members(text):
         if _WIN_ACCOUNT_RE.match(account):
             members.append(account)
     return members
+
+
+def netexec_admin_accounts(entries) -> tuple[tuple[str, str], ...]:
+    """``(domain, username)`` of every row NetExec marked ``Pwn3d!``.
+
+    NetExec prints the marker only after it authenticated *and* its own admin
+    check succeeded, so the row is a proven local-administrator session -not a
+    guess. The credential NetExec echoes (``CORP\\administrator:Passw0rd``) is
+    parsed for the account name and thrown away: the password never becomes a
+    fact (V1-29).
+    """
+    accounts: list[tuple[str, str]] = []
+    for entry in entries or ():
+        text = str((entry or {}).get("text") or "")
+        match = _PWN3D_RE.search(text)
+        if match is None:
+            continue
+        credential = match.group("credential")
+        account = credential.split(":", 1)[0].strip()
+        domain, _, username = account.partition("\\")
+        if not username:
+            username, domain = domain, ""
+        username = username.strip()
+        if not _WIN_ACCOUNT_RE.match(username):
+            continue
+        pair = (domain.strip(), username)
+        if pair not in accounts:
+            accounts.append(pair)
+    return tuple(accounts)
 
 
 def _secret_handle(value, *, kind="credential", tenant_id="system"):
@@ -1059,6 +1096,104 @@ def derive_assertions(tool_id, arguments, result, context):
                 add('privilege', target, {'uid': 0, 'user': 'root'})
             for flag in FLAG_RE.findall(stdout):
                 add('loot', flag, {'flag': flag, 'command': command, 'service': 'wordpress'}, flag)
+    elif (tool_id == 'nexus.recon.netexec'
+          and result.verification_method == 'netexec_text_parsed'):
+        # F1 (DeadDrop, 2026-10-23): the run reached the DC through a
+        # ``proxychains4`` command typed into ``nexus.shell.exec``, and this
+        # function asserted **nothing** for the only channel that worked, so a
+        # dumped domain administrator closed as ``grounded: 0``. The ``Pwn3d!``
+        # row is NetExec's own admin check: the account authenticated *and* is a
+        # local administrator on that host, which is ``access`` plus
+        # ``privilege`` -never a guess about a password.
+        target = output.get('target')
+        protocol = str(output.get('protocol') or 'smb')
+        tenant = str(getattr(context, 'tenant_id', 'system'))
+        password = (arguments or {}).get('password')
+        for domain, account in netexec_admin_accounts(output.get('entries') or ()):
+            add('access', target,
+                {'transport': protocol, 'username': account,
+                 'domain': domain or None, 'via': 'netexec'},
+                f'{protocol}:{account}@{target}')
+            add('privilege', target,
+                {'account': account, 'domain': domain or None, 'host': target,
+                 'source': 'netexec:pwn3d'},
+                f'admin:{account}@{target}')
+            if password:
+                handle = _credential_handle(
+                    {'password': password}, kind=protocol, tenant_id=tenant
+                )
+                if handle:
+                    add('credential', target,
+                        {'username': account, 'secret_ref': handle,
+                         'service': protocol},
+                        f'cred:{protocol}:{account}@{target}')
+    elif (tool_id == 'nexus.attack.impacket_secretsdump'
+          and result.verification_method == 'secretsdump_files_parsed'):
+        # The dump files exist only after secretsdump authenticated *and* was
+        # allowed to read SAM/NTDS, so the caller's channel is proven on its
+        # own and every account in the files is a credential the engine
+        # recovered. The NT hash is stored in the vault under its own kind so it
+        # can never be handed out as a password (V1-29).
+        target = output.get('target')
+        domain = str((arguments or {}).get('domain') or '')
+        caller = (arguments or {}).get('username')
+        tenant = str(getattr(context, 'tenant_id', 'system'))
+        if caller:
+            add('access', target,
+                {'transport': 'smb', 'username': caller, 'domain': domain or None,
+                 'via': 'secretsdump'},
+                f'smb:{caller}@{target}')
+        for entry in output.get('entries') or ():
+            entry = entry if isinstance(entry, dict) else {}
+            username = str(entry.get('username') or '').strip()
+            ntlm_hash = str(entry.get('ntlm_hash') or '').strip()
+            if not username or not ntlm_hash:
+                continue
+            handle = _secret_handle(ntlm_hash, kind='ntlm', tenant_id=tenant)
+            add('credential', target,
+                {'username': username, 'domain': domain or None,
+                 'secret_ref': handle or None, 'hash_type': 'ntlm',
+                 'rid': entry.get('rid') or None,
+                 'source': str(entry.get('source') or '') or None,
+                 'service': 'smb', 'via': 'secretsdump'},
+                f'ntlm:{username}@{target}')
+            # RID 500 is the built-in administrator account of the database that
+            # was dumped: its hash *is* the compromise of that authority. The
+            # fact says exactly that and never invents a group membership the
+            # tool did not print.
+            if str(entry.get('rid') or '') == '500':
+                add('privilege', target,
+                    {'account': username, 'domain': domain or None,
+                     'host': target, 'source': 'secretsdump:rid500'},
+                    f'admin:{username}@{target}')
+    elif (tool_id == 'nexus.attack.impacket_psexec'
+          and result.verification_method == 'psexec_output_parsed'):
+        # psexec uploads a service binary and runs it as SYSTEM, so a successful
+        # call is a command channel on that host. The privilege claim still waits
+        # for the account name in the output: the remote command proves it, the
+        # handler's design does not have to.
+        target = output.get('target')
+        domain = str((arguments or {}).get('domain') or '')
+        username = str((arguments or {}).get('username') or '')
+        auth = f'{domain}/{username}' if domain else username
+        add('access', target,
+            {'transport': 'smb-exec', 'username': username or None,
+             'domain': domain or None, 'via': 'psexec'},
+            f'smb-exec:{auth}@{target}')
+        text = "\n".join(str(line) for line in (output.get('lines') or ()))
+        if _SYSTEM_ACCOUNT_RE.search(text):
+            add('privilege', target,
+                {'account': 'SYSTEM', 'domain': domain or None,
+                 'host': target, 'source': 'psexec:remote-identity'},
+                f'admin:SYSTEM@{target}')
+        command = str((arguments or {}).get('command') or '')
+        read = _WIN_READ_RE.match(command)
+        path = read.group('path').strip('"\'') if read else ''
+        for flag in FLAG_RE.findall(text):
+            add('loot', flag,
+                {'flag': flag, 'command': command, 'path': path or None,
+                 'service': 'smb-exec', 'via': 'psexec'},
+                path or flag)
     elif tool_id == 'nexus.win.winrm_exec' and result.verification_method == 'winrm_command_executed':
         # The channel itself is proven: the harness only reports
         # ``winrm_command_executed`` after NetExec authenticated *and* printed its
