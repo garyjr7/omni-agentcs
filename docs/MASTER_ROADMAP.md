@@ -18,7 +18,9 @@
 | Ingesta de evidencia web + identidades (B0/B1) | §5.17 — `html_evidence` + `identity_derivation` (2026-10-23) |
 | Validación de identidad sin contraseña (B1) | §5.18 — `nexus.attack.ad_user_enum` |
 | Ledger por camino (B2) | §5.19 — `VectorEntry` en `agent/coverage.py` |
+| Reflexión auditable (B3) | §5.20 — `agent/reflection.py` + evento `react.reflection` |
 | Suite tras B0/B1/B2 | **4 184 passed / 53 skipped** |
+| Suite tras B3 | **4 195 passed / 53 skipped** |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
 | Regla de esta entrega | **V11**: el PoC tiene que llegar al objetivo (form_params reales, next_steps y subida de temas) sin tocar `ToolGateway` |
@@ -360,7 +362,7 @@ son una fase nueva: son la capa entre la observación y la acción.
 | Derivación de identidades (B1) | Medido HackPark | **[HECHO]** | `kernel/identity_derivation.py`: convención confirmada por una dirección publicada, candidatos con `confidence` (1.0 observada / 0.9 nombre+correo / 0.6 convención / 0.3 conjetura), `priority_targets` por rol. Sin dominio no se inventa ninguna cuenta. |
 | Validación barata antes de la contraseña (B1) | Medido HackPark | **[HECHO]** | `nexus.attack.ad_user_enum` (§5.18): kerbrute si está (veredicto por cuenta, `attribution=full`) o `GetNPUsers -no-pass` si no (`partial`: prueba las que nombra y deja el resto `unknown`). No envía contraseña, así que no mueve el contador de bloqueo (`lockout_risk: none`). Los hashes AS-REP van al vault y `crack_hash` gana `krb5asrep`/`krb5tgs`. |
 | Ledger por camino `servicio × técnica` (B2) | Requisito de la v1 | **[HECHO]** | `VectorEntry` en `agent/coverage.py` (§5.19): cada `vulnerability` que nombra una ruta (CVE/id/path) es un ítem con su veredicto; un `barrier` que nombra la ruta cierra **solo** ese camino y el servicio sigue abierto mientras queden pendientes. El pivote ordena el siguiente camino en vez de abandonar el servicio. |
-| Reflexión auditable por turno (B3) | Requisito de la v1 | **[PENDIENTE]** | Hoy la corrección es determinista por hints (`login_probe_hint`, `pivot_hint`, `budget_hint`). Falta el evento que obligue a citar hechos nuevos sin usar antes de actuar. |
+| Reflexión auditable por turno (B3) | Requisito de la v1 | **[HECHO]** | `agent/reflection.py` (§5.20): tras 3 turnos sin hechos nuevos el prompt nombra los hechos **verificados y accionables** cuyo valor no aparece en ningún argumento de la ronda, y el evento `react.reflection` guarda el texto. No decide ni autoriza: el modelo elige y el gateway gobierna. |
 
 ---
 
@@ -987,6 +989,45 @@ comporta igual.
   se convierte en camino cuando un `vulnerability` la nombra.
 - No se ha re-ejecutado una sala con cuatro vectores reales: la aceptación es
   unitaria sobre hechos sintéticos con las formas que produce el verificador.
+
+### 5.20 B3 — la ronda se pregunta qué tiene y no ha gastado (2026-10-23) — **EJECUTADA**
+
+Origen medido: en HackPark V15 el run tenía en el tablero el nombre del contrato,
+la cuenta y la sesión del panel, y gastó los turnos releyendo la misma página; en
+DeadDrop P12 el hash y la contraseña SSH ya eran hechos verificados y el run pidió
+credenciales con ellos en pantalla. La metodología no faltaba (las skills la
+traen): faltaba **mirar atrás**. Un senior pregunta una sola cosa entre observar y
+actuar —«¿qué tengo ya que no he usado?»— y B3 hace esa pregunta auditable en vez
+de esperar a que el modelo la formule.
+
+| Paso | Cambio | Ficheros | Test de aceptación |
+|---|---|---|---|
+| B3.1 | Regla determinista: solo hechos **verificados** (`is_verified_fact`) de tipo accionable (credential, vulnerability, user, email, session); «usado» = algún valor del hecho aparece en los `arguments` de una acción de la ronda | `agent/reflection.py` (`unused_facts`) | `test_a_credential_no_action_used_is_the_first_thing_reflected`, `test_an_unverified_fact_is_never_reflected`, `test_a_fact_whose_value_appears_in_the_arguments_is_not_unused` |
+| B3.2 | La salida de la herramienta no cuenta como uso: se leen `arguments` y `tool_id`, nunca `output`/`stdout`, para que la acción que produjo el hecho no silencie el aviso | `agent/reflection.py` (`_action_blob`) | `test_the_tool_output_is_not_confused_with_use` |
+| B3.3 | Los `endpoint`/`host`/`service` no son leads accionables: una ruta existe en la salida del escáner, no en los argumentos del modelo, así que llamarla «sin usar» sería una mentira | `agent/reflection.py` (`ACTIONABLE_TYPES`) | `test_recon_outputs_are_not_actionable_leads` |
+| B3.4 | Umbral y cota: el bloque solo aparece tras `REFLECTION_AFTER_TURNS` turnos sin hechos nuevos, con máximo 5 hechos y 900 caracteres, ordenados credential → vulnerability → user → email → session | `agent/reflection.py` (`render_reflection`) | `test_the_hint_only_appears_after_a_barren_streak`, `test_a_progressing_run_pays_nothing`, `test_the_list_is_bounded_and_ranked` |
+| B3.5 | Auditoría de una sola vez por lista: `_refresh_reflection_hint` inyecta el texto, lo guarda en `react.reflection` y lo marca en `audit_step`; el mismo texto no se repite en el siguiente turno | `agent/react_coordinator.py` | `test_the_coordinator_audits_the_reflection_once_per_list`, `test_a_action_that_spends_the_fact_silences_the_reflection` |
+| B3.6 | El bloque llega al prompt de sistema junto al ledger, sin tocar el plan | `agent/react_services.py` (`ContextSnapshot.reflection_hint`) | `test_the_prompt_carries_the_reflection_block` |
+
+**Por qué no es un parche de sala:** no hay host, CMS ni ruta concreta. La
+regla es textual sobre el hecho y sobre los argumentos de la ronda; el mismo
+código sirve para un AD, un panel web o un SSH.
+
+**Límites declarados:**
+
+- «Usado» es un substring en los argumentos: un valor de menos de 4 caracteres
+  se ignora a propósito (`/`, `80`, `svc` matchean por accidente) y la key solo
+  actúa de respaldo cuando el valor no aporta ningún identificador.
+- El aviso es una observación, no una orden: no bloquea la acción repetida, no
+  cambia el plan y no autoriza tools. Un run puede seguir releyendo la misma
+  página; ahora queda auditado que tenía con qué no hacerlo.
+- No hay juicio semántico: dos hechos que nombran la misma cosa con distinta
+  grafía cuentan como dos, y un hecho mencionado de pasada (un comentario en los
+  argumentos) cuenta como usado.
+- La etiqueta evita la forma `<término secreto>: valor` porque el redactor la
+  borraría entera (medido en el evento: `credential: [REDACTED]`).
+- No se ha re-ejecutado una sala con LLM real: la aceptación es unitaria sobre
+  hechos con la forma que produce el verificador.
 
 
 ## 6. Criterios de cierre

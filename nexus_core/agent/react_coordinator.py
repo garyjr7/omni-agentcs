@@ -621,6 +621,10 @@ class ReActCoordinator:
         self.login_hint = ""
         self.login_hint_emitted = False
         self.login_hints_sent = set()
+        # B3: what the board proved and no action has spent yet. Text-keyed so a
+        # stalled run is not re-told the same list on every turn.
+        self.reflection_hint = ""
+        self.reflection_hints_sent: set[str] = set()
         #: Tools withheld while the login form has no canonical probe (P9: the
         #: order arrived and the run still went to gobuster).
         self.login_withheld: set[str] = set()
@@ -829,6 +833,7 @@ class ReActCoordinator:
         # A login form read but never probed gets the three deterministic
         # probes, before any wordlist (DeadDrop P1/P3).
         self._refresh_login_hint()
+        self._refresh_reflection_hint()
         # A host in another network reached from a proven access needs the SOCKS
         # tunnel, not a local tool that has no route (DeadDrop P8).
         self._refresh_pivot_hint()
@@ -1155,6 +1160,41 @@ class ReActCoordinator:
             decision="degrade",
         )
         self.login_hint_emitted = True
+
+    def _refresh_reflection_hint(self) -> None:
+        """Name the verified facts this run has not spent yet, once per list.
+
+        The rule lives in ``agent/reflection.py`` (deterministic: substring over
+        the action history, no model). The loop injects the text and audits it;
+        it never changes the plan, stops the run or authorizes a tool.
+        """
+        from nexus_core.agent.reflection import render_reflection
+
+        hint = render_reflection(
+            self._blackboard_facts(),
+            self.actions,
+            no_progress=self.consecutive_no_progress,
+        )
+        self.reflection_hint = hint
+        if not hint or hint in self.reflection_hints_sent:
+            return
+        self.reflection_hints_sent.add(hint)
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.reflection",
+            {
+                "iteration": self.iteration,
+                "phase": str(getattr(self.plan, "current", "") or ""),
+                "no_progress": self.consecutive_no_progress,
+                "hint": hint,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="reflection",
+            decision="degrade",
+        )
 
     def _refresh_pivot_hint(self) -> None:
         """Order the SOCKS pivot when the run aims at a host it cannot route to.
@@ -1813,6 +1853,7 @@ class ReActCoordinator:
             coverage_hint=self.coverage_hint,
             robots_hint=self.robots_hint,
             login_hint=self.login_hint,
+            reflection_hint=self.reflection_hint,
             pivot_hint=self.pivot_hint,
             engagement_plan_summary=self.engagement_plan_text,
         )

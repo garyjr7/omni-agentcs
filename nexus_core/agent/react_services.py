@@ -301,6 +301,7 @@ class ContextBuilder:
         coverage_hint: str = "",
         robots_hint: str = "",
         login_hint: str = "",
+        reflection_hint: str = "",
         pivot_hint: str = "",
         engagement_plan_summary: str = "",
     ) -> list[LLMMessage]:
@@ -387,6 +388,12 @@ class ContextBuilder:
         # lives in the planner (``login_probe_hint``, deterministic).
         if login_hint:
             system_prompt = f"{system_prompt}\n\n{login_hint}"
+        # B3: the run is stalled and the board holds verified facts its actions
+        # never touched (a credential, a confirmed account, a proven path). The
+        # rule lives in ``agent/reflection.py`` (deterministic substring over the
+        # action history); the loop only injects the text.
+        if reflection_hint:
+            system_prompt = f"{system_prompt}\n\n{reflection_hint}"
         # The board proves access on one host and the run aims at another
         # network: the order names the tunnel command, because a local tool has
         # no route and its "filtered" is noise (DeadDrop P8, 19 iterations).
