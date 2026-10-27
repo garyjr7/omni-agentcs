@@ -23,6 +23,8 @@
 | Suite tras B3 | **4 195 passed / 53 skipped** |
 | Techo del blackboard por clave (V0-2) | §5.21 — `kernel/blackboard.py` |
 | Suite tras V0-2 | **4 199 passed / 53 skipped** |
+| Entrega de lanzamiento (SEC-03/06/09, V0-5, docs, CI) | §5.22 — auditoría 2026-10-23 (2026-10-26) |
+| Suite tras la entrega de lanzamiento | **4 211 passed / 53 skipped** |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
 | Rama | `feat/orchestration-phase-2-close` |
 | Regla de esta entrega | **V11**: el PoC tiene que llegar al objetivo (form_params reales, next_steps y subida de temas) sin tocar `ToolGateway` |
@@ -278,7 +280,7 @@ encendarlas sin abrir una puerta lateral al gateway.
 | Batch con presupuesto de CPU/concurrencia | `V0-9` | **[HECHO]** | `kernel/batch.py` (4 global / 1 por target, backpressure, cancelación) y CLI `scripts/omni_tool.py`. No es tool del modelo; ver §5.5. |
 | Listener valida el peer antes de interactuar | `V1-1` | **[HECHO]** | W1.2: el subproceso recibe los CIDR/exclusiones ya autenticados y cierra al peer fuera de scope antes del primer `recv`/`sendall` (`listener.py`). Test end-to-end: un peer conecta y recibe **0 bytes**. El handler repite la validación con el scope firmado como defensa en profundidad. |
 | Secretos opacos en la redacción | `V1-6` | **[HECHO]** | W1.2: `secrets_for_redaction` reúne argumentos secretos, handles `vault:` y hechos `credential` verificados; `redact_result` se aplica en PTY, `http_request` y `shell_exec` (SSH ya lo tenía). Tests con un secreto real del vault en los tres canales. Límite: solo valores conocidos, no un detector genérico. |
-| SARIF en `format=both` | `V0-5` | **[PENDIENTE]** | `report_generate.py:212`: SARIF solo se escribe con `format="sarif"`. `both` produce JSON+MD+HTML y omite el SARIF ya calculado. |
+| SARIF en `format=both` | `V0-5` | **[HECHO]** | §5.22: `both` es el formato por defecto y ahora escribe los cuatro entregables (JSON+MD+HTML+SARIF); el SARIF ya se calculaba y se descartaba. Cuatro tests actualizados + `test_the_default_format_also_writes_sarif`. |
 | Egress aislado con red gobernada | `V1-2`, `P1-B` | **[BLOQUEADO]** | `sandbox_modes.py:150` lanza `SandboxModeNotImplemented` para `oci_network`. Depende de implementar/filtrar egress por scope (5–8 días) o de un broker de red. |
 | Pivote con sesión y transferencia durable | `V0-20` | **[PENDIENTE]** | Hay `pivot_http`, `pivot_bruteforce`, `ssh_upload`, pero no un objeto de transferencia/sesión que sobreviva al turno ni un `session_ref` de pivote. |
 | Cancelación remota reconciliada | `V0-28` | **[PENDIENTE]** | No hay camino de cancelación de una invocación en vuelo en el gateway; el journal marca `unknown` y exige aprobación de retry, que es contención, no cancelación. |
@@ -1072,6 +1074,57 @@ desalojo y de `summary` fallan contra la implementación anterior (comprobado co
 existía.
 
 
+### 5.22 Entrega de lanzamiento — la auditoría del 23-10 y lo que bloquea publicar (2026-10-26) — **EJECUTADA**
+
+Origen: `docs/missions/AUDITORIA_OMNI_2026-10-23.md` (§0.4 y §9) — informe
+**local**: la propia auditoría pide que no se publique, así que no entra en el
+release. El plazo de
+publicación era el 2026-10-26 y lo que bloqueaba no era ninguna feature del plan
+v1, sino cuatro hallazgos de la auditoría. Esta pasada cierra **lo que es código**;
+lo que exige rotar claves, reescribir historial o hacer público el repositorio
+queda declarado abajo como tarea del operador.
+
+| Paso | Cambio | Ficheros | Test de aceptación |
+|---|---|---|---|
+| SEC-03 | `NEXUS_ENV=production` + `NEXUS_SANDBOX_MODE=local\|local_strict` **falla** (`SandboxModeForbidden`) en vez de arrancar sin aislamiento; `oci` sigue siendo el único modo de producción | `kernel/sandbox_modes.py` | `test_production_refuses_local_modes`, `test_production_still_resolves_oci` |
+| SEC-06 | `NEXUS_SCOPE_MODE=lab` con `NEXUS_ENV=production` **falla** (`LabScopeForbidden`); una variable de entorno ya no puede desactivar la firma del scope. `governed` sigue fallando si falta la firma | `scope/validator.py` | `test_production_refuses_lab_mode`, `test_development_keeps_lab_mode` |
+| SEC-03/06 | `--doctor` (lo primero que corre un operador cuando algo no arranca) reporta el modo **RECHAZADO** con el motivo en vez de morir con una traza, y sigue mostrando la tabla de garantías cuando la configuración es válida | `cli/doctor.py` (`_sandbox_report`) | `test_doctor_explains_a_refused_production_combination`, `test_doctor_prints_a_refused_mode_in_red` |
+| SEC-09 | El artefacto de `nexus.shell.exec` (foreground y background) se redacta antes del `put` con el mismo par que la observación (`redact_secret_values` + `sanitize_text`); el `sha256` publicado es el de lo almacenado | `tools/handlers/shell_exec_local.py` (`_artifact_payload`) | `test_the_artifact_never_stores_a_known_secret`, `test_the_background_artifact_is_redacted_too` |
+| V0-5 | `format=both` (el default) escribe también el SARIF que ya renderizaba | `tools/handlers/report_generate.py` | `test_the_default_format_also_writes_sarif` |
+| SEC-12 / Q-08 | README honesto: **83 herramientas** (no 42), keyring en uso (no «texto plano»), `local_strict` no aísla la **lectura** del host, y las dos guardas nuevas de producción | `README.md` | `test_readme_states_the_real_tool_count` |
+| SEC-02 / SEC-01 | `SECURITY.md`: modelo de privilegios del operador, garantías reales por modo, hallazgos abiertos numerados y canal de reporte | `SECURITY.md` (nuevo) | revisión manual |
+| SEC-10 | `requirements-dev.lock`: 111 paquetes con versión exacta y hash de **todos** los artefactos publicados por PyPI, generado para el target de CI y consumido con `--require-hashes` en los dos jobs | `scripts/lock_requirements.py`, `requirements-dev.lock`, `Makefile` (`make lock`), `ci.yml` | dry-run `pip install --require-hashes -r requirements-dev.lock` (resuelve en cp312 y en el 3.14 local) |
+| SEC-11 | `pip-audit` como paso de CI, **no bloqueante al inicio** (así lo pide la auditoría): hoy reporta `paramiko 3.5.1` con `PYSEC-2026-2858` y **sin versión corregida** | `ci.yml` | ejecución local: 2 vulnerabilidades en 1 paquete |
+| SEC-08 | Guardia de índice: lista congelada de la evidencia ya versionada (133 rutas) y fallo si aparece una ruta nueva; la lista solo puede encoger | `nexus_core/tests/unit/test_repo_hygiene.py`, `docs/missions/audit-v1/evidence-index-baseline.txt` | control negativo: un fichero nuevo en `docs/missions/evidence/` hace fallar el test, y el índice quedó limpio después |
+
+**Por qué no es un parche de sala:** las dos guardas son de arranque (no de un
+host concreto), la redacción es del canal, no de un comando, y el lock es del
+entorno, no de una ejecución.
+
+**Límites declarados:**
+
+- **SEC-00 sigue abierto y es el bloqueante real.** Las cuatro credenciales del
+  historial (`.env` en `b127c29` y `a8c2046`, más ~20 ramas remotas) no se rotan
+  ni se purgan aquí: rotar claves, `git filter-repo` y `--force` son decisiones
+  del operador. Publicar sin hacerlo publica secretos.
+- **SEC-08 no se ha tocado en el índice** (decisión explícita del operador): los
+  133 ficheros siguen versionados, la guardia evita que entren más. La purga del
+  historial los arrastrará igual.
+- La redacción del artefacto cubre **valores conocidos** (argumentos secretos,
+  handles `vault:` y hechos `credential` verificados) y **formas** de secreto,
+  no un detector genérico: un secreto que nadie conoce y no tiene forma típica
+  sigue guardándose. Es el mismo límite declarado de V1-6.
+- El lock se genera para **CPython 3.12 / manylinux2014 x86_64** (el runner) con
+  hashes de todos los artefactos, así que también resuelve en el 3.14 local; el
+  flujo de un desarrollador que instala desde `requirements-dev.txt` (rangos) no
+  lo usa. Si cambian los requisitos hay que regenerarlo (`make lock`).
+- `pip-audit` no falla el build por diseño de esta pasada. Cuando exista una
+  versión corregida de `paramiko`, el paso debería volverse bloqueante.
+- Las guardas no sustituyen a SEC-01 (el scope no cubre el egress del shell) ni a
+  SEC-02 (lectura del host en modo local): solo convierten una sorpresa en un
+  error explícito.
+
+
 ## 6. Criterios de cierre
 
 | Fase | Criterio duro | Lo que **no** cuenta |
@@ -1085,6 +1138,11 @@ existía.
 **Gate V2 (heredado de audit-v1):** cero P0 abiertas y 12 cadenas de referencia
 revalidadas con reporte/manifest. El score 38,77 es histórico y no se usa como
 medida actual.
+
+**Gate de publicación pública (auditoría 2026-10-23):** el repositorio no se hace
+público hasta que **SEC-00** esté cerrado (claves históricas rotadas y historial
+reescrito en todas las refs). El resto de la auditoría ya está en código (§5.22) o
+declarado en `SECURITY.md`.
 
 ### 6.1 Gate de release v1 (producto público)
 

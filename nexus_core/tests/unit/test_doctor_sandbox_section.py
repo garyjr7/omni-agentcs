@@ -40,6 +40,26 @@ def test_doctor_shows_guarantees(onboarding_env, capsys):
     assert "tools network" in output
 
 
+def test_doctor_explains_a_refused_production_combination(onboarding_env, capsys, monkeypatch):
+    """SEC-03: the diagnostic command reports the refusal, it does not crash."""
+    monkeypatch.setenv("NEXUS_ENV", "production")
+    monkeypatch.setenv("NEXUS_SANDBOX_MODE", "local_strict")
+    _run(onboarding_env, as_json=True)
+    report = json.loads(capsys.readouterr().out)
+    assert report["sandbox"]["mode"] is None
+    assert "NEXUS_ENV=production" in report["sandbox"]["error"]
+    assert report["sandbox"]["filesystem_isolation"] is False
+
+
+def test_doctor_prints_a_refused_mode_in_red(onboarding_env, capsys, monkeypatch):
+    monkeypatch.setenv("NEXUS_ENV", "production")
+    monkeypatch.setenv("NEXUS_SANDBOX_MODE", "local_strict")
+    _run(onboarding_env)
+    output = capsys.readouterr().out
+    assert "RECHAZADO" in output
+    assert "local_strict is not allowed" in output
+
+
 def test_doctor_json_reports_sandbox(onboarding_env, capsys):
     _run(onboarding_env, as_json=True)
     report = json.loads(capsys.readouterr().out)

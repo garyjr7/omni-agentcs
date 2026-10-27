@@ -209,7 +209,10 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             payloads.append(("report.md", markdown_text, "text/markdown"))
         if output_format in {"html", "both"}:
             payloads.append(("report.html", html_text, "text/html"))
-        if output_format == "sarif":
+        # V0-5: ``both`` is the default and it already renders SARIF. Omitting
+        # the file left the machine-readable deliverable out of the report an
+        # operator generates without thinking about formats.
+        if output_format in {"sarif", "both"}:
             payloads.append(("report.sarif", sarif_text, "application/sarif+json"))
         artifact_store = configured_artifact_store(store, default_artifact_root())
         for name, text, media_type in payloads:

@@ -46,6 +46,16 @@ def _try_ip(value: str):
         return None
 
 
+class LabScopeForbidden(ValueError):
+    """``NEXUS_SCOPE_MODE=lab`` was requested while ``NEXUS_ENV=production``.
+
+    Lab mode accepts scopes with **no signature** (it only audits
+    ``scope.unsigned_accepted``). That is a development convenience, not a
+    production guarantee, and an environment variable should not be able to
+    switch off the legal boundary of an engagement (audit SEC-06).
+    """
+
+
 class ScopeValidator:
     """Validate individual targets against one signed engagement scope."""
 
@@ -61,6 +71,15 @@ class ScopeValidator:
         self.mode = mode if mode is not None else os.getenv("NEXUS_SCOPE_MODE", "governed")
         if self.mode not in {"governed", "lab"}:
             raise ValueError(f"unknown scope mode: {self.mode!r}")
+        if self.mode == "lab" and os.getenv("NEXUS_ENV", "development").lower() == "production":
+            # SEC-06: lab mode skips the signature check entirely. Letting an
+            # environment variable disable it in production would turn the
+            # signed scope into decoration.
+            raise LabScopeForbidden(
+                "NEXUS_SCOPE_MODE=lab is not allowed with NEXUS_ENV=production: "
+                "lab mode accepts unsigned scopes. Use governed mode with a "
+                "signed engagement, or run with NEXUS_ENV=development."
+            )
         self.audit = audit
         self.scope = scope
         self.resolver = resolver if resolver is not None else DNSResolver()

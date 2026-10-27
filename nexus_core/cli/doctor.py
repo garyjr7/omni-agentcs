@@ -13,7 +13,14 @@ from urllib.parse import urlsplit
 from nexus_core.config.loader import config_exists, effective_db_path
 from nexus_core.config.schema import DEFAULT_MODELS, PROVIDERS, model_env_name
 from nexus_core.kernel.sandbox import sandbox_path, tool_bin_dir
-from nexus_core.kernel.sandbox_modes import active_mode, effective_guarantees
+from nexus_core.kernel.sandbox_modes import (
+    SandboxModeForbidden,
+    SandboxModeMismatch,
+    SandboxModeNotImplemented,
+    UnknownSandboxMode,
+    active_mode,
+    effective_guarantees,
+)
 from nexus_core.provisioner.detector import check_all_tools, detect_managers, detect_os
 from nexus_core.provisioner.installer import probe_command
 
@@ -44,6 +51,39 @@ def _rpc_status():
 
 #: Where nuclei looks for its templates when the env var is not set.
 NUCLEI_DEFAULT_TEMPLATES = "/opt/nuclei-templates"
+
+
+def _sandbox_report() -> dict:
+    """The active mode and its real guarantees, or why it was refused.
+
+    ``--doctor`` is what an operator runs when a run will not start: an invalid
+    production combination (SEC-03, SEC-06) has to arrive as a diagnostic with a
+    reason, not as a traceback from the resolution it is trying to explain.
+    """
+    report = {
+        "mode": None,
+        "path": sandbox_path(),
+        "tool_bin_dir": str(tool_bin_dir()) if tool_bin_dir() else None,
+        "error": None,
+        "filesystem_isolation": False,
+        "network_isolation": False,
+        "process_isolation": False,
+        "resource_limits": False,
+        "user_isolation": False,
+        "persistent_across_calls": False,
+        "supports_network_tools": False,
+    }
+    try:
+        report["mode"] = active_mode().value
+        report.update(effective_guarantees().to_dict())
+    except (
+        SandboxModeForbidden,
+        SandboxModeMismatch,
+        SandboxModeNotImplemented,
+        UnknownSandboxMode,
+    ) as exc:
+        report["error"] = str(exc)
+    return report
 
 
 def _unset(names: tuple[str, ...]) -> list[str]:
@@ -232,12 +272,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
             "backend": "postgres" if postgres else "sqlite",
             "diagnostic": "remote database not queried" if postgres else "local read-only",
         },
-        "sandbox": {
-            "mode": active_mode().value,
-            "path": sandbox_path(),
-            "tool_bin_dir": str(tool_bin_dir()) if tool_bin_dir() else None,
-            **effective_guarantees().to_dict(),
-        },
+        "sandbox": _sandbox_report(),
         "managers": list(detect_managers()),
         "tools": {name: asdict(status) for name, status in tools.items()},
         "msfrpcd": rpc,
@@ -295,6 +330,8 @@ def run_doctor(paths, config, *, as_json=False) -> int:
                     print(
                         f"  {name:12} {'✓' if item['present'] else '✗'} {item['path'] or '(ausente)'}  {item['version'] or ''}"
                     )
+            elif key == "sandbox" and value["error"]:
+                print(f"  modo:              RECHAZADO — {value['error']}")
             elif key == "sandbox":
                 print(f"  modo:              {value['mode']}")
                 print(f"  PATH:              {value['path']}")

@@ -116,6 +116,13 @@ def test_audit_ledger_catalog_and_result_versions_consistent(capsys):
         assert re.search(rf"^\| {re.escape(gap)} \|", backlog, re.MULTILINE), gap
 
 
+def test_readme_states_the_real_tool_count():
+    """Q-08: the README announced "42 herramientas" while the catalog had 83."""
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    count = tool_catalog()["tool_count"]
+    assert f"**{count} herramientas**" in text
+
+
 async def _echo_handler(arguments, context):
     return ToolResult(output={"target": arguments.get("target")}, verified=True,
                       verification_method="echo")

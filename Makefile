@@ -2,7 +2,7 @@
 # `make lint` fail with exit 2 even though the tools were installed.
 PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 RUFF ?= $(if $(wildcard .venv/bin/ruff),.venv/bin/ruff,ruff)
-.PHONY: test test-unit test-offline test-postgres lint typecheck syntax doctor
+.PHONY: test test-unit test-offline test-postgres lint typecheck syntax doctor lock
 
 # Base for the incremental type gate. Override it to typecheck a branch/PR:
 #   make typecheck TYPECHECK_BASE=origin/main
@@ -46,3 +46,8 @@ syntax:
 
 doctor:
 	$(PYTHON) omni.py --doctor --no-wizard
+
+# SEC-10: freeze the resolution CI installs (hashes de todos los artefactos
+# publicados, no solo el wheel de esta máquina). Necesita red.
+lock:
+	$(PYTHON) scripts/lock_requirements.py requirements-dev.txt requirements-dev.lock --pypi-hashes

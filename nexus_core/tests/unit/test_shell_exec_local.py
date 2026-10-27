@@ -522,6 +522,80 @@ def test_the_oci_sandbox_refuses_background_work_explicitly(context):
     assert "timeout_seconds" in result.output["guidance"]
 
 
+def test_the_artifact_never_stores_a_known_secret(context, monkeypatch):
+    """SEC-09: the artifact is durable evidence, not a place to keep the vault.
+
+    The observation boundary was already redacted; the artifact kept the raw
+    capture, so a credential the shell echoed back survived in clear for the
+    whole engagement (and inside the report's chain of custody).
+    """
+    from nexus_core.kernel.blackboard import Blackboard
+    from nexus_core.kernel.secret_store import default_secret_store
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(context.project_root) + "/state")
+    secret = "Sup3rS3cret2026"
+    ref = default_secret_store().put(secret, kind="credential", tenant_id="system")
+    Blackboard(context.store).record(
+        tenant_id="system",
+        engagement_id=context.scope.engagement_id,
+        fact_type="credential",
+        key=f"cred:ssh:lin@{TARGET}",
+        value={"username": "lin", "secret_ref": ref, "service": "ssh"},
+        source="test",
+        created_by="test",
+        verified=True,
+        asserted_by="verifier",
+        verification_method="test_verifier",
+        invocation_id="inv-1",
+    )
+
+    result = _run(context, {"command": f"echo {secret}"})
+    content = configured_artifact_store(
+        context.store, default_artifact_root()
+    ).get(context.tenant_id, result.output["artifact_ref"])
+
+    assert secret.encode() not in content
+    assert b"[REDACTED]" in content
+    # The hash the observation publishes is the hash of what was stored.
+    assert hashlib.sha256(content).hexdigest() == result.output["sha256"]
+
+
+def test_the_background_artifact_is_redacted_too(context, monkeypatch):
+    """The detached launch stores its own artifact: same rule applies."""
+    from nexus_core.kernel.blackboard import Blackboard
+    from nexus_core.kernel.secret_store import default_secret_store
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(context.project_root) + "/state")
+    secret = "BgSup3rS3cret2026"
+    ref = default_secret_store().put(secret, kind="credential", tenant_id="system")
+    Blackboard(context.store).record(
+        tenant_id="system",
+        engagement_id=context.scope.engagement_id,
+        fact_type="credential",
+        key=f"cred:bg:lin@{TARGET}",
+        value={"username": "lin", "secret_ref": ref, "service": "ssh"},
+        source="test",
+        created_by="test",
+        verified=True,
+        asserted_by="verifier",
+        verification_method="test_verifier",
+        invocation_id="inv-2",
+    )
+
+    result = _run(context, {
+        "command": f"nohup sh -c 'printf {secret}' &",
+        "timeout_seconds": 30,
+    })
+    try:
+        content = configured_artifact_store(
+            context.store, default_artifact_root()
+        ).get(context.tenant_id, result.output["artifact_ref"])
+        assert secret.encode() not in content
+        assert b"[REDACTED]" in content
+    finally:
+        _kill(result.output["pid"])
+
+
 def test_shell_exec_archives_full_stdout_and_stderr(context):
     result = _run(context, {"command": "printf 'hola\\nque tal\\n'; echo oops >&2"})
     reference = result.output["artifact_ref"]

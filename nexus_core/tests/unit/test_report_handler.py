@@ -148,6 +148,7 @@ def test_report_writes_to_output_dir(env, tmp_path):
     assert (target / "report.md").is_file()
     assert (target / "report.html").is_file()
     assert (target / "report.json").is_file()
+    assert (target / "report.sarif").is_file()
     assert result["output"]["directory"] == str(target)
 
 
@@ -157,8 +158,10 @@ def test_report_registers_artifact_with_sha256(env):
     store, engagement, _run_id, gateway = env
     result = _invoke(gateway, {"engagement_id": engagement.engagement_id}, store)
     evidence = result["evidence"]
-    assert len(evidence["artifacts"]) == 3
-    assert set(evidence["artifact_sha256"]) == {"report.md", "report.html", "report.json"}
+    assert len(evidence["artifacts"]) == 4
+    assert set(evidence["artifact_sha256"]) == {
+        "report.md", "report.html", "report.json", "report.sarif",
+    }
     for name, digest in evidence["artifact_sha256"].items():
         body = Path(result["output"]["directory"], name).read_bytes()
         assert len(digest) == 64
@@ -171,7 +174,7 @@ def test_report_registers_artifact_with_sha256(env):
             "WHERE tenant_id=? AND metadata LIKE '%engagement_report%'",
             (support.TENANT,),
         ).fetchall()
-    assert len(rows) == 3
+    assert len(rows) == 4
     by_id = {row["id"]: row for row in rows}
     for artifact_id in evidence["artifacts"]:
         assert artifact_id in by_id
@@ -288,12 +291,30 @@ def test_report_artifact_store_is_content_addressed(env, tmp_path):
             "AND metadata LIKE '%engagement_report%'",
             (support.TENANT,),
         ).fetchone()["n"]
-    assert count == 6  # three deliverables per generation, both recorded
+    assert count == 8  # four deliverables per generation, both recorded
     assert rows
     root = LocalArtifactStore(store, module.default_artifact_root()).root
     for row in rows:
         assert row["storage_uri"] == f"cas:v1/{support.TENANT}/{digest}"
         assert (root / support.TENANT / digest[:2] / digest).is_file()
+
+
+def test_the_default_format_also_writes_sarif(env):
+    """V0-5: ``both`` already rendered SARIF and then threw it away."""
+    from nexus_core.report.sarif import validate_sarif
+
+    store, engagement, _run_id, gateway = env
+    result = _invoke(gateway, {"engagement_id": engagement.engagement_id}, store)
+    output = result["output"]
+    assert output["report_path_sarif"].endswith("report.sarif")
+    assert Path(output["report_path_sarif"]).is_file()
+    document = json.loads(Path(output["report_path_sarif"]).read_text())
+    assert validate_sarif(document) == []
+    assert "report.sarif" in result["evidence"]["files"]
+    # Markdown and HTML are still there: ``both`` grew a deliverable, it did
+    # not replace one.
+    assert Path(output["report_path_md"]).is_file()
+    assert Path(output["report_path_html"]).is_file()
 
 
 def test_report_sarif_format_writes_sarif(env):

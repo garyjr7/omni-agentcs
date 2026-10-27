@@ -116,6 +116,17 @@ class SandboxModeNotImplemented(NotImplementedError):
     """The requested policy has no implementing executor."""
 
 
+class SandboxModeForbidden(RuntimeError):
+    """Production asked for a mode that offers no isolation of the host.
+
+    ``local`` and ``local_strict`` constrain ``argv``, ``cwd`` and ``HOME``; they
+    do not isolate the filesystem, the processes or the network of the operator's
+    machine (see :data:`GUARANTEES`). Running them under ``NEXUS_ENV=production``
+    shipped "production mode" with no isolation at all, so the combination now
+    fails closed instead of degrading silently (audit SEC-03).
+    """
+
+
 def _build_executor(mode, workspace_root, allowed_programs, env):
     from .sandbox import LocalSandbox, OCISandbox
 
@@ -146,6 +157,19 @@ class SandboxPolicy:
                 raise UnknownSandboxMode(f"unknown sandbox mode: {raw!r}")
         else:
             mode = SandboxMode.OCI if env.get("NEXUS_ENV", "development").lower() == "production" else SandboxMode.LOCAL_STRICT
+        if env.get("NEXUS_ENV", "development").lower() == "production" and mode in {
+            SandboxMode.LOCAL, SandboxMode.LOCAL_STRICT,
+        }:
+            # SEC-03: local modes are development modes. Accepting them in
+            # production turns "modo producción" into "sin aislamiento", which is
+            # exactly the divergence between what is announced and what is
+            # enforced. OCI is the only production mode today.
+            raise SandboxModeForbidden(
+                f"NEXUS_SANDBOX_MODE={mode.value} is not allowed with "
+                "NEXUS_ENV=production: local modes do not isolate the host "
+                "filesystem, processes or network. Use NEXUS_SANDBOX_MODE=oci, "
+                "or run with NEXUS_ENV=development for a lab CLI."
+            )
         if mode is SandboxMode.OCI_NETWORK:
             raise SandboxModeNotImplemented("oci_network requires an enforced egress policy; not implemented")
         executor = _build_executor(mode, workspace_root, allowed_programs, env)

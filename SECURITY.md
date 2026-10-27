@@ -1,0 +1,96 @@
+# Política de seguridad — OMNI / OmniAgentCS
+
+OMNI es una CLI de pentesting asistido que se instala **en la máquina del
+operador** y ejecuta herramientas reales (nmap, ffuf, impacket, Metasploit RPC,
+`nexus.shell.exec`). No es un servidor multi-tenant ni un servicio alojado. Esta
+página describe qué garantiza el producto hoy, qué **no** garantiza, y cómo
+reportar un problema. Se escribió desde la auditoría del 2026-10-23
+([`docs/missions/AUDITORIA_OMNI_2026-10-23.md`](docs/missions/AUDITORIA_OMNI_2026-10-23.md)).
+
+## 1. El modelo de privilegios, sin adornos
+
+El agente corre con **los privilegios del operador**. Un objetivo hostil no
+necesita escalar en tu máquina: le basta con conseguir que el modelo ejecute una
+orden, vía prompt injection, en el contenido que controla (un banner, un HTML,
+la salida de un `nmap --script`). La defensa no es "el agente no puede", es
+"toda orden pasa por el gateway y queda auditada".
+
+Por eso:
+
+- **`local_strict` no aísla la lectura del host.** Confina `cwd` al workspace,
+  arma el `argv` contra una allowlist, configura un `HOME` efímero y limpia el
+  grupo de procesos. Dentro del `bash -lc` resultante, `cat
+  /home/<operador>/.ssh/id_rsa` o `~/.config/omni/secrets.json` **se leen**. La
+  tabla de garantías lo declara en código
+  ([`kernel/sandbox_modes.py`](nexus_core/kernel/sandbox_modes.py)) y el banner
+  lo repite. Trátalo como "aislamiento de escritura y de proceso", no de lectura.
+- **`oci` es el único modo que aísla de verdad** (namespace, sin red por
+  defecto), y por eso `NEXUS_ENV=production` lo exige: con `NEXUS_ENV=production`
+  y `NEXUS_SANDBOX_MODE=local` o `local_strict` el arranque **falla**
+  (`SandboxModeForbidden`).
+- **`local_sudo` no es un control de seguridad.** La denylist del shell es
+  léxica (dice "guard-rail, not a security boundary" en su propio docstring):
+  `python3 -c 'import os; os.system("sudo -n id")'` no casa con el patrón. El
+  control real es que ya tienes los privilegios de ese usuario.
+- **El scope firmado cubre `nexus.web.request`, no el shell universal.** El
+  handler de `nexus.shell.exec` valida el destino de `curl`, `wget`, `nc`,
+  `ncat` y `netcat` contra el engagement con el mismo validador, pero un
+  `python3 -c`, `ssh`, `openssl s_client` o `bash -c 'exec 3<>/dev/tcp/…'` no se
+  inspecciona. Es el hallazgo abierto **SEC-01** (§4).
+
+## 2. Qué garantiza el producto hoy
+
+| Garantía | Cómo |
+|---|---|
+| Nada se ejecuta sin pasar por el gateway | scope → RoE → policy → approval → journal, en un único punto (`kernel/tool_gateway.py`). |
+| Un scope sin firma no autoriza nada en producción | `governed` por defecto; `NEXUS_SCOPE_MODE=lab` **falla** con `NEXUS_ENV=production` (`LabScopeForbidden`). |
+| Las herramientas HIGH/DESTRUCTIVE piden aprobación humana | incluido `--trust-mode`, que no autoaprueba `impacket_psexec` ni `sliver_deploy`. |
+| Headless falla cerrado | sin `--trust-mode`, no autoaprueba nada. |
+| Los secretos no se escriben en claro en la evidencia | el artefacto de `nexus.shell.exec` se redacta antes de almacenarse (`redact_secret_values` + `sanitize_text`, SEC-09) y la observación ya lo estaba. |
+| Las claves no viven en el repositorio | keyring del sistema y, si no está, `secrets.json` con permisos `0600`; `gitleaks` corre en CI. |
+| La auditoría es encadenada | cada decisión y cada resultado se registran con hash; el reporte **muestra** si la cadena está rota en vez de ocultarlo. |
+
+## 3. Secretos y datos del engagement
+
+- Las claves de proveedor y el secreto de firma del scope se guardan con
+  `omni secrets set NOMBRE` (keyring o fichero `0600`), nunca en `config.toml`
+  ni en el prompt. El CLI solo imprime **nombres**.
+- Los datos de los engagements viven en la base local
+  (`~/.local/share/omni/control.db`) y en el árbol de artefactos
+  (`~/.local/share/omni/artifacts`). No se envían a ningún servicio propio: la
+  única salida de red es el proveedor de LLM que configures y las herramientas
+  que apuntes a un objetivo autorizado.
+- Si compartes un reporte, recuerda que el JSON/Markdown incluye evidencia. Los
+  datos de laboratorio de este repositorio **no** deben publicarse ni
+  redistribuirse.
+
+## 4. Hallazgos abiertos conocidos
+
+Se listan a propósito: una limitación documentada es una decisión, una
+sorpresa es un incidente.
+
+| ID | Qué falta | Estado |
+|---|---|---|
+| SEC-01 | El scope no cubre el egress del shell universal (`python3`, `ssh`, `openssl s_client`, `/dev/tcp`). Mitigación real: proxy de egress por engagement. | Abierto |
+| SEC-02 | Aislamiento de **lectura** en modo local (`bwrap`/namespace sobre el HOME real). | Abierto |
+| SEC-03 | `oci_network` no implementado: en OCI el agente no alcanza el objetivo. Hoy se elige entre aislar y ver la red. | Abierto (documentado) |
+| SEC-05 | Los plugins que añaden tools vía entry points `nexus.tools` declaran su propio `risk`; no hay allowlist ni firma. | Abierto |
+| SEC-07 | `ApprovalService.decide()` no comprueba rol/tenant del aprobador (relevante solo con varios analistas). | Backlog |
+| SEC-10/11 | Sin lockfile reproducible al inicio; `pip-audit` ya corre en CI. | Parcial |
+
+## 5. Reportar una vulnerabilidad
+
+Usa el canal privado del repositorio (**Security → Report a vulnerability**,
+GitHub Security Advisories). No abras un issue público con el detalle.
+
+Incluye: versión (`omni --version`), sistema, comando o tool implicado, y una
+reproducción mínima. Si la reproducción necesita un objetivo, describe el
+comportamiento en lugar de apuntar a un tercero.
+
+**Nunca** envíes claves reales, tokens ni volcados de la base de un engagement.
+Rota cualquier credencial que hayas pegado antes de reportar: si una clave
+llegó a un issue, un log o una captura, considérala comprometida.
+
+Lo que puedes esperar: acuse de recibo en unos días, y si el hallazgo toca el
+modelo de privilegios (§1) o la gobernanza, el parche entra con el hallazgo
+declarado en esta página en vez de silenciarlo.

@@ -27,8 +27,12 @@ Las herramientas externas se detectan y pueden instalarse con aprobación
 por comando. El catálogo no añade repositorios del sistema. Los paquetes
 pip/npm del producto todavía no se publican; la instalación actual es desde
 este repositorio. Los locks antiguos de la plataforma están archivados y no
-son manifiestos de instalación del CLI; los requisitos actuales usan rangos
-de versiones, sin prometer una resolución reproducible.
+son manifiestos de instalación del CLI. Los requisitos de producción
+(`requirements-prod.in`) usan rangos de versiones; el entorno de desarrollo y CI
+sí es reproducible: `requirements-dev.lock` fija la versión exacta y el hash de
+todos los artefactos publicados, se instala con
+`pip install --require-hashes -r requirements-dev.lock` y se regenera con
+`make lock` (necesita red).
 
 ## Primera ejecución y configuración
 
@@ -64,7 +68,11 @@ del checkout, configuración TOML, defaults. `.env` es opcional; consulta
 prevalecen sobre la DB global. El worker usa la misma configuración.
 
 Config se escribe atómicamente con permisos `600` en directorios `700`.
-Las claves se guardan en texto plano con esos permisos; keyring queda pendiente.
+Las **claves** (proveedores de LLM y el secreto de firma del scope) no viven en
+`config.toml`: se guardan en el **keyring del sistema** cuando el paquete
+`keyring` está disponible y, si no lo está, en un `secrets.json` con permisos
+`0600` bajo el directorio de configuración (`omni secrets set NOMBRE` no las
+ecoa; el CLI solo imprime nombres de secretos).
 Un config corrupto se respalda como `.bak` y se recupera con defaults.
 `--reset-config` conserva un respaldo antes de reiniciar el onboarding.
 
@@ -156,7 +164,9 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **42 herramientas**:
+El catálogo durable contiene **83 herramientas** —la cifra la publica
+`tool_catalog()` y la comprueba un test—; esta es una selección de las
+principales:
 
 - `nexus.system.status`, `nexus.workspace.search`.
 - `nexus.knowledge.record_fact`, `nexus.knowledge.query_facts` — blackboard
@@ -938,13 +948,18 @@ worker comparten el arranque de secretos: entorno explícito, después `.env`,
 después el almacén de secretos/keyring. No se registran los valores secretos.
 `NEXUS_SCOPE_MODE=lab` permite scopes unsigned y registra
 `scope.unsigned_accepted` en la auditoría durable. **Lab no debe usarse en
-producción**; no omite targets, exclusiones, vencimiento ni firmas incorrectas.
+producción**, y desde el 2026-10-26 tampoco puede: con `NEXUS_ENV=production`
+el constructor **falla** (`LabScopeForbidden`) en vez de aceptar scopes sin
+firma. No omite targets, exclusiones, vencimiento ni firmas incorrectas.
 
 `NEXUS_SANDBOX_MODE` selecciona el mismo ejecutor que anuncian banner y doctor.
 Un modo desconocido falla; `oci_network` falla explícitamente porque no tiene
 una política de egress implementada. `local_strict` confina el cwd y configura
-HOME/argv, pero **no aísla el sistema de archivos, procesos ni red del host**.
-`oci` requiere el ejecutor OCI y conserva su red deshabilitada.
+HOME/argv, pero **no aísla el sistema de archivos, procesos ni red del host**
+(lectura incluida: `cat /home/<operador>/.ssh/id_rsa` funciona dentro del
+sandbox), y por eso `NEXUS_ENV=production` con `local` o `local_strict` **falla**
+(`SandboxModeForbidden`) en vez de arrancar sin aislamiento. `oci` es el único
+modo de producción y conserva su red deshabilitada.
 
 `omni run` publica `run.complete` tanto en JSON como en NDJSON, con
 `termination_reason`, `completion_verified`, `exit_code` y `exit_code_version: 1`.

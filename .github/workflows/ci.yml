@@ -23,11 +23,22 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: |
+            requirements-dev.lock
             requirements-dev.txt
             requirements-prod.in
             nexus_core/requirements.txt
-      - run: pip install -r requirements-dev.txt
+      # SEC-10: the lock fixes every version and hash, so two builds of the same
+      # commit install the same bytes. Regenerate it with `make lock` when the
+      # requirements change.
+      - run: pip install --require-hashes -r requirements-dev.lock
       - run: make syntax lint test
+      - name: Audit dependencies (SEC-11, no bloqueante al inicio)
+        # Staged rollout from the 2026-10-23 audit: it reports without failing
+        # the build while the known advisory below has no fix. It is NOT green:
+        # paramiko 3.5.1 carries PYSEC-2026-2858 with no fixed release yet, and
+        # paramiko backs nexus.post.* (ssh_exec / enum_system).
+        continue-on-error: true
+        run: pip-audit -r requirements-dev.lock --progress-spinner off
       - name: Typecheck changed Python files (V1-9)
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -60,7 +71,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements-dev.txt
+      - run: pip install --require-hashes -r requirements-dev.lock
       - run: make test-postgres
       - run: python -m pytest nexus_core/tests/integration/test_kernel_concurrency.py -q
 

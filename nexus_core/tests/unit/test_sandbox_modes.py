@@ -69,6 +69,35 @@ def test_mode_selected_from_env(monkeypatch):
     assert modes.active_mode() is modes.SandboxMode.LOCAL_STRICT
 
 
+def test_production_refuses_local_modes(tmp_path):
+    """SEC-03: production + local mode is "no isolation" announced as production."""
+    for mode in ("local", "local_strict"):
+        with pytest.raises(modes.SandboxModeForbidden) as excinfo:
+            modes.SandboxPolicy.resolve(
+                {"NEXUS_ENV": "production", modes.MODE_ENV: mode},
+                workspace_root=tmp_path,
+            )
+        assert mode in str(excinfo.value)
+        assert "NEXUS_ENV=production" in str(excinfo.value)
+    # Development keeps both local modes: the guard is about production only.
+    for mode in ("local", "local_strict"):
+        resolved, _, _ = modes.SandboxPolicy.resolve(
+            {"NEXUS_ENV": "development", modes.MODE_ENV: mode},
+            workspace_root=tmp_path,
+        )
+        assert resolved.value == mode
+
+
+def test_production_still_resolves_oci(tmp_path):
+    """The fail-closed guard must not retire the one mode production has."""
+    resolved, executor, guarantees = modes.SandboxPolicy.resolve(
+        {"NEXUS_ENV": "production", modes.MODE_ENV: "oci"},
+        workspace_root=tmp_path,
+    )
+    assert resolved is modes.SandboxMode.OCI
+    assert guarantees["network_isolation"] is True
+
+
 def test_parse_mode_rejects_unknown():
     assert modes.parse_mode("nope") is None
     assert modes.parse_mode("") is None

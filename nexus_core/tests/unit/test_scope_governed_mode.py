@@ -18,6 +18,30 @@ def test_lab_mode_audits_unsigned_acceptance(monkeypatch):
     assert events == ['scope.unsigned_accepted']
 
 
+def test_production_refuses_lab_mode(monkeypatch):
+    """SEC-06: an env var must not switch off the signature in production."""
+    from nexus_core.scope.validator import LabScopeForbidden
+    monkeypatch.setenv('NEXUS_SCOPE_MODE', 'lab')
+    monkeypatch.setenv('NEXUS_ENV', 'production')
+    with pytest.raises(LabScopeForbidden):
+        ScopeValidator(make_scope())
+    # Explicitly passing the mode is the same decision, not a way around it.
+    with pytest.raises(LabScopeForbidden):
+        ScopeValidator(make_scope(), mode='lab')
+    # Governed keeps working in production and still demands the signature.
+    monkeypatch.setenv('NEXUS_SCOPE_MODE', 'governed')
+    with pytest.raises(ScopeSignatureInvalid):
+        ScopeValidator(make_scope()).validate('203.0.113.10')
+
+
+def test_development_keeps_lab_mode(monkeypatch):
+    monkeypatch.setenv('NEXUS_SCOPE_MODE', 'lab')
+    monkeypatch.setenv('NEXUS_ENV', 'development')
+    events = []
+    ScopeValidator(make_scope(), audit=lambda action, detail: events.append(action)).validate('203.0.113.10')
+    assert events == ['scope.unsigned_accepted']
+
+
 def test_worker_bootstrap_loads_secrets_from_keyring(monkeypatch, tmp_path):
     from nexus_core.config import bootstrap, secrets
     monkeypatch.delenv('NEXUS_SCOPE_SIGNING_SECRET', raising=False)

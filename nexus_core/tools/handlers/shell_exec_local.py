@@ -795,6 +795,20 @@ def _combined_output(
     return data
 
 
+def _artifact_payload(content: bytes, secrets: tuple[str, ...]) -> bytes:
+    """Return the bytes to store: the capture minus the secrets we knew (SEC-09).
+
+    The artifact is durable, content-addressed and quoted by the report's chain
+    of custody, so an operator's own credential must not be written into it in
+    clear. Redaction is the same pair already applied to the observation -
+    :func:`redact_secret_values` for the literals this invocation was allowed to
+    know and :func:`sanitize_text` for secret shapes- and nothing else changes:
+    the artifact stays the evidence, it is only stripped of secrets.
+    """
+    text = content.decode("utf-8", errors="replace")
+    return sanitize_text(redact_secret_values(text, secrets)).encode("utf-8")
+
+
 #: One in-flight shell command per run. The plan's limit is one concurrent
 #: process per session; this serializes the handler inside a process (the
 #: durable job/task layer already serializes across workers).
@@ -942,7 +956,7 @@ async def _launch_background(
     )
     artifact = configured_artifact_store(context.store, default_artifact_root()).put(
         context.tenant_id,
-        content,
+        _artifact_payload(content, secrets_for_redaction(context, {"command": request.command})),
         "text/plain; charset=utf-8",
         run_id=context.run_id,
         metadata={
@@ -1180,9 +1194,12 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
     content = _combined_output(
         request.command, result.stdout, result.stderr, result.exit_code, result.timed_out
     )
+    invocation_secrets = secrets_for_redaction(
+        context, {"command": request.command, "stdin": request.stdin}
+    )
     artifact = configured_artifact_store(context.store, default_artifact_root()).put(
         context.tenant_id,
-        content,
+        _artifact_payload(content, invocation_secrets),
         "text/plain; charset=utf-8",
         run_id=context.run_id,
         metadata={
@@ -1195,10 +1212,7 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
     # The observation boundary is redacted **before** it is composed: the summary
     # embeds stderr, so redacting only ``stderr_tail`` would leave the same secret
     # in ``output["summary"]`` -the text the model actually reads-. The artifact
-    # keeps the raw capture (it is the evidence, never the prompt).
-    invocation_secrets = secrets_for_redaction(
-        context, {"command": request.command, "stdin": request.stdin}
-    )
+    # keeps the capture minus those same known secrets (SEC-09).
     safe_stderr = sanitize_text(redact_secret_values(result.stderr, invocation_secrets))
     summary = summarize(result.stdout, safe_stderr)
     if apt_install_permission_denied(
