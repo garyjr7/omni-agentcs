@@ -82,3 +82,15 @@ crack_run_*/
 # Reconocimiento y evidencia de engagement (nunca commitear)
 recon/
 loot/
+
+# Evidencia de runs contra salas (mantener fuera del repo aunque sean labs)
+docs/missions/salas/**/evidence/
+wordlists/
+
+
+# Auditoría externa: no publicar
+docs/missions/AUDITORIA_OMNI_2026-10-23.md
+
+# Artefactos de ejecución transitorios
+partial
+omni_shadow.js

@@ -67,7 +67,15 @@ def test_no_new_engagement_evidence_enters_the_index():
 
 
 def test_the_baseline_lists_only_evidence_paths():
-    """A garbage line would silently whitelist a path that is not evidence."""
+    """A garbage line would silently whitelist a path that is not evidence.
+
+    Tras la purga de 2026-10-26 la baseline es legítimamente vacía: no queda
+    evidencia en el índice. Si vuelve a tener líneas, todas deben apuntar a
+    evidencia real; una línea suelta aquí *sí* es un fallo.
+    """
     baseline = _baseline()
-    assert baseline
-    assert not sorted(path for path in baseline if not _is_evidence(path))
+    bad = sorted(path for path in baseline if not _is_evidence(path))
+    assert not bad, (
+        f"rutas que no son evidencia en "
+        f"{BASELINE_PATH.relative_to(REPO_ROOT)}: {bad}"
+    )
