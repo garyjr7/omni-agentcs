@@ -182,6 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("no-wizard", "omitir onboarding interactivo"), ("reset-config", "respaldar config y reiniciar onboarding"),
         ("about", "muestra el banner ASCII completo con las stats y sale"),
         ("banner", "usa el banner ASCII completo en el arranque del REPL"),
+        ("check", "con `omni update`: solo comprueba si hay versión nueva"),
     ):
         parser.add_argument("--" + flag, action="store_true", help=help_text)
     parser.epilog = ("omni run · códigos de salida v1: 0=completed verificado; "
@@ -446,7 +447,9 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
         if subcommand == "run":
             objective = " ".join(args.command[1:]).strip() or objective
             headless_mode = "stream" if args.stream_json else "json"
-        elif subcommand not in {"report", "cve", "tool", "hooks", "resume"}:
+        elif subcommand not in {
+            "report", "cve", "tool", "hooks", "resume", "auth", "update",
+        }:
             render.render_error(f"subcomando desconocido: {subcommand}")
             return 2
     elif args.stream_json and objective:
@@ -458,6 +461,23 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
     from nexus_core.config.xdg import resolve_xdg_paths
     paths = paths or resolve_xdg_paths()
     config = config or load_config(paths)
+
+    # ``omni auth login`` before the control store is opened on purpose: a key is
+    # exactly what you configure when a run cannot start, and it must not depend
+    # on a healthy database.
+    if subcommand == "auth":
+        from .auth_cli import run_auth_command
+
+        return int(run_auth_command(list(args.command[1:])))
+
+    # ``omni update`` likewise: the upgrade must work on a machine whose
+    # database (or whose config) is exactly what is broken.
+    if subcommand == "update":
+        from .update import run_update_command
+
+        extra = ["--check"] if getattr(args, "check", False) else []
+        return int(run_update_command([*args.command[1:], *extra]))
+
     store = get_control_store(effective_db_path(config, paths))
     store.initialize()
     engagements = list(EngagementStore(store).list_for_tenant(args.tenant))

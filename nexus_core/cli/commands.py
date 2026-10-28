@@ -1513,6 +1513,27 @@ def cmd_secrets(session: "OmniSession", args: list[str]) -> None:
     render.render_error(f"acción desconocida: {action} (usa list|set|rotate|delete|import-env)")
 
 
+def cmd_auth(session: "OmniSession", args: list[str]) -> None:
+    """Configura la API key de un proveedor sin escribirla en el `.env` (/auth).
+
+    Es el mismo flujo que ``omni auth login``: menú de proveedor, valor pedido
+    de forma oculta y guardado en el store. La selección del proveedor usa
+    ``visible_input`` (no ``input()``) para no bloquearse contra la TUI, y el
+    valor usa ``secure_input``.
+    """
+    from .auth_cli import run_auth_command
+
+    text_reader = getattr(session, "visible_input", None)
+    code = run_auth_command(
+        ["login", *[str(item) for item in args]],
+        text_reader=text_reader if callable(text_reader) else None,
+        secret_reader=lambda prompt: _read_secret(session, prompt),
+        out=render.write,
+    )
+    if code:
+        render.render_error("no se guardó ninguna clave")
+
+
 def cmd_roe(session: "OmniSession", args: list[str]) -> None:
     """Muestra las Reglas de Encuentro (RoE) y controla su kill switch."""
     from .roe_cli import run_roe_action
@@ -1645,6 +1666,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/subagent": cmd_subagent,
     "/status": cmd_status,
     "/secrets": cmd_secrets,
+    "/auth": cmd_auth,
     "/roe": cmd_roe,
     "/skills": cmd_skills,
     "/exploit": cmd_exploit,
@@ -1688,6 +1710,7 @@ __all__ = [
     "COMMANDS",
     "cmd_approvals",
     "cmd_ask",
+    "cmd_auth",
     "cmd_chat",
     "cmd_facts",
     "cmd_clear",

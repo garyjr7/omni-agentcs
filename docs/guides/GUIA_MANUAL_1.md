@@ -69,12 +69,15 @@ export PATH="$HOME/.local/bin:$PATH"
 omni
 ```
 
-Instalación "one-command" (`scripts/install.sh`) resuelve su fuente en este orden:
-`$OMNI_SOURCE` → checkout local → `$OMNI_GIT_URL` → PyPI.
+Instalación "one-command" (`install.sh`, raíz del repo) resuelve su fuente en este
+orden: `$OMNI_SOURCE` → checkout local → `$OMNI_GIT_URL` → PyPI.
 
 ```bash
-bash scripts/install.sh --dry-run   # ver el plan sin instalar nada
-bash scripts/install.sh             # instalar
+curl -fsSL https://raw.githubusercontent.com/garyjr7/omni-agentcs/main/install.sh | bash
+bash install.sh --dry-run   # ver el plan sin instalar nada (desde el checkout)
+bash install.sh             # instalar
+omni update --check         # ¿hay versión nueva? (no modifica nada)
+omni update                 # actualizar; la config de ~/.config/omni no se toca
 ```
 
 **Primera ejecución:** si no hay config global y hay TTY, corre el **wizard**

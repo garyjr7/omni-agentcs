@@ -11,6 +11,7 @@ import sqlite3
 from urllib.parse import urlsplit
 
 from nexus_core.config.loader import config_exists, effective_db_path
+from nexus_core.config.secrets import secrets_file_report
 from nexus_core.config.schema import DEFAULT_MODELS, PROVIDERS, model_env_name
 from nexus_core.kernel.sandbox import sandbox_path, tool_bin_dir
 from nexus_core.kernel.sandbox_modes import (
@@ -177,6 +178,33 @@ def _runtime_preconditions(tools, rpc) -> list[dict]:
     return entries
 
 
+def _secrets_precondition() -> list[dict]:
+    """Warn when the local key file is readable by anyone but its owner.
+
+    ``~/.config/omni/secrets.json`` holds every provider key the operator typed
+    with ``omni auth login``. The file is written ``0600`` and its directory
+    ``0700``, but a restored backup, a ``cp`` from another machine or a copied
+    ``.config`` can leave it ``0644``. A diagnostic that only listed the path
+    would report the store as healthy while the keys were world-readable.
+    """
+    report = secrets_file_report()
+    if not report["exists"] or report["secure"] is not False:
+        return []
+    return [
+        {
+            "service": "secretos",
+            "missing_env": [],
+            "severity": "warning",
+            "action": (
+                f"ejecuta `chmod 600 {report['path']}` (y `chmod 700 "
+                f"{Path(report['path']).parent}`): hoy cualquier usuario del "
+                "sistema puede leer las API keys guardadas"
+            ),
+            "observed": f"mode={report['mode']}",
+        }
+    ]
+
+
 def _workspace_isolation() -> list[dict]:
     """Warn when the workspace already holds the report the run must produce.
 
@@ -279,8 +307,11 @@ def run_doctor(paths, config, *, as_json=False) -> int:
         # Operator config the tools need at run time (never a secret: only the
         # *names* of unset variables and what to do about them).
         "runtime_preconditions": (
-            _runtime_preconditions(tools, rpc) + _workspace_isolation()
+            _runtime_preconditions(tools, rpc)
+            + _workspace_isolation()
+            + _secrets_precondition()
         ),
+        "secrets": secrets_file_report(),
         "audit": [] if postgres else _audit(db),
     }
     # Protect against a secret accidentally echoed by a local version command.
@@ -320,6 +351,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
             ("Gestores", "managers"),
             ("Herramientas", "tools"),
             ("msfrpcd", "msfrpcd"),
+            ("Secretos (gestor local)", "secrets"),
             ("Precondiciones de runtime", "runtime_preconditions"),
             ("Auditoría (últimos 5 eventos)", "audit"),
         ):
@@ -341,6 +373,22 @@ def run_doctor(paths, config, *, as_json=False) -> int:
                 print(f"  process isolation: {'sí' if value['process_isolation'] else 'no'}")
                 print(f"  límites recursos:  {'sí' if value['resource_limits'] else 'no'}")
                 print(f"  tools network:     {'OK' if value['supports_network_tools'] else 'no'}")
+            elif key == "secrets":
+                print(f"  backend:            {value['backend'] or '(no resoluble)'}")
+                print(f"  fichero:            {value['path']}")
+                print(
+                    "  existe:             "
+                    + ("sí" if value["exists"] else "no (sin fichero: keyring o sin claves)")
+                )
+                if value["exists"]:
+                    verdict = "OK" if value["secure"] else "INSEGUROS"
+                    print(f"  permisos:           {value['mode']} ({verdict})")
+                print(f"  secretos guardados: {value['names']}")
+                if value["exists"] and value["secure"] is False:
+                    print(
+                        "  ⚠ seguridad: el fichero tiene permisos de grupo/otros. "
+                        f"Ejecuta: chmod 600 {value['path']}"
+                    )
             elif key == "runtime_preconditions":
                 if not value:
                     print("  (sin avisos)")

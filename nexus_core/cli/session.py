@@ -531,6 +531,7 @@ class OmniSession:
             )
             self._output.write(banner, end="")
             self._tui.mark_startup_banner()
+            self._announce_update_in_background()
             return
         from .banner import build_banner, render_banner
         from .main import PROGRAM_VERSION
@@ -561,6 +562,35 @@ class OmniSession:
             self._output.write(banner_text, end="")
         else:
             render_banner(banner_text, no_color=self.no_color)
+
+    def _announce_update_in_background(self) -> None:
+        """Check GitHub off the UI thread and print the notice when it lands.
+
+        Two seconds is a *cap*, not a delay: the banner and the prompt are
+        already on screen when this returns, and the thread simply gives up when
+        the API does not answer. ``OMNI_NO_UPDATE_CHECK=1`` opts out (offline
+        box, CI, air-gapped lab). The write goes through the same locked
+        scrollback the streaming output uses, so it cannot interleave with a
+        tool's output.
+        """
+        from .update import DISABLE_ENV, check_for_update, update_notice
+
+        if os.getenv(DISABLE_ENV, "").strip().lower() in {"1", "true", "yes"}:
+            return
+
+        def worker() -> None:
+            try:
+                release = check_for_update()
+            except Exception:  # noqa: BLE001 - a version check never breaks a run
+                return
+            if release is None:
+                return
+            try:
+                self._output.write(render.paint(update_notice(release), render.YELLOW, render.BOLD))
+            except Exception:  # noqa: BLE001 - the UI may already be closing
+                pass
+
+        threading.Thread(target=worker, name="omni-update-check", daemon=True).start()
 
     def _describe_tool_call(self, tool_id: str, arguments: dict[str, Any]) -> str:
         """One-line description of a running tool, shown by the spinner."""
@@ -1263,6 +1293,20 @@ class OmniSession:
             f"conversación={result.conversation_id}"
         )
         return result
+
+    def visible_input(self, prompt: str) -> str:
+        """Read a non-secret line mid-command, TUI-safe.
+
+        ``input()`` inside a meta command fights prompt_toolkit for the terminal
+        and deadlocks it -- the same reason :meth:`secure_input` exists. This is
+        the visible counterpart, used by ``/auth`` to pick a provider from the
+        menu before the key itself is read concealed.
+        """
+        if self.input_reader is not None:
+            return str(self.input_reader(prompt))
+        if self._tui.use_tui:
+            return str(self._tui.prompt(prompt))
+        return input(prompt)
 
     def secure_input(self, prompt: str) -> str:
         """Read a secret: masked, never echoed, never written to history.

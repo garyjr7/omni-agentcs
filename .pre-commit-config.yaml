@@ -1,0 +1,23 @@
+# Protección pre-commit contra fugas de credenciales (hallazgo SEC-00).
+#
+# El job `secrets` de CI (.github/workflows/ci.yml) ya escanea el historial
+# completo, pero llega tarde: cuando el push se rechaza, el secreto ya estuvo en
+# el remoto y la única salida es rotarlo. Este hook mira lo *staged* antes de que
+# el commit exista, que es el único punto en el que la fuga todavía se evita.
+#
+# Instalación (una vez por clon):
+#   pip install pre-commit        # o: apt install pre-commit / brew install pre-commit
+#   pre-commit install
+#
+# Comprobación manual sin commitear:
+#   pre-commit run gitleaks --all-files
+#
+# El hook `gitleaks` compila el binario con Go (pre-commit descarga la versión
+# fijada en `rev`). Si prefieres usar el binario del sistema -sin toolchain de
+# Go-, cambia el id por `gitleaks-system` e instala gitleaks aparte
+# (https://github.com/gitleaks/gitleaks#installing).
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

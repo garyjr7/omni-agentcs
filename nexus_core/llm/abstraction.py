@@ -617,8 +617,10 @@ class DeepSeekClient(OpenAIClient):
         # close one completion under load, and cutting it short aborted the ReAct
         # turn instead of waiting it out. The value is env-overridable and floored.
         timeout = deepseek_timeout_seconds()
+        from nexus_core.config.secrets import resolve_api_key
+
         super().__init__(replace(config, model=model,
-            api_key=config.api_key or os.getenv("DEEPSEEK_API_KEY"),
+            api_key=config.api_key or resolve_api_key("deepseek"),
             base_url=config.base_url or "https://api.deepseek.com",
             timeout=int(timeout)))
         # One retry owner: SDK retries would bypass our per-attempt reservation.
@@ -1025,11 +1027,23 @@ class LLMFactory:
     @staticmethod
     def create_from_env() -> Dict[str, BaseLLMClient]:
         """
-        Creates all available LLM clients based on environment variables.
+        Creates all available LLM clients from the operator's stored keys.
+
+        The key comes from :func:`nexus_core.config.secrets.resolve_api_key`,
+        which reads the local store (OS keyring, else the ``0600`` file) **first**
+        and only then the environment. So a key entered once with
+        ``omni auth login`` wins over a stale export or ``.env`` line, and no
+        secret has to live in the process environment to build a client.
 
         Returns:
             A dictionary of available client names to their instances.
         """
+        from nexus_core.config.secrets import resolve_api_key
+
+        keys = {
+            name: resolve_api_key(name)
+            for name in ("openai", "gemini", "groq", "deepseek", "anthropic")
+        }
         clients: Dict[str, BaseLLMClient] = {}
         logger = get_logger("LLMFactory")
 
@@ -1041,12 +1055,12 @@ class LLMFactory:
         clients["fake"] = FakeLLMClient(fake_config)
 
         # OpenAI
-        if os.getenv("OPENAI_API_KEY"):
+        if keys["openai"]:
             try:
                 config = LLMConfig(
                     provider=LLMProvider.OPENAI,
                     model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-                    api_key=os.getenv("OPENAI_API_KEY")
+                    api_key=keys["openai"]
                 )
                 clients["openai"] = OpenAIClient(config)
                 # Visibility is decided by NEXUS_LOG_LEVEL (default warning), so
@@ -1056,12 +1070,12 @@ class LLMFactory:
                 logger.warning(f"Failed to create OpenAI client from env: {e}")
 
         # Gemini
-        if os.getenv("GEMINI_API_KEY"):
+        if keys["gemini"]:
             try:
                 config = LLMConfig(
                     provider=LLMProvider.GEMINI,
                     model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
-                    api_key=os.getenv("GEMINI_API_KEY")
+                    api_key=keys["gemini"]
                 )
                 clients["gemini"] = GeminiClient(config)
                 logger.info("Gemini client created from environment variables.")
@@ -1069,12 +1083,12 @@ class LLMFactory:
                 logger.warning(f"Failed to create Gemini client from env: {e}")
 
         # Groq / OpenAI-compatible endpoint
-        if os.getenv("GROQ_API_KEY"):
+        if keys["groq"]:
             try:
                 config = LLMConfig(
                     provider=LLMProvider.GROQ,
                     model=os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b"),
-                    api_key=os.getenv("GROQ_API_KEY"),
+                    api_key=keys["groq"],
                     base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
                 )
                 clients["groq"] = OpenAIClient(config)
@@ -1084,12 +1098,12 @@ class LLMFactory:
 
         # DeepSeek (OpenAI-compatible). Available from Fase 3.6, not the default;
         # a client is only built when the operator exported the key.
-        if os.getenv("DEEPSEEK_API_KEY"):
+        if keys["deepseek"]:
             try:
                 config = LLMConfig(
                     provider=LLMProvider.DEEPSEEK,
                     model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
-                    api_key=os.getenv("DEEPSEEK_API_KEY"),
+                    api_key=keys["deepseek"],
                     base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                 )
                 clients["deepseek"] = DeepSeekClient(config)
@@ -1097,11 +1111,11 @@ class LLMFactory:
             except Exception as e:
                 logger.warning(f"Failed to create DeepSeek client from env: {e}")
 
-        if os.getenv("ANTHROPIC_API_KEY"):
+        if keys["anthropic"]:
             clients["anthropic"] = LLMFactory.create(LLMConfig(
                 provider=LLMProvider.ANTHROPIC,
                 model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
-                api_key=os.getenv("ANTHROPIC_API_KEY"),
+                api_key=keys["anthropic"],
             ))
 
         # Ollama

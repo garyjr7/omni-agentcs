@@ -7,19 +7,37 @@ alto riesgo. Úsalo únicamente sobre objetivos autorizados en tu engagement.
 
 ## Instalación
 
-Requiere Python 3.12+. El CLI y el provisioner reconocen Linux y macOS;
-la ejecución de cada herramienta depende del binario y sandbox disponibles.
+Requiere Python 3.12+ (lo que declara `pyproject.toml`), `pip` y `git`. El CLI y
+el provisioner reconocen Linux y macOS; la ejecución de cada herramienta depende
+del binario y sandbox disponibles.
+
+### Instalación rápida (un comando)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/garyjr7/omni-agentcs/main/install.sh | bash
+```
+
+El instalador comprueba Python/pip/git, instala en un entorno aislado (`pipx` si
+existe; si no, un venv en `~/.local/share/omniagentcs/venv`) y enlaza `omni` en
+`~/.local/bin`. **No crea ni toca configuración ni claves**: `~/.config/omni`
+(con `config.toml` y `secrets.json`) se deja exactamente como está, y el script
+verifica su huella al terminar. `omni` nunca se ejecuta durante la instalación,
+porque sería lo único capaz de crear esa carpeta.
+
+```bash
+# 1. guarda tu clave (no se muestra al teclear)
+omni auth login
+# 2. primer arranque: wizard de configuración y engagement
+omni
+```
+
+Sin red o con `curl` bloqueado, la instalación desde el checkout es equivalente:
 
 ```bash
 git clone https://github.com/garyjr7/omni-agentcs
 cd omni-agentcs
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-prod.in
-mkdir -p ~/.local/bin
-ln -s "$PWD/omni.py" ~/.local/bin/omni
-export PATH="$HOME/.local/bin:$PATH"
-omni
+bash install.sh --dry-run   # ver la fuente y el plan, sin instalar nada
+bash install.sh
 ```
 
 Activa el venv en cada terminal; el ejecutable usa el Python de `PATH`.
@@ -150,12 +168,28 @@ obtienes el comando exacto para ejecutarlo a mano en vez de un prompt colgado.
 
 ### Instalación del CLI (un comando, sin depender de PyPI)
 
-`scripts/install.sh` resuelve su fuente en este orden: `$OMNI_SOURCE` → el
-**checkout local** si el script vive dentro de un repo con `pyproject.toml` →
+`install.sh` (raíz del repo) resuelve su fuente en este orden: `$OMNI_SOURCE` →
+el **checkout local** si el script vive dentro de un repo con `pyproject.toml` →
 `$OMNI_GIT_URL` (por defecto `git+https://github.com/garyjr7/omni-agentcs.git`) →
 PyPI. Así el one-liner funciona hoy contra el repositorio y no solo si el
-paquete está publicado. `bash scripts/install.sh --dry-run` muestra la fuente y
-el plan sin instalar nada.
+paquete está publicado. `bash install.sh --dry-run` muestra la fuente y el plan
+sin instalar nada.
+
+### Actualización
+
+```bash
+omni update           # consulta, pregunta y actualiza
+omni update --check   # solo dice si hay versión nueva; no modifica nada
+```
+
+`omni update` lee la última versión de la API de GitHub Releases (con fallback al
+`pyproject.toml` de `main`), la compara con la instalada y, solo si aceptas,
+ejecuta `git pull --ff-only` y reinstala dependencias en el entorno que ya usas
+(el venv del instalador o pipx). **Nunca escribe en `~/.config/omni`**: calcula
+la huella de esa carpeta antes y después y aborta con un error visible si algo
+la hubiera tocado. La TUI, al arrancar, comprueba actualizaciones en segundo
+plano (tope de 2 s) y muestra `[!] Actualización disponible: vX.Y.Z` sin
+bloquear el prompt; `OMNI_NO_UPDATE_CHECK=1` lo desactiva.
 
 Doctor muestra sistema, herramientas, gestores, rutas, SQLite, últimos eventos
 de auditoría y puerto/systemd de msfrpcd. El sondeo del puerto no autentica RPC.
