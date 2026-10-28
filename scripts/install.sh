@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # OmniAgentCS — instalador de un solo comando.
 #
-#   curl -fsSL https://raw.githubusercontent.com/garyjr7/NEXUS/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/garyjr7/omni-agentcs/main/scripts/install.sh | sh
 #
 # Fuente de instalación, en orden de preferencia:
 #   1. $OMNI_SOURCE     spec instalable de pip/pipx (ruta local, git URL o nombre)
 #   2. checkout local   si este script vive dentro de un repo con pyproject.toml
-#   3. $OMNI_GIT_URL    repo del proyecto (por defecto git+https://github.com/garyjr7/NEXUS.git)
+#   3. $OMNI_GIT_URL    repo del proyecto (por defecto git+https://github.com/garyjr7/omni-agentcs.git)
 #   4. PyPI             $OMNI_PYPI_NAME (último recurso, solo si las anteriores fallan)
 #
 # Instala de forma aislada con pipx (preferido) o, si no está, crea un venv en
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 PYPI_NAME="${OMNI_PYPI_NAME:-omniagentcs}"
-GIT_URL="${OMNI_GIT_URL:-git+https://github.com/garyjr7/NEXUS.git}"
+GIT_URL="${OMNI_GIT_URL:-git+https://github.com/garyjr7/omni-agentcs.git}"
 BIN_DIR="${HOME}/.local/bin"
 VENV_DIR="${HOME}/.local/share/omniagentcs/venv"
 

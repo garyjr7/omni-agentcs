@@ -152,7 +152,7 @@ obtienes el comando exacto para ejecutarlo a mano en vez de un prompt colgado.
 
 `scripts/install.sh` resuelve su fuente en este orden: `$OMNI_SOURCE` → el
 **checkout local** si el script vive dentro de un repo con `pyproject.toml` →
-`$OMNI_GIT_URL` (por defecto `git+https://github.com/garyjr7/NEXUS.git`) →
+`$OMNI_GIT_URL` (por defecto `git+https://github.com/garyjr7/omni-agentcs.git`) →
 PyPI. Así el one-liner funciona hoy contra el repositorio y no solo si el
 paquete está publicado. `bash scripts/install.sh --dry-run` muestra la fuente y
 el plan sin instalar nada.
