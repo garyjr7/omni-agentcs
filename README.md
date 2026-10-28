@@ -11,7 +11,7 @@ Requiere Python 3.12+. El CLI y el provisioner reconocen Linux y macOS;
 la ejecución de cada herramienta depende del binario y sandbox disponibles.
 
 ```bash
-git clone https://github.com/bajioware/omni-agentcs
+git clone https://github.com/garyjr7/omni-agentcs
 cd omni-agentcs
 python3.12 -m venv .venv
 source .venv/bin/activate

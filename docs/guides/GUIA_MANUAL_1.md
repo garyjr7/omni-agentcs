@@ -58,7 +58,7 @@ Referencia: `docs/missions/MANUAL_VS_AGENT.md` (comparativa medida de ambos modo
 Requiere **Python 3.12+**. Linux y macOS soportados por el CLI/provisioner.
 
 ```bash
-git clone https://github.com/bajioware/omni-agentcs
+git clone https://github.com/garyjr7/omni-agentcs
 cd omni-agentcs
 python3.12 -m venv .venv
 source .venv/bin/activate

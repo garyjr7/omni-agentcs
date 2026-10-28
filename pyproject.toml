@@ -56,7 +56,7 @@ dev = [
 omni = "omni:main"
 
 [project.urls]
-Homepage = "https://github.com/bajioware/omni-agentcs"
+Homepage = "https://github.com/garyjr7/omni-agentcs"
 
 [tool.mypy]
 # Contrato de tipado del proyecto (V1-9). No silencia errores del código propio:
