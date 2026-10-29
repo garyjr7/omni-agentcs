@@ -29,6 +29,10 @@ from .react_types import (
     PHASE_TIMEOUT_ENV,
     STUCK_THRESHOLD_ENV,
     DEFAULT_STUCK_THRESHOLD,
+    VECTOR_FAILURE_WARN_THRESHOLD,
+    VECTOR_FAILURE_LOCK_THRESHOLD,
+    VECTOR_LOCK_WARN_ENV,
+    VECTOR_LOCK_HARD_ENV,
     REACT_MAX_TOKENS_ENV,
     REACT_DEFAULT_MAX_TOKENS,
     REACT_MIN_MAX_TOKENS,
@@ -325,6 +329,29 @@ def stuck_threshold() -> int:
     except (TypeError, ValueError):
         return int(DEFAULT_STUCK_THRESHOLD)
     return value if value > 0 else int(DEFAULT_STUCK_THRESHOLD)
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return int(default)
+    return value if value > 0 else int(default)
+
+
+def vector_lock_thresholds() -> tuple[int, int]:
+    """Umbrales del bloqueo por vector: ``(aviso, bloqueo duro)``.
+
+    ``NEXUS_VECTOR_LOCK_WARN`` y ``NEXUS_VECTOR_LOCK_HARD`` los sobreescriben
+    para depurar un run sin recompilar. Un valor inválido o no positivo cae al
+    default (igual que ``stuck_threshold``); el bloqueo se mantiene siempre por
+    encima del aviso, porque avisar y bloquear en el mismo turno no deja al
+    modelo corregir y convierte el aviso en ruido.
+    """
+    warn = _positive_env_int(VECTOR_LOCK_WARN_ENV, VECTOR_FAILURE_WARN_THRESHOLD)
+    hard = _positive_env_int(VECTOR_LOCK_HARD_ENV, VECTOR_FAILURE_LOCK_THRESHOLD)
+    return warn, hard if hard > warn else warn + 1
 
 
 def react_max_tokens() -> int:

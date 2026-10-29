@@ -33,6 +33,41 @@ CANCEL_EVENT_TYPE = "react.cancel_requested"
 #: streak: an isolated failure between successful calls is not a broken tool.
 MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE = 3
 TOOL_UNAVAILABLE_EVENT_TYPE = "react.tool_unavailable"
+#: FIX 1: fallos *consecutivos de la misma tool sobre el mismo objetivo*. La
+#: cuenta de arriba mira la tool en general; esta mira el vector. Medido en la
+#: sala easy del 2026-10-29 (10.66.171.37, Apache/PHP en el 80): el modelo gastó
+#: 12+ turnos en ``pyNfsClient`` por ``nexus.shell.exec`` con el mismo error de
+#: autenticación, mientras ``nexus.knowledge.record_fact`` registraba un solo
+#: ``barrier`` y el puerto 80 nunca se visitaba. A los 2 fallos el loop inyecta
+#: un aviso en el historial; a los 3 rechaza la llamada.
+VECTOR_FAILURE_WARN_THRESHOLD = 2
+VECTOR_FAILURE_LOCK_THRESHOLD = 3
+#: Env opcionales para depurar los umbrales sin recompilar el paquete.
+VECTOR_LOCK_WARN_ENV = "NEXUS_VECTOR_LOCK_WARN"
+VECTOR_LOCK_HARD_ENV = "NEXUS_VECTOR_LOCK_HARD"
+#: Turno ``user`` del historial con el aviso de vector bloqueado. El ``kind``
+#: permite al operador (y a los tests) encontrarlo sin leer el texto.
+VECTOR_LOCK_WARNING_KIND = "react.vector_lock_warning"
+#: Eventos del run (NDJSON) con los que se valida el fix en un run real: sin
+#: ellos no se puede distinguir un pivote forzado de una casualidad del modelo.
+VECTOR_LOCKED_EVENT_TYPE = "react.vector_locked"
+VECTOR_UNLOCKED_EVENT_TYPE = "react.vector_unlocked"
+VECTOR_LOCK_SKIPPED_EVENT_TYPE = "react.vector_lock_skipped_ambiguous"
+#: Texto exacto que lee el modelo. Nombra el fallo, el veredicto y la salida
+#: (``barrier``), y termina con los vectores abiertos y su tool sugerida para
+#: que el pivote sea una acción concreta y no una queja.
+VECTOR_LOCK_WARNING = (
+    "AVISO DEL SISTEMA: has fallado {failures} veces con la tool `{tool_id}` sobre "
+    "`{target}`. Este vector está BLOQUEADO: no lo reintentes. Marca barrier con "
+    "`nexus.knowledge.record_fact` y pivota. Vectores abiertos en el blackboard: "
+    "{vectors}"
+)
+VECTOR_LOCKED_HINT = (
+    "Este vector está bloqueado tras {failures} fallos consecutivos. Usa otra "
+    "tool, otro subcomando u otro target; si el vector entero está muerto marca "
+    "barrier con `nexus.knowledge.record_fact`. Vectores abiertos: {vectors}"
+)
+VECTOR_LOCK_NO_VECTORS = "(ninguno registrado todavía: usa la enumeración que ya completaste)"
 PHASE_TIMEOUT_EVENT_TYPE = "react.phase_timeout"
 #: Optional per-phase wall-clock budget (0 disables it). When exceeded the
 #: phase's already-failing tools are retired and the event is audited.

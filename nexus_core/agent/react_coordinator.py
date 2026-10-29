@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import shlex
 import time
 from typing import Any
 
@@ -83,6 +85,13 @@ from .react_types import (
     LOOP_BARRIER_EVENT_TYPE,
     STALL_BARRIER_MULTIPLIER,
     STALLED_BRANCH_WINDOW,
+    VECTOR_LOCKED_EVENT_TYPE,
+    VECTOR_LOCKED_HINT,
+    VECTOR_LOCK_NO_VECTORS,
+    VECTOR_LOCK_SKIPPED_EVENT_TYPE,
+    VECTOR_LOCK_WARNING,
+    VECTOR_LOCK_WARNING_KIND,
+    VECTOR_UNLOCKED_EVENT_TYPE,
     TARGET_REACHED_EVENT_TYPE,
     TARGET_REACHED_FORCED_EVENT_TYPE,
     TARGET_REACHED_GRACE_TURNS,
@@ -98,6 +107,7 @@ from .react_support import (
     _failure_kind,
     _phase_timeout_seconds,
     stuck_threshold,
+    vector_lock_thresholds,
     _keep_going_after_failures,
     _run_messages,
     _premature_completion_message,
@@ -268,6 +278,234 @@ MAX_REPLAY_REFUSALS = 3
 #: credential on the board, 1 M tokens of budget left and 82 iterations unused.
 MAX_CONSECUTIVE_GOVERNANCE_DENIALS = 3
 
+#: FIX 1: tools whose first argument is a *command*. ``nexus.shell.exec`` is the
+#: catch-all of the catalog, so the lock on it is per binary inside the command
+#: (``mount``, ``python3``, ``curl``) and never per tool: locking
+#: ``(shell.exec, host)`` would also remove the ``curl`` that is exactly the
+#: pivot this fix exists to force (measured in hijack_v2: twelve
+#: ``python3 -c`` calls against NFS while port 80 stayed unvisited).
+SHELL_COMMAND_TOOLS = frozenset({"nexus.shell.exec"})
+#: Leading binaries that hide the real command (``sudo -u x bash -c ...``) or
+#: have no stable one. Such a command is only *warned* about, never locked: a
+#: wrong attribution would close a vector that never ran.
+SHELL_WRAPPERS = frozenset(
+    {
+        "sh", "bash", "zsh", "dash", "ksh", "fish", "env", "nohup", "sudo",
+        "doas", "timeout", "xargs", "watch", "screen", "tmux", "su", "command",
+        "exec", "eval", "source",
+    }
+)
+#: Arguments that name the target of an invocation, in priority order, for the
+#: tools that do not declare ``scope_target_field``.
+TARGET_ARGUMENT_KEYS = (
+    "target", "targets", "url", "urls", "host", "hosts", "domain", "rhost",
+)
+_URL_TOKEN_RE = re.compile(r"https?://[^\s'\"<>|;&]+", re.IGNORECASE)
+_IPV4_TOKEN_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
+_HOST_TOKEN_RE = re.compile(
+    r"(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?![\w.-])",
+    re.IGNORECASE,
+)
+#: Last labels that look like a TLD inside a shell command but are files
+#: (``exploit.py``, ``auth.conf``): they are never a target.
+_FILE_SUFFIXES = frozenset(
+    {
+        "py", "sh", "txt", "json", "xml", "log", "conf", "cfg", "md", "yml",
+        "yaml", "php", "html", "htm", "js", "css", "csv", "ini", "pem", "key",
+        "pub", "tar", "gz", "zip", "c", "h", "rb", "pl", "bin", "out", "db",
+        "sql", "bak", "tmp", "lock", "service", "socket", "nfs", "exe", "dll",
+    }
+)
+#: Outcomes that mean "this vector did not work", whatever ``success`` says. A
+#: handler may report ``partial`` with ``verified=True`` in the future and the
+#: counter must not depend on that detail (nfs.py builds it with
+#: ``verified=False`` today; http_request.py declares ``partial`` when the
+#: session is not authenticated, also ``verified=False``).
+VECTOR_FAILURE_OUTCOMES = frozenset({"failed", "partial", "unavailable", "timeout"})
+#: Outcomes that are *not* a verdict about the vector: the signed scope refused
+#: the call (its own streak governs), the channel ran but the command failed
+#: (the tool works), or governance/approval denied it before reaching the target.
+VECTOR_NEUTRAL_OUTCOMES = frozenset(
+    {
+        "scope_denied", "command_failed", "governance_denial", "approval_required",
+        "denied_by_operator", "replay_approval_required", "cancelled",
+    }
+)
+#: Tool suggested for each service name an open vector may carry. The warning
+#: has to name a next action, not just list ports.
+_VECTOR_TOOL_SUGGESTIONS = {
+    "http": "nexus.web.request",
+    "https": "nexus.web.request",
+    "http-proxy": "nexus.web.request",
+    "ssh": "nexus.post.ssh_exec",
+    "telnet": "nexus.post.ssh_exec",
+    "ftp": "nexus.recon.ftp",
+    "nfs": "nexus.recon.nfs",
+    "rpcbind": "nexus.recon.nfs",
+    "smb": "nexus.recon.smb",
+    "netbios-ssn": "nexus.recon.smb",
+    "microsoft-ds": "nexus.recon.smb",
+    "domain": "nexus.recon.netexec",
+    "ldap": "nexus.recon.netexec",
+    "mysql": "nexus.cred.bruteforce",
+}
+#: Ceiling of the open-vector list injected into the prompt. The warning is a
+#: nudge, not a second catalogue.
+VECTOR_OPEN_LIMIT = 6
+
+
+def _canonical_target(value: Any) -> str:
+    """Host identity of a target: no scheme, no user, no path, no port.
+
+    The same host reached as ``http://10.0.0.5/x.php``, ``10.0.0.5:80`` and
+    ``10.0.0.5`` is one vector; comparing the raw strings would let the model
+    dodge the counter by writing the target differently each turn.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    text = text.split("/", 1)[0].split("?", 1)[0]
+    if "@" in text:
+        text = text.rsplit("@", 1)[1]
+    if text.startswith("["):
+        return text.split("]", 1)[0].lstrip("[").lower()
+    if text.count(":") == 1:
+        text = text.split(":", 1)[0]
+    return text.strip(".,;:'\"()[]{}").lower()
+
+
+def _targets_in(text: str) -> list[str]:
+    """Targets named anywhere inside a free-form string (a shell command)."""
+    found = [_canonical_target(match.group(0)) for match in _URL_TOKEN_RE.finditer(text)]
+    found += [_canonical_target(match.group(0)) for match in _IPV4_TOKEN_RE.finditer(text)]
+    for match in _HOST_TOKEN_RE.finditer(text):
+        token = match.group(0).lower()
+        if token.rsplit(".", 1)[-1] in _FILE_SUFFIXES:
+            continue
+        found.append(_canonical_target(token))
+    unique: list[str] = []
+    for item in found:
+        if item and item not in unique:
+            unique.append(item)
+    return unique
+
+
+def _scope_field(definition: Any) -> str:
+    if isinstance(definition, dict):
+        return str(definition.get("scope_target_field") or "")
+    return str(getattr(definition, "scope_target_field", "") or "")
+
+
+def _vector_target(definition: Any, arguments: Any) -> tuple[str, list[str]]:
+    """``(target_canonical, candidates)`` of one invocation.
+
+    ``candidates`` is non-empty only when the arguments name more than one
+    distinct target (``nmap 10.0.0.5 && curl 10.0.0.6``): the attribution would
+    be a guess, so the caller logs it and counts nothing.
+    """
+    args = arguments if isinstance(arguments, dict) else {}
+    field = _scope_field(definition)
+    if field and args.get(field) not in (None, "", [], ()):
+        value = args[field]
+        first = value[0] if isinstance(value, (list, tuple)) and value else value
+        target = _canonical_target(first)
+        if target:
+            return target, []
+    for key in TARGET_ARGUMENT_KEYS:
+        value = args.get(key)
+        first = value[0] if isinstance(value, (list, tuple)) and value else value
+        if not isinstance(first, str) or not first.strip() or any(ch.isspace() for ch in first):
+            continue
+        target = _canonical_target(first)
+        if target:
+            return target, []
+    candidates: list[str] = []
+    for value in args.values():
+        strings = (
+            [item for item in value if isinstance(item, str)]
+            if isinstance(value, (list, tuple))
+            else [value]
+            if isinstance(value, str)
+            else []
+        )
+        for item in strings:
+            for found in _targets_in(item):
+                if found not in candidates:
+                    candidates.append(found)
+    if len(candidates) == 1:
+        return candidates[0], []
+    return "", candidates if len(candidates) > 1 else []
+
+
+def _shell_subcommand(command: Any) -> str:
+    """Binary a shell command runs (``python3``, ``mount``), or ``""``.
+
+    Empty means the command cannot be attributed to one binary (an unparsable
+    quote, a wrapper such as ``bash -c``): the pair then only gets the warning,
+    never the hard lock.
+    """
+    if isinstance(command, (list, tuple)):
+        command = " ".join(str(part) for part in command)
+    text = str(command or "").strip()
+    if not text:
+        return ""
+    try:
+        tokens = shlex.split(text, posix=True)
+    except ValueError:
+        return ""
+    while tokens and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0]):
+        tokens = tokens[1:]
+    if not tokens:
+        return ""
+    binary = tokens[0].rsplit("/", 1)[-1].strip().lower()
+    if not binary or binary in SHELL_WRAPPERS:
+        return ""
+    return binary
+
+
+def _vector_key(
+    tool_id: str, definition: Any, arguments: Any
+) -> tuple[tuple[str, str, str] | None, list[str]]:
+    """``((tool_id, subcommand, target), ambiguous_candidates)`` for one call."""
+    args = arguments if isinstance(arguments, dict) else {}
+    subcommand = _shell_subcommand(args.get("command")) if tool_id in SHELL_COMMAND_TOOLS else ""
+    target, ambiguous = _vector_target(definition, args)
+    if ambiguous:
+        return None, ambiguous
+    if not target:
+        return None, []
+    return (tool_id, subcommand, target), []
+
+
+def _vector_lockable(key: tuple[str, str, str]) -> bool:
+    """Fallback A: an unattributable shell command is warned about, not locked."""
+    return not (key[0] in SHELL_COMMAND_TOOLS and not key[1])
+
+
+def _is_vector_failure(observation: Any) -> bool:
+    """Whether a tool observation is a verdict against the *vector*.
+
+    ``partial`` counts by outcome even when a handler ever reports it with
+    ``success=True``; governance refusals and a failed command inside a working
+    channel do not count at all.
+    """
+    if not isinstance(observation, dict):
+        return False
+    outcome = str(observation.get("outcome") or "").strip()
+    if outcome in VECTOR_NEUTRAL_OUTCOMES:
+        return False
+    if outcome in VECTOR_FAILURE_OUTCOMES:
+        return True
+    return observation.get("success") is False
+
+
+def _render_vectors(vectors: list[dict[str, str]]) -> str:
+    if not vectors:
+        return VECTOR_LOCK_NO_VECTORS
+    return "; ".join(f"{item['key']} → {item['suggested_tool']}" for item in vectors)
+
 
 class ReActCoordinator:
     """One run's state and explicit transitions; services own boundary logic."""
@@ -305,6 +543,16 @@ class ReActCoordinator:
     subagent_iterations: int
     unavailable_tools: set[str]
     tool_failures: dict[str, int]
+    #: FIX 1: fallos consecutivos por ``(tool_id, subcommand, target)``, los
+    #: pares ya avisados y los que están bloqueados. El estado es del run: un
+    #: run reanudado desde historial empieza con los vectores libres.
+    vector_failures: dict[tuple[str, str, str], int]
+    vector_warned: set[tuple[str, str, str]]
+    vector_locked: set[tuple[str, str, str]]
+    #: Umbrales efectivos del run (``NEXUS_VECTOR_LOCK_WARN``/
+    #: ``NEXUS_VECTOR_LOCK_HARD``), leídos una vez en ``_initialize``.
+    vector_warn_threshold: int
+    vector_lock_threshold: int
     phase_started: float
     phase_timeout_seconds: float
     run_evidence: list[dict[str, Any]]
@@ -611,6 +859,10 @@ class ReActCoordinator:
             else self._initial_unavailable_tools
         )
         self.tool_failures = {}
+        self.vector_failures = {}
+        self.vector_warned = set()
+        self.vector_locked = set()
+        self.vector_warn_threshold, self.vector_lock_threshold = vector_lock_thresholds()
         self.phase_started = time.monotonic()
         self.phase_timeout_seconds = (
             self._phase_timeout_override
@@ -2447,6 +2699,12 @@ class ReActCoordinator:
                 ),
                 "next": CREATE_PLAN_TOOL,
             }
+        # FIX 1: the vector of this exact call is dead. It is refused before
+        # policy, approval and the gateway -it is a behavioural brake, not a
+        # governance decision- and only asks the model to change tool or branch.
+        locked = self._vector_lock_refusal(spec)
+        if locked is not None:
+            return "vector_locked", locked
         if tool_id in self.unavailable_tools:
             return "tool_unavailable", {
                 "success": False,
@@ -2556,6 +2814,46 @@ class ReActCoordinator:
                 decision="deny",
                 tool_id=self.action.tool_id,
                 reason="plan_required",
+            )
+            return Transition.NEXT_TURN
+        if refusal is not None and refusal[0] == "vector_locked":
+            self.observation = refusal[1]
+            self.entry["tool_result"] = self.observation
+            self.actions.append(self.entry)
+            _inject_observation(
+                self.store,
+                self.tenant_id,
+                self.conversation_id,
+                self.run_id,
+                self.iteration,
+                self.action,
+                self.observation,
+                subagent_id=self.active_subagent_id,
+            )
+            self.telemetry.flag(FrictionFlag.REPEATED_ACTION)
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                VECTOR_LOCKED_EVENT_TYPE,
+                {
+                    "iteration": self.iteration,
+                    "tool_id": self.observation.get("tool_id"),
+                    "subcommand": self.observation.get("subcommand", ""),
+                    "target": self.observation.get("target"),
+                    "fail_count": self.observation.get("failures"),
+                    "refused": True,
+                },
+            )
+            # A refusal is not a tool failure: it never moves
+            # ``consecutive_failures`` nor retires the tool, because the vector
+            # (not the tool) is what the loop closed.
+            self.audit_step(
+                iteration=self.iteration,
+                action=self.action.action,
+                decision="deny",
+                tool_id=self.action.tool_id,
+                reason="vector_locked",
+                target=self.observation.get("target"),
             )
             return Transition.NEXT_TURN
         if refusal is not None and refusal[0] == "tool_unavailable":
@@ -3259,6 +3557,7 @@ class ReActCoordinator:
             self.tool_failures.clear()
             self.run_evidence.extend(result["assertions"])
             del self.run_evidence[:-RUN_EVIDENCE_MAX_OBSERVATIONS]
+            self._account_vector(spec.tool_id, spec.arguments, observation)
             return result
         if outcome == "scope_denied":
             handler_output = observation.get("output")
@@ -3306,6 +3605,7 @@ class ReActCoordinator:
                 result["guidance"] = unavailable_guidance(spec.tool_id, reason)
         elif outcome == "command_failed":
             result["guidance"] = command_failed_guidance(spec.tool_id)
+        self._account_vector(spec.tool_id, spec.arguments, observation)
         return result
 
     def _account_call_error(
@@ -3396,6 +3696,7 @@ class ReActCoordinator:
             if kind == "tool":
                 self._note_tool_failure(spec.tool_id)
             self.consecutive_failures += 1
+        self._account_vector(spec.tool_id, spec.arguments, result)
         return result
 
     async def _batch_turn(self) -> Transition:
@@ -3946,6 +4247,12 @@ class ReActCoordinator:
             self.observation,
             subagent_id=self.active_subagent_id,
         )
+        # FIX 1: one executed call is one count against its vector (or a clear).
+        # The observation is already in the history, so a warning appended here
+        # is read by the very next turn.
+        self._account_vector(
+            str(self.action.tool_id), self.action.arguments, self.observation
+        )
         self.audit_step(
             iteration=self.iteration,
             action=self.action.action,
@@ -4017,6 +4324,260 @@ class ReActCoordinator:
                 failures=count,
             )
         return count
+
+    # ----------------------------------------------------------- vector lock
+    def _vector_key_for(
+        self, tool_id: str, arguments: Any
+    ) -> tuple[tuple[str, str, str] | None, list[str]]:
+        resolved = self.catalog.get(tool_id) if getattr(self, "catalog", None) else None
+        definition = resolved[0] if isinstance(resolved, tuple) else resolved
+        return _vector_key(tool_id, definition, arguments)
+
+    def _vector_lock_refusal(self, spec: Any) -> dict[str, Any] | None:
+        """Observation that refuses a call on a vector the loop already closed."""
+        locked = getattr(self, "vector_locked", None)
+        if not locked:
+            return None
+        tool_id = str(getattr(spec, "tool_id", "") or "")
+        key, _ambiguous = self._vector_key_for(tool_id, getattr(spec, "arguments", None))
+        if key is None or key not in locked:
+            return None
+        failures = int(self.vector_failures.get(key, self.vector_lock_threshold))
+        named = f"`{key[1]}` " if key[1] else ""
+        return {
+            "success": False,
+            "outcome": "vector_locked",
+            "error": "vector_locked",
+            "reason": f"{failures} fallos consecutivos en {key[0]} {named}sobre {key[2]}".replace(
+                "  ", " "
+            ),
+            "tool_id": key[0],
+            "subcommand": key[1],
+            "target": key[2],
+            "failures": failures,
+            "hint": VECTOR_LOCKED_HINT.format(
+                failures=failures, vectors=_render_vectors(self._open_vectors())
+            ),
+            "available_tools": sorted(self.allowed_catalog),
+        }
+
+    def _account_vector(
+        self, tool_id: str, arguments: Any, observation: Any
+    ) -> None:
+        """Count one executed call against its vector, or clear it on success.
+
+        Single calls (``_execute_tool``) and parallel ones (``_account_call``)
+        share this rule, so a batch of three failures on the same vector closes
+        it exactly like three turns would.
+        """
+        if isinstance(observation, dict) and observation.get("success"):
+            self._account_vector_success(tool_id, arguments)
+            return
+        self._note_vector_failure(tool_id, arguments, observation)
+
+    def _note_vector_failure(self, tool_id: str, arguments: Any, observation: Any) -> None:
+        """Warn at the first threshold, lock at the second (FIX 1)."""
+        if not _is_vector_failure(observation):
+            return
+        key, ambiguous = self._vector_key_for(tool_id, arguments)
+        if ambiguous:
+            command = arguments.get("command") if isinstance(arguments, dict) else ""
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                VECTOR_LOCK_SKIPPED_EVENT_TYPE,
+                {
+                    "iteration": self.iteration,
+                    "tool_id": tool_id,
+                    "subcommand": _shell_subcommand(command),
+                    "command_preview": str(command or "")[:200],
+                    "detected_targets": list(ambiguous),
+                },
+            )
+            return
+        if key is None:
+            return
+        count = self.vector_failures.get(key, 0) + 1
+        self.vector_failures[key] = count
+        if count >= self.vector_warn_threshold and key not in self.vector_warned:
+            self.vector_warned.add(key)
+            self._warn_vector_lock(key, count)
+        if (
+            count >= self.vector_lock_threshold
+            and _vector_lockable(key)
+            and key not in self.vector_locked
+        ):
+            self.vector_locked.add(key)
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                VECTOR_LOCKED_EVENT_TYPE,
+                {
+                    "iteration": self.iteration,
+                    "tool_id": key[0],
+                    "subcommand": key[1],
+                    "target": key[2],
+                    "fail_count": count,
+                },
+            )
+            self.audit_step(
+                iteration=self.iteration,
+                action="vector_locked",
+                decision="deny",
+                tool_id=key[0],
+                subcommand=key[1],
+                target=key[2],
+                failures=count,
+            )
+
+    def _warn_vector_lock(self, key: tuple[str, str, str], count: int) -> None:
+        """Inject the system warning as a history turn and journal the event."""
+        vectors = self._open_vectors()
+        text = VECTOR_LOCK_WARNING.format(
+            failures=count, tool_id=key[0], target=key[2], vectors=_render_vectors(vectors)
+        )
+        memory.append_step(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            "user",
+            text,
+            {
+                "kind": VECTOR_LOCK_WARNING_KIND,
+                "iteration": self.iteration,
+                "run_id": self.run_id,
+                "tool_id": key[0],
+                "subcommand": key[1],
+                "target": key[2],
+                "failures": count,
+                "open_vectors": vectors,
+            },
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            VECTOR_LOCK_WARNING_KIND,
+            {
+                "iteration": self.iteration,
+                "tool_id": key[0],
+                "subcommand": key[1],
+                "target": key[2],
+                "fail_count": count,
+                "open_vectors": vectors,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="vector_lock_warning",
+            decision="degrade",
+            tool_id=key[0],
+            subcommand=key[1],
+            target=key[2],
+            failures=count,
+        )
+
+    def _account_vector_success(self, tool_id: str, arguments: Any) -> None:
+        """A success clears the vector it reached.
+
+        Two escapes, and both are one line of policy: any other tool that works
+        on the same target resets the counters of that target, and a
+        ``record_fact(fact_type="barrier")`` unlocks it explicitly -the model
+        recognised the dead vector, which is the behaviour the loop wants.
+        """
+        key, ambiguous = self._vector_key_for(tool_id, arguments)
+        if ambiguous:
+            return
+        if key is not None:
+            target = key[2]
+        else:
+            target, _ambiguous = _vector_target(None, arguments)
+        if not target:
+            return
+        barrier = (
+            tool_id == "nexus.knowledge.record_fact"
+            and isinstance(arguments, dict)
+            and str(arguments.get("fact_type") or "") == "barrier"
+        )
+        if barrier:
+            self._release_vectors(target, reason="barrier")
+            return
+        self._release_vectors(target, reason="other_tool_success", keep_tool=tool_id)
+        # The successful tool's own streak is broken by definition; nothing is
+        # unlocked, the pair simply stops counting.
+        for stale in [
+            item
+            for item in self.vector_failures
+            if item[0] == tool_id and item[2] == target
+        ]:
+            self.vector_failures.pop(stale, None)
+            self.vector_warned.discard(stale)
+
+    def _release_vectors(self, target: str, *, reason: str, keep_tool: str = "") -> None:
+        """Drop every counter of *target* (except ``keep_tool``) and journal it."""
+        name = _canonical_target(target)
+        if not name:
+            return
+        for key in [
+            item
+            for item in getattr(self, "vector_failures", {})
+            if item[2] == name and (not keep_tool or item[0] != keep_tool)
+        ]:
+            self.vector_failures.pop(key, None)
+            warned = key in self.vector_warned
+            was_locked = key in self.vector_locked
+            self.vector_warned.discard(key)
+            self.vector_locked.discard(key)
+            if not (warned or was_locked):
+                continue
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                VECTOR_UNLOCKED_EVENT_TYPE,
+                {
+                    "iteration": self.iteration,
+                    "tool_id": key[0],
+                    "subcommand": key[1],
+                    "target": key[2],
+                    "reason": reason,
+                },
+            )
+
+    def _open_vectors(self) -> list[dict[str, str]]:
+        """Open services and endpoints of the board, with the tool to use next.
+
+        A ``service`` counts when nmap saw it open (``state`` in ``open``/``up``,
+        the shape ``fact_verification`` persists); an ``endpoint`` counts when
+        an HTTP answer carried a 2xx-4xx ``status_code`` -it has no ``state``
+        key, which is why filtering on ``state`` alone used to hide the web
+        pivots the warning exists to suggest.
+        """
+        vectors: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for fact in self._blackboard_facts():
+            fact_type = str(fact.get("fact_type") or "")
+            key = str(fact.get("key") or "")
+            value = fact.get("value")
+            if not key or key in seen or not isinstance(value, dict):
+                continue
+            if fact_type == "service":
+                if str(value.get("state") or "").strip().lower() not in {"open", "up"}:
+                    continue
+                name = str(
+                    value.get("service") or value.get("name") or value.get("protocol") or ""
+                ).strip().lower()
+                suggested = _VECTOR_TOOL_SUGGESTIONS.get(name, "nexus.recon.nmap")
+            elif fact_type == "endpoint":
+                code = value.get("status_code")
+                if not isinstance(code, int) or not 200 <= code <= 499:
+                    continue
+                suggested = "nexus.web.request"
+            else:
+                continue
+            seen.add(key)
+            vectors.append({"type": fact_type, "key": key, "suggested_tool": suggested})
+            if len(vectors) >= VECTOR_OPEN_LIMIT:
+                break
+        return vectors
 
     def _blackboard_counts(self) -> dict[str, int] | None:
         """Counts of the blackboard *after* the turn's tool call (never raises).
