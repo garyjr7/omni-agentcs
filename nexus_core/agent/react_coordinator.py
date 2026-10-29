@@ -51,6 +51,8 @@ from .react_types import (
     MAX_CONSECUTIVE_TOOL_FAILURES,
     MAX_FREE_ARGUMENT_REJECTIONS,
     MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE,
+    RESURRECTING_FACT_TYPES,
+    TOOL_RESURRECTED_EVENT_TYPE,
     TOOL_UNAVAILABLE_EVENT_TYPE,
     PHASE_TIMEOUT_EVENT_TYPE,
     STUCK_EVENT_TYPE,
@@ -550,6 +552,10 @@ class ReActCoordinator:
     subagent_iterations: int
     unavailable_tools: set[str]
     tool_failures: dict[str, int]
+    #: FIX 3: tools retiradas por *rechazo* (``repeated_*_action``: la llamada no
+    #: se ejecutó) y las que ya gastaron su única resurrección del run.
+    refusal_retired: set[str]
+    resurrected_tools: set[str]
     #: FIX 1: fallos consecutivos por ``(tool_id, subcommand, target)``, los
     #: pares ya avisados y los que están bloqueados. El estado es del run: un
     #: run reanudado desde historial empieza con los vectores libres.
@@ -866,6 +872,8 @@ class ReActCoordinator:
             else self._initial_unavailable_tools
         )
         self.tool_failures = {}
+        self.refusal_retired = set()
+        self.resurrected_tools = set()
         self.vector_failures = {}
         self.vector_last_failure: dict[tuple[str, str, str], int] = {}
         self.vector_warned = set()
@@ -3122,7 +3130,7 @@ class ReActCoordinator:
         # budget one correction at a time without ever retiring anything. It is the
         # per-tool counter that moves, never the run-level ``consecutive_failures``:
         # a correction must not be able to abort an engagement.
-        self._note_tool_failure(tool_id)
+        self._note_tool_failure(tool_id, cause="refusal")
         self.entry["tool_result"] = self.observation
         self.actions.append(self.entry)
         _inject_observation(
@@ -4255,6 +4263,10 @@ class ReActCoordinator:
             self.observation,
             subagent_id=self.active_subagent_id,
         )
+        # FIX 3: the world changed this turn (a credential/session/vulnerability
+        # landed), so a tool retired only for insisting gets its one extra chance.
+        if self.observation.get("success"):
+            self._resurrect_tools_for_new_context()
         # FIX 1: one executed call is one count against its vector (or a clear).
         # The observation is already in the history, so a warning appended here
         # is read by the very next turn.
@@ -4284,7 +4296,7 @@ class ReActCoordinator:
         self.last_tool_elapsed_ms = _elapsed_ms(tool_started)
         return Transition.STOP if scope_aborted else Transition.READY
 
-    def _note_tool_failure(self, tool_id: str) -> int:
+    def _note_tool_failure(self, tool_id: str, *, cause: str = "failure") -> int:
         """Count one *consecutive* tool failure and retire it once exhausted (B3).
 
         The counter is a streak, not a tally: any successful turn clears it
@@ -4308,6 +4320,10 @@ class ReActCoordinator:
             and tool_id not in self.unavailable_tools
         ):
             self.unavailable_tools.add(tool_id)
+            if cause == "refusal":
+                # FIX 3: retirada por insistencia, no por avería. Queda anotada
+                # para poder devolverla cuando el tablero cambie.
+                self.refusal_retired.add(tool_id)
             self.telemetry.flag(FrictionFlag.TOOL_RETIRED)
             self.observation["tool_retired"] = True
             self.observation["available_tools"] = sorted(
@@ -4321,6 +4337,7 @@ class ReActCoordinator:
                     "tool_id": tool_id,
                     "subagent_id": self.subagent.id,
                     "failures": count,
+                    "cause": cause,
                     "iteration": self.iteration,
                 },
             )
@@ -4332,6 +4349,70 @@ class ReActCoordinator:
                 failures=count,
             )
         return count
+
+    def _resurrect_tools_for_new_context(self) -> None:
+        """Return the tools retired for insisting, once, when the board changed.
+
+        ``_correct_repeated_action`` counts a refusal as a tool failure so that a
+        model insisting on a dead route ends up with that route retired (V1-26/B3).
+        The brake is right for the *route* and wrong for the *tool*: the call was
+        rejected before the handler ran, so nothing proved the tool broken.
+        Measured in hijack_v4 (2026-10-29): ``nexus.web.request`` was retired at
+        iteration 29 by three ``repeated_barren_action`` refusals, and the
+        credential discovered at iteration 30 could not be used because the only
+        tool that consumes a ``session_ref`` was gone for the rest of the run.
+
+        A new ``credential``/``session``/``vulnerability`` fact is a different
+        world: the blocked tool has new material. Each tool gets this exactly once
+        per run and its streak is reset, so the model cannot ping-pong between a
+        refusal and a fact forever. Tools retired by a real failure, or absent
+        from the environment (``binary_missing``, decided at iteration 0 through
+        ``_call_refusal``), never enter ``refusal_retired`` and are never touched.
+        """
+        observed = {
+            str(assertion.get("fact_type") or "")
+            for assertion in (self.observation.get("assertions") or [])
+            if isinstance(assertion, dict)
+        }
+        if str(getattr(self.action, "tool_id", "")) == "nexus.knowledge.record_fact":
+            observed.add(str((self.action.arguments or {}).get("fact_type") or ""))
+        landed = observed & RESURRECTING_FACT_TYPES
+        if not landed:
+            return
+        candidates = sorted(
+            tool_id
+            for tool_id in self.refusal_retired
+            if tool_id not in self.resurrected_tools
+        )
+        if not candidates:
+            return
+        for tool_id in candidates:
+            self.unavailable_tools.discard(tool_id)
+            self.tool_failures.pop(tool_id, None)
+            self.resurrected_tools.add(tool_id)
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            TOOL_RESURRECTED_EVENT_TYPE,
+            {
+                "tools": candidates,
+                "reason": "new_context",
+                "fact_types": sorted(landed),
+                "iteration": self.iteration,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="tool_resurrected",
+            decision="allow",
+            tools=candidates,
+            fact_types=sorted(landed),
+        )
+        # The observation this turn already carries the retired catalog: name the
+        # returned tools there so the very next prompt offers them again.
+        available = self.observation.get("available_tools")
+        if isinstance(available, list):
+            self.observation["available_tools"] = sorted(set(available) | set(candidates))
 
     # ----------------------------------------------------------- vector lock
     def _vector_key_for(

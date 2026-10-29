@@ -33,6 +33,14 @@ CANCEL_EVENT_TYPE = "react.cancel_requested"
 #: streak: an isolated failure between successful calls is not a broken tool.
 MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE = 3
 TOOL_UNAVAILABLE_EVENT_TYPE = "react.tool_unavailable"
+#: FIX 3: una tool retirada *solo* porque el modelo insistía en un repeat (la
+#: llamada se rechazó antes de ejecutarse, así que la tool nunca demostró estar
+#: rota) recupera una vez el turno cuando el tablero cambia de verdad: llega un
+#: ``credential``/``session``/``vulnerability`` nuevo. Medido en hijack_v4: a
+#: ``nexus.web.request`` la retiraron tres rechazos en la iteración 29 y la
+#: credencial de la 30 necesitaba exactamente esa tool para usarse.
+TOOL_RESURRECTED_EVENT_TYPE = "react.tool_resurrected"
+RESURRECTING_FACT_TYPES = frozenset({"credential", "session", "vulnerability"})
 #: FIX 1: fallos *consecutivos de la misma tool sobre el mismo objetivo*. La
 #: cuenta de arriba mira la tool en general; esta mira el vector. Medido en la
 #: sala easy del 2026-10-29 (10.66.171.37, Apache/PHP en el 80): el modelo gastó
