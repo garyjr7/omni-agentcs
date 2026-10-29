@@ -339,6 +339,9 @@ class ContextBuilder:
                 snapshot.coverage, directive=parse_directive(objective)
             ),
             subagent_summary=subagent.describe(),
+            # WP2: the single ``omni`` profile is unrestricted, and the system
+            # message must not claim a per-phase subset it does not enforce.
+            subagent_unrestricted=bool(getattr(subagent, "unrestricted", False)),
             project_summary=render_project_instruction(project_instruction),
             skills_summary=render_skills(active_skills, bodies=skill_bodies),
             # The catalogue is read on every turn, so a skill created during the

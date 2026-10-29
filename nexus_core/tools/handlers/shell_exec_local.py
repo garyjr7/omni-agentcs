@@ -458,6 +458,62 @@ def apt_install_permission_denied(
     return "permission denied" in output
 
 
+#: Output fragments that mean "the kernel refused the mount for lack of
+#: privileges". ``failed to apply fstab options`` is the one the sandbox actually
+#: printed in the Hijack V1 run (``mount -t nfs -o vers=3,nolock``).
+_MOUNT_PRIVILEGE_MARKERS: tuple[str, ...] = (
+    "must be superuser",
+    "only root can do that",
+    "operation not permitted",
+    "permission denied",
+    "failed to apply fstab options",
+    "access denied by server while mounting",
+)
+
+#: What the model reads when it tried to mount an NFS export from the sandbox.
+#: The dead end was *privileges*, not a missing package: the Hijack V1 run spent
+#: iterations 11-14 retrying the mount and then asked to install ``nfs-common``,
+#: which cannot grant root either. The guidance names the unprivileged path that
+#: already exists (``nexus.recon.nfs`` runs ``showmount``/``nfs-ls``/``nfs-cat``).
+MOUNT_REQUIRES_ROOT_GUIDANCE = (
+    "MONTAR NECESITA ROOT Y EL SANDBOX NO LO TIENE: no se ha montado nada. No "
+    "reintentes el montaje ni instales `nfs-common` (no da privilegios). Usa "
+    "nexus.recon.nfs con action=\"exports\" para listar los exports y "
+    "action=\"list\"/action=\"read\" (showmount/nfs-ls/nfs-cat, sin root). Si el "
+    "export exige un montaje real, documenta el barrier y pivota (SSH, web)."
+)
+
+
+def _mount_segment(segment: str) -> bool:
+    """Whether one simple command is a *local* NFS ``mount``."""
+    words = segment.strip().lstrip("(){} \t").split()
+    if not words:
+        return False
+    head = Path(words[0]).name if "/" in words[0] else words[0]
+    if head != "mount" and not head.startswith("mount."):
+        return False
+    return "nfs" in segment.lower()
+
+
+def mount_requires_root(command: str, stdout: str, stderr: str) -> bool:
+    """Whether *command* tried to mount NFS locally and was refused for privileges.
+
+    Keyed to the command, like :func:`apt_install_permission_denied`, so an
+    unrelated failure that happens to print ``permission denied`` keeps its own
+    outcome. The exit code is deliberately *not* required: the measured command
+    chained the mount with ``; ls``, so the pipeline reported the exit status of
+    ``ls`` and the refusal only survived in the output.
+    """
+    try:
+        segments = _command_segments(str(command or ""))
+    except (TypeError, ValueError):
+        return False
+    if not any(_mount_segment(segment) for segment in segments):
+        return False
+    output = f"{stdout or ''}\n{stderr or ''}".lower()
+    return any(marker in output for marker in _MOUNT_PRIVILEGE_MARKERS)
+
+
 #: Clients whose destination is extractable from the command line. The shell
 #: runs an arbitrary argv, so this is the only egress boundary that can be
 #: enforced without turning the universal shell into a parser of every tool.
@@ -1215,6 +1271,42 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
     # keeps the capture minus those same known secrets (SEC-09).
     safe_stderr = sanitize_text(redact_secret_values(result.stderr, invocation_secrets))
     summary = summarize(result.stdout, safe_stderr)
+    if mount_requires_root(request.command, result.stdout, result.stderr):
+        # The sandbox is unprivileged on purpose, so a local NFS mount can only
+        # fail. Reporting it as ``unavailable`` names the real cause and the
+        # unprivileged alternative, instead of leaving the model to retry the
+        # mount four times and then ask to install what it already has.
+        _audit(
+            context, command=request.command, cwd=cwd_relative,
+            exit_code=result.exit_code, duration_ms=duration_ms,
+            bytes_written=len(content), timed_out=result.timed_out,
+            reason="mount_requires_root",
+        )
+        return ToolResult(
+            output={
+                "error": "mount needs root and the sandbox is unprivileged",
+                "command": request.command,
+                "guidance": MOUNT_REQUIRES_ROOT_GUIDANCE,
+                "summary": summary,
+                "artifact": artifact,
+                "artifact_ref": artifact.get("id"),
+                "sha256": artifact.get("sha256"),
+                "exit_code": result.exit_code,
+                "cwd": cwd_relative,
+            },
+            verified=False,
+            outcome="unavailable",
+            verification_method="mount_requires_root",
+            evidence={
+                "cwd": cwd_relative,
+                "exit_code": result.exit_code,
+                "artifact_ref": artifact.get("id"),
+            },
+            exit_code=result.exit_code,
+            stdout=summary,
+            stderr="",
+            timed_out=False,
+        )
     if apt_install_permission_denied(
         request.command, result.stdout, result.stderr, result.exit_code
     ):
@@ -1347,6 +1439,8 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
 
 __all__ = [
     "APT_INSTALL_DENIED_GUIDANCE",
+    "MOUNT_REQUIRES_ROOT_GUIDANCE",
+    "mount_requires_root",
     "BACKGROUND_LOG_DIRNAME",
     "DESTRUCTIVE_REASON",
     "DeniedCommand",

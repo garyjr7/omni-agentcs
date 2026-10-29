@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -818,6 +819,34 @@ def _store_session(
     )
 
 
+#: A page that still asks for a password is a login form, not the panel behind
+#: it. Same detection the planner uses for the login probes.
+_PASSWORD_INPUT_RE = re.compile(r"type\s*=\s*[\"']?password", re.IGNORECASE)
+
+#: What the model reads when its ``session_ref`` did not authenticate.
+SESSION_NOT_AUTHENTICATED_GUIDANCE = (
+    "La sesión NO autentica: el servidor devolvió el formulario de login (200 con "
+    "campo de contraseña) en lugar del panel. No sigas navegando con ese "
+    "session_ref ni repitas la misma petición. Vuelve a hacer login con "
+    "nexus.web.request (method=\"POST\" al form de login; csrf_mode=true si el "
+    "formulario lleva tokens) y usa el session_ref que devuelva ese POST. Si el "
+    "login sigue devolviendo el formulario, esa credencial no es de esta "
+    "aplicación: cambia de vector en vez de insistir."
+)
+
+
+def serves_login_form(payload: dict[str, Any]) -> bool:
+    """Whether the response body is a login form (never raises).
+
+    The preview is what the model reads, so it is also what the tool can judge:
+    a ``<input type="password">`` means the server did not let the request in.
+    """
+    body = str(payload.get("body_preview") or "")
+    if not body:
+        return False
+    return bool(_PASSWORD_INPUT_RE.search(body))
+
+
 async def _http_request_handler(arguments: dict[str, Any], context: RunContext) -> ToolResult:
     """Send one scoped HTTP(S) request through the sandbox and parse the result."""
     from nexus_core.kernel.schema_validation import validate
@@ -984,10 +1013,18 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
 
     ok = bool(payload.get("ok")) and result.exit_code == 0
     response_cookies = _cookie_pairs(payload.get("set_cookie"))
+    # A ``session_ref`` that comes back with a login form did not authenticate:
+    # the panel answered 200 because that is what a login page does. Reporting
+    # it as success is the infinite loop measured in the Hijack V1 run
+    # (iterations 18-35: the same 3 843 bytes of ``login.php`` read as "panel"),
+    # and storing the cookie of a failed login poisons the vault handle.
+    not_authenticated = ok and bool(session_ref) and serves_login_form(payload)
     # The response may have handed out a session (a login that worked). Keep it
     # in the vault and return the handle so the next call does not need the value.
     stored_session_ref = (
-        _store_session(response_cookies, context, session_ref, cookie_sent) if ok else None
+        _store_session(response_cookies, context, session_ref, cookie_sent)
+        if ok and not not_authenticated
+        else None
     )
     # ``evidence["session_ref"]`` keeps naming the handle this request *used*;
     # the new one is reported apart so a replay can tell them apart.
@@ -1063,10 +1100,20 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
         # Handle for the session this response issued: pass it as
         # ``session_ref`` on the next call instead of the cookie value.
         output["session_ref"] = issued_session_ref
+    if not_authenticated:
+        # The system's verdict, not the model's reading of a 200.
+        evidence["session_state"] = "not_authenticated"
+        output["session_state"] = "not_authenticated"
+        output["guidance"] = SESSION_NOT_AUTHENTICATED_GUIDANCE
     return ToolResult(
         output=output,
-        verified=ok,
-        verification_method="http_response_received" if ok else "http_request_failed",
+        verified=ok and not not_authenticated,
+        outcome="partial" if not_authenticated else "",
+        verification_method=(
+            "http_session_not_authenticated"
+            if not_authenticated
+            else "http_response_received" if ok else "http_request_failed"
+        ),
         evidence=evidence,
         exit_code=result.exit_code,
         accepted_exit_codes=(0,),

@@ -297,7 +297,12 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # is an *order with the wire shape*, not prose, and it is the only way the
     # model can learn that a turn may carry several calls -without it the whole
     # feature is invisible. Measured 33,620; ceiling 33_680.
-    assert len(_prompt(catalog)) < 33_680
+    # The subagent-scope rule of an ``unrestricted`` profile and the
+    # install-last-resort order replace the old "si falta el binario, instálalo"
+    # bullet: measured 33,821; ceiling 33_900. The install rule is gated on the
+    # catalog offering ``nexus.system.install_tool``, so a restricted profile
+    # pays nothing for it.
+    assert len(_prompt(catalog)) < 33_900
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -337,7 +342,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # The block itself is unchanged.
     # The parallel contract moves with the static prompt: measured 34,247;
     # ceiling 34,320. The block itself is unchanged.
-    assert len(prompt) < 34_320
+    # The scope + install orders move with the static prompt: measured 34,448;
+    # ceiling 34_530. The block itself is unchanged.
+    assert len(prompt) < 34_530
     assert len(block) < 1_200
 
 
@@ -581,7 +588,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # every turn): ceiling 8_130, ~30 turns.
     # The parallel contract is paid every turn (+137 tokens of average):
     # measured 8,222; ceiling 8_270, ~30 turns.
-    assert sum(totals) / len(totals) < 8_270
+    # The scope + install orders cost the same on every turn: measured 8,272
+    # average; ceiling 8_330, ~30 turns.
+    assert sum(totals) / len(totals) < 8_330
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -615,7 +624,8 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # (8 refreshes at 10,574 plus 32 compact turns at 7,531 are 325 584 tokens,
     # which is why the run budget is planned by ``budget_tokens_for_iterations``
     # and not by a fixed 250k).
-    assert max(totals) < 10_620
+    # The scope + install orders land here too: measured 10,624; ceiling 10_700.
+    assert max(totals) < 10_700
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):

@@ -259,6 +259,14 @@ MAX_CONSECUTIVE_SCOPE_DENIALS = 3
 #: as a silent failure.
 MAX_CONSECUTIVE_PIVOT_GATES = 3
 MAX_REPLAY_REFUSALS = 3
+#: Denials of the *gateway* (policy, an approval that does not match the call,
+#: a journal state) that a run tolerates in a row before closing. One denial is
+#: about one invocation, not about the engagement: measured in the Hijack V1 run
+#: (2026-10-29), the loop answered the very first ``install_tool`` denial -caused
+#: by an approval registered for a different action string- with
+#: ``governance_denial`` and ``Transition.STOP``, ending a run that had a verified
+#: credential on the board, 1 M tokens of budget left and 82 iterations unused.
+MAX_CONSECUTIVE_GOVERNANCE_DENIALS = 3
 
 
 class ReActCoordinator:
@@ -588,6 +596,7 @@ class ReActCoordinator:
         self.consecutive_failures = 0
         self.scope_denial_target = None
         self.scope_denial_streak = 0
+        self.governance_denial_streak = 0
         self.invalid_json_turns = 0
         self.last_phase = None
         self.last_plan = None
@@ -3558,6 +3567,39 @@ class ReActCoordinator:
             self.consecutive_failures = 0
         return Transition.READY
 
+    def _record_governance_denial(
+        self, exc: BaseException, *, reason: str = "governance_denial", guidance: str = ""
+    ) -> None:
+        """Persist a denied call as this turn's observation (never a crash)."""
+        self.observation = {
+            "success": False,
+            "outcome": "governance_denial",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "failure_kind": "governance",
+        }
+        if guidance:
+            self.observation["guidance"] = guidance
+        self.entry["tool_result"] = self.observation
+        self.actions.append(self.entry)
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            self.action,
+            self.observation,
+            subagent_id=self.active_subagent_id,
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=self.action.action,
+            decision="deny",
+            tool_id=self.action.tool_id,
+            reason=reason,
+        )
+
     async def _execute_tool(self) -> Transition:
         repeated_tool = self._repeated_failed_action()
         if repeated_tool is not None:
@@ -3663,39 +3705,40 @@ class ReActCoordinator:
             )
             if isinstance(exc, ReplayApprovalRequired):
                 return self._correct_replayed_invocation(exc)
-            if isinstance(exc, PermissionError):
-                self.status = (
-                    STATUS_BLOCKED
-                    if isinstance(exc, ApprovalRequired)
-                    else "governance_denial"
-                )
+            if isinstance(exc, ApprovalRequired):
+                # Nobody can answer an unattended run: without the approval the
+                # loop cannot continue, so it stops -and says so as ``blocked``.
+                self.status = STATUS_BLOCKED
                 self.final_summary = str(exc)
-                self.observation = {
-                    "success": False,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                    "failure_kind": "governance",
-                }
-                self.entry["tool_result"] = self.observation
-                self.actions.append(self.entry)
-                _inject_observation(
-                    self.store,
-                    self.tenant_id,
-                    self.conversation_id,
-                    self.run_id,
-                    self.iteration,
-                    self.action,
-                    self.observation,
-                    subagent_id=self.active_subagent_id,
-                )
-                self.audit_step(
-                    iteration=self.iteration,
-                    action=self.action.action,
-                    decision="deny",
-                    tool_id=self.action.tool_id,
-                    reason=self.status,
-                )
+                self._record_governance_denial(exc, reason=STATUS_BLOCKED)
                 return Transition.STOP
+            if isinstance(exc, PermissionError):
+                # A governance denial is about *this* invocation, not about the
+                # engagement: record it as the turn's observation and let the
+                # model correct itself (another tool, other arguments, a
+                # barrier). Only insisting on it closes the run. Measured in the
+                # Hijack V1 run: the first denial ended a run with 82 iterations
+                # and 1 M tokens of budget unused.
+                self.governance_denial_streak += 1
+                self.consecutive_failures += 1
+                self.telemetry.flag(FrictionFlag.GOVERNANCE_DENIAL)
+                self._record_governance_denial(
+                    exc,
+                    guidance=(
+                        "El gateway denegó esta invocación (política, aprobación "
+                        "inválida o estado del journal): NO la repitas. Elige otra "
+                        "acción, otros argumentos u otra herramienta; si el vector "
+                        "entero está bloqueado, registra un barrier y pivota."
+                    ),
+                )
+                if self.governance_denial_streak >= MAX_CONSECUTIVE_GOVERNANCE_DENIALS:
+                    self.status = "governance_denial"
+                    self.final_summary = (
+                        "governance denial repeated "
+                        f"{self.governance_denial_streak} times in a row: {exc}"
+                    )
+                    return Transition.STOP
+                return Transition.READY
             backend_unavailable = (
                 isinstance(exc, ProviderFailure) and getattr(exc, "kind", "fatal") == "unavailable"
             )
@@ -3791,6 +3834,7 @@ class ReActCoordinator:
             if self.observation.get("success"):
                 self.scope_denial_target = None
                 self.scope_denial_streak = 0
+                self.governance_denial_streak = 0
                 self.consecutive_failures = 0
                 # A successful turn breaks every per-tool failure streak: the
                 # retirement below is about *consecutive* failures, never about

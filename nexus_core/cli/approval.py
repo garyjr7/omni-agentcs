@@ -107,6 +107,38 @@ def edit_arguments(arguments: dict[str, Any], reader: Callable[[str], str]) -> d
     return edited
 
 
+def _exact_action(
+    tenant_id: str,
+    tool_id: str,
+    arguments: dict[str, Any],
+    *,
+    show_plan: bool = False,
+) -> str:
+    """Return the action the gateway will *consume* for this call.
+
+    Most tools are approved as ``execute:tool:<id>``, but
+    ``nexus.system.install_tool`` is approved per **exact plan**: the gateway
+    rewrites the action to ``execute:tool:nexus.system.install_tool:<sha256>``
+    (``kernel/tool_gateway.py``). Registering the bare id made the durable row
+    unverifiable, so the very first install of a run was rejected as "approval
+    is invalid or already used" -the measured death of the Hijack V1 run at
+    iteration 38, where the approval had been created one line earlier.
+    """
+    if tool_id != "nexus.system.install_tool":
+        return f"execute:tool:{tool_id}"
+    from nexus_core.kernel.schema_validation import validate
+    from nexus_core.provisioner.installer import approval_action, format_plan, plan_install
+
+    definition = _tool_definition(tenant_id, tool_id)
+    if definition is None:
+        raise ValueError("tool not found")
+    validate(arguments, getattr(definition, "input_schema", {}) or {})
+    plan = plan_install(arguments["tool_name"], arguments.get("manager"))
+    if show_plan:
+        render.write("Comando exacto de instalación:\n" + format_plan(plan))
+    return approval_action(plan, dry_run=arguments.get("dry_run", False))
+
+
 def _register_approval(
     session: "OmniSession",
     service: ApprovalService,
@@ -207,19 +239,22 @@ def make_approval_callback(
         if reader is None and session._tui.use_tui:
             reader = session._tui.prompt
         if trust_mode and _risk_of(tenant_id, tool_id) not in NEVER_TRUSTED_RISKS:
+            # Same exact action as the interactive path: an install is approved
+            # for its plan, and trust mode must not weaken that invariant.
+            try:
+                action = _exact_action(tenant_id, tool_id, arguments)
+            except (ValueError, KeyError, AttributeError):
+                return ApprovalDecision(approved=False, reason="no valid install plan")
             return _trust_authorization(
                 session, service, tenant_id, run_id, tool_id, arguments, action
             )
         for _ in range(MAX_PROMPT_ATTEMPTS):
             if tool_id == "nexus.system.install_tool":
-                from nexus_core.provisioner.installer import approval_action, format_plan, plan_install
-                from nexus_core.kernel.schema_validation import validate
                 try:
-                    validate(arguments, _tool_definition(tenant_id, tool_id).input_schema)
-                    plan = plan_install(arguments["tool_name"], arguments.get("manager"))
-                    action = approval_action(plan, dry_run=arguments.get("dry_run", False))
-                    render.write("Comando exacto de instalación:\n" + format_plan(plan))
-                except (ValueError, KeyError):
+                    action = _exact_action(
+                        tenant_id, tool_id, arguments, show_plan=True
+                    )
+                except (ValueError, KeyError, AttributeError):
                     return ApprovalDecision(approved=False, reason="no valid install plan")
             try:
                 answer = render.render_approval_prompt(
