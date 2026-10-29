@@ -422,6 +422,14 @@ def _run_headless(
         """
         from nexus_core.agent.engagement_plan import is_engagement_objective
         from nexus_core.agent.planning import draft_engagement_plan
+        from nexus_core.llm.dynamic_selector import build_model_selector, routed_for_task
+
+        # ``[model_routing]``, resolved once: ``None`` when the operator never
+        # pinned a profile, so the run keeps the client it was given.
+        try:
+            selector = build_model_selector(session.llm_client)
+        except Exception:  # noqa: BLE001 - routing must never block a run
+            selector = None
 
         # Only an engagement is planned: a bare objective has no signed scope to
         # attack, so there is nothing to contract. This also keeps the extra model
@@ -429,7 +437,7 @@ def _run_headless(
         if session.engagement_id and is_engagement_objective(objective):
             try:
                 plan = await draft_engagement_plan(
-                    llm_client=session.llm_client,
+                    llm_client=routed_for_task("planner", base=session.llm_client),
                     objective=objective,
                     engagement_id=session.engagement_id,
                     workspace=os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd()),
@@ -448,6 +456,7 @@ def _run_headless(
             objective=objective,
             engagement_id=session.engagement_id,
             llm_client=session.llm_client,
+            model_selector=selector,
             config=config,
             conversation_id=session.conversation_id,
         )

@@ -40,6 +40,51 @@ class LlmConfig:
     fallback_chain: list[str] = field(default_factory=list)
 
 
+#: Task types the dynamic router knows about. The order is the one ``--doctor``
+#: prints and the one the TOML writer emits.
+ROUTING_TASKS = ("planner", "executor", "reflection", "reporting")
+
+
+@dataclass
+class RouteTarget:
+    """One task's pinned model, plus the backups tried when it fails.
+
+    ``provider``/``model`` empty means *inherit*: the task runs on the same
+    provider and model as ``[llm] default_provider``/``default_model``, which is
+    the historical behaviour and the only default that cannot fail for lack of a
+    key. ``fallbacks`` holds ``"provider/model"`` (or just ``"provider"`` to
+    reuse that provider's own model) and is tried **after** the pinned target,
+    different providers first.
+    """
+
+    provider: str = ""
+    model: str = ""
+    fallbacks: list[str] = field(default_factory=list)
+
+    def is_pinned(self) -> bool:
+        return bool(self.provider or self.model or self.fallbacks)
+
+
+@dataclass
+class ModelRoutingConfig:
+    """``[model_routing]``: which model each kind of turn runs on.
+
+    Routing is on by default, but with no profile pinned it does nothing: the
+    selector returns the operator's normal client, byte for byte (see
+    :func:`nexus_core.llm.dynamic_selector.build_model_selector`).
+    """
+
+    enabled: bool = True
+    planner: RouteTarget = field(default_factory=RouteTarget)
+    executor: RouteTarget = field(default_factory=RouteTarget)
+    reflection: RouteTarget = field(default_factory=RouteTarget)
+    reporting: RouteTarget = field(default_factory=RouteTarget)
+
+    def is_default(self) -> bool:
+        """True when no task pins anything: routing is a no-op."""
+        return not any(getattr(self, task).is_pinned() for task in ROUTING_TASKS)
+
+
 @dataclass
 class DbConfig:
     path: str = ""
@@ -69,10 +114,75 @@ def _value(value):
     raise ValueError("unsupported TOML value")
 
 
+def _routing_toml(routing: dict) -> list[str]:
+    """``[model_routing]`` plus one sub-table per pinned task.
+
+    An empty target is not written: its absence *is* ``inherit``, and a file
+    full of ``provider = ""`` would read as if something were configured.
+    """
+    lines = ["", "[model_routing]", f"enabled = {_value(routing['enabled'])}"]
+    for task in ROUTING_TASKS:
+        target = routing[task]
+        if not any((target["provider"], target["model"], target["fallbacks"])):
+            continue
+        lines.extend(
+            [
+                "",
+                f"[model_routing.{task}]",
+                f"provider = {_value(target['provider'])}",
+                f"model = {_value(target['model'])}",
+                f"fallbacks = {_value(target['fallbacks'])}",
+            ]
+        )
+    return lines
+
+
+def _parse_routing(values: Any) -> ModelRoutingConfig:
+    """Validate ``[model_routing]``; every field is checked before it is used."""
+    if not isinstance(values, dict):
+        raise ValueError("model_routing must be a table")
+    unknown = set(values) - {"enabled", *ROUTING_TASKS}
+    if unknown:
+        raise ValueError("unknown model_routing fields")
+    enabled = values.get("enabled", True)
+    if type(enabled) is not bool:
+        raise ValueError("model_routing.enabled must be a boolean")
+    routing = ModelRoutingConfig(enabled=enabled)
+    for task in ROUTING_TASKS:
+        raw = values.get(task, {})
+        if not isinstance(raw, dict):
+            raise ValueError("model_routing profiles must be tables")
+        if set(raw) - {"provider", "model", "fallbacks"}:
+            raise ValueError("unknown model_routing profile fields")
+        provider = raw.get("provider", "")
+        model = raw.get("model", "")
+        fallbacks = raw.get("fallbacks", [])
+        if not isinstance(provider, str) or provider not in (*PROVIDERS, ""):
+            raise ValueError("invalid model_routing provider")
+        if not isinstance(model, str):
+            raise ValueError("invalid model_routing model")
+        if not isinstance(fallbacks, list) or not all(isinstance(item, str) for item in fallbacks):
+            raise ValueError("model_routing fallbacks must be a list of strings")
+        if len(set(fallbacks)) != len(fallbacks):
+            raise ValueError("model_routing fallbacks repeat a model")
+        for item in fallbacks:
+            name, _, label = item.partition("/")
+            if name not in PROVIDERS or name == "fake":
+                # The fake answers every failure with a canned completion, so a
+                # fallback that names it would hide a dead provider instead of
+                # surfacing it - the same rule ``[llm] fallback_chain`` follows.
+                raise ValueError("invalid model_routing fallback")
+            if not label and "/" in item:
+                raise ValueError("invalid model_routing fallback model")
+        setattr(routing, task, RouteTarget(provider, model, list(fallbacks)))
+    return routing
+
+
 @dataclass
 class OmniConfig:
     schema_version: int = CURRENT_SCHEMA_VERSION
     llm: LlmConfig = field(default_factory=LlmConfig)
+    model_routing: ModelRoutingConfig = field(default_factory=ModelRoutingConfig)
     db: DbConfig = field(default_factory=DbConfig)
     provisioning: ProvisioningConfig = field(default_factory=ProvisioningConfig)
     scope: ScopeConfig = field(default_factory=ScopeConfig)
@@ -80,10 +190,12 @@ class OmniConfig:
 
     def to_toml(self) -> str:
         data = asdict(self)
+        routing = data.pop("model_routing")
         lines = [f"schema_version = {data.pop('schema_version')}"]
         for section, values in data.items():
             lines.extend(["", f"[{section}]"])
             lines.extend(f"{json.dumps(key)} = {_value(value)}" for key, value in values.items())
+        lines.extend(_routing_toml(routing))
         text = "\n".join(lines) + "\n"
         self.from_toml(text)
         return text
@@ -97,6 +209,7 @@ class OmniConfig:
         if type(version) is not int or version != CURRENT_SCHEMA_VERSION:
             raise ValueError("unsupported schema version")
         result = cls()
+        result.model_routing = _parse_routing(data.get("model_routing", {}))
         for section, kind in (
             ("llm", LlmConfig),
             ("db", DbConfig),

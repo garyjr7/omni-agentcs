@@ -366,6 +366,13 @@ Para invocar una herramienta:
   "expected_outcome": "qué esperas que devuelva esta tool"
 }}
 
+PARALELO: para tools INDEPENDIENTES (ninguna necesita el resultado de otra),
+responde {{"action": "tool_calls", "calls": [{{"tool_id": "…", "arguments":
+{{…}}}}, …]}} con 2 a 4 llamadas. El motor ejecuta hasta 3 a la vez, valida
+scope/RoE/aprobación por cada una y te devuelve un solo bloque `results`; si una
+falla, las demás siguen: lee `results` y no repitas las que ya terminaron. Si hay
+dependencia, usa un `tool_call` normal.
+
 Los hechos registrados por knowledge.record_fact son hipótesis, aunque se envíe
 verified=true. Solo assertions emitidas por verificadores deterministas permiten
 avanzar el plan o confirmar hallazgos. Conserva invocation_id, target, fact_type y

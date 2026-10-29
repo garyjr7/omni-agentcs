@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from nexus_core.config.loader import config_exists, effective_db_path
 from nexus_core.config.secrets import secrets_file_report
 from nexus_core.config.schema import DEFAULT_MODELS, PROVIDERS, model_env_name
+from nexus_core.llm.dynamic_selector import ModelTarget, describe_routing
 from nexus_core.kernel.sandbox import sandbox_path, tool_bin_dir
 from nexus_core.kernel.sandbox_modes import (
     SandboxModeForbidden,
@@ -235,6 +236,33 @@ def _workspace_isolation() -> list[dict]:
     ]
 
 
+def _routing_report(config, provider: str, model: str, keys: dict) -> dict:
+    """The active ``[model_routing]`` policy, resolved against the keys present.
+
+    Pure: no client is built and no provider is contacted. A pin that names a
+    provider without a key still appears, with the reason saying so - that is the
+    difference between "the operator wrote it" and "the next run will use it",
+    which is exactly what an operator reads this section for.
+    """
+    available = {}
+    for name in PROVIDERS:
+        if name == "fake":
+            continue
+        if keys.get(name) or name == provider or (
+            name == "ollama" and os.getenv("OLLAMA_BASE_URL")
+        ):
+            available[name] = (
+                model
+                if name == provider
+                else os.getenv(model_env_name(name), DEFAULT_MODELS.get(name, ""))
+            )
+    return describe_routing(
+        config.model_routing,
+        default=ModelTarget(provider, model),
+        available=available,
+    )
+
+
 def _audit(path):
     if not path.is_file():
         return []
@@ -271,6 +299,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
         for provider in PROVIDERS
         if provider not in {"fake", "ollama"}
     }
+    routing = _routing_report(config, provider, model, keys)
     tools = check_all_tools()
     rpc = _rpc_status()
     report = {
@@ -300,6 +329,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
             "backend": "postgres" if postgres else "sqlite",
             "diagnostic": "remote database not queried" if postgres else "local read-only",
         },
+        "model_routing": routing,
         "sandbox": _sandbox_report(),
         "managers": list(detect_managers()),
         "tools": {name: asdict(status) for name, status in tools.items()},
@@ -347,6 +377,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
             ("Rutas XDG", "paths"),
             ("Config", "config"),
             ("Base de datos", "db"),
+            ("Enrutamiento de modelos", "model_routing"),
             ("Sandbox", "sandbox"),
             ("Gestores", "managers"),
             ("Herramientas", "tools"),
@@ -362,6 +393,31 @@ def run_doctor(paths, config, *, as_json=False) -> int:
                     print(
                         f"  {name:12} {'✓' if item['present'] else '✗'} {item['path'] or '(ausente)'}  {item['version'] or ''}"
                     )
+            elif key == "model_routing":
+                if not value["enabled"]:
+                    print("  estado:             desactivado ([model_routing] enabled = false)")
+                elif not value["active"]:
+                    print(
+                        f"  estado:             por defecto (todas las tareas heredan "
+                        f"{value['default']})"
+                    )
+                else:
+                    print(f"  estado:             activo (default {value['default']})")
+                for task in value["tasks"].values():
+                    label = (
+                        f"{task['provider']}/{task['model']}"
+                        if task["model"]
+                        else task["provider"]
+                    )
+                    backups = ", ".join(task["fallbacks"]) or "(ninguno)"
+                    print(f"  {task['task']:11} {label}  [{task['source']}]")
+                    if task["effective"] != label:
+                        print(f"              efectivo: {task['effective']}")
+                    print(f"              fallback: {backups}")
+                    if "sin perfil" not in task["reason"]:
+                        # A pinned profile that could not be honoured (no key for
+                        # that provider) lands here as ``inherit``: say why.
+                        print(f"              motivo:   {task['reason'].split(': ', 1)[-1]}")
             elif key == "sandbox" and value["error"]:
                 print(f"  modo:              RECHAZADO — {value['error']}")
             elif key == "sandbox":

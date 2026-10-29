@@ -134,9 +134,11 @@ def _threaded_llm(llm_client: Any) -> Callable[[str], str | None]:
 
 def _select_llm() -> Any:
     try:
-        from nexus_core.kernel.runtime import select_llm_client
+        from nexus_core.llm.dynamic_selector import select_llm_for_task
 
-        return select_llm_client()
+        # The report scorer is a *reporting* turn: ``[model_routing.reporting]``
+        # can put it on a cheap model without touching the run's executor.
+        return select_llm_for_task("reporting")
     except Exception:  # noqa: BLE001 - no provider is a normal situation
         return None
 

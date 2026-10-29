@@ -202,7 +202,21 @@ if TYPE_CHECKING:
     from nexus_core.hooks import HookRunner
 from nexus_core.kernel.control_store import ControlStore
 from nexus_core.scope import EngagementScope
-from nexus_core.kernel.domain_dto import Action, ToolCall, TaskComplete, RequestClarification
+from nexus_core.kernel.domain_dto import (
+    Action,
+    RequestClarification,
+    TaskComplete,
+    ToolCall,
+    ToolCallBatch,
+    ToolCallSpec,
+)
+from .parallel import (
+    CallExecution,
+    call_timeout,
+    consolidate,
+    execute_calls,
+    parallel_limit,
+)
 from .react_services import (
     ContextBuilder,
     ContextSnapshot,
@@ -217,6 +231,20 @@ class Transition(str, Enum):
     READY = "ready"
     NEXT_TURN = "next_turn"
     STOP = "stop"
+
+
+#: Synthetic tool id of the single observation a parallel turn leaves behind. It
+#: keys compaction and the artifact store; it is never a catalog entry.
+BATCH_TOOL_ID = "parallel.tools"
+
+
+class _BatchObservationAction:
+    """What ``_inject_observation`` needs from an action: its tool id."""
+
+    __slots__ = ("tool_id",)
+
+    def __init__(self, tool_id: str) -> None:
+        self.tool_id = tool_id
 
 
 #: A tool that names an out-of-scope target is refused as an observation, not as
@@ -400,11 +428,16 @@ class ReActCoordinator:
         approval_coordinator: ApprovalCoordinator | None = None,
         tool_execution: ToolExecutionService | None = None,
         completion_verifier: CompletionVerifier | None = None,
+        model_selector: Any | None = None,
     ) -> None:
         self.context = context
         self.objective = objective
         self.engagement_id = engagement_id
         self.llm_client = llm_client
+        #: ``[model_routing]`` resolved once per run. ``None`` (the default, and
+        #: what an unconfigured operator gets) keeps the historical single
+        #: client: every task runs on ``llm_client``.
+        self.model_selector = model_selector
         self.config = config
         self.tool_catalog = tool_catalog
         self.conversation_id = conversation_id or ""
@@ -780,6 +813,44 @@ class ReActCoordinator:
             return Transition.STOP
         return Transition.READY
 
+    def _model_client(self, task: str, *, journal: bool = False) -> Any:
+        """The client for one kind of turn, and the reason it was chosen.
+
+        ``[model_routing]`` may pin a different provider/model per task. This is
+        the only place the loop asks for one, so every turn (and the context
+        summariser that runs before it) goes through the same policy. A selector
+        that cannot answer never ends a run: ``llm_client`` -the client the run
+        was started with- is the floor.
+
+        With ``journal`` the decision is written as ``model.route`` *before* the
+        call, so a provider failure later in the turn still leaves the operator
+        the model that failed and the policy that picked it.
+        """
+        selector = self.model_selector
+        if selector is None:
+            return self.llm_client
+        try:
+            routed = selector.routed(task, event_sink=self._model_event)
+        except Exception:  # noqa: BLE001 - routing never aborts a run
+            return self.llm_client
+        if journal:
+            from nexus_core.llm.dynamic_selector import ROUTE_EVENT_TYPE
+
+            decision = getattr(routed, "decision", None)
+            if decision is not None:
+                self._model_event(
+                    ROUTE_EVENT_TYPE,
+                    {**decision.as_payload(), "iteration": self.iteration},
+                )
+        return routed
+
+    def _model_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Route model telemetry to the run journal; never break the turn."""
+        try:
+            self.store.append_run_event(self.tenant_id, self.run_id, event_type, payload)
+        except Exception:  # noqa: BLE001 - telemetry is best-effort
+            return
+
     async def _build_context(self) -> Transition:
         self.iteration += 1
         self.snapshot = await self.context_builder.gather(
@@ -787,7 +858,9 @@ class ReActCoordinator:
             tenant_id=self.tenant_id,
             run_id=self.run_id,
             conversation_id=self.conversation_id,
-            llm_client=self.llm_client,
+            # Context compaction is a *reflection* turn: it can run on a cheaper
+            # model than the executor without affecting the action quality.
+            llm_client=self._model_client("reflection"),
             config=self.config,
             hooks=self.hooks,
             engagement_id=self.engagement_id,
@@ -1514,7 +1587,7 @@ class ReActCoordinator:
         plan = self.engagement_plan
         return bool(plan is not None and plan.flags_pending)
 
-    def _note_observed_flags(self) -> None:
+    def _note_observed_flags(self, spec: Any | None = None) -> None:
         """Keep every flag seen in the successful output of this run (WP5).
 
         The verifier only derives ``loot`` for the tools it parses; a webshell
@@ -1529,7 +1602,11 @@ class ReActCoordinator:
         tokens = flag_tokens(observation.get("output"))
         if not tokens:
             return
-        arguments = getattr(self.action, "arguments", None) or {}
+        # ``spec`` is the call that produced the observation. A parallel batch
+        # passes it explicitly: ``self.action`` names several tools and only the
+        # one that ran may be credited with the flag.
+        action = spec if spec is not None else self.action
+        arguments = getattr(action, "arguments", None) or {}
         target = str(
             arguments.get("target") or arguments.get("url") or arguments.get("host") or ""
         )
@@ -1538,7 +1615,7 @@ class ReActCoordinator:
                 continue
             self.captured_flag_refs[token] = {
                 "flag": token,
-                "ref": str(getattr(self.action, "tool_id", "") or ""),
+                "ref": str(getattr(action, "tool_id", "") or ""),
                 "fact_type": "loot",
                 "invocation_id": str(observation.get("invocation_id") or ""),
                 "verification_method": str(
@@ -1886,7 +1963,9 @@ class ReActCoordinator:
                 return Transition.STOP
         reasoning_started = time.perf_counter()
         try:
-            response = await _complete_turn(self.llm_client, self.messages, self.config)
+            response = await _complete_turn(
+                self._model_client("executor", journal=True), self.messages, self.config
+            )
         except ProviderFailure as exc:
             # A provider failure raised directly by the client ends the run with
             # a typed terminal status instead of escaping ``run()`` (B8.2).
@@ -2057,7 +2136,7 @@ class ReActCoordinator:
                 self.tenant_id,
                 self.conversation_id,
                 "user",
-                f"Tu respuesta anterior no era JSON válido y no se ejecutó nada. Error del parser: {str(exc)[:300]}. Responde de nuevo con UN solo objeto JSON que cumpla el contrato (tool_call, task_complete o request_clarification).",
+                f"Tu respuesta anterior no era JSON válido y no se ejecutó nada. Error del parser: {str(exc)[:300]}. Responde de nuevo con UN solo objeto JSON que cumpla el contrato (tool_call, tool_calls, task_complete o request_clarification).",
                 {"kind": "react.correction", "iteration": self.iteration, "run_id": self.run_id},
             )
             self.telemetry.note_action(action="parse_error")
@@ -2086,6 +2165,21 @@ class ReActCoordinator:
                 "arguments": memory._redact_arguments(self.action.arguments),
                 "warnings": list(self.action.warnings),
                 "run_id": self.run_id,
+                # A batch names every call: the transcript keeps what the model
+                # actually asked for, not only the first one.
+                **(
+                    {
+                        "calls": [
+                            {
+                                "tool_id": call.tool_id,
+                                "arguments": memory._redact_arguments(call.arguments),
+                            }
+                            for call in self.action.calls
+                        ]
+                    }
+                    if isinstance(self.action, ToolCallBatch)
+                    else {}
+                ),
             },
         )
         self.telemetry.note_action(
@@ -2302,13 +2396,62 @@ class ReActCoordinator:
         )
         return Transition.READY
 
-    def _check_tool(self) -> Transition:
-        if self.action.tool_id not in self.catalog:
-            self.observation = {
+    def _call_refusal(self, spec: Any) -> tuple[str, dict[str, Any]] | None:
+        """Why this call may not reach the gateway, or ``None`` when it may.
+
+        One predicate for both shapes of a turn: a call inside a parallel batch is
+        refused by exactly the same rules as a lone one -catalog membership, the
+        active subagent's subset, PLAN-FIRST and a retired tool- so ``tool_calls``
+        can never widen what the model is allowed to invoke. The caller owns the
+        bookkeeping; this only decides and builds the observation.
+        """
+        tool_id = str(getattr(spec, "tool_id", "") or "")
+        if tool_id not in self.catalog:
+            return "unknown_tool", {
                 "success": False,
-                "error": f"tool '{self.action.tool_id}' does not exist in the catalog",
+                "error": f"tool '{tool_id}' does not exist in the catalog",
                 "available_tools": sorted(self.catalog),
             }
+        if not permits(self.subagent, tool_id, self.catalog.get(tool_id)):
+            return "subagent_tool_denied", {
+                "success": False,
+                "error": f"tool '{tool_id}' is outside subagent '{self.subagent.id}' subset",
+                "subagent_id": self.subagent.id,
+                "available_tools": sorted(self.allowed_catalog),
+            }
+        if self._plan_required_missing() and _touches_target(self.catalog.get(tool_id)):
+            # PLAN-FIRST: an engagement does not start by attacking. The engine
+            # refuses the call (it is not counted as a tool failure: it is an
+            # ordering rule) and tells the model exactly what unblocks it.
+            from nexus_core.tools.handlers.plan_engagement import CREATE_PLAN_TOOL
+
+            return "plan_required", {
+                "success": False,
+                "status": "denied_no_plan",
+                "tool_id": tool_id,
+                "error": (
+                    "hay que fijar el PLAN DEL ENGAGEMENT antes de atacar: "
+                    f"llama a {CREATE_PLAN_TOOL} con los TODOs del objetivo "
+                    "(id, description, fact_types). Mientras no exista el plan, "
+                    "el motor solo admite lectura de contexto (query_facts, "
+                    "workspace.read) y las tools nexus.orchestrator.*."
+                ),
+                "next": CREATE_PLAN_TOOL,
+            }
+        if tool_id in self.unavailable_tools:
+            return "tool_unavailable", {
+                "success": False,
+                "tool_id": tool_id,
+                "error": f"tool '{tool_id}' is unavailable after repeated failures; use another tool from the available list",
+                "subagent_id": self.subagent.id,
+                "available_tools": sorted(self.allowed_catalog),
+            }
+        return None
+
+    def _check_tool(self) -> Transition:
+        refusal = self._call_refusal(self.action)
+        if refusal is not None and refusal[0] == "unknown_tool":
+            self.observation = refusal[1]
             self.consecutive_failures += 1
             self.entry["tool_result"] = self.observation
             self.actions.append(self.entry)
@@ -2341,13 +2484,8 @@ class ReActCoordinator:
                 return Transition.STOP
             self.consecutive_failures = 0
             return Transition.NEXT_TURN
-        if not permits(self.subagent, self.action.tool_id, self.catalog.get(self.action.tool_id)):
-            self.observation = {
-                "success": False,
-                "error": f"tool '{self.action.tool_id}' is outside subagent '{self.subagent.id}' subset",
-                "subagent_id": self.subagent.id,
-                "available_tools": sorted(self.allowed_catalog),
-            }
+        if refusal is not None and refusal[0] == "subagent_tool_denied":
+            self.observation = refusal[1]
             self.consecutive_failures += 1
             self.entry["tool_result"] = self.observation
             self.actions.append(self.entry)
@@ -2379,27 +2517,8 @@ class ReActCoordinator:
                 return Transition.STOP
             self.consecutive_failures = 0
             return Transition.NEXT_TURN
-        if self._plan_required_missing() and _touches_target(
-            self.catalog.get(self.action.tool_id)
-        ):
-            # PLAN-FIRST: an engagement does not start by attacking. The engine
-            # refuses the call (it is not counted as a tool failure: it is an
-            # ordering rule) and tells the model exactly what unblocks it.
-            from nexus_core.tools.handlers.plan_engagement import CREATE_PLAN_TOOL
-
-            self.observation = {
-                "success": False,
-                "status": "denied_no_plan",
-                "tool_id": self.action.tool_id,
-                "error": (
-                    "hay que fijar el PLAN DEL ENGAGEMENT antes de atacar: "
-                    f"llama a {CREATE_PLAN_TOOL} con los TODOs del objetivo "
-                    "(id, description, fact_types). Mientras no exista el plan, "
-                    "el motor solo admite lectura de contexto (query_facts, "
-                    "workspace.read) y las tools nexus.orchestrator.*."
-                ),
-                "next": CREATE_PLAN_TOOL,
-            }
+        if refusal is not None and refusal[0] == "plan_required":
+            self.observation = refusal[1]
             self.entry["tool_result"] = self.observation
             self.actions.append(self.entry)
             _inject_observation(
@@ -2430,14 +2549,8 @@ class ReActCoordinator:
                 reason="plan_required",
             )
             return Transition.NEXT_TURN
-        if self.action.tool_id in self.unavailable_tools:
-            self.observation = {
-                "success": False,
-                "tool_id": self.action.tool_id,
-                "error": f"tool '{self.action.tool_id}' is unavailable after repeated failures; use another tool from the available list",
-                "subagent_id": self.subagent.id,
-                "available_tools": sorted(self.allowed_catalog),
-            }
+        if refusal is not None and refusal[0] == "tool_unavailable":
+            self.observation = refusal[1]
             self.entry["tool_result"] = self.observation
             self.actions.append(self.entry)
             _inject_observation(
@@ -2460,13 +2573,13 @@ class ReActCoordinator:
             return Transition.NEXT_TURN
         return Transition.READY
 
-    def _approve_tool(self) -> Transition:
-        assert isinstance(self.action, ToolCall)
-        resolved = self.catalog[self.action.tool_id]
-        definition = resolved[0] if isinstance(resolved, tuple) else resolved
-        self.tool_payload = {
-            "tool_id": self.action.tool_id,
-            "arguments": dict(self.action.arguments or {}),
+    def _call_payload(self, spec: Any) -> dict[str, Any]:
+        """The engine data one gateway invocation carries (never the model's word)."""
+        from nexus_core.kernel.job_authority import JobAuthority
+
+        payload = {
+            "tool_id": str(spec.tool_id),
+            "arguments": dict(spec.arguments or {}),
             "identity": self.payload.get("identity") or {},
             "engagement_id": self.engagement_id,
             "permissions": tuple(self.payload.get("permissions") or ()),
@@ -2482,22 +2595,38 @@ class ReActCoordinator:
             # engine set it from ``--resume-policy`` (only under trust mode).
             "resume_policy": str(getattr(self.config, "resume_policy", "") or ""),
         }
-        from nexus_core.kernel.job_authority import JobAuthority
-
-        self.tool_payload["job_authority"] = JobAuthority(
+        payload["job_authority"] = JobAuthority(
             run_id=self.run_id, engagement_id=self.engagement_id or "", profile_id=self.subagent.id,
             tools=tuple(sorted(self.subagent.tools)),
             token_budget=self.subagent.token_budget,
             run_token_budget=max(0, self.budget),
             job_limit=max(0, self.subagent.max_iterations - self.subagent_iterations),
         ).model_dump(mode="json")
+        return payload
+
+    def _review_call(self, spec: Any, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Policy + operator approval for one call; a denial observation or ``None``.
+
+        Runs the very same :class:`ApprovalCoordinator` the single-call path uses,
+        once per call: a batch of three tools asks three questions, never one
+        blanket approval for all of them.
+        """
+        if self.config.on_approval_needed is None:
+            return None
+        resolved = self.catalog[str(spec.tool_id)]
+        definition = resolved[0] if isinstance(resolved, tuple) else resolved
+        return self.approval_coordinator.review(
+            config=self.config,
+            context=self.context,
+            definition=definition,
+            tool_payload=payload,
+        )
+
+    def _approve_tool(self) -> Transition:
+        assert isinstance(self.action, ToolCall)
+        self.tool_payload = self._call_payload(self.action)
         if self.config.on_approval_needed is not None:
-            denial = self.approval_coordinator.review(
-                config=self.config,
-                context=self.context,
-                definition=definition,
-                tool_payload=self.tool_payload,
-            )
+            denial = self._review_call(self.action, self.tool_payload)
             if denial is not None:
                 self.entry["tool_result"] = denial
                 self.actions.append(self.entry)
@@ -3019,6 +3148,415 @@ class ReActCoordinator:
             reason="replay_requires_approval",
         )
         return Transition.STOP if aborted else Transition.READY
+
+    # ------------------------------------------------------- parallel turns
+    def _batch_entry(self, index: int, spec: ToolCallSpec, size: int) -> dict[str, Any]:
+        """One action log entry per call, so the run stays audit-able per tool."""
+        return _action_entry(
+            self.iteration,
+            "tool_call",
+            thought=self.action.thought,
+            tool_id=spec.tool_id,
+            arguments=memory._redact_arguments(spec.arguments),
+            warnings=self.action.warnings,
+            expected_outcome=spec.expected_outcome,
+            invocation_signature=_invocation_signature(spec.tool_id, spec.arguments),
+            batch_index=index,
+            batch_size=size,
+        )
+
+    def _record_batch_denial(
+        self, spec: ToolCallSpec, entry: dict[str, Any], reason: str, observation: dict[str, Any]
+    ) -> dict[str, Any]:
+        """A call that never reached the gateway: refusal is local to that call."""
+        entry["tool_result"] = observation
+        self.actions.append(entry)
+        if reason in {"unknown_tool", "subagent_tool_denied"}:
+            self.consecutive_failures += 1
+        if reason == "plan_required":
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                "orchestrator.plan_required",
+                {
+                    "iteration": self.iteration,
+                    "tool_id": spec.tool_id,
+                    "subagent_id": self.active_subagent_id,
+                    "batch": True,
+                },
+            )
+        self.audit_step(
+            iteration=self.iteration,
+            action=self.action.action,
+            decision="deny",
+            tool_id=spec.tool_id,
+            reason=reason,
+            batch=True,
+            **({"operator_reason": observation["reason"]} if "reason" in observation else {}),
+        )
+        detail = observation.get("error") or observation.get("reason") or reason
+        return {
+            "tool_id": spec.tool_id,
+            "arguments": memory._redact_arguments(spec.arguments),
+            "success": False,
+            "outcome": "denied",
+            "reason": reason,
+            "error": str(detail)[:800],
+            "guidance": str(observation.get("guidance") or detail)[:800],
+            **({"next": observation["next"]} if observation.get("next") else {}),
+        }
+
+    def _account_call(self, spec: ToolCallSpec, execution: CallExecution) -> dict[str, Any]:
+        """Turn one execution into its ``results`` entry, updating the run's counters.
+
+        Same rules as the single-call path, applied in batch order: a success
+        clears the failure streaks, ``command_failed`` is about the command (not
+        the tool), ``timeout``/``unavailable`` retire the tool after repeated
+        attempts, and a ``scope_denied`` target extends the insistence streak -so
+        three denials of the same host still close the run, even spread across
+        parallel calls.
+        """
+        result: dict[str, Any] = {
+            "tool_id": spec.tool_id,
+            "arguments": memory._redact_arguments(spec.arguments),
+            "duration_ms": int(round(execution.duration_ms)),
+        }
+        if execution.cancelled:
+            result.update(success=False, outcome="cancelled", error="cancelación solicitada")
+            return result
+        error = execution.error
+        if error is not None:
+            return self._account_call_error(spec, error, result)
+        observation = _observation_payload(execution.invocation or {})
+        self.observation = observation
+        self._note_observed_flags(spec)
+        success = bool(observation.get("success"))
+        outcome = str(observation.get("outcome") or "")
+        result.update(
+            success=success,
+            outcome=outcome,
+            verification_method=observation.get("verification_method"),
+            invocation_id=observation.get("invocation_id"),
+            evidence=observation.get("evidence"),
+            assertions=list(observation.get("assertions") or []),
+            output=observation.get("output"),
+            error=observation.get("error"),
+        )
+        self.telemetry.note_tool(duration_ms=result["duration_ms"], success=success)
+        if success:
+            self.scope_denial_target = None
+            self.scope_denial_streak = 0
+            self.consecutive_failures = 0
+            self.tool_failures.clear()
+            self.run_evidence.extend(result["assertions"])
+            del self.run_evidence[:-RUN_EVIDENCE_MAX_OBSERVATIONS]
+            return result
+        if outcome == "scope_denied":
+            handler_output = observation.get("output")
+            if not isinstance(handler_output, dict):
+                handler_output = {}
+            target = str(
+                observation.get("target") or handler_output.get("target") or ""
+            ).strip()
+            if handler_output.get("error") and not result.get("error"):
+                result["error"] = handler_output["error"]
+            if handler_output.get("guidance"):
+                result["guidance"] = handler_output["guidance"]
+            streak = self._note_scope_denial(target)
+            result["scope_denial_streak"] = streak
+            self.telemetry.flag(FrictionFlag.SCOPE_VIOLATION)
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                "react.scope_violation",
+                {
+                    "iteration": self.iteration,
+                    "tool_id": spec.tool_id,
+                    "error": str(result.get("error") or "")[:500],
+                    "target": target,
+                    "streak": streak,
+                    "aborted": streak >= MAX_CONSECUTIVE_SCOPE_DENIALS,
+                    "batch": True,
+                },
+            )
+        else:
+            self.scope_denial_target = None
+            self.scope_denial_streak = 0
+        if outcome != "command_failed":
+            self.consecutive_failures += 1
+        if outcome in {"unavailable", "timeout"}:
+            self.observation = result
+            self._note_tool_failure(spec.tool_id)
+            if outcome == "timeout":
+                result["guidance"] = timeout_guidance(spec.tool_id)
+            else:
+                reason = observation.get("failure_kind") or "backend unavailable"
+                evidence = observation.get("evidence")
+                if isinstance(evidence, dict) and evidence.get("provider"):
+                    reason = str(evidence["provider"])
+                result["guidance"] = unavailable_guidance(spec.tool_id, reason)
+        elif outcome == "command_failed":
+            result["guidance"] = command_failed_guidance(spec.tool_id)
+        return result
+
+    def _account_call_error(
+        self, spec: ToolCallSpec, error: BaseException, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """A call that raised: the batch keeps the others, the run learns why."""
+        self.telemetry.note_tool(
+            duration_ms=result.get("duration_ms", 0),
+            success=False,
+            error_type=type(error).__name__,
+        )
+        if isinstance(error, TimeoutError):
+            self._note_tool_failure(spec.tool_id)
+            result.update(
+                success=False,
+                outcome="timeout",
+                error=(str(error) or "la llamada excedió su presupuesto de tiempo")[:1000],
+                guidance=timeout_guidance(spec.tool_id),
+            )
+            self.consecutive_failures += 1
+        elif isinstance(error, ScopeViolation):
+            self.telemetry.flag(FrictionFlag.SCOPE_VIOLATION)
+            target = str(getattr(error, "target", "") or "").strip()
+            streak = self._note_scope_denial(target)
+            result.update(
+                success=False,
+                outcome="scope_denied",
+                error=str(error)[:500],
+                target=target,
+                scope_denial_streak=streak,
+                guidance=(
+                    f"El objetivo {target or 'solicitado'} está fuera del alcance "
+                    "firmado. Ignora esa ruta y busca otra."
+                ),
+            )
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                "react.scope_violation",
+                {
+                    "iteration": self.iteration,
+                    "tool_id": spec.tool_id,
+                    "error": str(error)[:500],
+                    "target": target,
+                    "streak": streak,
+                    "aborted": streak >= MAX_CONSECUTIVE_SCOPE_DENIALS,
+                    "batch": True,
+                },
+            )
+        elif isinstance(error, ReplayApprovalRequired):
+            result.update(
+                success=False,
+                outcome="replay_approval_required",
+                error=str(error)[:500],
+            )
+            self.consecutive_failures += 1
+        elif isinstance(error, ApprovalRequired):
+            # Never local: without the approval the run cannot continue, exactly
+            # as on the single-call path.
+            result.update(
+                success=False,
+                outcome="approval_required",
+                error=str(error)[:500],
+                guidance=(
+                    "La llamada necesita aprobación humana y no la tiene: el run "
+                    "se detiene para que la concedas."
+                ),
+            )
+            self.consecutive_failures += 1
+        elif isinstance(error, PermissionError):
+            # Another call of the same batch being authorized says nothing about
+            # this one: the denial is this call's, and the batch reports it.
+            result.update(
+                success=False,
+                outcome="governance_denial",
+                error=str(error)[:500],
+                guidance="La política denegó esta llamada; las demás ya pasaron la suya.",
+            )
+            self.consecutive_failures += 1
+        else:
+            kind = _failure_kind(error)
+            result.update(
+                success=False,
+                outcome="error",
+                error=str(error)[:1000],
+                failure_kind=kind,
+            )
+            if kind == "tool":
+                self._note_tool_failure(spec.tool_id)
+            self.consecutive_failures += 1
+        return result
+
+    async def _batch_turn(self) -> Transition:
+        """Run several independent tools at once and answer with one observation.
+
+        Each call is governed exactly like a lone one -catalog/subagent/PLAN-FIRST
+        refusal, then policy + operator approval, then the gateway, which repeats
+        scope/RoE and audits- and only then are the survivors executed
+        concurrently, bounded by ``PARALLEL_MAX_CONCURRENCY``. A refusal or a
+        failure is local to its call: the others were authorized on their own
+        merit, already hold their approvals and finish.
+
+        ``ApprovalRequired`` is the one non-local outcome (the run stops, as
+        always), and the scope-insistance streak still closes the run after
+        ``MAX_CONSECUTIVE_SCOPE_DENIALS`` denials of the same target.
+        """
+        batch = self.action
+        assert isinstance(batch, ToolCallBatch)
+        calls = list(batch.calls)
+        entries = {
+            index: self._batch_entry(index, spec, len(calls))
+            for index, spec in enumerate(calls)
+        }
+        results: dict[int, dict[str, Any]] = {}
+        prepared: list[dict[str, Any]] = []
+        for index, spec in enumerate(calls):
+            refusal = self._call_refusal(spec)
+            if refusal is not None:
+                reason, observation = refusal
+                results[index] = self._record_batch_denial(
+                    spec, entries[index], reason, observation
+                )
+                continue
+            payload = self._call_payload(spec)
+            try:
+                denial = self._review_call(spec, payload)
+            except PermissionError as exc:
+                # The policy engine refused this call at the approval gate. It is
+                # this call's denial, not the batch's: the others are reviewed on
+                # their own merits below.
+                self.consecutive_failures += 1
+                results[index] = self._record_batch_denial(
+                    spec,
+                    entries[index],
+                    "governance_denial",
+                    {"success": False, "error": str(exc)},
+                )
+                continue
+            if denial is not None:
+                self.telemetry.flag(FrictionFlag.OPERATOR_DENIAL)
+                results[index] = self._record_batch_denial(
+                    spec, entries[index], "denied_by_operator", denial
+                )
+                continue
+            prepared.append(
+                {
+                    "index": index,
+                    "tool_id": spec.tool_id,
+                    "arguments": dict(spec.arguments),
+                    "payload": payload,
+                }
+            )
+        started = time.perf_counter()
+        executions: list[CallExecution] = []
+        if prepared:
+            executions = await execute_calls(
+                prepared,
+                execute=lambda payload, timeout, cancel_event: self.tool_execution.execute(
+                    payload, self.context, timeout=timeout, cancel_event=cancel_event
+                ),
+                limit=parallel_limit(),
+                timeout=call_timeout(self.config.timeout_per_tool_seconds),
+                cancel_event=self.cancel_event,
+            )
+        cancelled_now = False
+        approval_required = ""
+        for execution in executions:
+            spec = calls[execution.index]
+            result = self._account_call(spec, execution)
+            results[execution.index] = result
+            entries[execution.index]["tool_result"] = result
+            self.actions.append(entries[execution.index])
+            if execution.cancelled:
+                cancelled_now = True
+            self.audit_step(
+                iteration=self.iteration,
+                action=batch.action,
+                decision="allow" if result.get("success") else "deny",
+                tool_id=spec.tool_id,
+                success=bool(result.get("success")),
+                batch=True,
+                batch_index=execution.index,
+            )
+            if isinstance(execution.error, ApprovalRequired):
+                approval_required = str(execution.error)
+        consolidated = consolidate([results[index] for index in sorted(results)])
+        consolidated["duration_ms"] = int(round((time.perf_counter() - started) * 1000))
+        consolidated["concurrency"] = parallel_limit()
+        consolidated["executed"] = len(executions)
+        consolidated["refused"] = len(calls) - len(prepared)
+        if cancelled_now:
+            consolidated["outcome"] = "cancelled"
+        self.observation = consolidated
+        self.entry = entries[0]
+        # The model reads ONE message with every result; ``parallel.tools`` is the
+        # synthetic tool id (the artifact/compaction key) of that block.
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            _BatchObservationAction(BATCH_TOOL_ID),
+            consolidated,
+            subagent_id=self.active_subagent_id,
+        )
+        self.last_tool_elapsed_ms = int(consolidated["duration_ms"])
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.parallel_batch",
+            {
+                "iteration": self.iteration,
+                "subagent_id": self.active_subagent_id,
+                "tool_ids": list(batch.tool_ids),
+                "tool_calls": consolidated["tool_calls"],
+                "succeeded": consolidated["succeeded"],
+                "failed": consolidated["failed"],
+                "executed": consolidated["executed"],
+                "refused": consolidated["refused"],
+                "concurrency": consolidated["concurrency"],
+                "duration_ms": consolidated["duration_ms"],
+            },
+        )
+        if cancelled_now:
+            self.status = STATUS_CANCELLED
+            self.final_summary = "cancellation requested during a parallel tool batch"
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                "react.cancelled",
+                {"iteration": self.iteration, "phase": "parallel_tools"},
+            )
+            return Transition.STOP
+        if approval_required:
+            self.status = STATUS_BLOCKED
+            self.final_summary = approval_required
+            return Transition.STOP
+        if self.scope_denial_streak >= MAX_CONSECUTIVE_SCOPE_DENIALS:
+            self.status = STATUS_SCOPE_VIOLATION
+            self.final_summary = (
+                "scope violation aborted the loop: the model insisted on a target "
+                f"outside the signed scope {self.scope_denial_streak} times"
+            )
+            return Transition.STOP
+        if not _keep_going_after_failures(
+            self.subagent,
+            self.unavailable_tools,
+            self.consecutive_failures,
+            self.catalog,
+        ):
+            self.status = STATUS_FAILED
+            self.final_summary = (
+                f"aborted after {self.consecutive_failures} consecutive tool failures "
+                f"(no usable tools remain for subagent '{self.subagent.id}')"
+            )
+            return Transition.STOP
+        if self.consecutive_failures >= MAX_CONSECUTIVE_TOOL_FAILURES:
+            self.consecutive_failures = 0
+        return Transition.READY
 
     async def _execute_tool(self) -> Transition:
         repeated_tool = self._repeated_failed_action()
@@ -3866,6 +4404,8 @@ class ReActCoordinator:
                 )
             else:
                 return self._force_target_completion()
+        if isinstance(self.action, ToolCallBatch):
+            return await self._batch_turn()
         return await self._tool_turn()
 
     async def _tool_turn(self) -> Transition:

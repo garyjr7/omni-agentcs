@@ -31,6 +31,29 @@ class AgentAction(DomainDTO):
         return value.strip()
 
 
+#: Ceiling on one parallel batch. It is a contract, not a tuning knob: a model
+#: that names ten independent tools in one answer is dictating a scan, not
+#: orchestrating a turn, and the consolidated observation would not fit the
+#: context anyway. Execution is additionally capped by
+#: :data:`nexus_core.agent.parallel.PARALLEL_MAX_CONCURRENCY`.
+MAX_PARALLEL_TOOL_CALLS = 4
+
+
+class ToolCallSpec(DomainDTO):
+    """One independent invocation inside a parallel batch."""
+
+    tool_id: str = Field(min_length=1)
+    arguments: dict[str, JsonValue]
+    expected_outcome: str | None = None
+
+    @field_validator("tool_id")
+    @classmethod
+    def nonempty_tool(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("tool_id must be nonempty")
+        return value.strip()
+
+
 class ToolCall(AgentAction):
     action: Literal["tool_call"] = "tool_call"
     tool_id: str = Field(min_length=1)
@@ -55,6 +78,48 @@ class ToolCall(AgentAction):
     @property
     def question(self) -> None:
         return None
+
+
+class ToolCallBatch(AgentAction):
+    """Several independent tools the model asked to run at once.
+
+    Every call is validated, approved and audited on its own -a batch is a
+    scheduling hint, never a way around the gateway- and the loop answers with a
+    single consolidated observation (``parallel.results``). Two calls are the
+    minimum: a batch of one is normalised back to a plain ``tool_call`` by the
+    parser, so the old single-tool paths never see this shape for one call.
+    """
+
+    action: Literal["tool_calls"] = "tool_calls"
+    calls: list[ToolCallSpec] = Field(min_length=2, max_length=MAX_PARALLEL_TOOL_CALLS)
+
+    @property
+    def tool_id(self) -> str:
+        return self.calls[0].tool_id
+
+    @property
+    def arguments(self) -> dict[str, JsonValue]:
+        return self.calls[0].arguments
+
+    @property
+    def expected_outcome(self) -> str | None:
+        return self.calls[0].expected_outcome
+
+    @property
+    def summary(self) -> None:
+        return None
+
+    @property
+    def findings(self) -> list[dict[str, Any]]:
+        return []
+
+    @property
+    def question(self) -> None:
+        return None
+
+    @property
+    def tool_ids(self) -> tuple[str, ...]:
+        return tuple(call.tool_id for call in self.calls)
 
 
 class TaskComplete(AgentAction):
@@ -118,7 +183,10 @@ class RequestClarification(AgentAction):
         return []
 
 
-Action = Annotated[ToolCall | TaskComplete | RequestClarification, Field(discriminator="action")]
+Action = Annotated[
+    ToolCall | ToolCallBatch | TaskComplete | RequestClarification,
+    Field(discriminator="action"),
+]
 ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
 
 

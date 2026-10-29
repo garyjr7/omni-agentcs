@@ -292,7 +292,12 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # 32,968; ceiling 33_050.
     # B1 adds the ``ad_user_enum`` catalog line (+225: the tool that confirms an
     # account without a password). Measured 33,193; ceiling 33_250.
-    assert len(_prompt(catalog)) < 33_250
+    # The parallel contract costs 427 characters (the `tool_calls` shape and its
+    # two conditions: only independent tools, and a single `results` block). It
+    # is an *order with the wire shape*, not prose, and it is the only way the
+    # model can learn that a turn may carry several calls -without it the whole
+    # feature is invisible. Measured 33,620; ceiling 33_680.
+    assert len(_prompt(catalog)) < 33_680
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -330,7 +335,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # 33_800. The block itself is unchanged.
     # B1 moves with the static prompt (+109): measured 33,820; ceiling 33_880.
     # The block itself is unchanged.
-    assert len(prompt) < 33_880
+    # The parallel contract moves with the static prompt: measured 34,247;
+    # ceiling 34,320. The block itself is unchanged.
+    assert len(prompt) < 34_320
     assert len(block) < 1_200
 
 
@@ -525,7 +532,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # ceiling 7_330 (250k buys ~34 turns).
     # Tanda G's SSRF order lands here too (+121 tokens): measured 7,401;
     # ceiling 7_450 (250k buys ~33 turns).
-    assert tokens < 7_450
+    # The parallel contract lands here too (+130 tokens): measured 7,531;
+    # ceiling 7_590 (250k buys ~33 turns).
+    assert tokens < 7_590
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -570,7 +579,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # catalog offers ``netexec``): ceiling 8_010, ~31 turns.
     # Tanda G measured 8,085 average (the SSRF order and the new catalog line on
     # every turn): ceiling 8_130, ~30 turns.
-    assert sum(totals) / len(totals) < 8_130
+    # The parallel contract is paid every turn (+137 tokens of average):
+    # measured 8,222; ceiling 8_270, ~30 turns.
+    assert sum(totals) / len(totals) < 8_270
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -600,7 +611,11 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # Tanda E on the refresh turn: measured 10,192; ceiling 10_250.
     # Tanda F on the refresh turn: measured 10,263; ceiling 10_330.
     # Tanda G on the refresh turn: measured 10,413; ceiling 10_470.
-    assert max(totals) < 10_470
+    # The parallel contract on the refresh turn: measured 10,574; ceiling 10_620
+    # (8 refreshes at 10,574 plus 32 compact turns at 7,531 are 325 584 tokens,
+    # which is why the run budget is planned by ``budget_tokens_for_iterations``
+    # and not by a fixed 250k).
+    assert max(totals) < 10_620
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):

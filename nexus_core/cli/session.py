@@ -330,6 +330,25 @@ class OmniSession:
         return self.resume_policy if self.trust_mode else ""
 
     @property
+    def _model_selector(self) -> Any:
+        """``[model_routing]`` for this session, or ``None`` when it is inert.
+
+        ``None`` is the normal answer for an operator who never pinned a profile:
+        the loop then runs on ``llm_client`` exactly as before. In the TUI every
+        routed client is wrapped by :meth:`_metered_client`, so cost accounting
+        survives a model switch.
+        """
+        from nexus_core.llm.dynamic_selector import build_model_selector
+
+        try:
+            return build_model_selector(
+                self._llm,
+                wrap=self._metered_client if self._tui.use_tui else None,
+            )
+        except Exception:  # noqa: BLE001 - routing never blocks a run
+            return None
+
+    @property
     def _llm(self) -> Any:
         """The LLM client of this session, resolved lazily if it was not given.
 
@@ -1248,17 +1267,26 @@ class OmniSession:
                     if self._tui.use_tui
                     else self.llm_client
                 )
+                from nexus_core.llm.dynamic_selector import routed_for_task
+
+                # The planning turn is a different job from the ACT loop: with a
+                # ``[model_routing.planner]`` profile it runs on its own model.
+                planner_client = routed_for_task(
+                    "planner", base=self._llm,
+                    wrap=self._metered_client if self._tui.use_tui else None,
+                )
 
                 async def _plan_then_run() -> Any:
                     """PLAN MODE (iteration 0) and then the ACT loop."""
                     await self._draft_engagement_plan(
-                        llm_client, objective, workspace=str(self.workspace_root)
+                        planner_client, objective, workspace=str(self.workspace_root)
                     )
                     return await run_react_loop(
                         context=context,
                         objective=objective,
                         engagement_id=self.engagement_id,
                         llm_client=llm_client,
+                        model_selector=self._model_selector,
                         config=config,
                         conversation_id=self.conversation_id,
                         cancel_event=cancel_event,

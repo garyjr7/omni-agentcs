@@ -106,6 +106,7 @@ async def _run_react_loop_impl(
     budget_tokens: int | None = None,
     cancel_event: asyncio.Event | None = None,
     isolated_child: bool = False,
+    model_selector: Any | None = None,
 ) -> ReActResult:
     return await ReActCoordinator(
         context=context,
@@ -120,6 +121,7 @@ async def _run_react_loop_impl(
         isolated_child=isolated_child,
         phase_timeout_seconds=_phase_timeout_seconds(),
         initial_unavailable_tools=unavailable_tools_from_env(),
+        model_selector=model_selector,
     ).run()
 
 
@@ -200,8 +202,16 @@ async def run_react_loop(
     budget_tokens: int | None = None,
     cancel_event: asyncio.Event | None = None,
     isolated_child: bool = False,
+    model_selector: Any | None = None,
 ) -> ReActResult:
     """Public entry point: the engine plus a guaranteed ``session_end``.
+
+    ``model_selector`` is resolved by the caller
+    (``dynamic_selector.build_model_selector(llm_client)``) and ``None`` means
+    "no ``[model_routing]``": the run then uses ``llm_client`` for every task,
+    exactly as before. The engine deliberately does not read the operator's
+    config itself, so a library caller -or a test- is never steered by the
+    config file of whoever runs it.
 
     ``_run_react_loop_impl`` owns the ReAct mechanics. This thin wrapper adds the
     lifecycle guarantee the operator extensions depend on: ``session_end`` is
@@ -257,6 +267,7 @@ async def run_react_loop(
             budget_tokens=budget_tokens,
             cancel_event=cancel_event,
             isolated_child=isolated_child,
+            model_selector=model_selector,
         )
     except BaseException:
         await _reap_pty_sessions(context)

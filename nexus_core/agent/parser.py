@@ -22,10 +22,16 @@ from nexus_core.kernel.domain_dto import (
 from nexus_core.kernel.serialization import decode_json
 
 ACTION_TOOL_CALL = "tool_call"
+ACTION_TOOL_CALLS = "tool_calls"
 ACTION_TASK_COMPLETE = "task_complete"
 ACTION_REQUEST_CLARIFICATION = "request_clarification"
 
-KNOWN_ACTIONS = (ACTION_TOOL_CALL, ACTION_TASK_COMPLETE, ACTION_REQUEST_CLARIFICATION)
+KNOWN_ACTIONS = (
+    ACTION_TOOL_CALL,
+    ACTION_TOOL_CALLS,
+    ACTION_TASK_COMPLETE,
+    ACTION_REQUEST_CLARIFICATION,
+)
 
 
 class ReActParseError(ValueError):
@@ -152,17 +158,80 @@ def _extract_json_value(text: str, warnings: list[str]) -> Any:
     raise ReActParseError("response does not contain a parsable JSON object", text)
 
 
+def _call_specs(items: Any) -> list[dict[str, Any]] | None:
+    """Normalise a list of tool calls, or ``None`` when it is not one.
+
+    Accepts both the compact shape (``tool_id``/``arguments``) and the historical
+    action object (``action: "tool_call"``) so a model that stacks three answers
+    in one array is understood as the parallel turn it meant, instead of silently
+    running only the first one.
+    """
+    if not isinstance(items, list) or not items:
+        return None
+    specs: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        if item.get("action") not in (None, ACTION_TOOL_CALL):
+            return None
+        tool_id = item.get("tool_id")
+        arguments = item.get("arguments", {})
+        if not isinstance(tool_id, str) or not tool_id.strip():
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        spec = {"tool_id": tool_id, "arguments": arguments}
+        if isinstance(item.get("expected_outcome"), str):
+            spec["expected_outcome"] = item["expected_outcome"]
+        specs.append(spec)
+    return specs
+
+
+def _batch(specs: list[dict[str, Any]]) -> dict[str, Any]:
+    """A batch payload for >= 2 calls; anything shorter stays a single call."""
+    if len(specs) == 1:
+        return {"action": ACTION_TOOL_CALL, **specs[0]}
+    return {"action": ACTION_TOOL_CALLS, "calls": specs}
+
+
 def _normalize(payload: Any, raw_response: str, warnings: list[str]) -> Action:
     """Tolerate transport wrappers; never coerce the domain action."""
     warnings = list(dict.fromkeys(warnings))
     if isinstance(payload, list):
         if not payload:
             raise ReActParseError("response is an empty JSON array", raw_response)
-        if len(payload) > 1 and not any("multiple actions" in item for item in warnings):
-            warnings.append("response contained multiple actions; using the first one")
-        payload = payload[0]
+        specs = _call_specs(payload)
+        if specs is not None:
+            warnings.append(
+                "response contained multiple tool calls; running them in parallel"
+            )
+            thought = next(
+                (
+                    str(item.get("thought") or "")
+                    for item in payload
+                    if isinstance(item, dict) and item.get("thought")
+                ),
+                "",
+            )
+            payload = {**_batch(specs), "thought": thought}
+        else:
+            if len(payload) > 1 and not any("multiple actions" in item for item in warnings):
+                warnings.append("response contained multiple actions; using the first one")
+            payload = payload[0]
     if not isinstance(payload, dict):
         raise ReActParseError("response is not a JSON object", raw_response)
+    if "action" not in payload and "tool_calls" in payload:
+        # ``{"thought": ..., "tool_calls": [...]}`` without an action label: the
+        # only thing it can mean is a parallel turn, so no correction is wasted.
+        specs = _call_specs(payload.get("tool_calls"))
+        if specs is not None:
+            warnings.append("tool_calls was read without an explicit action label")
+            payload = {**_batch(specs), "thought": str(payload.get("thought") or "")}
+    if payload.get("action") == ACTION_TOOL_CALLS:
+        specs = _call_specs(payload.get("calls"))
+        if specs is None:
+            raise ReActParseError("tool_calls needs a list of tool calls", raw_response)
+        payload = {**_batch(specs), "thought": str(payload.get("thought") or "")}
     if payload.get("action") not in KNOWN_ACTIONS:
         raise ReActParseError("unknown or missing action", raw_response)
     if "raw_response" in payload or "warnings" in payload:
@@ -180,22 +249,34 @@ def _normalize(payload: Any, raw_response: str, warnings: list[str]) -> Action:
         raise ReActParseError(f"invalid action fields: {fields}", raw_response) from None
 
 
+def _is_parallel_payload(payload: Any) -> bool:
+    """Whether the decoded response is several tool calls, not stacked actions."""
+    if isinstance(payload, list):
+        return _call_specs(payload) is not None
+    if isinstance(payload, dict):
+        if payload.get("action") == ACTION_TOOL_CALLS:
+            return True
+        return "action" not in payload and _call_specs(payload.get("tool_calls")) is not None
+    return False
+
+
 def parse_react_response(text: str) -> Action:
     """Parse a model response into the discriminated Pydantic ``Action`` union.
 
     Strategy: pure JSON first, then a ```` ```json ```` block, then the first
-    balanced ``{...}`` slice. Stacked actions are reduced to the first one and
-    reported as a warning. Raises :class:`ReActParseError` with the raw text.
+    balanced ``{...}`` slice. Several tool calls in one answer become a
+    :class:`ToolCallBatch`; any other stack of actions is reduced to the first
+    one and reported as a warning. Raises :class:`ReActParseError` with the raw
+    text.
     """
     if not isinstance(text, str) or not text.strip():
         raise ReActParseError("empty model response", str(text or ""))
 
     warnings: list[str] = []
+    payload = _extract_json_value(text, warnings)
     actionable = [
         candidate for candidate in _balanced_json_objects(text) if '"action"' in candidate
     ]
-    if len(actionable) > 1:
+    if len(actionable) > 1 and not _is_parallel_payload(payload):
         warnings.append("response contained multiple actions; using the first one")
-
-    payload = _extract_json_value(text, warnings)
     return _normalize(payload, text, warnings)
