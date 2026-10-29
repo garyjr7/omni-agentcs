@@ -17,6 +17,14 @@ from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from .hardware import (
+    CPU_LIMIT_ENV,
+    NICE_ENV,
+    cpu_cap_percent,
+    heavy_target,
+    nice_level,
+    priority_prefix,
+)
 from .output_capture import BoundedCapture, StreamManifest
 from .process_registry import register as register_process_group
 from .process_registry import unregister as unregister_process_group
@@ -88,6 +96,26 @@ class SandboxResult:
     duration_seconds: float = 0.0
     stdout_manifest: StreamManifest | None = None
     stderr_manifest: StreamManifest | None = None
+    #: ``nice``/``cpulimit`` prologue the sandbox prepended, for the audit trail.
+    priority: tuple[str, ...] = ()
+
+
+def with_priority(argv: Sequence[str]) -> list[str]:
+    """Prepend the ``nice``/``cpulimit`` prologue of :func:`priority_prefix`.
+
+    Applied by :class:`LocalSandbox` right before ``create_subprocess_exec`` (and
+    after the program allowlist check, so the injected wrappers are never a way
+    around it). ``nice`` is inherited by the whole descendant tree, which is how
+    the TUI -whose thread lives in the *parent* process at nice 0- keeps the
+    scheduler's favour while an ``nmap -p-`` runs.
+    """
+    if not argv:
+        return list(argv)
+    # A shell's command word decides the CPU ceiling: ``bash -lc "hashcat ..."``
+    # must be capped even though the spawned program is the shell.
+    program = heavy_target(argv) or argv[0]
+    prefix = priority_prefix(program, search_path=sandbox_path())
+    return [*prefix, *argv] if prefix else list(argv)
 
 
 def merge_extra_env(env: dict[str, str], extra_env: dict[str, str] | None) -> dict[str, str]:
@@ -188,7 +216,7 @@ async def _capture_process(
     process: asyncio.subprocess.Process, limit: int, timeout: float,
     cancel_event: asyncio.Event | None, grace: float, started: float,
     cleanup: Callable[[], Awaitable[None]] | None = None,
-    *, input_data: bytes | None = None,
+    *, input_data: bytes | None = None, priority: Sequence[str] = (),
 ) -> SandboxResult:
     assert process.stdout is not None and process.stderr is not None
     stdout, stderr = BoundedCapture(limit), BoundedCapture(limit)
@@ -260,6 +288,7 @@ async def _capture_process(
         process.returncode if process.returncode is not None else -1,
         stdout.text(), stderr.text(), timed_out, cancelled, orphans,
         round(time.monotonic() - started, 3), stdout.manifest(), stderr.manifest(),
+        tuple(priority),
     )
 
 
@@ -317,6 +346,10 @@ class LocalSandbox:
         env["XDG_CONFIG_HOME"] = str(resolved_home / ".config")
         env["XDG_CACHE_HOME"] = str(resolved_home / ".cache")
         env["XDG_DATA_HOME"] = str(resolved_home / ".local" / "share")
+        # The policy travels with the child so a tool that spawns its own worker
+        # (the ``john`` client inside ``crack_hash``) applies the same ceiling.
+        env[NICE_ENV] = str(nice_level())
+        env[CPU_LIMIT_ENV] = str(cpu_cap_percent())
         for path in (
             resolved_home,
             Path(env["XDG_CONFIG_HOME"]),
@@ -332,6 +365,7 @@ class LocalSandbox:
         if not argv or argv[0] not in self.allowed_programs:
             raise PermissionError("program is not allowed in this sandbox")
         env = merge_extra_env(self._sandbox_env(), extra_env)
+        argv = with_priority(argv)
         process = await asyncio.create_subprocess_exec(
             *argv, cwd=str(self.resolve_workspace(cwd)), env=env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -380,8 +414,9 @@ class LocalSandbox:
         encoded = (input_data.encode("utf-8") if isinstance(input_data, str)
                    else input_data)
         started = time.monotonic()
+        priority = with_priority(argv)
         process = await asyncio.create_subprocess_exec(
-            *argv,
+            *priority,
             cwd=str(working_directory),
             stdin=asyncio.subprocess.PIPE if encoded is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
@@ -391,11 +426,12 @@ class LocalSandbox:
         )
         # The command runs in its own session, so a run that dies by signal
         # leaves the group behind; record it so the next run can reap it.
-        register_process_group(process.pid, argv)
+        register_process_group(process.pid, priority)
         try:
             return await _capture_process(
                 process, self.max_output_bytes, timeout_seconds, cancel_event,
                 grace_seconds, started, input_data=encoded,
+                priority=priority[: len(priority) - len(argv)],
             )
         finally:
             unregister_process_group(process.pid)

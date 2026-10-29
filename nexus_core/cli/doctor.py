@@ -14,6 +14,12 @@ from nexus_core.config.loader import config_exists, effective_db_path
 from nexus_core.config.secrets import secrets_file_report
 from nexus_core.config.schema import DEFAULT_MODELS, PROVIDERS, model_env_name
 from nexus_core.llm.dynamic_selector import ModelTarget, describe_routing
+from nexus_core.kernel.hardware import (
+    PARALLEL_LIMIT_ENV,
+    detect_hardware,
+    parallel_tools,
+    tool_priority_available,
+)
 from nexus_core.kernel.sandbox import sandbox_path, tool_bin_dir
 from nexus_core.kernel.sandbox_modes import (
     SandboxModeForbidden,
@@ -86,6 +92,34 @@ def _sandbox_report() -> dict:
     ) as exc:
         report["error"] = str(exc)
     return report
+
+
+def _hardware_report() -> dict:
+    """The machine and the budget the run will actually use on it.
+
+    The limits are reported *as resolved* (detection + operator overrides), not
+    as a promise: ``parallel_tools`` is the number of tools the next batch may
+    run at once, and ``nice``/``cpu_percent`` say whether the sandbox can really
+    lower a child's priority on this host (``nice_binary``/``cpulimit_binary``
+    are ``None`` when the package is missing).
+    """
+    profile = detect_hardware()
+    priority = tool_priority_available(search_path=sandbox_path())
+    return {
+        **profile.to_dict(),
+        "summary": profile.summary(),
+        "limits": {
+            "parallel_tools": parallel_tools(profile),
+            "parallel_tools_source": (
+                "env" if os.getenv(PARALLEL_LIMIT_ENV, "").strip() else "hardware"
+            ),
+            "nice": priority["nice_level"],
+            "nice_binary": priority["nice_binary"],
+            "cpu_percent": priority["cpu_percent"],
+            "cpulimit_binary": priority["cpulimit_binary"],
+            "cpu_heavy_programs": priority["cpu_heavy_programs"],
+        },
+    }
 
 
 def _unset(names: tuple[str, ...]) -> list[str]:
@@ -304,6 +338,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
     rpc = _rpc_status()
     report = {
         "os": asdict(detect_os()),
+        "hardware": _hardware_report(),
         "python": platform.python_version(),
         "shell": os.getenv("SHELL", ""),
         "paths": {
@@ -372,6 +407,7 @@ def run_doctor(paths, config, *, as_json=False) -> int:
         print("OmniAgentCS Doctor\n" + "═" * 54)
         for title, key in (
             ("Sistema", "os"),
+            ("Hardware", "hardware"),
             ("Python", "python"),
             ("Shell", "shell"),
             ("Rutas XDG", "paths"),
@@ -418,6 +454,36 @@ def run_doctor(paths, config, *, as_json=False) -> int:
                         # A pinned profile that could not be honoured (no key for
                         # that provider) lands here as ``inherit``: say why.
                         print(f"              motivo:   {task['reason'].split(': ', 1)[-1]}")
+            elif key == "hardware":
+                limits = value["limits"]
+                print(f"  {value['summary']}")
+                print(f"  fuente:            {value['cpu']['source']}")
+                print(
+                    "  RAM disponible:    "
+                    + (value["ram"]["available_human"] or "desconocida")
+                )
+                print(
+                    f"  tools en paralelo: {limits['parallel_tools']} "
+                    f"({limits['parallel_tools_source']})"
+                )
+                nice = limits["nice"]
+                if not nice:
+                    print("  nice:              desactivado")
+                elif limits["nice_binary"]:
+                    print(f"  nice:              +{nice} ({limits['nice_binary']})")
+                else:
+                    print(f"  nice:              +{nice} (sin binario `nice`: no se inyecta)")
+                cap = limits["cpu_percent"]
+                if not cap:
+                    print("  tope CPU:          desactivado")
+                elif limits["cpulimit_binary"]:
+                    print(f"  tope CPU:          {cap}% ({limits['cpulimit_binary']})")
+                else:
+                    print(
+                        f"  tope CPU:          {cap}% pero falta `cpulimit` "
+                        "(apt install cpulimit)"
+                    )
+                print(f"  tools pesadas:     {', '.join(limits['cpu_heavy_programs'])}")
             elif key == "sandbox" and value["error"]:
                 print(f"  modo:              RECHAZADO — {value['error']}")
             elif key == "sandbox":

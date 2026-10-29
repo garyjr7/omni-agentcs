@@ -25,6 +25,7 @@ def test_doctor_human_output_contains_sections(onboarding_env, capsys):
         section in output
         for section in (
             "Sistema",
+            "Hardware",
             "Rutas XDG",
             "Config",
             "Base de datos",

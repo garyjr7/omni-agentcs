@@ -125,8 +125,22 @@ def resolve(name, absolute):
             return candidate
     return None
 
+HEAVY = {"john", "hashcat"}
+
+def capped(argv):
+    # ``john`` is a child of this script, so the sandbox's own ``nice`` is
+    # inherited but the CPU ceiling of NEXUS_TOOL_CPU_LIMIT is not: apply it here
+    # or a wordlist run owns every core while the operator tries to use the TUI.
+    limit = (os.environ.get("NEXUS_TOOL_CPU_LIMIT") or "").strip()
+    if not limit or limit == "0" or os.path.basename(argv[0]) not in HEAVY:
+        return list(argv)
+    limiter = shutil.which("cpulimit")
+    if not limiter:
+        return list(argv)
+    return [limiter, "-l", limit, "--"] + list(argv)
+
 def run(argv, timeout):
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(capped(argv), capture_output=True, text=True, timeout=timeout)
 
 def main():
     workdir, hash_path, fmt, wordlist, ssh_path, timeout, label = sys.argv[1:8]

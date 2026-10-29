@@ -31,12 +31,16 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from nexus_core.kernel.hardware import (
+    MAX_PARALLEL_TOOLS,
+    PARALLEL_LIMIT_ENV,
+    parallel_tools,
+)
+
 #: How many calls of one batch may run at the same time. Three scans already
 #: saturate a laptop's uplink and CPU; the ceiling is per turn, not per run.
-PARALLEL_MAX_CONCURRENCY = 3
-#: Operator override (``NEXUS_PARALLEL_TOOL_LIMIT=1`` turns the feature off
-#: without touching the code).
-PARALLEL_LIMIT_ENV = "NEXUS_PARALLEL_TOOL_LIMIT"
+#: The *effective* number comes from the detected hardware, never above this.
+PARALLEL_MAX_CONCURRENCY = MAX_PARALLEL_TOOLS
 #: Per-call wall-clock ceiling. Unset keeps the loop's own
 #: ``timeout_per_tool_seconds``, which is what a single call already had.
 PARALLEL_TIMEOUT_ENV = "NEXUS_PARALLEL_CALL_TIMEOUT"
@@ -47,13 +51,14 @@ RESULT_OUTPUT_CHARS = 2_000
 
 
 def parallel_limit() -> int:
-    """Concurrent calls allowed in one turn (>= 1; 1 means "sequential")."""
-    raw = os.getenv(PARALLEL_LIMIT_ENV, "")
-    try:
-        value = int(raw) if str(raw).strip() else PARALLEL_MAX_CONCURRENCY
-    except ValueError:
-        return PARALLEL_MAX_CONCURRENCY
-    return max(1, min(value, PARALLEL_MAX_CONCURRENCY))
+    """Concurrent calls allowed in one turn (>= 1; 1 means "sequential").
+
+    Derived from the machine (1 core pair -> 1, up to 8 -> 2, more -> 3) and
+    still overridable with ``NEXUS_PARALLEL_TOOL_LIMIT``. The policy lives in
+    :mod:`nexus_core.kernel.hardware` so the CLI, the doctor and the sandbox all
+    read the same numbers.
+    """
+    return parallel_tools()
 
 
 def call_timeout(default: float) -> float:

@@ -20,6 +20,7 @@ from nexus_core.agent.parser import ACTION_TOOL_CALLS, ReActParseError, parse_re
 from nexus_core.agent.react import ReActConfig, run_react_loop
 from nexus_core.agent.react_coordinator import ReActCoordinator
 from nexus_core.agent.react_services import ToolExecutionService
+from nexus_core.kernel import hardware
 from nexus_core.kernel.domain_dto import (
     MAX_PARALLEL_TOOL_CALLS,
     ToolCall,
@@ -351,10 +352,15 @@ def test_the_operator_can_turn_parallelism_off(monkeypatch):
     assert parallel.parallel_limit() == 1
 
     monkeypatch.setenv(parallel.PARALLEL_LIMIT_ENV, "99")
-    assert parallel.parallel_limit() == parallel.PARALLEL_MAX_CONCURRENCY
+    assert parallel.parallel_limit() == parallel.PARALLEL_MAX_CONCURRENCY, (
+        "the override is clamped, never trusted above the hard ceiling"
+    )
 
     monkeypatch.delenv(parallel.PARALLEL_LIMIT_ENV)
-    assert parallel.parallel_limit() == parallel.PARALLEL_MAX_CONCURRENCY
+    # Without an override the number comes from the machine, so the assertion is
+    # the tier of *this* host's profile -not a constant that would pass on a
+    # laptop and lie on a 32-core server.
+    assert parallel.parallel_limit() == hardware.concurrency_for(hardware.detect_hardware())
 
 
 # ------------------------------------------------------------------ consolidation
@@ -405,7 +411,20 @@ def test_a_huge_output_is_bounded_but_the_evidence_is_kept():
 
 
 # ---------------------------------------------------------------- the ReAct loop
+def _simulate(monkeypatch, *, logical: int, ram_gib: int = 32) -> None:
+    """Pretend the host has ``logical`` cores, so the tier is deterministic."""
+    profile = hardware.HardwareProfile(
+        cpu_logical=logical,
+        cpu_physical=max(1, logical // 2),
+        ram_total_bytes=ram_gib * hardware.GIB,
+        ram_available_bytes=ram_gib * hardware.GIB // 2,
+        source="test",
+    )
+    monkeypatch.setattr(hardware, "detect_hardware", lambda: profile)
+
+
 def test_three_tools_run_at_once_and_arrive_as_one_observation(tmp_path, monkeypatch):
+    _simulate(monkeypatch, logical=16)
     exec_ctx = _loop_context(tmp_path, monkeypatch)
     service = FakeService(delay=0.12)
     llm = ScriptedLLM(_batch("local.one", "local.two", "local.three"), _CLARIFY)
@@ -443,6 +462,23 @@ def test_three_tools_run_at_once_and_arrive_as_one_observation(tmp_path, monkeyp
     ]
     assert len(events) == 1
     assert events[0]["payload"]["tool_calls"] == 3
+
+
+def test_a_two_core_box_runs_the_batch_one_call_at_a_time(tmp_path, monkeypatch):
+    """The hardware tier wins over the old fixed 3: no lock-up on a laptop."""
+    _simulate(monkeypatch, logical=2)
+    exec_ctx = _loop_context(tmp_path, monkeypatch)
+    service = FakeService(delay=0.01)
+    llm = ScriptedLLM(_batch("local.one", "local.two", "local.three"), _CLARIFY)
+    coordinator = _coordinator(exec_ctx, llm, ("local.one", "local.two", "local.three"), service)
+
+    result = asyncio.run(coordinator.run())
+
+    assert result.status == "clarification"
+    assert service.max_in_flight == 1, "2 cores -> one tool at a time"
+    block = _observations(exec_ctx, coordinator)[0]
+    assert block["concurrency"] == 1
+    assert block["tool_calls"] == 3 and block["succeeded"] == 3
 
 
 def test_each_call_gets_its_own_approval_and_a_denial_is_local(tmp_path, monkeypatch):

@@ -77,12 +77,17 @@ la misma: ocupa una iteración, cuenta tokens, respeta el presupuesto, el
 
 | Variable | Por defecto | Efecto |
 |---|---|---|
-| `NEXUS_PARALLEL_TOOL_LIMIT` | `3` | llamadas simultáneas (1 = secuencial, máx. 3) |
+| `NEXUS_PARALLEL_TOOL_LIMIT` | derivado del hardware (1–3) | llamadas simultáneas (1 = secuencial, máx. 3); ver `PERFORMANCE_TUNING.md` |
 | `NEXUS_PARALLEL_CALL_TIMEOUT` | `timeout_per_tool_seconds` del bucle | techo por llamada; una `nmap -p-` colgada no bloquea al resto |
 
 Los dos límites existen por separado a propósito: la concurrencia protege la CPU
 y el enlace de la caja (que también está corriendo Metasploit), el timeout
 protege al **turno** de una sola herramienta que no vuelve.
+
+El valor por defecto de la concurrencia ya no es un 3 fijo: sale de los núcleos y
+la RAM detectados (1–2 núcleos → 1, 3–8 → 2, más → 3; menos de 4 GiB de RAM → 1),
+con `NEXUS_PARALLEL_TOOL_LIMIT` como override. El detalle y la inyección de
+`nice`/`cpulimit` en el sandbox están en `PERFORMANCE_TUNING.md`.
 
 ---
 
