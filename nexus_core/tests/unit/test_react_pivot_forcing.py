@@ -1,11 +1,13 @@
-"""FIX 1: aviso y bloqueo por vector ``(tool, subcommand, target)``.
+"""FIX 1 (+ FIX 2.4): aviso y bloqueo por vector ``(tool, subcommand, target)``.
 
 El run de la sala easy del 2026-10-29 (10.66.171.37, Apache/PHP en el 80) gastó
 12+ turnos en ``pyNfsClient`` por ``nexus.shell.exec`` con el mismo error y nunca
-visitó HTTP. Estas pruebas fijan el contrato nuevo: a los 2 fallos consecutivos
-del mismo vector el loop inyecta un aviso en el historial, a los 3 rechaza la
-llamada, y un éxito de otra tool sobre el mismo target o un ``barrier``
-registrado por el modelo devuelven el vector al juego.
+visitó HTTP. Estas pruebas fijan el contrato: a los 2 fallos consecutivos del
+mismo vector el loop inyecta un aviso en el historial y a los 3 rechaza la
+llamada. Un ``barrier`` explícito devuelve el vector al juego, el éxito de la
+propia tool rompe su streak (consecutivos) y el TTL (10 iteraciones sin fallo)
+expira un contador abandonado; lo que ya no blanquea nada es el éxito de *otra*
+tool sobre el mismo host.
 """
 
 from __future__ import annotations
@@ -258,28 +260,44 @@ def test_three_failures_reject_call(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------------------ resets
-def test_different_tool_resets_counter(tmp_path, monkeypatch):
-    """Un éxito HTTP sobre el mismo host devuelve el contador de NFS a cero."""
+def test_other_tool_success_does_not_reset_counter(tmp_path, monkeypatch):
+    """Un éxito de HTTP sobre el mismo host no blanquea el contador de NFS.
+
+    Medido en Hijack v3: cualquier tool con éxito sobre el target liberaba todos
+    los vectores de ese target (``reason=other_tool_success``), así que el vector
+    que fallaba volvía a empezar de cero y el umbral no se alcanzaba nunca.
+    """
     exec_ctx = _loop_context(tmp_path, monkeypatch)
     web = _call("nexus.web.request", url=f"http://{TARGET}/index.php")
-    llm = ScriptedLLM(_nfs("a"), _nfs("b"), web, _nfs("c"), _nfs("d"), _nfs("e"), CLARIFY)
-    service = ScriptedService("failed", "failed", "success", "failed", "failed", "success")
+    llm = ScriptedLLM(_nfs("a"), _nfs("b"), web, _nfs("c"), CLARIFY)
+    service = ScriptedService("failed", "failed", "success", "failed")
     coordinator = _coordinator(exec_ctx, llm, _catalog(NFS, WEB), service)
 
     asyncio.run(coordinator.run())
 
-    assert service.calls == [
-        "nexus.recon.nfs",
-        "nexus.recon.nfs",
-        "nexus.web.request",
-        "nexus.recon.nfs",
-        "nexus.recon.nfs",
-        "nexus.recon.nfs",
-    ], "tras el reset los dos fallos vuelven a ejecutarse, y el 6º no está bloqueado"
+    assert service.calls == ["nexus.recon.nfs"] * 2 + ["nexus.web.request", "nexus.recon.nfs"]
+    warnings = _events(exec_ctx, VECTOR_LOCK_WARNING_KIND)
+    assert [item["payload"]["fail_count"] for item in warnings] == [2]
+    locked = _events(exec_ctx, VECTOR_LOCKED_EVENT_TYPE)
+    assert [item["payload"]["fail_count"] for item in locked] == [3]
+    assert not _events(exec_ctx, VECTOR_UNLOCKED_EVENT_TYPE)
+
+
+def test_ttl_expiration_resets_counter(tmp_path, monkeypatch):
+    """Diez iteraciones sin fallo expiran el contador sin esperar a un barrier."""
+    exec_ctx = _loop_context(tmp_path, monkeypatch)
+    web = [_call("nexus.web.request", url=f"http://{TARGET}/p{index}.php") for index in range(11)]
+    llm = ScriptedLLM(_nfs("a"), _nfs("b"), *web, _nfs("c"), CLARIFY)
+    service = ScriptedService("failed", "failed", *(["success"] * 11), "failed")
+    coordinator = _coordinator(exec_ctx, llm, _catalog(NFS, WEB), service, max_iterations=20)
+
+    asyncio.run(coordinator.run())
+
     assert not _events(exec_ctx, VECTOR_LOCKED_EVENT_TYPE)
     unlocked = _events(exec_ctx, VECTOR_UNLOCKED_EVENT_TYPE)
-    assert [item["payload"]["reason"] for item in unlocked] == ["other_tool_success"]
-    assert unlocked[0]["payload"]["target"] == TARGET
+    assert [item["payload"]["reason"] for item in unlocked] == ["ttl_expired"]
+    warnings = _events(exec_ctx, VECTOR_LOCK_WARNING_KIND)
+    assert [item["payload"]["fail_count"] for item in warnings] == [2]
 
 
 def test_barrier_resets_counter(tmp_path, monkeypatch):

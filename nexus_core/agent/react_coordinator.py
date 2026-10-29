@@ -352,6 +352,13 @@ _VECTOR_TOOL_SUGGESTIONS = {
 #: Ceiling of the open-vector list injected into the prompt. The warning is a
 #: nudge, not a second catalogue.
 VECTOR_OPEN_LIMIT = 6
+#: Iterations without a new failure after which a vector's counter expires.
+#: The only two escapes are an explicit ``barrier`` and this TTL: a success does
+#: not clear the counter, because the key is coarse (``nexus.recon.nfs`` shares
+#: one key between ``action=exports`` and ``action=list``, measured in Hijack v3)
+#: and because the model's own exit-0 introspection calls were "successes" that
+#: blanched the streak while the vector stayed dead.
+VECTOR_TTL_ITERATIONS = 10
 
 
 def _canonical_target(value: Any) -> str:
@@ -860,6 +867,7 @@ class ReActCoordinator:
         )
         self.tool_failures = {}
         self.vector_failures = {}
+        self.vector_last_failure: dict[tuple[str, str, str], int] = {}
         self.vector_warned = set()
         self.vector_locked = set()
         self.vector_warn_threshold, self.vector_lock_threshold = vector_lock_thresholds()
@@ -4335,6 +4343,9 @@ class ReActCoordinator:
 
     def _vector_lock_refusal(self, spec: Any) -> dict[str, Any] | None:
         """Observation that refuses a call on a vector the loop already closed."""
+        # A stale streak must not reject a call: the TTL is evaluated at the
+        # decision point, before ``vector_locked`` is read.
+        self._expire_vectors()
         locked = getattr(self, "vector_locked", None)
         if not locked:
             return None
@@ -4399,6 +4410,7 @@ class ReActCoordinator:
             return
         count = self.vector_failures.get(key, 0) + 1
         self.vector_failures[key] = count
+        self.vector_last_failure[key] = self.iteration
         if count >= self.vector_warn_threshold and key not in self.vector_warned:
             self.vector_warned.add(key)
             self._warn_vector_lock(key, count)
@@ -4477,12 +4489,15 @@ class ReActCoordinator:
         )
 
     def _account_vector_success(self, tool_id: str, arguments: Any) -> None:
-        """A success clears the vector it reached.
+        """An explicit ``barrier`` clears the vector; a success only its own streak.
 
-        Two escapes, and both are one line of policy: any other tool that works
-        on the same target resets the counters of that target, and a
-        ``record_fact(fact_type="barrier")`` unlocks it explicitly -the model
-        recognised the dead vector, which is the behaviour the loop wants.
+        Measured in ``run_3a188d2c2bd440f8bca8d88ad922a024`` (Hijack v3): the NFS
+        ``action=list`` failure was cleared by *any* other tool succeeding on the
+        target (``reason=other_tool_success``), so the counter never reached two
+        and FIX 1 never fired. That target-wide reset is gone. The tool's own
+        success still breaks its streak -the counter is "consecutive failures"-
+        and the TTL covers the case the model keeps failing a vector without ever
+        succeeding on it.
         """
         key, ambiguous = self._vector_key_for(tool_id, arguments)
         if ambiguous:
@@ -4501,7 +4516,6 @@ class ReActCoordinator:
         if barrier:
             self._release_vectors(target, reason="barrier")
             return
-        self._release_vectors(target, reason="other_tool_success", keep_tool=tool_id)
         # The successful tool's own streak is broken by definition; nothing is
         # unlocked, the pair simply stops counting.
         for stale in [
@@ -4510,7 +4524,46 @@ class ReActCoordinator:
             if item[0] == tool_id and item[2] == target
         ]:
             self.vector_failures.pop(stale, None)
+            getattr(self, "vector_last_failure", {}).pop(stale, None)
             self.vector_warned.discard(stale)
+
+    def _expire_vectors(self) -> None:
+        """Drop counters older than ``VECTOR_TTL_ITERATIONS`` and journal it.
+
+        The TTL is the escape that does not need the model to recognise the dead
+        vector, and it keeps an ancient streak from rejecting a tool that has
+        been working since. It runs at the decision point (before
+        ``vector_locked`` is read), so a lock armed ten iterations ago no longer
+        refuses anything.
+        """
+        failures = getattr(self, "vector_failures", None)
+        if not failures:
+            return
+        last_failures = getattr(self, "vector_last_failure", {})
+        for key in list(failures):
+            last = last_failures.get(key, self.iteration)
+            if self.iteration - last < VECTOR_TTL_ITERATIONS:
+                continue
+            failures.pop(key, None)
+            last_failures.pop(key, None)
+            warned = key in self.vector_warned
+            was_locked = key in self.vector_locked
+            self.vector_warned.discard(key)
+            self.vector_locked.discard(key)
+            if not (warned or was_locked):
+                continue
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                VECTOR_UNLOCKED_EVENT_TYPE,
+                {
+                    "iteration": self.iteration,
+                    "tool_id": key[0],
+                    "subcommand": key[1],
+                    "target": key[2],
+                    "reason": "ttl_expired",
+                },
+            )
 
     def _release_vectors(self, target: str, *, reason: str, keep_tool: str = "") -> None:
         """Drop every counter of *target* (except ``keep_tool``) and journal it."""
@@ -4523,6 +4576,7 @@ class ReActCoordinator:
             if item[2] == name and (not keep_tool or item[0] != keep_tool)
         ]:
             self.vector_failures.pop(key, None)
+            getattr(self, "vector_last_failure", {}).pop(key, None)
             warned = key in self.vector_warned
             was_locked = key in self.vector_locked
             self.vector_warned.discard(key)

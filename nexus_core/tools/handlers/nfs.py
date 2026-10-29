@@ -58,6 +58,16 @@ NFS_MOUNT_GUIDANCE = (
     "`nfs-ls` si está disponible."
 )
 
+#: What to do when the userland client ran and the server refused the read.
+NFS_FAILED_HINT = (
+    "El cliente userland arrancó pero la lectura no se completó. Lee el `stderr`: "
+    "`permission denied`/`access denied` significa que el export restringe tu "
+    "cliente (prueba desde otro host o pide al humano que monte el recurso); "
+    "`no such file` significa que `path` no es un export de la lista. Si el "
+    "vector está cerrado, registra un barrier con nexus.knowledge.record_fact "
+    "(key \"<host>:2049\") y pivota."
+)
+
 #: Install hint appended when the required binary is absent from the sandbox.
 NFS_INSTALL_GUIDANCE = {
     "showmount": (
@@ -294,7 +304,14 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
                 "path": path,
                 "exports": exports,
                 "partial": True,
+                # Machine-readable reason first (the loop and the operator read
+                # it), then the human message and the one action that unblocks
+                # the vector. Measured in Hijack v3: the model had this answer
+                # and still burned 23 pyNfsClient calls instead of installing
+                # the client.
+                "error": "userland_client_missing",
                 "message": NFS_MOUNT_GUIDANCE,
+                "hint": NFS_INSTALL_GUIDANCE[program],
                 "guidance": NFS_INSTALL_GUIDANCE[program],
             },
             verified=False,
@@ -333,7 +350,9 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
                 "path": path,
                 "exports": exports,
                 "partial": True,
+                "error": "mount_failed",
                 "message": NFS_MOUNT_GUIDANCE,
+                "hint": NFS_FAILED_HINT,
                 "stdout": result.stdout[:2_000],
                 "stderr": result.stderr[:2_000],
             },
@@ -350,12 +369,37 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
         lines = [line for line in str(result.stdout or "").splitlines() if line.strip()]
         evidence["entries_total"] = len(lines)
         evidence["entries_truncated"] = len(lines) > NFS_MAX_LISTING_LINES
+        if not lines:
+            # An empty listing is a real observation, not a success with nothing
+            # in it: the model must not read it as "there is something here".
+            return ToolResult(
+                output={
+                    "target": target,
+                    "action": action,
+                    "path": path,
+                    "entries": [],
+                    "count": 0,
+                    "message": (
+                        "El export está vacío: el cliente userland leyó el directorio y "
+                        "no devolvió entradas. Prueba otro export de la lista o lee un "
+                        "fichero concreto con action=read."
+                    ),
+                },
+                verified=True,
+                outcome="negative",
+                verification_method="nfs_listing_empty",
+                evidence=evidence,
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
         return ToolResult(
             output={
                 "target": target,
                 "action": action,
                 "path": path,
                 "entries": lines[:NFS_MAX_LISTING_LINES],
+                "count": len(lines[:NFS_MAX_LISTING_LINES]),
                 "truncated": len(lines) > NFS_MAX_LISTING_LINES,
             },
             verified=True,
@@ -429,15 +473,26 @@ def _exports_result(
     ok = result.exit_code == 0
     unreachable = not ok and _unreachable(result)
     evidence["reachable"] = not unreachable
+    output: dict[str, Any] = {
+        "target": target,
+        "action": "exports",
+        "exports": exports,
+        "count": len(exports),
+        "stdout": result.stdout[:4_000],
+        "stderr": result.stderr[:2_000],
+    }
+    if ok and exports:
+        # The export table is the *surface*, not the contents: say what the next
+        # call is and what it needs, so a success here is never read as "NFS
+        # enumerated" (Hijack v3 spent 23 calls importing pyNfsClient).
+        output["next_steps"] = [
+            "Para ver el contenido de un export: "
+            'nexus.recon.nfs(target=..., action="list", path="<export>").',
+            "action=list usa el cliente userland `nfs-ls` (paquete `libnfs-utils`); "
+            "si falta, el propio resultado lo dice con error=userland_client_missing.",
+        ]
     return ToolResult(
-        output={
-            "target": target,
-            "action": "exports",
-            "exports": exports,
-            "count": len(exports),
-            "stdout": result.stdout[:4_000],
-            "stderr": result.stderr[:2_000],
-        },
+        output=output,
         verified=ok,
         outcome="" if ok else ("unavailable" if unreachable else "negative"),
         verification_method=(

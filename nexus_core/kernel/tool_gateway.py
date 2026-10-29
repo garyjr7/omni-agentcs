@@ -25,7 +25,7 @@ from .models import (
 )
 from .policy import PolicyEngine
 from .redaction import sanitize
-from .schema_validation import validate
+from .schema_validation import SchemaValidationError, validate
 from .telemetry import metrics, telemetry
 
 from .artifacts import ArtifactStore
@@ -78,19 +78,42 @@ def _already_invoked(result: Dict[str, Any], previous: Dict[str, Any]) -> Dict[s
     working) and the repeat becomes explicit: the method, the invocation it
     reused and a direct instruction to change strategy. ``invocation_id`` stays
     the previous one on purpose - no new invocation happened.
+
+    The reused verdict is *not* promoted: a ``partial`` stays ``success=False``
+    and ``verified=False`` across the reuse. See the measured Hijack v3 run in
+    the body.
     """
     previous_id = str(previous.get("invocation_id") or "")
     marked = dict(result)
+    # The journal marks *determinate* invocations ``succeeded``, which is not the
+    # same as the tool having succeeded: ``partial``/``negative``/``unavailable``
+    # complete too. Relabelling them as a success is what the model reads: in
+    # run_3a188d2c2bd440f8bca8d88ad922a024 (Hijack v3) the ``nexus.recon.nfs``
+    # ``action=list`` that answered ``partial`` (``nfs-ls`` absent) was re-issued
+    # three times and every reuse said ``success=True, verified=True``, so the
+    # loop reset the NFS vector counter and never pivoted. The previous answer's
+    # verdict travels untouched; only the fact that it is a repeat is new.
+    success = bool(marked.get("success"))
+    stored_outcome = str(marked.get("outcome") or ("success" if success else "error"))
+    previous_label = "succeeded" if success else stored_outcome
     output = dict(marked.get("output") or {})
     output.update(
         {
             "deduplicated": True,
             "previous_invocation_id": previous_id,
-            "previous_outcome": "succeeded",
+            "previous_outcome": previous_label,
             "message": (
                 f"Esta misma invocación ya se ejecutó con éxito en este run "
                 f"(invocación previa {previous_id}): devuelve los mismos datos y no "
                 f"aporta información nueva. Considera cambiar de estrategia."
+                if success
+                else (
+                    f"Esta misma invocación ya se ejecutó en este run y terminó con "
+                    f"outcome `{stored_outcome}` (invocación previa {previous_id}): "
+                    "devuelve el mismo resultado y no aporta información nueva. No la "
+                    "repitas con los mismos argumentos: cambia de estrategia o resuelve "
+                    "la causa (el propio error trae el hint)."
+                )
             ),
         }
     )
@@ -98,16 +121,34 @@ def _already_invoked(result: Dict[str, Any], previous: Dict[str, Any]) -> Dict[s
     evidence.update(
         {
             "previous_invocation_id": previous_id,
-            "previous_outcome": "succeeded",
+            "previous_outcome": previous_label,
         }
     )
     marked["output"] = output
     marked["evidence"] = evidence
-    # A determinate completion: nothing failed, nothing new happened.
-    marked["success"] = True
-    marked["verified"] = True
+    # A determinate completion: nothing new happened. Whether something *failed*
+    # keeps being the previous result's verdict, not this function's opinion.
+    marked["success"] = success
+    marked["verified"] = bool(marked.get("verified"))
     marked["verification_method"] = ALREADY_INVOKED_METHOD
     return marked
+
+
+def _schema_rejection(
+    error: SchemaValidationError, definition: ToolDefinition
+) -> SchemaValidationError:
+    """Append the tool's declared example to a schema rejection.
+
+    The rejection is the model's only feedback for that turn; a bare "required
+    property" on a conditional branch leaves it guessing which invocation is
+    legal (Hijack v3, iteration 7). The example is declarative (never derived from
+    the model's own arguments) and only appended when the tool declares one.
+    """
+    example = getattr(definition, "input_example", None)
+    if not example:
+        return error
+    rendered = json.dumps(example, ensure_ascii=False, sort_keys=True)
+    return SchemaValidationError(f"{error} · ejemplo válido: {rendered}")
 
 
 def _failure_detail(result: ToolResult) -> str:
@@ -273,7 +314,10 @@ class ToolGateway:
             modes = OperatorMode(self.audit.store)
             modes.constrain(context, definition)
             context = replace(context, invocation_id=uuid4().hex)
-            validate(arguments, definition.input_schema or {"type": "object"})
+            try:
+                validate(arguments, definition.input_schema or {"type": "object"})
+            except SchemaValidationError as exc:
+                raise _schema_rejection(exc, definition) from None
             if context.scope is not None:
                 from .scope_loader import validate_scope_authentication
 

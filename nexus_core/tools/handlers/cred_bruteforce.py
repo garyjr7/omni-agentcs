@@ -68,7 +68,12 @@ CRED_DEFAULT_PORTS = {"ssh": 22, "ftp": 21, "telnet": 23,
                       "http-post-form": 80, "http-get-form": 80}
 #: Turns an HTTP form login into hydra when the operator did not ask for SSL.
 CRED_SSL_PORTS = (443, 8443)
-#: Budget of the TCP script (``tcp``/``telnet``), which is not hydra.
+#: Default budget of one sweep. It used to apply only to the TCP script, while
+#: hydra inherited the 1 785 s ceiling: measured in
+#: run_3a188d2c2bd440f8bca8d88ad922a024 (Hijack v3), a 5 000-entry rockyou slice
+#: against ssh held the run for 1 785 174 ms and decided nothing. A slice that
+#: does not finish now returns ``timeout`` with ``next_start_at``, and the caller
+#: asks for the next slice with an explicit ``timeout_seconds`` if it wants more.
 CRED_DEFAULT_TIMEOUT_SECONDS = 300
 #: Budget of the tool itself, published in its contract. The handler adds no
 #: shorter one: the measured 60 s cap killed hydra mid-wordlist and the run read
@@ -241,6 +246,17 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
             ],
             "required": ["target", "service", "password_file"],
             "additionalProperties": False,
+        },
+        # The conditional branch is the one the model cannot guess: a full
+        # ``http-post-form`` invocation that passes the schema.
+        input_example={
+            "service": "http-post-form",
+            "target": "10.0.0.5",
+            "username": "admin",
+            "password_file": "/usr/share/wordlists/rockyou.txt",
+            "form_url": "http://10.0.0.5/login.php",
+            "form_params": "username=^USER^&password=^PASS^",
+            "failure_string": "Invalid credentials",
         },
         risk=RiskLevel.MEDIUM,
         required_permissions=["execute:tool:nexus.cred.bruteforce"],
@@ -1671,10 +1687,11 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         csrf_page_url = _csrf_form_target(
             csrf_form_raw, target=target, port=port, secure=secure, form_path=form_path
         )
-    # No cap of the handler's own: ``max_attempts`` cuts the list only when the
-    # caller asks for it, and ``timeout_seconds`` is the caller's or the budget the
-    # tool's contract publishes. The TCP script keeps its own (smaller) budget
-    # because it is a python probe, not a hydra sweep.
+    # ``max_attempts`` cuts the list only when the caller asks for it, and
+    # ``timeout_seconds`` is the caller's or the default budget. The default is
+    # the same for hydra and for the TCP python probe; the contract's ceiling is
+    # only reachable when the caller asks for it explicitly, and never exceeds
+    # the sweep margin.
     requested_attempts = arguments.get("max_attempts")
     max_attempts = (
         int(requested_attempts) if requested_attempts else CRED_DEFAULT_MAX_ATTEMPTS
@@ -1683,12 +1700,11 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
     if start_at < 0:
         raise ToolInputError("start_at must be zero or positive")
     requested_timeout = arguments.get("timeout_seconds")
-    default_timeout = (
-        CRED_DEFAULT_TIMEOUT_SECONDS
-        if service in {"tcp", "telnet"}
-        else CRED_SWEEP_TIMEOUT_SECONDS
+    # An explicit budget is the caller's decision (the schema already caps it at
+    # the contract ceiling); only the *default* is the bounded 300 s slice.
+    timeout_seconds = (
+        int(requested_timeout) if requested_timeout else CRED_DEFAULT_TIMEOUT_SECONDS
     )
-    timeout_seconds = int(requested_timeout) if requested_timeout else default_timeout
 
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
     # The probe goes first: two requests either prove the failure marker
@@ -1911,7 +1927,7 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         if session.get("reason"):
             evidence["session_reason"] = session["reason"]
 
-    if _hydra_unavailable(result.exit_code, result.stderr or ""):
+    if not result.timed_out and _hydra_unavailable(result.exit_code, result.stderr or ""):
         # hydra never ran: the target was not contacted, so this is not a verdict
         # about the credentials (never ``negative``) and not a modelling slip.
         # ``unavailable`` is the determinate classification the loop counts and

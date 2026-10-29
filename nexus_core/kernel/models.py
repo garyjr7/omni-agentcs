@@ -144,6 +144,14 @@ class ToolDefinition:
     #: path, e.g. ``options.LHOST``. Optional: only a tool that has one declares
     #: it, and the handler keeps enforcing it (this field never authorizes).
     fixed_by_env: Dict[str, str] = field(default_factory=dict)
+    #: A minimal invocation that satisfies the schema, published with a schema
+    #: rejection. A conditional contract (``allOf``/``if``) rejects with
+    #: ``'form_url' is a required property`` and nothing else, so the model can
+    #: only guess which of the branches it hit; measured in
+    #: run_3a188d2c2bd440f8bca8d88ad922a024 (Hijack v3), iteration 7 was spent on
+    #: that guess and iteration 8 on the retry. Optional: only a tool whose
+    #: contract is not obvious declares one.
+    input_example: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Fail closed on an invented effect: the gate compares against
