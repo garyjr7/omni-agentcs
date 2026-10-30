@@ -89,6 +89,19 @@ _NON_ATTEMPT_PREFIXES: tuple[str, ...] = (
 
 RECORD_FACT_TOOL = "nexus.knowledge.record_fact"
 
+#: Fact types the deterministic verifier owns: it derives them from a tool's
+#: parsed output (nmap XML, httpx JSONL), so a model that writes them back adds
+#: nothing. Only these are refused; every other type stays the model's to record.
+VERIFIER_OWNED_FACT_TYPES: frozenset[str] = frozenset({"host", "service"})
+
+REDUNDANT_FACT_GUIDANCE = (
+    "`{fact_type}:{key}` YA está en la pizarra, verificado por el verifier al "
+    "ejecutar la tool que lo observó: registrarlo otra vez no añade ningún hecho "
+    "y gasta un turno. Deja de registrar hechos del verifier y ataca la "
+    "superficie que ya conoces.{next_branch} Si necesitas releerla, usa "
+    "nexus.knowledge.query_facts (una sola vez), no record_fact."
+)
+
 #: A fact that *opens* a branch again. Registering one in the same window is the
 #: documented way out of both gates: a new vector is evidence, and a barrier on
 #: top of a fresh vulnerability would hide the vector.
@@ -247,6 +260,45 @@ def opening_fact_recorded(
     return False
 
 
+#: Outcomes a tool can answer with that *are* a verdict about the branch: the
+#: service refused, answered "nothing here", or the command it ran failed. One
+#: such answer is already more than a guess, so it justifies the barrier the
+#: pivot hint asks for.
+CONCULSIVE_ATTEMPT_OUTCOMES: frozenset[str] = frozenset(
+    {"negative", "denied", "unsupported", "command_failed"}
+)
+
+
+def conclusive_attempt(
+    actions: Iterable[Any],
+    coverage: Coverage | None,
+    ref: str,
+    *,
+    window: int = BARRIER_ATTEMPT_WINDOW,
+) -> bool:
+    """Whether a tool that attacked ``ref`` recently got a determinate answer.
+
+    Measured in hijack_v7 (2026-10-30): ``nexus.recon.ftp`` answered
+    ``530 Login incorrect`` on ``:21`` -a real verdict from the server- and the
+    barrier that documented it was refused for having only *one* distinct tool.
+    A refusal that proves the vector does not work is not the "one guess" this
+    gate exists to stop.
+    """
+    for entry in _tool_turns(actions, window):
+        focus = _entry_for_arguments(coverage, entry)
+        if focus is None or focus.ref.lower() != str(ref).strip().lower():
+            continue
+        if not _attempt_tool(entry):
+            continue
+        result = entry.get("tool_result")
+        outcome = str(result.get("outcome") or "").strip().lower() if isinstance(
+            result, Mapping
+        ) else ""
+        if outcome in CONCULSIVE_ATTEMPT_OUTCOMES:
+            return True
+    return False
+
+
 def barrier_refusal(
     actions: Iterable[Any],
     coverage: Coverage | None,
@@ -254,6 +306,7 @@ def barrier_refusal(
     *,
     window: int = BARRIER_ATTEMPT_WINDOW,
     minimum: int = BARRIER_MIN_DISTINCT_TOOLS,
+    no_progress: int = 0,
 ) -> str | None:
     """Why a ``barrier`` may not close its branch yet, or ``None`` to allow it.
 
@@ -277,6 +330,14 @@ def barrier_refusal(
         return BARRIER_PREVIEW_REFUSAL.format(ref=entry.ref, window=int(window))
     if opening_fact_recorded(actions, coverage, entry.ref, window=window):
         return None
+    # The loop already declared this branch stalled (``no_progress`` barren
+    # turns): its own verdict and the model's barrier agree, so refusing the
+    # bookkeeping only burns another turn. The fact is still stamped
+    # ``sweep_attempted: false`` by the handler, so it cannot close the branch.
+    if int(no_progress or 0) >= int(window):
+        return None
+    if conclusive_attempt(actions, coverage, entry.ref, window=window):
+        return None
     attempts = distinct_attempts(actions, coverage, entry.ref, window=window)
     if len(attempts) >= int(minimum):
         return None
@@ -288,6 +349,53 @@ def barrier_refusal(
         tools=tools,
         minimum=int(minimum),
     )
+
+
+def redundant_fact_refusal(
+    facts: Iterable[Any],
+    arguments: Mapping[str, Any] | None,
+    *,
+    next_branch: str = "",
+) -> str | None:
+    """Why a ``record_fact`` adds nothing, or ``None`` when it does.
+
+    Measured in hijack_v7 (2026-10-30, iterations 3-11): the ``nmap`` turn
+    derived all ten facts (host + nine services) from the XML, and the model then
+    spent nine turns writing each one back with ``record_fact``. Every call
+    succeeded, every turn added zero facts, and the loop read the sequence as a
+    dead end until it closed the only web branch.
+
+    Only ``host``/``service`` are considered, and only when the board already
+    holds a **verified** fact with every key/value the model sent: a different
+    value is the model adding something (a product, a version, a note) and is
+    allowed through to the handler.
+    """
+    if not isinstance(arguments, Mapping):
+        return None
+    fact_type = str(arguments.get("fact_type") or "").strip().lower()
+    key = str(arguments.get("key") or "").strip()
+    if fact_type not in VERIFIER_OWNED_FACT_TYPES or not key:
+        return None
+    raw_value = arguments.get("value")
+    value: Mapping[str, Any] = raw_value if isinstance(raw_value, Mapping) else {}
+    for fact in facts or ():
+        if not isinstance(fact, Mapping) or not fact.get("verified"):
+            continue
+        if str(fact.get("fact_type") or "").strip().lower() != fact_type:
+            continue
+        if str(fact.get("key") or "").strip() != key:
+            continue
+        held = fact.get("value")
+        if not isinstance(held, Mapping):
+            held = {}
+        if any(held.get(name) != item for name, item in value.items()):
+            continue
+        return REDUNDANT_FACT_GUIDANCE.format(
+            fact_type=fact_type,
+            key=key,
+            next_branch=f" Siguiente rama abierta: {next_branch}." if next_branch else "",
+        )
+    return None
 
 
 def closed_branch_refusal(
@@ -338,6 +446,11 @@ __all__ = [
     "BARRIER_INSISTENCE_LIMIT",
     "BARRIER_MIN_DISTINCT_TOOLS",
     "CLOSED_BRANCH_BLOCK_TURNS",
+    "CONCULSIVE_ATTEMPT_OUTCOMES",
+    "REDUNDANT_FACT_GUIDANCE",
+    "VERIFIER_OWNED_FACT_TYPES",
+    "conclusive_attempt",
+    "redundant_fact_refusal",
     "PREVIEW_EMPTY_BODY",
     "PREVIEW_MARKER",
     "PREVIEW_MODULE_NOTE",

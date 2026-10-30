@@ -230,11 +230,27 @@ def test_restricted_export_stays_partial_and_shows_what_is_visible():
     assert result.evidence["exit_code"] == 13
 
 
-def test_read_requires_file_and_list_requires_path():
+def test_read_requires_path_and_file_but_list_without_path_enumerates():
+    # Hijack v7 asked for an export it invented (``/mnt/share``) because
+    # ``list`` demanded a path: without one it now lists every export.
     with pytest.raises(ValueError):
-        _run({"target": "203.0.113.10", "action": "list"})
+        _run({"target": "203.0.113.10", "action": "read"})
     with pytest.raises(ValueError):
         _run({"target": "203.0.113.10", "action": "read", "path": "/srv/nfs"})
+
+
+def test_list_without_path_lists_every_export():
+    sandbox = FakeSandbox(
+        {"nfs-ls": _result("notes.txt\n"), "showmount": _result(EXPORTS_STDOUT)}
+    )
+    with mock.patch.object(
+        nfs_module, "sandbox_for_environment", lambda *args, **kwargs: sandbox
+    ):
+        result = _run({"target": "203.0.113.10", "action": "list"})
+    assert result.verified is True
+    assert result.verification_method == "nfs_all_exports_listed"
+    assert result.output["count"] == 2
+    assert [item["path"] for item in result.output["exports"]] == ["/srv/nfs", "/home"]
 
 
 # ------------------------------------------------- kernel-mount fallback (FIX 5.2)
@@ -296,7 +312,10 @@ def test_restricted_export_is_read_through_a_kernel_mount(tmp_path, monkeypatch)
         monkeypatch,
         tmp_path,
     )
-    assert sandbox.verbs() == ["nfs-ls", "mount", "find", "umount"]
+    # Auto-loot reads the small text files the listing revealed, then unmounts.
+    assert sandbox.verbs()[:3] == ["nfs-ls", "mount", "find"]
+    assert "cat" in sandbox.verbs()
+    assert sandbox.verbs()[-1] == "umount"
     mount_call = sandbox.calls[1]
     assert mount_call[:5] == ["sudo", "-n", "mount", "-t", "nfs"]
     assert "203.0.113.10:/srv/nfs" in mount_call
@@ -321,12 +340,118 @@ def test_operator_mountpoint_is_reused_without_sudo(tmp_path, monkeypatch):
         monkeypatch,
         tmp_path,
     )
-    assert sandbox.verbs() == ["nfs-ls", "find"]
+    assert sandbox.verbs()[:2] == ["nfs-ls", "find"]
+    assert "cat" in sandbox.verbs()
     assert "sudo" not in [call[0] for call in sandbox.calls]
     assert result.verified is True
     assert any("note.txt" in entry for entry in result.output["entries"])
     assert result.evidence["mountpoint"] == str(shared)
     assert result.evidence["mounted_by_operator"] is True
+
+
+def test_the_listing_brings_the_content_of_the_small_text_files(tmp_path, monkeypatch):
+    """Hijack: the FTP credential is a text file inside the export."""
+    sandbox = MountSandbox(
+        mount=_result(""),
+        find=_result("f  40 for_you.txt\nf 1000000 big.bin\n"),
+        cat=_result("user: ftpuser\npassword: s3cr3t\n"),
+    )
+    result = _mount_run(
+        sandbox,
+        {"target": "203.0.113.10", "action": "list", "path": "/srv/nfs"},
+        monkeypatch,
+        tmp_path,
+    )
+    assert result.verified is True
+    assert [item["path"] for item in result.output["files"]] == ["for_you.txt"]
+    assert result.output["credentials"] == [
+        {"username": "ftpuser", "password": "s3cr3t", "source": "for_you.txt"}
+    ]
+    assert result.evidence["credentials_found"] == 1
+
+
+def test_a_base64_note_is_decoded_before_looking_for_credentials(tmp_path, monkeypatch):
+    import base64
+
+    blob = base64.b64encode(b"username: rick\npassword: hunter2\n").decode()
+    sandbox = MountSandbox(
+        mount=_result(""),
+        find=_result("f  40 secret.txt\n"),
+        cat=_result(blob),
+    )
+    result = _mount_run(
+        sandbox,
+        {"target": "203.0.113.10", "action": "list", "path": "/srv/nfs"},
+        monkeypatch,
+        tmp_path,
+    )
+    item = result.output["files"][0]
+    assert item["decoded"].startswith("username: rick")
+    assert result.output["credentials"][0]["username"] == "rick"
+
+
+class SequenceSandbox:
+    """One handler per argv, so a retry can answer differently from the first try."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.calls: list[list[str]] = []
+
+    async def run(self, argv, **kwargs):
+        self.calls.append(list(argv))
+        return self.handler(list(argv))
+
+
+def test_a_root_squashed_export_is_listed_as_its_numeric_owner(tmp_path, monkeypatch):
+    """Hijack: the export squashes root, its files belong to uid 1002.
+
+    The writeups create a local user with that uid; the handler asks ``find``
+    for the owners, then lists again with ``setpriv --reuid`` -no user created-.
+    """
+    denied = _result("", "find: '/ws/.nexus-nfs/export': Permission denied", 1)
+    owners = _result("1002\n1002\n65534\n")
+    listed = _result("f  40 for_you.txt\n")
+
+    def handler(argv):
+        if "-t" in argv or "umount" in argv:
+            return _result("")  # the mount itself and the cleanup
+        if "%u\n" in argv:
+            return owners
+        if any("setpriv" in part for part in argv):
+            return listed
+        return denied
+
+    sandbox = SequenceSandbox(handler)
+    monkeypatch.setattr(
+        nfs_module, "existing_mountpoint", lambda *args, **kwargs: None
+    )
+    result = _mount_run(
+        sandbox,
+        {"target": "203.0.113.10", "action": "list", "path": "/srv/nfs"},
+        monkeypatch,
+        tmp_path,
+    )
+    assert result.verified is True
+    assert result.evidence["listed_as_uid"] == "1002"
+    assert result.output["files"][0]["path"] == "for_you.txt"
+    assert any("--reuid=1002" in call for call in sandbox.calls)
+
+
+def test_a_failed_find_is_not_reported_as_an_empty_export(tmp_path, monkeypatch):
+    """hijack_v7 read ``count: 0`` from a ``find`` that had been denied."""
+    sandbox = MountSandbox(
+        mount=_result(""),
+        find=_result("", "find: 'Permission denied'", 1),
+    )
+    result = _mount_run(
+        sandbox,
+        {"target": "203.0.113.10", "action": "list", "path": "/srv/nfs"},
+        monkeypatch,
+        tmp_path,
+    )
+    assert result.verified is False
+    assert result.outcome == "partial"
+    assert "Permission denied" in result.output["mount_error"]
 
 
 def test_mount_without_passwordless_sudo_keeps_the_refusal_and_the_hint(tmp_path, monkeypatch):

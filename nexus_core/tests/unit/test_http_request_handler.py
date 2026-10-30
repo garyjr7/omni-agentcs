@@ -333,6 +333,36 @@ def test_shipped_client_accepts_a_self_signed_certificate_when_insecure(self_sig
 
 
 # ------------------------------------------------------- repeated Set-Cookie
+def test_a_base64_session_cookie_is_reported_as_forgeable():
+    """Hijack: ``PHPSESSID`` was ``base64("admin:" + md5(password))``.
+
+    The scheme is a credential the model already holds (the hashes came from
+    FTP), so naming it turns a dead end into one deterministic command.
+    """
+    import base64
+    import hashlib
+
+    digest = hashlib.md5(b"s3cr3t").hexdigest()
+    value = base64.b64encode(f"admin:{digest}".encode()).decode()
+    cookies = [f"PHPSESSID={value}; path=/"]
+    with _fake_sandbox(_sandbox_for(_ok_payload(set_cookie=cookies))):
+        result = _run({"url": "http://203.0.113.10/login.php"})
+    scheme = result.output["session_scheme"]
+    assert scheme["scheme"] == "base64(user:md5(password))"
+    assert scheme["username"] == "admin"
+    assert scheme["hash"] == digest
+    assert scheme["cookie"] == "PHPSESSID"
+    assert "FORJAR" in result.output["session_forge_hint"]
+    assert result.evidence["session_scheme"] == "base64(user:md5(password))"
+
+
+def test_an_opaque_cookie_is_not_reported_as_a_scheme():
+    cookies = ["connect.sid=s%3Adeadbeef.sig; Path=/"]
+    with _fake_sandbox(_sandbox_for(_ok_payload(set_cookie=cookies))):
+        result = _run({"url": "http://203.0.113.10/login"})
+    assert "session_scheme" not in result.output
+
+
 def test_repeated_set_cookie_headers_are_preserved_in_output():
     cookies = ["JSESSIONID=node01abc.node0;Path=/;HttpOnly", "csrf=Tok3n;Path=/;HttpOnly"]
     with _fake_sandbox(_sandbox_for(_ok_payload(set_cookie=cookies))):

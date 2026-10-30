@@ -167,13 +167,36 @@ NOISE_LEVELS = {"low": 0, "medium": 1, "high": 2}
 NOISE_NAMES = ("low", "medium", "high")
 
 
-def _nuclei_templates_dir() -> str:
-    """Return the configured nuclei templates directory.
+#: Where ``nuclei -update-templates`` actually installs on exercise hosts.
+#: Measured on this Kali (hijack_v7, 2026-10-30): ``nuclei`` is on PATH and its
+#: templates live in ``~/.local/nuclei-templates``, but the handler only looked
+#: at ``/opt/nuclei-templates``, so every scan died as a broken post-condition.
+NUCLEI_TEMPLATE_CANDIDATES: tuple[str, ...] = (
+    "/usr/share/nuclei-templates",
+    "~/.local/nuclei-templates",
+    "~/nuclei-templates",
+    "~/.config/nuclei/templates",
+)
 
-    ``NEXUS_NUCLEI_TEMPLATES`` overrides the packaged default
-    :data:`DEFAULT_NUCLEI_TEMPLATES`.
+
+def _nuclei_templates_dir() -> str:
+    """Return the nuclei templates directory that actually exists.
+
+    ``NEXUS_NUCLEI_TEMPLATES`` is authoritative when set (an explicit operator
+    choice is never second-guessed). Without it, the packaged default is tried
+    first and then the paths ``nuclei -update-templates`` uses, so an installed
+    toolkit is not reported as missing.
     """
-    return os.getenv("NEXUS_NUCLEI_TEMPLATES", DEFAULT_NUCLEI_TEMPLATES)
+    override = os.getenv("NEXUS_NUCLEI_TEMPLATES")
+    if override:
+        return override
+    if Path(DEFAULT_NUCLEI_TEMPLATES).is_dir():
+        return DEFAULT_NUCLEI_TEMPLATES
+    for candidate in NUCLEI_TEMPLATE_CANDIDATES:
+        path = os.path.expanduser(candidate)
+        if Path(path).is_dir():
+            return path
+    return DEFAULT_NUCLEI_TEMPLATES
 
 
 #: Public alias: the resolver is part of the handler contract now.
@@ -372,8 +395,22 @@ async def nuclei_handler(arguments: dict, context: RunContext) -> ToolResult:
             output={
                 "error": "nuclei templates directory not found",
                 "templates_dir": templates_dir,
+                "outcome": "unavailable",
+                "guidance": (
+                    "nuclei está instalado pero no tiene templates. Instálalos "
+                    "en el host (`nuclei -update-templates`) o apunta "
+                    "NEXUS_NUCLEI_TEMPLATES al directorio correcto, y reintenta. "
+                    "Mientras tanto, enumera la web con nexus.web.request / "
+                    "nexus.recon.gobuster."
+                ),
+                # Distinto de "la web no tiene nada": el pase no llegó a correr.
+                "searched": [
+                    DEFAULT_NUCLEI_TEMPLATES,
+                    *(os.path.expanduser(path) for path in NUCLEI_TEMPLATE_CANDIDATES),
+                ],
             },
             verified=False,
+            outcome="unavailable",
             verification_method="nuclei_templates_missing",
         )
     # nuclei does not follow a symlinked template *directory*, so the run gets

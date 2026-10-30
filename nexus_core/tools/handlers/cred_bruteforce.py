@@ -193,7 +193,16 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                 # spending its budget on a marker that cannot identify a failure
                 # (Brute It v6, iteration 8: 600 s with ``F=LOGIN``).
                 "probe": {"type": "boolean"},
-                "password_file": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "password_file": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "description": (
+                        "Wordlist a probar. Si se omite se usa la primera "
+                        "instalada (rockyou.txt); no inventes rutas como "
+                        "`path/to/your/wordlist.txt`."
+                    ),
+                },
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                 # A bounded slice by default (Brute It v7: an unbounded rockyou
                 # sweep ran 890 s and was cut by the loop). The cap is a *slice*,
@@ -244,7 +253,10 @@ def cred_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                     },
                 },
             ],
-            "required": ["target", "service", "password_file"],
+            # ``password_file`` is optional: the handler falls back to the first
+            # installed list. Hijack v7 invented ``path/to/your/wordlist.txt``
+            # twice, and each rejection was a turn.
+            "required": ["target", "service"],
             "additionalProperties": False,
         },
         # The conditional branch is the one the model cannot guess: a full
@@ -1630,9 +1642,23 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         if service in {"ssh", "ftp", *CRED_FORM_SERVICES} or arguments.get("username")
         else ""
     )
-    password_file = _validate_text(
-        arguments.get("password_file"), "password_file", max_length=1024
-    )
+    raw_password_file = str(arguments.get("password_file") or "").strip()
+    if raw_password_file:
+        password_file = _validate_text(
+            raw_password_file, "password_file", max_length=1024
+        )
+    else:
+        # No path from the model: use the corpus this host actually has instead
+        # of spending a turn on an invented one (hijack_v7, iterations 15/35).
+        default_list = shared_wordlists.default_wordlist(
+            _wordlist_roots(os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd()))
+        )
+        if not default_list:
+            raise ToolInputError(
+                "password_file is required: no wordlist is installed on this "
+                "host (expected rockyou.txt under a wordlist root)"
+            )
+        password_file = default_list
     form_path = form_host = ""
     form_port: int | None = None
     secure = False
@@ -2029,6 +2055,9 @@ async def cred_bruteforce_handler(arguments: dict[str, Any], context: RunContext
         "service": service,
         "port": port,
         "username": username,
+        # Which list actually ran: the model may have omitted it and the handler
+        # picked the installed one.
+        "wordlist": source_path,
         "attempts": attempts,
         "start_at": start_at,
         "next_start_at": start_at + attempts,

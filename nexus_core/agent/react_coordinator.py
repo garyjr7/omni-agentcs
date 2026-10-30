@@ -40,6 +40,7 @@ from .branch_discipline import (
     BARRIER_MIN_DISTINCT_TOOLS,
     barrier_refusal,
     closed_branch_refusal,
+    redundant_fact_refusal,
 )
 
 from .react_types import (
@@ -3323,6 +3324,41 @@ class ReActCoordinator:
             extra={"branch_closed_recent": True},
         )
 
+    def _refuse_redundant_fact(self) -> Transition | None:
+        """Refuse a ``record_fact`` of something the verifier already proved.
+
+        Measured in hijack_v7 (2026-10-30, iterations 3-11): the ``nmap`` turn
+        derived all ten facts (host + nine services) from the XML, and the model
+        then spent nine turns writing each one back with
+        ``nexus.knowledge.record_fact``. Every call succeeded, every turn added
+        zero facts, and the loop read the sequence as a dead end until it closed
+        the only web branch. The rule lives in ``branch_discipline`` (pure and
+        unit-tested); here it only decides the turn.
+        """
+        if str(getattr(self.action, "tool_id", "")) != "nexus.knowledge.record_fact":
+            return None
+        arguments = self.action.arguments if isinstance(self.action.arguments, dict) else None
+        if not arguments:
+            return None
+        coverage = self._coverage_snapshot()
+        following = coverage.first_open() if coverage is not None else None
+        guidance = redundant_fact_refusal(
+            self._blackboard_facts(),
+            arguments,
+            next_branch=following.label if following is not None else "",
+        )
+        if guidance is None:
+            return None
+        return self._refuse_before_execution(
+            outcome="redundant_fact",
+            guidance=guidance,
+            extra={
+                "redundant_fact": True,
+                "fact_type": str(arguments.get("fact_type") or ""),
+                "key": str(arguments.get("key") or ""),
+            },
+        )
+
     def _refuse_barrier_without_attempts(self) -> Transition | None:
         """Refuse a ``barrier`` that one guess does not justify.
 
@@ -3334,7 +3370,10 @@ class ReActCoordinator:
         """
         arguments = self.action.arguments if isinstance(self.action.arguments, dict) else None
         guidance = barrier_refusal(
-            self.actions, self._coverage_snapshot(), arguments
+            self.actions,
+            self._coverage_snapshot(),
+            arguments,
+            no_progress=self.consecutive_no_progress,
         )
         # ``getattr``: a resumed run (and the unit tests) may hand the gate a
         # coordinator built without ``__init__``; the counter starts at zero.
@@ -3986,6 +4025,9 @@ class ReActCoordinator:
         premature_barrier = self._refuse_barrier_without_attempts()
         if premature_barrier is not None:
             return premature_barrier
+        redundant_fact = self._refuse_redundant_fact()
+        if redundant_fact is not None:
+            return redundant_fact
         unroutable = await self._correct_unroutable_sweep()
         if unroutable is not None:
             return unroutable

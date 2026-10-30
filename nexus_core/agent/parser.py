@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import ValidationError
 from nexus_core.kernel.domain_dto import (
     ACTION_ADAPTER,
+    MAX_PARALLEL_TOOL_CALLS,
     Action,
     ToolCall as ToolCall,
     TaskComplete as TaskComplete,
@@ -187,6 +188,27 @@ def _call_specs(items: Any) -> list[dict[str, Any]] | None:
     return specs
 
 
+def _bounded(specs: list[dict[str, Any]], warnings: list[str]) -> list[dict[str, Any]]:
+    """Cut an oversized batch to ``MAX_PARALLEL_TOOL_CALLS`` instead of failing.
+
+    Measured in hijack_v7 (2026-10-30, iteration 2): after the first ``nmap`` the
+    model answered with **nine** ``record_fact`` calls -one per service, all of
+    them already verified by the verifier-. ``ToolCallBatch`` caps at four, the
+    DTO rejected the whole turn (``invalid action fields: tool_calls.calls``) and
+    the model spent the next nine turns re-recording them one at a time until the
+    loop declared a dead end. A batch that is too big is a scheduling detail: run
+    the first four and say so, so the rest can come next turn.
+    """
+    if len(specs) <= MAX_PARALLEL_TOOL_CALLS:
+        return specs
+    dropped = len(specs) - MAX_PARALLEL_TOOL_CALLS
+    warnings.append(
+        f"the batch had {len(specs)} calls; only the first {MAX_PARALLEL_TOOL_CALLS} "
+        f"run and the remaining {dropped} were not executed"
+    )
+    return specs[:MAX_PARALLEL_TOOL_CALLS]
+
+
 def _batch(specs: list[dict[str, Any]]) -> dict[str, Any]:
     """A batch payload for >= 2 calls; anything shorter stays a single call."""
     if len(specs) == 1:
@@ -205,6 +227,7 @@ def _normalize(payload: Any, raw_response: str, warnings: list[str]) -> Action:
             warnings.append(
                 "response contained multiple tool calls; running them in parallel"
             )
+            specs = _bounded(specs, warnings)
             thought = next(
                 (
                     str(item.get("thought") or "")
@@ -226,11 +249,13 @@ def _normalize(payload: Any, raw_response: str, warnings: list[str]) -> Action:
         specs = _call_specs(payload.get("tool_calls"))
         if specs is not None:
             warnings.append("tool_calls was read without an explicit action label")
+            specs = _bounded(specs, warnings)
             payload = {**_batch(specs), "thought": str(payload.get("thought") or "")}
     if payload.get("action") == ACTION_TOOL_CALLS:
         specs = _call_specs(payload.get("calls"))
         if specs is None:
             raise ReActParseError("tool_calls needs a list of tool calls", raw_response)
+        specs = _bounded(specs, warnings)
         payload = {**_batch(specs), "thought": str(payload.get("thought") or "")}
     if payload.get("action") not in KNOWN_ACTIONS:
         raise ReActParseError("unknown or missing action", raw_response)

@@ -127,6 +127,31 @@ def test_client_error_payload_is_not_verified():
         result = _run({"target": "203.0.113.10", "action": "list"})
     assert result.verified is False
     assert result.verification_method == "ftp_list_failed"
+    # A 530 is the server's verdict, not a broken post-condition: without this
+    # the loop counted the branch as a failed *tool* (hijack_v7, iter 13/23).
+    assert result.outcome == "denied"
+
+
+def test_a_listing_brings_the_content_of_the_small_files():
+    payload = {
+        "ok": True,
+        "action": "list",
+        "names": ["hash", "note.txt"],
+        "files": [
+            {
+                "name": "hash",
+                "size": 42,
+                "preview": "user: rick\npassword: hunter2\n",
+            }
+        ],
+    }
+    with _fake_sandbox(_sandbox_for(payload)):
+        result = _run({"target": "203.0.113.10", "action": "list"})
+    assert result.output["files"][0]["name"] == "hash"
+    assert result.output["credentials"] == [
+        {"username": "rick", "password": "hunter2", "source": "hash"}
+    ]
+    assert result.evidence["credentials_found"] == 1
 
 
 def test_unparseable_output_is_not_verified():

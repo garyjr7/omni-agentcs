@@ -52,6 +52,41 @@ def _coordinator(exec_ctx, llm, catalog, service, **kwargs):
     )
 
 
+# ------------------------------------- hijack_v7: registrar lo que ya está escrito
+def test_a_record_fact_the_verifier_already_proved_never_reaches_the_tool(
+    tmp_path, monkeypatch
+):
+    """Nine turns re-recording the nmap services, refused before they run."""
+    exec_ctx = _loop_context(tmp_path, monkeypatch)
+    catalog = _catalog(RECORD_FACT)
+    llm = ScriptedLLM(
+        _call(
+            "nexus.knowledge.record_fact",
+            fact_type="service",
+            key="10.0.0.5:21:tcp",
+            value={"port": "21", "service": "ftp", "state": "open"},
+        ),
+        CLARIFY,
+    )
+    service = ScriptedService("success")
+    coordinator = _coordinator(exec_ctx, llm, catalog, service)
+    coordinator._blackboard_facts = lambda: [
+        {
+            "fact_type": "service",
+            "key": "10.0.0.5:21:tcp",
+            "value": {"port": "21", "service": "ftp", "state": "open"},
+            "verified": True,
+        }
+    ]
+
+    asyncio.run(coordinator.run())
+
+    assert service.calls == []
+    observations = _observations(exec_ctx, coordinator)
+    refused = [obs for obs in observations if obs.get("outcome") == "redundant_fact"]
+    assert refused and "YA está en la pizarra" in refused[0]["guidance"]
+
+
 def _credential_fact() -> str:
     return _call(
         "nexus.knowledge.record_fact",

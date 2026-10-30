@@ -32,6 +32,10 @@ dependencies = [
     "mcp>=2.3,<3",
     # Phase 3B: OS-keyring backend for the secret store (config/secrets.py).
     "keyring>=25.7,<26",
+    # SSH post-exploitation (nexus.post.ssh_exec/ssh_upload/enum_system/pivot_*).
+    # Without it the run preflight retires all five tools (H5); hijack_v7 started
+    # with no way into the target after finding credentials.
+    "paramiko>=3.4,<6",
     # Tool input contract enforcement (kernel/schema_validation.py, V1-10):
     # every keyword a catalog schema declares is enforced before the handler.
     "jsonschema>=4.23,<5",

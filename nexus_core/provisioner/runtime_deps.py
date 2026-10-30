@@ -47,7 +47,7 @@ PYTHON_REQUIREMENTS: tuple[PythonRequirement, ...] = (
             "Post-explotación SSH (nexus.post.ssh_exec / ssh_upload / "
             "enum_system / pivot_bruteforce / pivot_http)"
         ),
-        install="pip install 'paramiko>=3.4,<4'",
+        install="pip install 'paramiko>=3.4,<6'",
         tool_ids=(
             "nexus.post.ssh_exec",
             "nexus.post.ssh_upload",

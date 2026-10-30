@@ -22,9 +22,10 @@ def record_fact_definition(tenant_id: str = "system") -> ToolDefinition:
         name="Record engagement fact",
         tenant_id=tenant_id,
         description=(
-            "Registra un hecho tipado del engagement (servicio, usuario, "
-            "credencial, acceso, privilegio...) con su procedencia. Memoria "
-            "durable que el agente reutiliza en pasos y runs siguientes."
+            "Registra un hecho tipado del engagement (credencial, acceso, "
+            "privilegio, pista, barrier...) con su procedencia. NO repitas "
+            "`host`/`service`: el verifier ya los escribe desde nmap/httpx y el "
+            "motor rechaza el duplicado."
         ),
         input_schema={
             "type": "object",

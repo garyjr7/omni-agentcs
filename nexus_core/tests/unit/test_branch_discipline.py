@@ -23,11 +23,13 @@ import json
 import pytest
 
 from nexus_core.agent.branch_discipline import (
+    BARRIER_ATTEMPT_WINDOW,
     BARRIER_TOO_EARLY,
     CLOSED_BRANCH_BLOCK_TURNS,
     barrier_refusal,
     closed_branch_refusal,
     distinct_attempts,
+    redundant_fact_refusal,
 )
 from nexus_core.agent.coverage import STATUS_CLOSED, STATUS_PROBED, build_coverage
 from nexus_core.agent.prompts import (
@@ -118,6 +120,74 @@ def _action(
 
 def _barrier_arguments(key: str = WEB) -> dict:
     return {"fact_type": "barrier", "key": key, "value": {"reason": "probado"}}
+
+
+# ------------------------------------------- hijack_v7: a barrier that was tried
+def test_a_barrier_after_a_conclusive_answer_is_accepted():
+    """``nexus.recon.ftp`` answering 530 is a verdict, not a guess."""
+    denied = _action("nexus.web.request", {"url": f"http://{HOST}/"}, output={})
+    denied["tool_result"].update(success=False, outcome="denied")
+    assert barrier_refusal([denied], _coverage(), _barrier_arguments(WEB)) is None
+
+
+def test_a_barrier_after_a_broken_tool_is_still_refused():
+    broken = _action("nexus.web.request", {"url": f"http://{HOST}/"}, output={})
+    broken["tool_result"].update(success=False, outcome="")
+    assert barrier_refusal([broken], _coverage(), _barrier_arguments(WEB)) is not None
+
+
+def test_a_stalled_branch_accepts_the_barrier_the_pivot_asks_for():
+    """The loop's own verdict and the model's barrier agree after the window."""
+    neutral = _action("nexus.web.request", {"url": f"http://{HOST}/"}, output={})
+    assert (
+        barrier_refusal(
+            [neutral], _coverage(), _barrier_arguments(WEB), no_progress=BARRIER_ATTEMPT_WINDOW
+        )
+        is None
+    )
+
+
+# ------------------------------------- hijack_v7: re-recording the verifier's work
+def test_a_service_the_verifier_already_proved_is_refused():
+    guidance = redundant_fact_refusal(
+        [_service(80, "http")],
+        {
+            "fact_type": "service",
+            "key": f"{HOST}:80:tcp",
+            "value": {"port": 80, "service": "http", "state": "open"},
+        },
+        next_branch=f"{HOST}:22/tcp ssh",
+    )
+    assert guidance is not None
+    assert "YA está en la pizarra" in guidance
+    assert f"Siguiente rama abierta: {HOST}:22/tcp ssh" in guidance
+
+
+def test_a_service_with_a_new_detail_is_allowed():
+    # A product/version is something the model learned, not bookkeeping.
+    assert (
+        redundant_fact_refusal(
+            [_service(80, "http")],
+            {
+                "fact_type": "service",
+                "key": f"{HOST}:80:tcp",
+                "value": {"product": "Apache httpd 2.4.18"},
+            },
+        )
+        is None
+    )
+
+
+def test_a_credential_or_barrier_is_never_refused():
+    facts = [_service(80, "http")]
+    for fact_type in ("credential", "barrier", "hint"):
+        assert (
+            redundant_fact_refusal(
+                facts,
+                {"fact_type": fact_type, "key": f"{HOST}:80:tcp", "value": {}},
+            )
+            is None
+        )
 
 
 # ----------------------------------------------------------------- D-2: the `{}`

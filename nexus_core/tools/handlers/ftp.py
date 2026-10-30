@@ -25,6 +25,7 @@ from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, Tool
 from nexus_core.kernel.sandbox import sandbox_for_environment
 
 from ._exec import RECON_ALLOWED_PROGRAMS, run_in_sandbox, safe_run_id
+from ._loot import loot_summary
 
 FTP_ALLOWED_PROGRAMS = RECON_ALLOWED_PROGRAMS
 FTP_DEFAULT_PORT = 21
@@ -42,6 +43,13 @@ FTP_MAX_LISTING_LINES = 500
 #: has exactly one definition.
 FTP_PREVIEW_BYTES = 4096
 
+#: Auto-loot: a listing also brings the first bytes of the small text files in
+#: it. Measured in Hijack (2026-10-30): the FTP account holds the password/hash
+#: notes the next step needs, and listing without reading them cost a turn per
+#: guessed file name. Five files, 64 KB each: one bounded answer.
+FTP_LOOT_MAX_FILES = 5
+FTP_LOOT_MAX_BYTES = 65_536
+
 FTP_ACTIONS = ("list", "download")
 
 #: Anonymous login credentials; the model must not invent other accounts.
@@ -56,6 +64,8 @@ FTP_CLIENT_SCRIPT = r"""
 import ftplib, hashlib, json, os, sys
 
 PREVIEW_BYTES = __PREVIEW_BYTES__
+LOOT_MAX_FILES = __LOOT_MAX_FILES__
+LOOT_MAX_BYTES = __LOOT_MAX_BYTES__
 
 def run_op(ftp, action, remote, local_dir):
     info = {}
@@ -72,6 +82,39 @@ def run_op(ftp, action, remote, local_dir):
             info["nlst_error"] = "%s: %s" % (type(exc).__name__, exc)
         info["listing"] = lines
         info["names"] = names
+        # Auto-loot: read the small text files the listing just revealed.
+        info["files"] = []
+        seen = set()
+        for name in names:
+            base = str(name).rstrip("/").rsplit("/", 1)[-1]
+            if not base or base in (".", "..") or base in seen:
+                continue
+            seen.add(base)
+            if len(info["files"]) >= LOOT_MAX_FILES:
+                break
+            try:
+                size = ftp.size(name)
+            except Exception:
+                size = None
+            if size is not None and size > LOOT_MAX_BYTES:
+                continue
+            buf = bytearray()
+            def writer(chunk, buf=buf):
+                if len(buf) < LOOT_MAX_BYTES:
+                    buf.extend(chunk[: LOOT_MAX_BYTES - len(buf)])
+            try:
+                ftp.retrbinary("RETR " + name, writer)
+            except Exception:
+                continue
+            text = bytes(buf).decode("utf-8", "replace")
+            printable = sum(c.isprintable() or c in "\n\r\t" for c in text)
+            if not text.strip() or printable < len(text) * 0.85:
+                continue
+            info["files"].append({
+                "name": name,
+                "size": size if size is not None else len(buf),
+                "preview": text[:PREVIEW_BYTES],
+            })
     elif action == "download":
         os.makedirs(local_dir, exist_ok=True)
         name = os.path.basename(remote.rstrip("/")) or "download.bin"
@@ -160,7 +203,9 @@ def main():
     print(json.dumps(result))
 
 main()
-""".replace("__PREVIEW_BYTES__", str(FTP_PREVIEW_BYTES))
+""".replace("__PREVIEW_BYTES__", str(FTP_PREVIEW_BYTES)).replace(
+    "__LOOT_MAX_FILES__", str(FTP_LOOT_MAX_FILES)
+).replace("__LOOT_MAX_BYTES__", str(FTP_LOOT_MAX_BYTES))
 
 
 def ftp_definition(tenant_id: str = "system") -> ToolDefinition:
@@ -171,8 +216,11 @@ def ftp_definition(tenant_id: str = "system") -> ToolDefinition:
         name="FTP recon",
         tenant_id=tenant_id,
         description=(
-            "Conecta a un servicio FTP, prueba login (anónimo por defecto), "
-            "lista un directorio o descarga un archivo. Read-only. En "
+            "Conecta a un servicio FTP, prueba login (anónimo por defecto; si ya "
+            "hay credenciales FTP en la pizarra, pásalas con username/password), "
+            "lista un directorio -y devuelve el contenido de los ficheros de "
+            "texto pequeños, que es donde suelen estar las credenciales y las "
+            "listas de contraseñas- o descarga un archivo. Read-only. En "
             "'download' el fichero se guarda siempre en el workspace del "
             "engagement (<workspace>/ftp_<run>/): no se elige ruta local."
         ),
@@ -333,6 +381,19 @@ async def ftp_handler(arguments: dict, context: RunContext) -> ToolResult:
 
     ok = bool(payload.get("ok")) and result.exit_code == 0
     evidence["mode"] = payload.get("mode")
+    # A refused login is a verdict from the server, not a broken tool: without
+    # this the gateway raised "post-condition was not verified" and the loop
+    # counted the branch as a *failed tool* (hijack_v7, iterations 13 and 23).
+    outcome = ""
+    if not ok:
+        error = str(payload.get("error") or "")
+        if "530" in error or "login" in error.lower():
+            outcome = "denied"
+    loot = loot_summary(
+        [item for item in (payload.get("files") or []) if isinstance(item, dict)]
+    )
+    evidence["files_total"] = int(loot.get("files_total") or 0)
+    evidence["credentials_found"] = len(loot.get("credentials") or [])
     if action == "list":
         listing = list(payload.get("listing") or [])
         names = list(payload.get("names") or [])
@@ -367,8 +428,10 @@ async def ftp_handler(arguments: dict, context: RunContext) -> ToolResult:
             "username": username,
             "anonymous": username == FTP_ANONYMOUS_USER,
             "result": payload,
+            **loot,
         },
         verified=ok,
+        outcome=outcome,
         verification_method=verification_method,
         evidence=evidence,
         exit_code=result.exit_code,

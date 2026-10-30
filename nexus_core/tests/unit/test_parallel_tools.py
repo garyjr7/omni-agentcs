@@ -241,10 +241,20 @@ def test_a_lone_call_never_becomes_a_batch():
 
 
 def test_the_batch_ceiling_is_enforced_by_the_contract():
+    """Over the ceiling the batch is cut, not the turn (hijack_v7 iter 2).
+
+    The DTO still caps at ``MAX_PARALLEL_TOOL_CALLS``; what changed is the
+    answer to a model that sends more: the first calls run and the warning says
+    the rest did not, instead of rejecting a turn the model can only retry one
+    call at a time.
+    """
     text = _batch(*[f"t{index}" for index in range(MAX_PARALLEL_TOOL_CALLS + 1)])
 
-    with pytest.raises(ReActParseError):
-        parse_react_response(text)
+    action = parse_react_response(text)
+
+    assert isinstance(action, ToolCallBatch)
+    assert len(action.calls) == MAX_PARALLEL_TOOL_CALLS
+    assert any("only the first" in warning for warning in action.warnings)
 
 
 def test_a_batch_without_arguments_defaults_to_an_empty_call():

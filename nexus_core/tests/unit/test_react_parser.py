@@ -148,6 +148,29 @@ def test_parse_accepts_json_array_and_keeps_first():
     assert action.tool_id == "a.b"
 
 
+def test_an_oversized_batch_is_truncated_instead_of_rejected():
+    """hijack_v7 iter 2: nine record_fact calls became nine wasted turns.
+
+    The model batched one call per service; the DTO caps the batch at four, and
+    the old parser failed the whole turn (``invalid action fields:
+    tool_calls.calls``). The first four must run and the answer must say so.
+    """
+    calls = [
+        {
+            "tool_id": "nexus.knowledge.record_fact",
+            "arguments": {"fact_type": "service", "key": f"10.0.0.5:{port}:tcp"},
+        }
+        for port in range(21, 30)
+    ]
+    action = parse_react_response(
+        json.dumps({"thought": "registro los servicios", "action": "tool_calls", "calls": calls})
+    )
+    assert action.action == "tool_calls"
+    assert len(action.calls) == 4
+    assert action.calls[0].arguments["key"] == "10.0.0.5:21:tcp"
+    assert any("only the first 4" in warning for warning in action.warnings)
+
+
 def test_parse_rejects_non_object_arguments():
     text = json.dumps(
         {"thought": "x", "action": "tool_call", "tool_id": "a.b", "arguments": ["--bad"]}

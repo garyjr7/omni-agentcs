@@ -462,7 +462,15 @@ def wp_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
             "properties": {
                 "url": {"type": "string", "minLength": 4, "maxLength": 512},
                 "username": {"type": "string", "minLength": 1, "maxLength": 128},
-                "password_file": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "password_file": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "description": (
+                        "Wordlist a probar. Si se omite se usa la primera "
+                        "instalada (rockyou.txt)."
+                    ),
+                },
                 "transport": {
                     "type": "string",
                     "enum": list(WP_BRUTEFORCE_TRANSPORTS),
@@ -492,7 +500,10 @@ def wp_bruteforce_definition(tenant_id: str = "system") -> ToolDefinition:
                     "maximum": WP_BRUTEFORCE_MAX_TIMEOUT_SECONDS,
                 },
             },
-            "required": ["url", "username", "password_file"],
+            # Optional: the handler resolves the first installed list when the
+            # model does not name one (hijack_v7 invented the path and lost two
+            # turns to the rejection).
+            "required": ["url", "username"],
             "additionalProperties": False,
         },
         risk=RiskLevel.HIGH,

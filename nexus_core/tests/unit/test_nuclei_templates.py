@@ -186,11 +186,29 @@ def test_nuclei_rejects_invalid_tags(tag):
         validate_tags([tag])
 
 
-def test_nuclei_templates_dir_reads_the_environment(monkeypatch):
+def test_nuclei_templates_dir_reads_the_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("NEXUS_NUCLEI_TEMPLATES", "/srv/templates")
     assert nuclei_templates_dir() == "/srv/templates"
     monkeypatch.delenv("NEXUS_NUCLEI_TEMPLATES")
-    assert nuclei_templates_dir() == nuclei_module.DEFAULT_NUCLEI_TEMPLATES
+    # Without the override the packaged default wins while it exists.
+    packaged = tmp_path / "packaged-templates"
+    packaged.mkdir()
+    monkeypatch.setattr(nuclei_module, "DEFAULT_NUCLEI_TEMPLATES", str(packaged))
+    assert nuclei_templates_dir() == str(packaged)
+
+
+def test_a_host_installed_templates_dir_is_found(tmp_path, monkeypatch):
+    """hijack_v7: nuclei and ``~/.local/nuclei-templates`` were installed."""
+    monkeypatch.delenv("NEXUS_NUCLEI_TEMPLATES", raising=False)
+    monkeypatch.setattr(
+        nuclei_module, "DEFAULT_NUCLEI_TEMPLATES", str(tmp_path / "absent")
+    )
+    installed = tmp_path / "local-templates"
+    installed.mkdir()
+    monkeypatch.setattr(
+        nuclei_module, "NUCLEI_TEMPLATE_CANDIDATES", (str(installed),)
+    )
+    assert nuclei_templates_dir() == str(installed)
 
 
 def test_nuclei_managed_flags_disable_the_update_check(templates_dir):
