@@ -235,3 +235,135 @@ def test_read_requires_file_and_list_requires_path():
         _run({"target": "203.0.113.10", "action": "list"})
     with pytest.raises(ValueError):
         _run({"target": "203.0.113.10", "action": "read", "path": "/srv/nfs"})
+
+
+# ------------------------------------------------- kernel-mount fallback (FIX 5.2)
+class MountSandbox:
+    """Dispatches on argv so ``mount`` and ``umount`` can answer differently."""
+
+    def __init__(self, *, mount=None, find=None, cat=None, umount=None, nfs_ls=None):
+        self.answers = {
+            "mount": mount if mount is not None else _result(),
+            "find": find if find is not None else _result(),
+            "cat": cat if cat is not None else _result(),
+            "umount": umount if umount is not None else _result(),
+            # The measured refusal: the userland client ran and the export
+            # answered NFS3ERR_ACCES, which is what triggers the fallback.
+            "nfs-ls": (
+                nfs_ls if nfs_ls is not None
+                else _result("", "RPC: Mount failure: access denied", 13)
+            ),
+            "showmount": _result(EXPORTS_STDOUT),
+        }
+        self.calls: list[list[str]] = []
+
+    async def run(self, argv, **kwargs):
+        self.calls.append(list(argv))
+        verb = argv[2] if argv[:2] == ["sudo", "-n"] else argv[0]
+        outcome = self.answers.get(verb)
+        if outcome is None:
+            raise FileNotFoundError(argv[0])
+        return outcome
+
+    def verbs(self) -> list[str]:
+        return [call[2] if call[:2] == ["sudo", "-n"] else call[0] for call in self.calls]
+
+
+def _mount_run(sandbox, arguments: dict, monkeypatch, tmp_path):
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv(nfs_module.NFS_MOUNT_ENV, raising=False)
+    with mock.patch.object(
+        nfs_module, "sandbox_for_environment", lambda *args, **kwargs: sandbox
+    ):
+        return _run(arguments)
+
+
+LISTING = (
+    "d          0 /tmp/mnt\n"
+    "f         31 /tmp/mnt/note.txt\n"
+    "d          0 /tmp/mnt/backup\n"
+)
+
+
+def test_restricted_export_is_read_through_a_kernel_mount(tmp_path, monkeypatch):
+    sandbox = MountSandbox(
+        mount=_result(""),
+        find=_result(LISTING.replace("/tmp/mnt/", "")),
+    )
+    result = _mount_run(
+        sandbox,
+        {"target": "203.0.113.10", "action": "list", "path": "/srv/nfs"},
+        monkeypatch,
+        tmp_path,
+    )
+    assert sandbox.verbs() == ["nfs-ls", "mount", "find", "umount"]
+    mount_call = sandbox.calls[1]
+    assert mount_call[:5] == ["sudo", "-n", "mount", "-t", "nfs"]
+    assert "203.0.113.10:/srv/nfs" in mount_call
+    assert nfs_module.NFS_MOUNT_OPTIONS in mount_call
+    assert result.verified is True
+    assert result.verification_method == "nfs_listing_via_kernel_mount"
+    assert result.output["via"] == "kernel_mount"
+    assert "note.txt" in " ".join(result.output["entries"])
+    assert result.evidence["mounted_by_operator"] is False
+
+
+def test_operator_mountpoint_is_reused_without_sudo(tmp_path, monkeypatch):
+    shared = tmp_path / "share"
+    shared.mkdir()
+    monkeypatch.setattr(
+        nfs_module, "existing_mountpoint", lambda target, path, mounts=None: str(shared)
+    )
+    sandbox = MountSandbox(find=_result(f"f 31 {shared}/note.txt\n"))
+    result = _mount_run(
+        sandbox,
+        {"target": "203.0.113.10", "action": "list", "path": "/srv/nfs"},
+        monkeypatch,
+        tmp_path,
+    )
+    assert sandbox.verbs() == ["nfs-ls", "find"]
+    assert "sudo" not in [call[0] for call in sandbox.calls]
+    assert result.verified is True
+    assert any("note.txt" in entry for entry in result.output["entries"])
+    assert result.evidence["mountpoint"] == str(shared)
+    assert result.evidence["mounted_by_operator"] is True
+
+
+def test_mount_without_passwordless_sudo_keeps_the_refusal_and_the_hint(tmp_path, monkeypatch):
+    sandbox = MountSandbox(
+        mount=_result("", "sudo: a password is required", 1),
+    )
+    result = _mount_run(
+        sandbox,
+        {"target": "203.0.113.10", "action": "list", "path": "/srv/nfs"},
+        monkeypatch,
+        tmp_path,
+    )
+    assert result.outcome == "partial"
+    assert "sudo: a password is required" in result.output["mount_error"]
+    assert "NOPASSWD" in result.output["mount_hint"]
+    assert result.output["error"] == "mount_failed"
+
+
+def test_mount_fallback_can_be_disabled(tmp_path, monkeypatch):
+    sandbox = MountSandbox()
+    monkeypatch.setenv(nfs_module.NFS_MOUNT_ENV, "off")
+    monkeypatch.setenv("NEXUS_WORKSPACE_ROOT", str(tmp_path))
+    with mock.patch.object(
+        nfs_module, "sandbox_for_environment", lambda *args, **kwargs: sandbox
+    ):
+        result = _run({"target": "203.0.113.10", "action": "list", "path": "/srv/nfs"})
+    assert "mount" not in sandbox.verbs()
+    assert nfs_module.NFS_MOUNT_ENV in result.output["mount_error"]
+
+
+def test_existing_mountpoint_reads_the_kernel_mount_table(tmp_path):
+    mounted = tmp_path / "share with space"
+    mounted.mkdir()
+    table = (
+        "203.0.113.10:/srv/nfs {mp} nfs4 rw,relatime 0 0\n"
+        "203.0.113.10:/home /mnt/home nfs4 rw 0 0\n"
+    ).format(mp=str(mounted).replace(" ", "\\040"))
+    assert nfs_module.existing_mountpoint("203.0.113.10", "/srv/nfs", mounts=table) == str(mounted)
+    assert nfs_module.existing_mountpoint("203.0.113.10", "/srv/nfs", mounts="") is None
+    assert nfs_module.existing_mountpoint("203.0.113.10", "/absent", mounts=table) is None

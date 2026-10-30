@@ -56,6 +56,15 @@ BARRIER_MIN_DISTINCT_TOOLS = 2
 #: bad payload; thirty is how long the measured model took.
 BARRIER_ATTEMPT_WINDOW = 3
 
+#: How many times the same unsatisfiable ``barrier`` may be refused before it is
+#: accepted anyway and stamped unsubstantiated (``invalid_*``, which
+#: ``coverage.barrier_is_conclusive`` reads as "does not close the branch").
+#: Measured in hijack_v7 (2026-10-30): the pivot hint tells the model to
+#: document a dead end with ``record_fact(fact_type="barrier")`` and this gate
+#: refused that call nine times, so the same instruction could never be
+#: satisfied and seventeen turns produced no fact.
+BARRIER_INSISTENCE_LIMIT = 2
+
 #: Turns a branch the loop closed stays refused for the tools that attack it.
 #: Long enough to be a real stop, short enough not to deadlock a run whose only
 #: open branch is that one.
@@ -326,6 +335,7 @@ def closed_branch_refusal(
 
 __all__ = [
     "BARRIER_ATTEMPT_WINDOW",
+    "BARRIER_INSISTENCE_LIMIT",
     "BARRIER_MIN_DISTINCT_TOOLS",
     "CLOSED_BRANCH_BLOCK_TURNS",
     "PREVIEW_EMPTY_BODY",

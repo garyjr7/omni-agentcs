@@ -227,7 +227,10 @@ def resolve_wordlist(workspace_root: str | Path, wordlist: str) -> str:
             )
         )
     except shared_wordlists.WordlistNotFound as exc:
-        raise ValueError(f"ffuf wordlist does not exist: {exc.path}") from exc
+        # Name the wordlists that exist here: a bare "does not exist" is what
+        # makes a model invent the next placeholder path (hijack_v7:,
+        # ``path/to/passwords.txt`` at the WordPress sweep).
+        raise ValueError(f"ffuf wordlist does not exist: {exc.path}{exc.hint}") from exc
     except shared_wordlists.WordlistForbidden as exc:
         allowed = ", ".join(str(directory) for directory in system_wordlist_dirs())
         raise ValueError(

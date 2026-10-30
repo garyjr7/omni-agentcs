@@ -64,3 +64,30 @@ def test_missing_wordlist_in_an_allowed_root_is_refused(tmp_path, _system_dir):
 
     with pytest.raises(ValueError, match="does not exist"):
         ffuf.resolve_wordlist(workspace, str(_system_dir / "missing.txt"))
+
+
+def test_a_missing_wordlist_names_the_lists_that_are_installed(tmp_path, _system_dir):
+    """hijack_v7 invented ``path/to/passwords.txt`` twice at the brute force.
+
+    The rejection said only that the invented path did not exist, so the next
+    attempt invented another one. It now carries the real files on this host.
+    """
+    (tmp_path / "system-wordlists" / "rockyou.txt").write_text("admin\n")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError) as excinfo:
+        ffuf.resolve_wordlist(workspace, "path/to/passwords.txt")
+    message = str(excinfo.value)
+    assert "path/to/passwords.txt" in message
+    assert "rockyou.txt" in message
+
+
+def test_the_default_wordlist_is_the_first_installed_one(tmp_path):
+    from nexus_core.tools import wordlists
+
+    system = tmp_path / "wordlists"
+    system.mkdir()
+    assert wordlists.default_wordlist([system]) is None
+    (system / "rockyou.txt").write_text("admin\n")
+    assert wordlists.default_wordlist([system]) == str(system / "rockyou.txt")

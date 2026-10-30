@@ -37,30 +37,77 @@ from __future__ import annotations
 import os
 from typing import Iterable
 
+#: Wordlists a fresh Kali install actually ships, in the order that unblocks a
+#: run: the password corpus first, then the directory lists. A missing wordlist
+#: is a hallucination waiting to happen -hijack_v7 (2026-10-30) invented
+#: ``path/to/passwords.txt`` twice, once at the WordPress sweep and once at the
+#: hydra sweep, and both tools answered with the path it had just made up-, so
+#: the error names the files that *are* installed instead of only saying "no".
+KNOWN_WORDLISTS: tuple[str, ...] = (
+    "rockyou.txt",
+    "rockyou.txt.gz",
+    "fasttrack.txt",
+    "dirb/common.txt",
+    "dirbuster/directory-list-2.3-small.txt",
+    "Passwords/Common-Credentials/10-million-password-list-top-1000.txt",
+    "Passwords/Common-Credentials/best1050.txt",
+)
+
+
+def available_wordlists(roots: Iterable[str], limit: int = 4) -> list[str]:
+    """Existing, known wordlist files under ``roots`` (bounded and ordered)."""
+    found: list[str] = []
+    for root in existing_roots(roots):
+        for name in KNOWN_WORDLISTS:
+            candidate = os.path.join(root, name)
+            if os.path.isfile(candidate) and candidate not in found:
+                found.append(candidate)
+                if len(found) >= limit:
+                    return found
+    return found
+
+
+def default_wordlist(roots: Iterable[str]) -> str | None:
+    """The first installed wordlist under ``roots``, or ``None``."""
+    found = available_wordlists(roots, limit=1)
+    return found[0] if found else None
+
 
 class WordlistError(ValueError):
     """A wordlist path that cannot be used, with the piece that failed."""
 
-    def __init__(self, label: str, path: str) -> None:
+    def __init__(self, label: str, path: str, *, available: Iterable[str] = (), reason: str = "") -> None:
         self.label = str(label or "wordlist")
         self.path = str(path or "")
-        super().__init__(f"{self.label} is not usable: {self.path}")
+        self.available = list(available)
+        self.reason = reason or f"{self.label} is not usable: {self.path}"
+        #: Extra sentence the tool wrappers append verbatim: the real paths the
+        #: operator has, so the next call cannot guess a different placeholder.
+        self.hint = (
+            f" · listas instaladas en este host: {', '.join(self.available)}"
+            if self.available else ""
+        )
+        super().__init__(f"{self.reason}{self.hint}")
 
 
 class WordlistNotFound(WordlistError):
     """The path does not name an existing file anywhere it was looked up."""
 
-    def __init__(self, label: str, path: str) -> None:
-        super().__init__(label, path)
-        self.args = (f"{self.label} does not exist: {self.path}",)
+    def __init__(self, label: str, path: str, *, available: Iterable[str] = ()) -> None:
+        super().__init__(
+            label, path, available=available,
+            reason=f"{str(label or 'wordlist')} does not exist: {path}",
+        )
 
 
 class WordlistForbidden(WordlistError):
     """The path exists but lives outside every root the tool may read."""
 
-    def __init__(self, label: str, path: str) -> None:
-        super().__init__(label, path)
-        self.args = (f"{self.label} is outside the allowed roots: {self.path}",)
+    def __init__(self, label: str, path: str, *, available: Iterable[str] = ()) -> None:
+        super().__init__(
+            label, path, available=available,
+            reason=f"{str(label or 'wordlist')} is outside the allowed roots: {path}",
+        )
 
 
 def _inside(path: str, root: str) -> bool:
@@ -134,6 +181,9 @@ def resolve_wordlist(
             # it is trusting root, which is the operator's own install.
             return resolved
         forbidden.append(candidate)
+    available = available_wordlists(roots[1:])
     if forbidden:
-        raise WordlistForbidden(label, forbidden[0])
-    raise WordlistNotFound(label, missing[0] if missing else os.path.abspath(text))
+        raise WordlistForbidden(label, forbidden[0], available=available)
+    raise WordlistNotFound(
+        label, missing[0] if missing else os.path.abspath(text), available=available
+    )

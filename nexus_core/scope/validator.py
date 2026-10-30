@@ -46,6 +46,25 @@ def _try_ip(value: str):
         return None
 
 
+def _split_host_port(value: str) -> tuple[str, str | None]:
+    """``(host, port)`` for a ``host:port`` target, else ``(value, None)``.
+
+    Only a single ``:`` with a numeric, non-empty port counts: an IPv6 literal
+    without brackets keeps its colons and is left for :func:`_try_ip`, and
+    ``scheme://`` URLs are handled before this point.
+    """
+    text = str(value or "")
+    if text.startswith("[") and "]:" in text:
+        host, _, port = text[1:].partition("]:")
+    elif text.count(":") == 1:
+        host, _, port = text.partition(":")
+    else:
+        return text, None
+    if not host or not port.isdigit() or not 0 < int(port) <= 65535:
+        return text, None
+    return host, port
+
+
 class LabScopeForbidden(ValueError):
     """``NEXUS_SCOPE_MODE=lab`` was requested while ``NEXUS_ENV=production``.
 
@@ -163,7 +182,15 @@ class ScopeValidator:
             )
 
     def _parse_target(self, target: str) -> tuple[ScopeKind, str, str | None]:
-        """Return ``(kind, canonical, domain_or_none)`` for a raw target."""
+        """Return ``(kind, canonical, domain_or_none)`` for a raw target.
+
+        ``host:port`` is the same asset as ``host``: the port selects the
+        service, not the authorization. hijack_v7 (2026-10-30, iteration 37)
+        aimed a scan at ``10.0.0.5:55104`` -a port the recon had just found
+        open- and the engagement answered "domain is outside the engagement
+        scope" because the whole ``ip:port`` string was matched as a domain, so
+        the model lost the turn and never scanned it.
+        """
         value = str(target).strip()
         if not value:
             raise self._violation(target, "target is empty")
@@ -177,6 +204,14 @@ class ScopeValidator:
             host = host.lower().rstrip(".")
             address = _try_ip(host)
             return ScopeKind.URL, host, None if address is not None else host
+        host_only, port = _split_host_port(value)
+        if port is not None:
+            address = _try_ip(host_only)
+            if address is not None:
+                return ScopeKind.IP, str(address), None
+            if host_only == "localhost" or "." in host_only:
+                canonical = host_only.lower().rstrip(".")
+                return ScopeKind.DOMAIN, canonical, canonical
         address = _try_ip(value)
         if address is not None:
             return ScopeKind.IP, str(address), None

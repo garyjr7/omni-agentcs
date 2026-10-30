@@ -1,4 +1,4 @@
-"""Durable ``nexus.recon.nfs``: exports, listing and reads without root.
+"""Durable ``nexus.recon.nfs``: exports, listing and reads.
 
 The measured dead end (run V9, Hijack): the agent found ``rpcbind``/``nfs`` and
 stopped because ``mount -t nfs`` needs root and the sandbox is unprivileged on
@@ -6,26 +6,39 @@ purpose. Root is not the only way in: ``showmount -e`` enumerates exports with
 no privileges at all, and the libnfs userland clients (``nfs-ls``/``nfs-cat``)
 speak the protocol without a kernel mount.
 
-The handler therefore never mounts anything. It answers three actions:
+It answers three actions:
 
 * ``exports`` - ``showmount -e <target>``: the list of exported paths.
 * ``list``    - ``nfs-ls nfs://<target><path>``: names inside one export.
 * ``read``    - ``nfs-cat nfs://<target><path>/<file>``: bytes of one file.
 
-When the userland client is not installed but the exports are visible, the
-answer is ``outcome="partial"`` carrying both facts and the message the
-operator needs: the share exists, an unprivileged read is still possible, and
-``nexus.system.install_tool`` can install ``libnfs-utils``. A missing
-``showmount`` is ``unavailable`` (the run cannot see the surface at all) and
-names ``nfs-common`` as the install. Nothing is ever run through a shell: the
-binaries are executed directly inside the same sandbox as every other recon
-handler.
+Two measured gaps pushed the rest of the handler:
+
+* when the userland client is not installed but the exports are visible, the
+  answer is ``outcome="partial"`` carrying both facts and the message the
+  operator needs: the share exists, an unprivileged read is still possible, and
+  ``nexus.system.install_tool`` can install ``libnfs-utils``. A missing
+  ``showmount`` is ``unavailable`` (the run cannot see the surface at all) and
+  names ``nfs-common`` as the install;
+* ``nfs-ls`` speaks AUTH_SYS as uid 0, so an export with ``root_squash`` (or one
+  that only trusts another subnet) answers ``NFS3ERR_ACCES`` and the loot stays
+  one ``mount`` away -hijack_v7 lost seventeen turns there-. The handler then
+  falls back to a real kernel mount: the mount the operator already made is
+  reused as-is (read with plain ``find``/``cat``, no sudo), and otherwise
+  ``sudo -n mount`` mounts into a workspace-local mountpoint that is always
+  unmounted afterwards. ``NEXUS_NFS_MOUNT=off`` disables that fallback.
+
+Nothing is ever run through a shell: the binaries are executed directly inside
+the same sandbox as every other recon handler, and every argv is built here.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import shutil
+from pathlib import Path
 from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
@@ -41,8 +54,13 @@ from ._exec import run_in_sandbox
 NFS_ACTIONS: tuple[str, ...] = ("exports", "list", "read")
 
 #: Programs the handler may execute. ``showmount`` enumerates; ``nfs-ls`` and
-#: ``nfs-cat`` read through libnfs without a kernel mount.
-NFS_ALLOWED_PROGRAMS: tuple[str, ...] = ("showmount", "nfs-ls", "nfs-cat")
+#: ``nfs-cat`` read through libnfs without a kernel mount; ``sudo``/``mount``/
+#: ``umount``/``find``/``cat`` are the kernel-mount fallback (see
+#: :func:`_mount_fallback`). Every argv is built here, so the allowlist is never
+#: a shell: the model picks the target, never the command line.
+NFS_ALLOWED_PROGRAMS: tuple[str, ...] = (
+    "showmount", "nfs-ls", "nfs-cat", "sudo", "mount", "umount", "find", "cat",
+)
 
 NFS_DEFAULT_TIMEOUT_SECONDS = 60
 NFS_MAX_TIMEOUT_SECONDS = 300
@@ -66,6 +84,36 @@ NFS_FAILED_HINT = (
     "`no such file` significa que `path` no es un export de la lista. Si el "
     "vector está cerrado, registra un barrier con nexus.knowledge.record_fact "
     "(key \"<host>:2049\") y pivota."
+)
+
+#: Kernel-mount fallback (FIX 5.2). The libnfs client speaks AUTH_SYS as uid 0;
+#: an export with ``root_squash`` (or one that only trusts a subnet the client
+#: is not in) answers ``NFS3ERR_ACCES`` and the run stops with the loot one
+#: ``mount`` away. A kernel mount runs as the operator, so it sees the same
+#: POSIX tree the human sees. Disabled only by an explicit environment value.
+NFS_MOUNT_ENV = "NEXUS_NFS_MOUNT"
+NFS_MOUNT_DISABLED_VALUES: frozenset[str] = frozenset({"0", "off", "false", "no"})
+
+#: Directory (inside the engagement workspace) the fallback mounts into. One
+#: mountpoint per export: ``.nexus-nfs/-mnt-share-ab12cd34``.
+NFS_MOUNT_ROOT_DIRNAME = ".nexus-nfs"
+
+#: Mount options. ``soft``/``timeo``/``retrans`` keep a hung server from eating
+#: the run's whole budget: the server answers or the mount gives up in seconds.
+NFS_MOUNT_OPTIONS = "vers=3,nolock,soft,timeo=50,retrans=2"
+
+#: Depth and width of the listing read from a mounted export.
+NFS_MOUNT_FIND_MAXDEPTH = 3
+
+#: Why the fallback could not run, spelled out for the model and the operator.
+NFS_MOUNT_FAILED_HINT = (
+    "El montaje del kernel tampoco funcionó. `sudo -n mount` exige sudo sin "
+    "contraseña para este usuario: si el error es 'a password is required', el "
+    "operador debe ejecutar `sudo mount -t nfs -o {options} <target>:<export> "
+    "<punto>` en su terminal (o añadir NOPASSWD en visudo) y repetir esta "
+    "llamada: el handler detecta el montaje ya hecho en /proc/self/mounts y lee "
+    "de él sin sudo. También puedes probar `nexus.shell.exec` con opciones "
+    "distintas (vers=4, port=...)."
 )
 
 #: Install hint appended when the required binary is absent from the sandbox.
@@ -137,6 +185,68 @@ def _export_path(value: Any) -> str:
     return text
 
 
+def nfs_mount_allowed() -> bool:
+    """Whether the kernel-mount fallback may run (``NEXUS_NFS_MOUNT=off`` opts out)."""
+    value = str(os.getenv(NFS_MOUNT_ENV, "") or "").strip().lower()
+    return value not in NFS_MOUNT_DISABLED_VALUES
+
+
+def _mount_device(target: str, path: str) -> str:
+    """``host:/export`` as the kernel writes it in ``/proc/self/mounts``."""
+    return f"{target}:{path}"
+
+
+def _unescape_mount_field(value: str) -> str:
+    """Undo the octal escapes the kernel uses for spaces in mount fields."""
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+
+
+def existing_mountpoint(target: str, path: str, mounts: str | None = None) -> str | None:
+    """Local mountpoint an operator already mounted for this export, if any.
+
+    The measured operator workflow is to mount the share by hand and tell the
+    agent it can use it. Refusing to look at that mount would be the same dead
+    end as before, so the handler reuses it -with no sudo at all- before trying
+    to mount anything itself.
+    """
+    device = _mount_device(target, path)
+    try:
+        text = mounts if mounts is not None else Path("/proc/self/mounts").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return None
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        if _unescape_mount_field(fields[0]) != device:
+            continue
+        mountpoint = _unescape_mount_field(fields[1])
+        if mountpoint and os.path.isdir(mountpoint):
+            return mountpoint
+    return None
+
+
+def _mountpoint_for(workspace_root: str, target: str, path: str) -> Path:
+    """Workspace-local, deterministic mountpoint for one export."""
+    digest = hashlib.sha256(f"{target}:{path}".encode("utf-8")).hexdigest()[:8]
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", path).strip("-")[:40] or "export"
+    return Path(workspace_root) / NFS_MOUNT_ROOT_DIRNAME / f"{slug}-{digest}"
+
+
+def _safe_child(root: str, name: str) -> str | None:
+    """``root/name`` when it stays inside ``root``, else ``None`` (no traversal)."""
+    text = str(name or "").strip().lstrip("/")
+    if not text:
+        return None
+    candidate = (Path(root) / text).resolve()
+    base = Path(root).resolve()
+    if candidate != base and base not in candidate.parents:
+        return None
+    return str(candidate)
+
+
 def _nfs_url(target: str, path: str, file: str | None = None) -> str:
     """``nfs://host/export[/file]`` URL the libnfs clients understand."""
     url = f"nfs://{target}{path}"
@@ -202,9 +312,10 @@ def nfs_definition(tenant_id: str = "system") -> ToolDefinition:
         name="NFS recon (no root)",
         tenant_id=tenant_id,
         description=(
-            "Enumera exports NFS con showmount -e y los lee sin root con "
-            "nfs-ls/nfs-cat (libnfs). Usa action=exports, list (path) o read "
-            "(path + file). Sin montaje del kernel."
+            "Enumera exports NFS con showmount -e y los lee con nfs-ls/nfs-cat "
+            "(libnfs); si el export rechaza al cliente userland, monta el export "
+            "con `sudo -n mount` (o reutiliza el montaje que el operador ya hizo) "
+            "y lee de ahí. Usa action=exports, list (path) o read (path + file)."
         ),
         input_schema={
             "type": "object",
@@ -290,13 +401,20 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
             default_image="python:3.12-alpine",
         )
     except (FileNotFoundError, PermissionError):
-        # The userland client is missing: report what *is* visible (the exports)
-        # plus the message, never a dead end. This is the plan's FIX 2 contract.
+        # The userland client is missing: the kernel mount does not need it, so
+        # try that before reporting what *is* visible (the exports).
+        mounted, mount_error = await _mount_fallback(
+            sandbox, programs, target=target, path=path, action=action, file=file,
+            timeout_seconds=timeout_seconds, workspace_root=workspace_root,
+        )
+        if mounted is not None:
+            return mounted
         _, exports = await _exports(
             sandbox, target, timeout_seconds, program=programs["showmount"]
         )
         evidence["exports"] = exports
         evidence["partial_reason"] = f"{program}_missing"
+        evidence["mount_error"] = mount_error
         return ToolResult(
             output={
                 "target": target,
@@ -313,6 +431,8 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
                 "message": NFS_MOUNT_GUIDANCE,
                 "hint": NFS_INSTALL_GUIDANCE[program],
                 "guidance": NFS_INSTALL_GUIDANCE[program],
+                "mount_hint": NFS_MOUNT_FAILED_HINT.format(options=NFS_MOUNT_OPTIONS),
+                "mount_error": mount_error,
             },
             verified=False,
             outcome="partial",
@@ -334,15 +454,24 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
         )
 
     if result.exit_code != 0:
-        # The client ran and the server refused (export restricted to another
-        # host, stale handle...). The exports travel with the refusal so the
-        # model can see what it *can* reach, and the outcome stays partial.
+        # The client ran and the server refused (``NFS3ERR_ACCES``: the export
+        # root-squashes AUTH_SYS uid 0, or only trusts a subnet). A kernel mount
+        # runs as the operator, so it is the next attempt, not a dead end.
+        mounted, mount_error = await _mount_fallback(
+            sandbox, programs, target=target, path=path, action=action, file=file,
+            timeout_seconds=timeout_seconds, workspace_root=workspace_root,
+        )
+        if mounted is not None:
+            return mounted
+        # The exports travel with the refusal so the model can see what it *can*
+        # reach, and the outcome stays partial.
         _, exports = await _exports(
             sandbox, target, timeout_seconds, program=programs["showmount"]
         )
         evidence["exports"] = exports
         evidence["exit_code"] = result.exit_code
         evidence["partial_reason"] = f"{program}_failed"
+        evidence["mount_error"] = mount_error
         return ToolResult(
             output={
                 "target": target,
@@ -353,6 +482,8 @@ async def nfs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRes
                 "error": "mount_failed",
                 "message": NFS_MOUNT_GUIDANCE,
                 "hint": NFS_FAILED_HINT,
+                "mount_hint": NFS_MOUNT_FAILED_HINT.format(options=NFS_MOUNT_OPTIONS),
+                "mount_error": mount_error,
                 "stdout": result.stdout[:2_000],
                 "stderr": result.stderr[:2_000],
             },
@@ -489,7 +620,8 @@ def _exports_result(
             "Para ver el contenido de un export: "
             'nexus.recon.nfs(target=..., action="list", path="<export>").',
             "action=list usa el cliente userland `nfs-ls` (paquete `libnfs-utils`); "
-            "si falta, el propio resultado lo dice con error=userland_client_missing.",
+            "si falta o el export lo rechaza, el handler monta el export con "
+            "`sudo -n mount` y lee de ahí (mismo action=list, mismo path).",
         ]
     return ToolResult(
         output=output,
@@ -507,13 +639,176 @@ def _exports_result(
     )
 
 
+async def _mount_fallback(
+    sandbox: Any,
+    programs: dict[str, str],
+    *,
+    target: str,
+    path: str,
+    action: str,
+    file: str,
+    timeout_seconds: int,
+    workspace_root: str,
+) -> tuple[ToolResult | None, str]:
+    """Read an export through a real kernel mount; ``(result, error)``.
+
+    Two ways in, in order of privilege: the mount the operator already made
+    (found in ``/proc/self/mounts``, read with plain ``find``/``cat``) and a
+    ``sudo -n mount`` into a workspace-local mountpoint that is always unmounted
+    afterwards. ``error`` is empty on success and carries the reason otherwise,
+    so the caller keeps the userland refusal *and* the mount refusal together.
+    """
+    mountpoint = existing_mountpoint(target, path)
+    mounted_here = False
+    evidence: dict[str, Any] = {"via": "kernel_mount"}
+    if mountpoint is None:
+        if not nfs_mount_allowed():
+            return None, f"mount fallback disabled by {NFS_MOUNT_ENV}"
+        directory = _mountpoint_for(workspace_root, target, path)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return None, f"mountpoint could not be created: {exc}"
+        mountpoint = str(directory)
+        argv = [
+            programs["sudo"], "-n", programs["mount"], "-t", "nfs",
+            "-o", NFS_MOUNT_OPTIONS, _mount_device(target, path), mountpoint,
+        ]
+        try:
+            mount = await run_in_sandbox(
+                sandbox,
+                argv,
+                timeout_seconds=min(int(timeout_seconds), 60),
+                image_env="NEXUS_NFS_IMAGE",
+                default_image="python:3.12-alpine",
+            )
+        except (FileNotFoundError, PermissionError) as exc:
+            return None, f"mount binary is not available: {exc}"
+        evidence["mount_options"] = NFS_MOUNT_OPTIONS
+        evidence["mount_exit_code"] = mount.exit_code
+        if mount.timed_out or mount.exit_code != 0:
+            detail = (mount.stderr or mount.stdout or "").strip()[:2_000]
+            return None, detail or f"mount exited with {mount.exit_code}"
+        mounted_here = True
+
+    evidence["mountpoint"] = mountpoint
+    evidence["mounted_by_operator"] = not mounted_here
+    # ``sudo -n`` only when this handler made the mount: the operator's own
+    # mount is readable by the operator, and asking for root there would turn a
+    # working path into a permission prompt.
+    elevate = [programs["sudo"], "-n"] if mounted_here else []
+    try:
+        if action == "list":
+            command = [
+                *elevate, programs["find"], mountpoint,
+                "-maxdepth", str(NFS_MOUNT_FIND_MAXDEPTH),
+                "-printf", "%y %10s %p\\n",
+            ]
+            result = await run_in_sandbox(
+                sandbox, command, timeout_seconds=min(int(timeout_seconds), 120),
+                image_env="NEXUS_NFS_IMAGE", default_image="python:3.12-alpine",
+            )
+            if result.timed_out:
+                return None, "find timed out over the mounted export"
+            lines: list[str] = []
+            for raw in str(result.stdout or "").splitlines():
+                line = raw.rstrip()
+                if not line.strip():
+                    continue
+                # ``find -printf`` prints the export root too; the model asked
+                # for it, so it is not an entry of the listing.
+                if line.split(maxsplit=2)[-1] == mountpoint:
+                    continue
+                lines.append(line.replace(mountpoint + "/", "").strip())
+            evidence["entries_total"] = len(lines)
+            entries = lines[:NFS_MAX_LISTING_LINES]
+            listing = ToolResult(
+                output={
+                    "target": target,
+                    "action": action,
+                    "path": path,
+                    "via": "kernel_mount",
+                    "entries": entries,
+                    "count": len(entries),
+                    "truncated": len(lines) > NFS_MAX_LISTING_LINES,
+                    "files_landed": False,
+                    "hint": (
+                        "Listado leído desde un montaje real del export. Usa "
+                        "nexus.recon.nfs(action=\"read\", path=..., file=\"<ruta de "
+                        "la lista>\") para traer el contenido de cada fichero "
+                        "interesante a la pizarra."
+                    ),
+                },
+                verified=True,
+                verification_method="nfs_listing_via_kernel_mount",
+                evidence=evidence,
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+            return listing, ""
+
+        child = _safe_child(mountpoint, file)
+        if child is None:
+            return None, f"file escapes the export: {file}"
+        result = await run_in_sandbox(
+            sandbox, [*elevate, programs["cat"], child],
+            timeout_seconds=min(int(timeout_seconds), 120),
+            image_env="NEXUS_NFS_IMAGE", default_image="python:3.12-alpine",
+        )
+        if result.timed_out:
+            return None, "cat timed out over the mounted export"
+        if result.exit_code != 0:
+            return None, (result.stderr or "").strip()[:2_000] or "cat failed"
+        content = str(result.stdout or "")
+        truncated = len(content.encode("utf-8", "replace")) > NFS_MAX_READ_BYTES
+        evidence["file"] = file
+        evidence["bytes_total"] = len(content.encode("utf-8", "replace"))
+        read = ToolResult(
+            output={
+                "target": target,
+                "action": action,
+                "path": path,
+                "file": file,
+                "via": "kernel_mount",
+                "preview": content[:NFS_MAX_READ_BYTES],
+                "truncated": truncated,
+            },
+            verified=bool(content),
+            outcome="" if content else "negative",
+            verification_method="nfs_file_read_via_kernel_mount",
+            evidence=evidence,
+            exit_code=result.exit_code,
+            stdout=content[:NFS_MAX_READ_BYTES],
+            stderr=result.stderr,
+        )
+        return read, ""
+    finally:
+        if mounted_here:
+            try:
+                await run_in_sandbox(
+                    sandbox,
+                    [programs["sudo"], "-n", programs["umount"], mountpoint],
+                    timeout_seconds=30,
+                    image_env="NEXUS_NFS_IMAGE",
+                    default_image="python:3.12-alpine",
+                )
+            except (FileNotFoundError, PermissionError, OSError):
+                evidence["umount"] = "failed"
+
+
 __all__ = [
     "NFS_ACTIONS",
     "NFS_ALLOWED_PROGRAMS",
     "NFS_INSTALL_GUIDANCE",
+    "NFS_MOUNT_ENV",
+    "NFS_MOUNT_FAILED_HINT",
     "NFS_MOUNT_GUIDANCE",
+    "NFS_MOUNT_OPTIONS",
+    "existing_mountpoint",
     "nfs_definition",
     "nfs_handler",
+    "nfs_mount_allowed",
     "parse_exports",
     "resolve_program",
 ]

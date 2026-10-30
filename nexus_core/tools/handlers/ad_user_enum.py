@@ -69,6 +69,13 @@ def user_enum_definition(tenant_id: str = "system") -> ToolDefinition:
                     "items": {"type": "string", "minLength": 1, "maxLength": 128},
                     "minItems": 1,
                     "maxItems": USER_ENUM_MAX_USERS,
+                    "description": (
+                        "Lista de nombres a probar (no vacía). Esta tool "
+                        "necesita un DC con Kerberos y nombres ya obtenidos; si "
+                        "el host no es un controlador de dominio o aún no tienes "
+                        "usuarios, no la uses: enumera primero el servicio "
+                        "(nexus.recon.smb, nexus.recon.ftp, la web)."
+                    ),
                 },
                 "timeout_seconds": {
                     "type": "integer",

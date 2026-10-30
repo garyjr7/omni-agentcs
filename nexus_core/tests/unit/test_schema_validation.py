@@ -227,6 +227,33 @@ def test_an_unknown_property_lists_what_the_contract_accepts() -> None:
     assert "allowed: level, url" in message
 
 
+def test_a_rejected_enum_carries_the_guidance_of_its_property() -> None:
+    """The catalog already says *why*; the rejection has to say it too.
+
+    hijack_v7 (2026-10-30) sent ``protocol="rpc"`` to ``nexus.recon.netexec``
+    five times: the error listed ``['smb', 'ldap']`` and nothing about the
+    rpcbind/mountd the run was actually looking at, so the model kept guessing.
+    """
+    from nexus_core.tools.handlers.netexec import netexec_definition
+
+    schema = netexec_definition().input_schema
+    with pytest.raises(SchemaValidationError) as excinfo:
+        validate({"protocol": "rpc", "target": "203.0.113.10"}, schema)
+    message = str(excinfo.value)
+    assert "$.protocol" in message
+    assert "rpcbind" in message
+
+
+def test_a_rejected_enum_without_a_description_stays_short() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"mode": {"type": "string", "enum": ["a", "b"]}},
+    }
+    with pytest.raises(SchemaValidationError) as excinfo:
+        validate({"mode": "c"}, schema)
+    assert str(excinfo.value) == "$.mode: 'c' is not one of ['a', 'b']"
+
+
 def test_malformed_schema_is_rejected_at_registration() -> None:
     with pytest.raises(SchemaValidationError):
         ToolDefinition(

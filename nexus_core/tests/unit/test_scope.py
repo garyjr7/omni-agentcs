@@ -202,6 +202,35 @@ class ScopeValidationTests(unittest.TestCase):
         with self.assertRaises(ScopeViolation):
             ScopeValidator(make_scope()).validate("not-a-target")
 
+    def test_ip_with_a_port_is_the_same_authorized_asset(self):
+        """hijack_v7 iteration 37: ``10.0.0.5:55104`` was read as a domain.
+
+        The scope covered ``10.0.0.5/32``; adding the port the recon had
+        just found open turned the target into an unknown domain and the scan of
+        that port never ran.
+        """
+        validator = ScopeValidator(make_scope())
+        result = validator.validate("203.0.113.10:55104")
+        self.assertEqual(result.kind, ScopeKind.IP)
+        self.assertEqual(result.ip, "203.0.113.10")
+        self.assertEqual(result.matched_rule, PUBLIC_DOC_CIDR)
+        self.assertEqual(result.original, "203.0.113.10:55104")
+
+    def test_a_port_does_not_widen_the_scope(self):
+        with self.assertRaises(ScopeViolation):
+            ScopeValidator(make_scope()).validate(f"{OUT_OF_SCOPE_IP}:443")
+
+    def test_domain_with_a_port_matches_the_domain_rule(self):
+        scope = make_scope(domains=("example.com",))
+        with mock.patch.object(DNSResolver, "resolve", return_value=("203.0.113.10",)):
+            result = ScopeValidator(scope).validate("example.com:8443")
+        self.assertEqual(result.kind, ScopeKind.DOMAIN)
+        self.assertEqual(result.domain, "example.com")
+
+    def test_a_non_numeric_port_is_not_stripped(self):
+        with self.assertRaises(ScopeViolation):
+            ScopeValidator(make_scope()).validate("example.com:not-a-port")
+
 
 class ScopeResolverTests(unittest.TestCase):
     def test_resolver_deduplicates_and_caches(self):

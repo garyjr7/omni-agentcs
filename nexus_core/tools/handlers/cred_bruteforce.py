@@ -312,9 +312,12 @@ def _resolve_wordlist(workspace_root: str, source: str) -> str:
             workspace_root, text, system_roots=roots[1:], label="password_file"
         )
     except shared_wordlists.WordlistNotFound as exc:
-        raise ToolInputError(f"file does not exist: {exc.path}") from exc
+        # The invented path is only half of the answer: the other half is which
+        # wordlists this host has (hijack_v7 guessed ``path/to/your/wordlist.txt``
+        # at the hydra sweep and the rejection did not say what to use instead).
+        raise ToolInputError(f"file does not exist: {exc.path}{exc.hint}") from exc
     except shared_wordlists.WordlistForbidden as exc:
-        raise ToolInputError(f"forbidden path: {exc.path}") from exc
+        raise ToolInputError(f"forbidden path: {exc.path}{exc.hint}") from exc
 
 
 def _truncate_wordlist(

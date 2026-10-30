@@ -36,6 +36,8 @@ from .parser import (
 )
 from .branch_discipline import (
     BARRIER_ATTEMPT_WINDOW,
+    BARRIER_INSISTENCE_LIMIT,
+    BARRIER_MIN_DISTINCT_TOOLS,
     barrier_refusal,
     closed_branch_refusal,
 )
@@ -959,6 +961,12 @@ class ReActCoordinator:
         #: Replays of an invocation whose effect is unconfirmed (P10 iteration 47:
         #: the fence was right, ending the run was not). Same counting.
         self.replay_refusals = 0
+        #: ``barrier`` facts refused for lack of attempts. After
+        #: :data:`BARRIER_INSISTENCE_LIMIT` the fact is accepted *and* stamped as
+        #: unsubstantiated instead of refused again: a gate the model cannot
+        #: satisfy only spends turns (hijack_v7 refused the same barrier nine
+        #: times over seventeen barren turns).
+        self.barrier_refusals = 0
         #: ``host:port`` refs the *loop* closed with a barrier fact this run (see
         #: ``_close_stalled_branch``). Two reasons to keep them: never write the
         #: same barrier twice, and never let the loop's own reflex read as
@@ -3328,7 +3336,44 @@ class ReActCoordinator:
         guidance = barrier_refusal(
             self.actions, self._coverage_snapshot(), arguments
         )
+        # ``getattr``: a resumed run (and the unit tests) may hand the gate a
+        # coordinator built without ``__init__``; the counter starts at zero.
         if not guidance:
+            self.barrier_refusals = 0
+            return None
+        self.barrier_refusals = int(getattr(self, "barrier_refusals", 0)) + 1
+        if arguments is not None and self.barrier_refusals >= BARRIER_INSISTENCE_LIMIT:
+            # The model insists: record its verdict so it stops re-asking, but
+            # stamp it as unsubstantiated. ``coverage.barrier_is_conclusive``
+            # keeps the branch open for an ``invalid_*`` outcome, so this can
+            # never be the false "descartado" the gate exists to prevent.
+            value = arguments.get("value")
+            if not isinstance(value, dict):
+                value = {}
+                arguments["value"] = value
+            value["sweep_attempted"] = False
+            value["outcome"] = "invalid_unsubstantiated"
+            value.setdefault(
+                "reason",
+                "barrier registrado tras insistir: no llegó a "
+                f"{BARRIER_MIN_DISTINCT_TOOLS} herramientas distintas en "
+                f"{BARRIER_ATTEMPT_WINDOW} turnos, así que no cierra la rama",
+            )
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                "react.barrier_downgraded",
+                {
+                    "iteration": self.iteration,
+                    "tool_id": str(self.action.tool_id),
+                    "refusals": self.barrier_refusals,
+                    "reason": (
+                        f"{BARRIER_MIN_DISTINCT_TOOLS} distinct tools in "
+                        f"{BARRIER_ATTEMPT_WINDOW} turns were not reached"
+                    ),
+                },
+            )
+            self.barrier_refusals = 0
             return None
         return self._refuse_before_execution(
             outcome="barrier_refused",
@@ -4136,6 +4181,7 @@ class ReActCoordinator:
             # so the pivot-gate and replay streaks start over.
             self.pivot_gate_streak = 0
             self.replay_refusals = 0
+            self.barrier_refusals = 0
             # The insistence streak is decided below: a successful turn or a
             # failure that is not a scope denial breaks it, while a handler that
             # returned ``scope_denied`` (``nexus.shell.exec`` validating the

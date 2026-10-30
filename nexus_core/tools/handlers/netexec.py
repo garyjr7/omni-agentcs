@@ -211,6 +211,13 @@ def netexec_definition(tenant_id: str = "system") -> ToolDefinition:
                     "type": "string",
                     "enum": list(NETEXEC_PROTOCOLS),
                     "default": "smb",
+                    "description": (
+                        "NetExec solo habla 'smb' y 'ldap'; no existe "
+                        "protocol='rpc'. Lo que corre en el puerto 111 es "
+                        "rpcbind/mountd (NFS): para eso usa nexus.recon.nfs "
+                        "(action=exports) o nexus.shell.exec(command='nmap -Pn -p "
+                        "111 --script rpcinfo <host>')."
+                    ),
                 },
                 "target": {"type": "string", "minLength": 1, "maxLength": 255},
                 "operation": {

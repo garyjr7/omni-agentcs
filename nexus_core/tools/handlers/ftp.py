@@ -181,7 +181,11 @@ def ftp_definition(tenant_id: str = "system") -> ToolDefinition:
             "properties": {
                 "target": {"type": "string", "minLength": 1, "maxLength": 255},
                 "action": {"type": "string", "enum": list(FTP_ACTIONS)},
-                "remote_path": {"type": "string", "minLength": 1, "maxLength": 1024},
+                # ``""`` is the anonymous root, and the handler already reads it
+                # as ``/``. Requiring a non-empty string made the model's
+                # ``remote_path=""`` a rejection instead of a listing of ``/``
+                # (hijack_v7, iteration 20).
+                "remote_path": {"type": "string", "maxLength": 1024},
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                 "username": {"type": "string", "minLength": 1, "maxLength": 128},
                 "password": {"type": "string", "maxLength": 256},

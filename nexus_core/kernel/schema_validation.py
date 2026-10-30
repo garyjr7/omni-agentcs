@@ -118,6 +118,35 @@ def _unknown_property_hint(error: ValidationError) -> str:
     return ""
 
 
+def _property_description(schema: Mapping[str, Any], error: ValidationError) -> str:
+    """The ``description`` of the property a failing keyword belongs to.
+
+    A rejection that only lists the accepted values still leaves the model to
+    guess *why*; hijack_v7 (2026-10-30) sent ``protocol="rpc"`` to
+    ``nexus.recon.netexec`` five times -the error said
+    ``'rpc' is not one of ['smb','ldap']`` and nothing about the rpcbind the run
+    was actually looking at-. The catalog already declares that guidance on the
+    property, so the rejection carries it instead of a second message nobody
+    reads.
+    """
+    node: Any = schema
+    for part in error.absolute_path or ():
+        if not isinstance(node, Mapping):
+            return ""
+        properties = node.get("properties")
+        if isinstance(properties, Mapping) and part in properties:
+            node = properties[part]
+            continue
+        items = node.get("items")
+        if isinstance(items, Mapping):
+            node = items
+            continue
+        return ""
+    if not isinstance(node, Mapping):
+        return ""
+    return " ".join(str(node.get("description") or "").split())[:320]
+
+
 def _location(path: str, error: ValidationError) -> str:
     """Join the caller's prefix with the failing JSON path.
 
@@ -144,6 +173,10 @@ def validate(instance: Any, schema: Dict[str, Any], path: str = "$") -> None:
     if error is None:
         return
     message = error.message
+    if error.validator in {"enum", "const", "minItems", "required"}:
+        description = _property_description(schema, error)
+        if description:
+            message += f" · {description}"
     if error.validator == "additionalProperties" and isinstance(error.schema, dict):
         # The raw message says what was rejected but not what the contract does
         # accept, so the model has to guess and burns a turn (run
