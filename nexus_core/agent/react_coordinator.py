@@ -499,11 +499,22 @@ def _is_vector_failure(observation: Any) -> bool:
     ``partial`` counts by outcome even when a handler ever reports it with
     ``success=True``; governance refusals and a failed command inside a working
     channel do not count at all.
+
+    A call the engine refused on its *arguments* is not a verdict about the
+    target either. Measured in hijack_v5 (2026-10-29): ``nmap --script`` was
+    rejected twice as a forbidden flag and counted as two failures of the
+    ``(nmap, '', host)`` vector, which locked nmap for the rest of the run; an
+    ``invalid_failure_string`` did the same to ``cred.bruteforce``. The model's
+    malformed call says nothing about the port. What keeps that from looping
+    forever is ``MAX_FREE_ARGUMENT_REJECTIONS``, which already charges the third
+    consecutive rejection as a barren turn.
     """
     if not isinstance(observation, dict):
         return False
+    if observation.get("input_rejected"):
+        return False
     outcome = str(observation.get("outcome") or "").strip()
-    if outcome in VECTOR_NEUTRAL_OUTCOMES:
+    if outcome in VECTOR_NEUTRAL_OUTCOMES or outcome.startswith("invalid_"):
         return False
     if outcome in VECTOR_FAILURE_OUTCOMES:
         return True

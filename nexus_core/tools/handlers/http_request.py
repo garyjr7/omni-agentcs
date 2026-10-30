@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from nexus_core.kernel.fact_verification import access_denied_page, authenticated_page_signal
 from nexus_core.kernel.html_evidence import extract_page_evidence, next_pages
 from nexus_core.kernel.identity_derivation import derive_identities
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
@@ -835,6 +836,30 @@ SESSION_NOT_AUTHENTICATED_GUIDANCE = (
 )
 
 
+#: What the model reads when its session *did* open the page. The absence of
+#: this verdict is what cost hijack_v5 27 turns (2026-10-29): it held a working
+#: ``session_ref`` and kept re-trying the login because nothing told it it was in.
+SESSION_AUTHENTICATED_GUIDANCE = (
+    "La sesión autentica: la respuesta es la página de dentro (sin formulario de "
+    "login, con 'logout' o en una ruta privada). El motor lo registra como hecho "
+    "'access' y el plan pasa a la fase siguiente. NO repitas el login ni vuelvas a "
+    "probar la misma credencial: enumera lo que el panel permite (subida de "
+    "archivos, ejecución, usuarios, IDOR) para convertir el acceso en shell/flag."
+)
+
+#: The other half of the verdict: a 200 that denies the session. Silence here is
+#: what made the run record a false ``barrier`` ("vector web auth agotado") over a
+#: credential that hydra had just validated.
+SESSION_DENIED_GUIDANCE = (
+    "La sesión NO autoriza este recurso: la respuesta trae 'access denied'/403 en "
+    "el body aunque el status sea 200. No repitas el mismo session_ref sobre esta "
+    "URL. Prueba el login de nuevo (POST al formulario, csrf_mode=true si lleva "
+    "tokens) para obtener una sesión con el rol correcto y, si vuelve a denegar, "
+    "cambia de vector: otra cuenta, otro parámetro o el servicio que quedó "
+    "pendiente en el plan."
+)
+
+
 def serves_login_form(payload: dict[str, Any]) -> bool:
     """Whether the response body is a login form (never raises).
 
@@ -1019,6 +1044,17 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
     # (iterations 18-35: the same 3 843 bytes of ``login.php`` read as "panel"),
     # and storing the cookie of a failed login poisons the vault handle.
     not_authenticated = ok and bool(session_ref) and serves_login_form(payload)
+    # The verdict for a request that *did* carry a session: the panel (positive
+    # marker) or an explicit denial. The verifier derives the ``access`` fact from
+    # the same predicate (``nexus_core.kernel.fact_verification``), so the answer
+    # the model reads and the fact the board records can never disagree.
+    session_signal = ""
+    session_denied = False
+    if ok and not not_authenticated and (session_ref or manual_cookie):
+        session_signal = authenticated_page_signal(
+            payload.get("body_preview"), urlsplit(url).path or "/"
+        )
+        session_denied = not session_signal and access_denied_page(payload.get("body_preview"))
     # The response may have handed out a session (a login that worked). Keep it
     # in the vault and return the handle so the next call does not need the value.
     stored_session_ref = (
@@ -1062,6 +1098,8 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
             evidence["emails_found"] = len(page_evidence.get("emails") or ())
             evidence["people_found"] = len(page_evidence.get("people") or ())
             evidence["links_found"] = len(page_evidence.get("links") or ())
+        if session_signal:
+            evidence["session_signal"] = session_signal
     else:
         evidence["error"] = payload.get("error")
 
@@ -1105,13 +1143,22 @@ async def _http_request_handler(arguments: dict[str, Any], context: RunContext) 
         evidence["session_state"] = "not_authenticated"
         output["session_state"] = "not_authenticated"
         output["guidance"] = SESSION_NOT_AUTHENTICATED_GUIDANCE
+    elif session_signal:
+        evidence["session_state"] = "authenticated"
+        output["session_state"] = "authenticated"
+        output["guidance"] = SESSION_AUTHENTICATED_GUIDANCE
+    elif session_denied:
+        evidence["session_state"] = "denied"
+        output["session_state"] = "denied"
+        output["guidance"] = SESSION_DENIED_GUIDANCE
     return ToolResult(
         output=output,
-        verified=ok and not not_authenticated,
-        outcome="partial" if not_authenticated else "",
+        verified=ok and not not_authenticated and not session_denied,
+        outcome="partial" if (not_authenticated or session_denied) else "",
         verification_method=(
             "http_session_not_authenticated"
             if not_authenticated
+            else "http_session_denied" if session_denied
             else "http_response_received" if ok else "http_request_failed"
         ),
         evidence=evidence,

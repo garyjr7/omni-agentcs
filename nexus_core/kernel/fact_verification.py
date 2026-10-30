@@ -87,6 +87,104 @@ WEB_SHELL_METHOD = "web_command_completed"
 #: caller's payload ran only if the engine answered with its own error text.
 SQLI_ERROR_METHOD = "http_sql_error"
 
+#: ``verification_method`` of an ``access`` fact a *page* proved: the request
+#: carried a session the engine had stored, and the response served the page
+#: behind it. It is the mirror image of the SSH channel -the session admits the
+#: client, no command runs yet- so the board can tell it from a shell.
+HTTP_SESSION_METHOD = "http_session_authenticated"
+
+#: A page served only to an authenticated visitor offers a way out: a logout /
+#: sign-out affordance. It is a *positive* marker, and a login page never has
+#: one, so it decides the verdict on its own.
+_LOGOUT_AFFORDANCE_RE = re.compile(
+    r"log\s*-?\s*out|sign\s*-?\s*out|cerrar\s+sesi[oó]n|desconectar", re.IGNORECASE
+)
+
+#: Paths that live behind a login in virtually every application. The second
+#: positive marker, and only when the body does not deny: hijack_v5 measured a
+#: 200 on ``/administration.php`` whose body said "Access denied", which is a
+#: rejected session, not the panel.
+_PROTECTED_PATH_RE = re.compile(
+    r"^/(?:admin(?:istrator|istration)?|dashboard|panel|private|internal|account|"
+    r"profile|settings|users?|backend|manage|console)(?:[/.]|$)",
+    re.IGNORECASE,
+)
+
+#: Text that refuses the request. It only ever *blocks* an assertion, so the list
+#: is deliberately wide (a false negative costs a turn, a false positive lies).
+_ACCESS_DENIED_RE = re.compile(
+    r"access\s+denied|acceso\s+denegado|not\s+authori[sz]ed|unauthori[sz]ed|"
+    r"permission\s+denied|permisos\s+insuficientes|login\s+required|"
+    r"please\s+(?:log|sign)\s*in|debes\s+iniciar\s+sesi[oó]n|"
+    r"no\s+tienes?\s+(?:permisos|acceso)|forbidden",
+    re.IGNORECASE,
+)
+
+#: A ``<input type="password">`` means the server answered with the login form:
+#: that is what a rejected session looks like, and it is never access.
+_LOGIN_FORM_RE = re.compile(r"type\s*=\s*[\"']?password", re.IGNORECASE)
+
+
+def access_denied_page(body) -> bool:
+    """Whether a response body refuses the request it answered."""
+    text = str(body or "")
+    return bool(text) and bool(_ACCESS_DENIED_RE.search(text))
+
+
+def authenticated_page_signal(body, path: str) -> str:
+    """Positive marker of a page only a session gets: why it counts, or ``""``.
+
+    Returns ``"logout_affordance"`` or ``"protected_path"``. A login form or a
+    denial page returns ``""`` whatever the path says: the verdict is read from
+    the response, never inferred from the URL alone.
+    """
+    text = str(body or "")
+    if not text or _LOGIN_FORM_RE.search(text) or access_denied_page(text):
+        return ""
+    if _LOGOUT_AFFORDANCE_RE.search(text):
+        return "logout_affordance"
+    if _PROTECTED_PATH_RE.search(str(path or "")):
+        return "protected_path"
+    return ""
+
+
+def http_session_evidence(arguments, output) -> dict | None:
+    """The ``access`` value a response that *used* a session proves, or ``None``.
+
+    Measured in hijack_v5 (``run_bc2ff878a44641afa8f04dc90168f22f``, 2026-10-29):
+    ``nexus.web.request`` sent the ``session_ref`` the credential tool had issued
+    against ``/administration.php``, got a 200 and asserted nothing, so the plan
+    stayed on *Acceso inicial* while the model re-tried the login for 27 turns.
+    The request has to carry the session (``session_ref`` or a literal ``cookie``),
+    answer 2xx and serve an authenticated page; a denial or a login form is not
+    access, whatever the status code says.
+    """
+    args = arguments if isinstance(arguments, dict) else {}
+    sent = str(args.get("session_ref") or "").strip() or str(args.get("cookie") or "").strip()
+    if not sent:
+        return None
+    payload = output if isinstance(output, dict) else {}
+    status = payload.get("status")
+    if not isinstance(status, int) or not 200 <= status < 300:
+        return None
+    url = str(payload.get("url") or args.get("url") or "")
+    try:
+        path = urlsplit(url).path or "/"
+    except ValueError:
+        path = "/"
+    signal = authenticated_page_signal(payload.get("body_preview"), path)
+    if not signal:
+        return None
+    return {
+        "transport": "http",
+        "authenticated": True,
+        "session_ref": str(args.get("session_ref") or "").strip() or None,
+        "status": status,
+        "path": path,
+        "signal": signal,
+    }
+
+
 #: ``verification_method`` of an identity a page *printed*. The parser read an
 #: address out of the body, so the fact is verified for what it says -this string
 #: is published- and carries ``confidence: observed`` because an address on a
@@ -1008,6 +1106,13 @@ def derive_assertions(tool_id, arguments, result, context):
                     {'username': local, 'domain': email_domain,
                      'source': 'web_email', 'confidence': 'observed'},
                     method=WEB_IDENTITY_METHOD)
+        # A session that opens the page behind the login is access in its own
+        # right: no command runs yet, but the engagement *is* inside. The fact is
+        # what closes ``exploitation`` in ``PHASES``; without it the plan stays on
+        # *Acceso inicial* and the model re-tries the credential it already used.
+        session = http_session_evidence(arguments, output)
+        if host and session:
+            add('access', host, session, method=HTTP_SESSION_METHOD)
         if host and remote:
             http_channel_assertions(
                 add, target=host, command=remote,

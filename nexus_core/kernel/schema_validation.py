@@ -80,6 +80,44 @@ def _checked(key: str) -> None:
     Draft202012Validator.check_schema(json.loads(key))
 
 
+def _unknown_property_hint(error: ValidationError) -> str:
+    """Name the allowed property an unknown one was reaching for.
+
+    The allowed list alone is not enough: hijack_v5 (2026-10-29) sent
+    ``credential_ref`` to ``nexus.web.request`` -the field is ``session_ref``- and
+    the rejection listed sixteen names the model could not choose between, so the
+    next turn guessed again (``rejected``, ``vault_handle``) and the credential the
+    run had just proved went unused for 27 turns.
+
+    A field is matched by its last ``_``-separated segment and only when exactly
+    one allowed property shares it (``credential_ref``/``session_ref`` → ``ref``);
+    with two candidates there is no hint, because a wrong suggestion is worse than
+    none. The hint never restates the value: only whether it is a ``vault:`` handle,
+    which tells the model that the field travels as-is.
+    """
+    schema = error.schema if isinstance(error.schema, dict) else {}
+    properties = schema.get("properties")
+    instance = error.instance if isinstance(error.instance, dict) else {}
+    if not isinstance(properties, dict) or not instance:
+        return ""
+    for name in sorted(str(key) for key in instance):
+        if name in properties or "_" not in name:
+            continue
+        tail = name.rsplit("_", 1)[-1]
+        matches = [
+            allowed
+            for allowed in properties
+            if "_" in str(allowed) and str(allowed).rsplit("_", 1)[-1] == tail
+        ]
+        if len(matches) != 1:
+            continue
+        hint = f"; '{name}' no existe: el campo que acepta ese valor aquí es '{matches[0]}'"
+        if isinstance(instance.get(name), str) and str(instance[name]).startswith("vault:"):
+            hint += " (un handle vault:... se pasa tal cual, el motor lo resuelve)"
+        return hint
+    return ""
+
+
 def _location(path: str, error: ValidationError) -> str:
     """Join the caller's prefix with the failing JSON path.
 
@@ -115,4 +153,5 @@ def validate(instance: Any, schema: Dict[str, Any], path: str = "$") -> None:
         allowed = sorted(str(key) for key in properties) if isinstance(properties, dict) else []
         if allowed:
             message += f" (allowed: {', '.join(allowed)})"
+        message += _unknown_property_hint(error)
     raise SchemaValidationError(f"{_location(path, error)}: {message}") from None

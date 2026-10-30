@@ -6,6 +6,7 @@ import os
 from dataclasses import replace
 from typing import Any
 
+from nexus_core.kernel.errors import ToolInputError
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.sandbox import SandboxResult, sandbox_for_environment
 from nexus_core.tools.parsers.nmap import parse_nmap_xml
@@ -61,6 +62,21 @@ NMAP_FORBIDDEN_FLAGS: set[str] = {
     "-oN",
     "-oG",
 }
+
+#: Why a refusal has to name a way out. A bare "flag is forbidden" is a dead end:
+#: hijack_v5 (2026-10-29) sent ``--script`` twice, got the same opaque rejection,
+#: and the second one locked ``nexus.recon.nmap`` for the rest of the run even
+#: though nothing was ever scanned. Both hints tell the model the next call.
+NMAP_FORBIDDEN_FLAG_HINT = (
+    "; esta tool no ejecuta scripts NSE ni escribe salida a fichero. Si necesitas un "
+    "script concreto, ejecútalo por nexus.shell.exec(command='nmap --script <script> "
+    "<target>')"
+)
+NMAP_UNKNOWN_FLAG_HINT = (
+    "; usa el argumento `profile` (quick, full_tcp, service, top_udp) en vez de "
+    "inventar flags: las extra permitidas son -sV -sC -sS -sT -sU -sn -O -Pn -n -F "
+    "--open -p --top-ports -T0..-T5 --min-rate --max-rate --max-retries --host-timeout"
+)
 
 NOISE_LEVELS = {"low": 0, "medium": 1, "high": 2}
 NOISE_NAMES = ("low", "medium", "high")
@@ -145,12 +161,15 @@ def validate_and_canonicalize_flags(raw_flags: list[str]) -> tuple[list[str], st
             raise ValueError(f"nmap flag must start with '-': {token!r}")
 
         name, separator, inline_value = token.partition("=")
+        # ``ToolInputError`` (a ``ValueError``) keeps the gateway's classification
+        # honest: the call was refused before nmap ran, so the failure belongs to
+        # the arguments and never to the vector (``_is_vector_failure``).
         if token in NMAP_FORBIDDEN_FLAGS or name in NMAP_FORBIDDEN_FLAGS:
-            raise ValueError(f"nmap flag is forbidden: {token!r}")
+            raise ToolInputError(f"nmap flag is forbidden: {token!r}{NMAP_FORBIDDEN_FLAG_HINT}")
 
         spec = NMAP_ALLOWED_FLAGS.get(token) or NMAP_ALLOWED_FLAGS.get(name)
         if spec is None:
-            raise ValueError(f"nmap flag is not allowed: {token!r}")
+            raise ToolInputError(f"nmap flag is not allowed: {token!r}{NMAP_UNKNOWN_FLAG_HINT}")
         level, requires_value = spec
         noise_rank = max(noise_rank, NOISE_LEVELS[level])
 
