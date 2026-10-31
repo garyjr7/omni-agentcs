@@ -6,9 +6,13 @@ runner failed to execute it, and operators had no single place to read which
 guarantees were in force. This module names the modes and their guarantees, and
 resolves the active one from the environment.
 
-``OCI_NETWORK`` is documented in ``docs/adr/ADR-004-sandbox-modes.md`` but not
-implemented yet: constructing it raises ``NotImplementedError`` on purpose so
-nobody silently runs network tools behind an assumed firewall.
+``OCI_NETWORK`` is implemented by :class:`nexus_core.kernel.sandbox.OCINetworkSandbox`:
+the container joins an ``--internal`` Docker network (no route to the internet)
+and its only way out is the scope-governed SOCKS5 proxy in
+:mod:`nexus_core.kernel.egress`. It still fails closed when either half is not
+configured (:data:`EGRESS_PROXY_ENV` / :data:`EGRESS_NETWORK_ENV`) or when the
+proxy is pointed at an ordinary bridge network, because an unenforced "filtered"
+mode is exactly the divergence this module exists to prevent.
 """
 
 from __future__ import annotations
@@ -91,6 +95,13 @@ GUARANTEES: dict[SandboxMode, SandboxGuarantees] = {
 
 #: Environment variable that overrides the mode explicitly.
 MODE_ENV = "NEXUS_SANDBOX_MODE"
+#: ``socks5://host:port`` of the running scope-governed egress proxy.
+EGRESS_PROXY_ENV = "NEXUS_EGRESS_PROXY"
+#: Name of the dedicated ``--internal`` Docker network the sandbox joins.
+EGRESS_NETWORK_ENV = "NEXUS_SANDBOX_NETWORK"
+#: Networks that would make the egress policy cosmetic (they reach the host or
+#: the internet untouched), so ``oci_network`` refuses to use them.
+_UNGUARDED_NETWORKS = frozenset({"", "none", "host", "bridge"})
 
 
 def parse_mode(value: str | None) -> SandboxMode | None:
@@ -127,12 +138,41 @@ class SandboxModeForbidden(RuntimeError):
     """
 
 
+def _images(env) -> list[str]:
+    """Allowlisted sandbox images, from the environment."""
+    return [
+        value.strip()
+        for value in env.get("NEXUS_SANDBOX_IMAGES", "python:3.12-alpine").split(",")
+        if value.strip()
+    ]
+
+
 def _build_executor(mode, workspace_root, allowed_programs, env):
-    from .sandbox import LocalSandbox, OCISandbox
+    from .sandbox import LocalSandbox, OCINetworkSandbox, OCISandbox
 
     if mode is SandboxMode.OCI:
-        images = [v.strip() for v in env.get("NEXUS_SANDBOX_IMAGES", "python:3.12-alpine").split(",") if v.strip()]
-        return OCISandbox(workspace_root, images, runtime=env.get("NEXUS_OCI_RUNTIME", "docker"))
+        return OCISandbox(
+            workspace_root, _images(env), runtime=env.get("NEXUS_OCI_RUNTIME", "docker")
+        )
+    if mode is SandboxMode.OCI_NETWORK:
+        proxy = str(env.get(EGRESS_PROXY_ENV, "")).strip()
+        network = str(env.get(EGRESS_NETWORK_ENV, "")).strip()
+        if not proxy or network in _UNGUARDED_NETWORKS:
+            raise SandboxModeNotImplemented(
+                "oci_network needs an enforced egress policy and none is "
+                f"configured: set {EGRESS_PROXY_ENV}=socks5://host:port (a running "
+                "nexus_core.kernel.egress.Socks5EgressProxy) and "
+                f"{EGRESS_NETWORK_ENV}=<dedicated --internal docker network>. "
+                "Without both, network tools stay unable to reach anything on "
+                "purpose: an unfiltered container would be isolation lost, not gained."
+            )
+        return OCINetworkSandbox(
+            workspace_root,
+            _images(env),
+            proxy=proxy,
+            network=network,
+            runtime=env.get("NEXUS_OCI_RUNTIME", "docker"),
+        )
     return LocalSandbox(workspace_root, **({"allowed_programs": allowed_programs} if allowed_programs is not None else {}))
 
 
@@ -147,7 +187,7 @@ class SandboxPolicy:
 
     @staticmethod
     def resolve(env=None, *, workspace_root=".", allowed_programs=None):
-        from .sandbox import LocalSandbox, OCISandbox
+        from .sandbox import LocalSandbox, OCINetworkSandbox, OCISandbox
 
         env = os.environ if env is None else env
         raw = env.get(MODE_ENV)
@@ -170,13 +210,24 @@ class SandboxPolicy:
                 "filesystem, processes or network. Use NEXUS_SANDBOX_MODE=oci, "
                 "or run with NEXUS_ENV=development for a lab CLI."
             )
-        if mode is SandboxMode.OCI_NETWORK:
-            raise SandboxModeNotImplemented("oci_network requires an enforced egress policy; not implemented")
         executor = _build_executor(mode, workspace_root, allowed_programs, env)
-        expected = OCISandbox if mode is SandboxMode.OCI else LocalSandbox
+        if mode is SandboxMode.OCI_NETWORK:
+            expected = OCINetworkSandbox
+            effective = SandboxMode.OCI_NETWORK
+        elif mode is SandboxMode.OCI:
+            expected = OCISandbox
+            effective = SandboxMode.OCI
+        else:
+            expected = LocalSandbox
+            effective = SandboxMode.LOCAL
         if not isinstance(executor, expected):
             raise SandboxModeMismatch(f"{mode.value} requires {expected.__name__}, got {type(executor).__name__}")
-        effective = SandboxMode.OCI if isinstance(executor, OCISandbox) else SandboxMode.LOCAL
+        if mode is SandboxMode.OCI_NETWORK and type(executor) is OCISandbox:
+            # A plain OCISandbox would run with --network none: isolation, but
+            # the network tools the mode promises would all fail.
+            raise SandboxModeMismatch(
+                "oci_network requires OCINetworkSandbox, got OCISandbox (no egress)"
+            )
         return mode, executor, GUARANTEES[effective].to_dict()
 
 

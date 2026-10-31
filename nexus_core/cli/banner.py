@@ -57,7 +57,7 @@ SANDBOX_NOTES: dict[str, str] = {
     "local": "sin aislamiento",
     "local_strict": "sin aislamiento",
     "oci": "container aislado · sin red",
-    "oci_network": "no implementado",
+    "oci_network": "container aislado · egress filtrado por scope",
 }
 
 #: Below this width the ASCII art is dropped and only the stats block is shown.

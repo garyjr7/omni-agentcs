@@ -441,6 +441,10 @@ class LocalSandbox:
 class OCISandbox:
     """Ephemeral Docker/Podman sandbox for untrusted agent commands."""
 
+    #: Docker network the container joins. ``none`` is the safe default; the
+    #: governed-egress subclass overrides it with an ``--internal`` network.
+    network = "none"
+
     def __init__(
         self,
         workspace_root: str | Path,
@@ -450,6 +454,7 @@ class OCISandbox:
         cpus: str = "1.0",
         pids_limit: int = 128,
         max_output_bytes: int = 1_000_000,
+        network: str | None = None,
     ):
         if runtime not in {"docker", "podman"}:
             raise ValueError("OCI runtime must be docker or podman")
@@ -462,6 +467,10 @@ class OCISandbox:
         if max_output_bytes < 0:
             raise ValueError("capture limit must be nonnegative")
         self.max_output_bytes = max_output_bytes
+        if network is not None:
+            self.network = str(network)
+        if not self.network:
+            raise ValueError("sandbox network must be a nonempty name")
 
     def build_argv(self, image: str, command: Sequence[str]) -> list[str]:
         if image not in self.allowed_images:
@@ -471,7 +480,7 @@ class OCISandbox:
         name = f"nexus-sandbox-{uuid4().hex[:12]}"
         return [
             self.runtime, "run", "--rm", "--name", name,
-            "--network", "none",
+            "--network", self.network,
             "--read-only",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
@@ -564,6 +573,65 @@ class OCISandbox:
         return await _capture_process(process, self.max_output_bytes, timeout_seconds,
                                       cancel_event, grace_seconds, started, cleanup_container,
                                       input_data=encoded)
+
+
+class OCINetworkSandbox(OCISandbox):
+    """OCI sandbox whose only route out is the scope-governed egress proxy.
+
+    Two things happen together, and both are required:
+
+    * The container joins an **``--internal`` Docker network**. Docker does not
+      route that network to the internet, so a tool that ignores the proxy
+      variables still cannot reach a target: the bypass attempt fails at the
+      kernel, not in a regex over ``argv``.
+    * The container receives the proxy as ``ALL_PROXY``/``HTTP(S)_PROXY`` so the
+      tools that honor it (``nmap --proxies``, ``httpx -http-proxy``, ``ffuf``)
+      send their traffic through the scope check anyway.
+
+    The proxy itself is :class:`nexus_core.kernel.egress.Socks5EgressProxy`; it
+    runs on the host (reachable through the internal network's gateway) and must
+    already be listening, because a sandbox that starts one per call would
+    reset its authorization cache on every command.
+    """
+
+    #: Environment keys the container reads to find the proxy.
+    PROXY_ENV_KEYS = ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NEXUS_EGRESS_PROXY")
+
+    def __init__(
+        self,
+        workspace_root: str | Path,
+        allowed_images: Iterable[str],
+        proxy: str,
+        network: str,
+        runtime: str = "docker",
+        **kwargs: Any,
+    ):
+        text = str(proxy or "").strip()
+        if not text.startswith(("socks5://", "socks5h://", "http://")):
+            raise ValueError(
+                "egress proxy must be a socks5:// (or http://) URL, "
+                f"got {text!r}"
+            )
+        if not str(network or "").strip() or network in {"none", "host", "bridge"}:
+            # ``bridge`` routes to the internet and ``host`` shares the host
+            # stack, so either would silently disable the governance.
+            raise ValueError(
+                "oci_network requires a dedicated --internal docker network, "
+                f"got {network!r}"
+            )
+        if kwargs.get("network") is not None:
+            raise ValueError("network is set by OCINetworkSandbox, not passed in")
+        super().__init__(
+            workspace_root, allowed_images, runtime=runtime, network=network, **kwargs
+        )
+        self.proxy = text
+
+    def build_argv(self, image: str, command: Sequence[str]) -> list[str]:
+        argv = super().build_argv(image, command)
+        _insert_oci_env(
+            argv, image, {key: self.proxy for key in self.PROXY_ENV_KEYS},
+        )
+        return argv
 
 
 def sandbox_for_environment(

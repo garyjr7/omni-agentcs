@@ -1,7 +1,7 @@
 # ADR-004: Sandbox modes and their guarantees
 
-- Estado: aceptado (modo `oci_network` documentado, no implementado)
-- Fecha: 2026-10-01
+- Estado: aceptado (modo `oci_network` implementado con proxy de egress)
+- Fecha: 2026-10-01 (actualizado 2026-10-30: egress gobernado implementado)
 
 ## Contexto
 
@@ -34,20 +34,34 @@ garantías declaradas:
 - `verify_tool_in_sandbox()` ejecuta el comando de verificación del binario
   *dentro* del sandbox y distingue `ABSENT` / `DETECTED` / `RUNNABLE` / `FAILED`.
 
-## `oci_network`: diseño (no implementado)
+## `oci_network`: implementación (egress gobernado)
 
-Un contenedor con red, pero cuyo tráfico queda restringido a las IPs/CIDRs del
-scope del engagement mediante reglas `iptables` en el host:
+Un contenedor con red, pero cuyo único camino de salida es un proxy SOCKS5 que
+valida cada destino contra el scope firmado:
 
-1. El contenedor se une a una red bridge dedicada por engagement.
-2. Una cadena `NEXUS_SCOPE_<engagement>` acepta `-d <cidr>` del scope y
-   `DROP`ea el resto del tráfico saliente.
-3. Las excepciones del scope ganan (se DROP-ean primero).
-4. El runner elimina la cadena al terminar el container.
+1. `nexus_core/kernel/egress.py` expone `Socks5EgressProxy` (solo `CONNECT`;
+   `BIND` y `UDP ASSOCIATE` se rechazan) y `ScopeEgressGuard`, que reutiliza
+   `ScopeValidator` en vez de reimplementar el matching de scope.
+2. El proxy autoriza **antes** de crear el socket: una denegación devuelve
+   `0x02`, cuenta en `EgressStats` y se emite como `egress.denied` al hook de
+   auditoría; nunca llega a abrirse una conexión al destino.
+3. La conexión se abre a la **IP que el validador autorizó**, no al nombre que
+   envió el cliente, así que un cambio de respuesta DNS entre check y connect
+   (rebinding) no redirige el tráfico.
+4. `OCINetworkSandbox` une el contenedor a una red Docker `--internal` (sin
+   ruta a internet) y le pasa el proxy en `ALL_PROXY`/`HTTP(S)_PROXY`. Una tool
+   que ignore las variables de entorno no tiene salida: el bloqueo lo aplica el
+   kernel, no una regex sobre `argv`.
+5. `SandboxPolicy.resolve()` exige `NEXUS_EGRESS_PROXY=socks5://host:port` y
+   `NEXUS_SANDBOX_NETWORK=<red --internal>`; si falta cualquiera, o si la red es
+   `none`/`host`/`bridge`, sigue lanzando `SandboxModeNotImplemented` con esas
+   dos variables en el mensaje.
 
-El hook existe como `SandboxMode.OCI_NETWORK`, pero `sandbox_for_mode()` lanza
-`NotImplementedError` con un mensaje que apunta a este ADR: nadie debe ejecutar
-tools de red creyendo que el firewall ya está aplicado.
+Límites conocidos, que no se anuncian como garantías: la red `--internal` deja
+que el contenedor alcance al host en la puerta de enlace (donde escucha el
+proxy), por lo que aislar otros servicios del host requiere reglas de host; y
+las tools que no respetan variables de proxy (p. ej. `hydra`) fallan cerrado en
+vez de salir sin filtro.
 
 ## Consecuencias
 
@@ -55,5 +69,8 @@ tools de red creyendo que el firewall ya está aplicado.
 - Un binario "presente" ya no se reporta como utilizable sin evidencia.
 - La cancelación puede matar el árbol de procesos del sandbox sin dejar
   huérfanos (`SandboxResult.cancelled` / `orphans_detected`).
-- Implementar `oci_network` es trabajo futuro acotado a `iptables` + ciclo de
-  vida del contenedor; hasta entonces falla ruidosamente.
+- `oci_network` ya no falla por diseño: falla cerrado si no hay proxy y red
+  `--internal` configurados, y cada conexión denegada queda auditada.
+- Arrancar el proxy es responsabilidad del operador (no se inicia por handler):
+  un proxy por llamada reiniciaría su caché de autorizaciones y ocultaría
+  patrones de egress del run.
