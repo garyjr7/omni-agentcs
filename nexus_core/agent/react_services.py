@@ -49,8 +49,13 @@ from .react_types import (
     TARGET_REACHED_PROMPT,
 )
 from .project_context import render_project_instruction
-from .skills import discover_skills, render_skill_index, render_skills
+from .skills import default_skills_root, discover_skills, render_skill_index, render_skills
 from .evidence import annotate_findings
+
+
+def _skills_root() -> str:
+    """Catalogue directory shared by the prompt index and ``nexus.skill.*``."""
+    return str(default_skills_root())
 
 
 def _skills_secret() -> str | None:
@@ -346,7 +351,14 @@ class ContextBuilder:
             skills_summary=render_skills(active_skills, bodies=skill_bodies),
             # The catalogue is read on every turn, so a skill created during the
             # engagement is loadable without restarting the run (WP4).
-            skill_index=render_skill_index(discover_skills(secret=_skills_secret())),
+            # One resolution for the prompt and for ``nexus.skill.load``: the
+            # installation's catalogue (or ``NEXUS_SKILLS_ROOT``), never the
+            # engagement workspace the CLI happens to run from. The index names
+            # the directory it read when it is empty, so "no skills" is never
+            # confused with "wrong root".
+            skill_index=render_skill_index(
+                discover_skills(secret=_skills_secret()), catalogue=_skills_root()
+            ),
             playbook_summary=_playbook_guidance(store, tenant_id, engagement_id, run_id=snapshot.run_id),
             full_catalog=full_catalog,
         )

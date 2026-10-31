@@ -88,6 +88,31 @@ _NON_ATTEMPT_PREFIXES: tuple[str, ...] = (
 )
 
 RECORD_FACT_TOOL = "nexus.knowledge.record_fact"
+SKILL_LOAD_TOOL = "nexus.skill.load"
+SKILL_LIST_TOOL = "nexus.skill.list"
+
+#: Failed loads of one skill name tolerated before the loop answers the call
+#: itself. The handler already answers the first miss with the real catalogue, so
+#: a second request for the same name cannot learn anything new: it is the
+#: measured loop of the Bounty Hacker run (2026-10-30), where ``web-recon-master``
+#: was refused because the catalogue was read from the wrong directory and the
+#: name came back turn after turn. A name the catalogue now holds is never
+#: refused (a skill created mid-run is legitimate).
+UNKNOWN_SKILL_RETRY_LIMIT = 1
+
+UNKNOWN_SKILL_REFUSAL = (
+    "SKILL INEXISTENTE: `{name}` ya se intentó cargar {count} vez/veces en este "
+    "run y no está en el catálogo ({catalogue}). No la vuelvas a pedir. "
+    "Catálogo real: {known}. Sigue con las tools que ya tienes o carga una de "
+    "las listadas con `{tool}`."
+)
+
+UNKNOWN_SKILL_EMPTY_CATALOGUE = (
+    "SKILL INEXISTENTE: `{name}` no está en el catálogo y el catálogo está vacío "
+    "({catalogue}): no hay ninguna receta que cargar en este host, así que NO "
+    "reintentes `{tool}`. Continúa el engagement con las tools del catálogo de "
+    "herramientas y documenta el atasco si no hay vector."
+)
 
 #: Fact types the deterministic verifier owns: it derives them from a tool's
 #: parsed output (nmap XML, httpx JSONL), so a model that writes them back adds
@@ -398,6 +423,62 @@ def redundant_fact_refusal(
     return None
 
 
+def unknown_skill_refusal(
+    actions: Iterable[Any],
+    arguments: Mapping[str, Any] | None,
+    *,
+    known: Iterable[str] = (),
+    catalogue: str = "",
+    limit: int = UNKNOWN_SKILL_RETRY_LIMIT,
+) -> str | None:
+    """Why a ``nexus.skill.load`` of a name that already failed is refused now.
+
+    A missing skill is an argument error, and the handler already answers the
+    first one with the real catalogue. What the loop adds is the bound: the same
+    name is not requested over and over, because each turn costs a model call and
+    the measured run spent them on a name that could never resolve.
+
+    Only *failed* loads of the **same** name count; a successful load, another
+    name, or a name the catalogue now holds is untouched, and the refusal never
+    stops the run -it is a correction the model reads and moves on from.
+    """
+    if not isinstance(arguments, Mapping):
+        return None
+    name = str(arguments.get("name") or "").strip()
+    if not name:
+        return None
+    if name in {str(item) for item in known}:
+        # The catalogue gained it (created mid-run): the load is legitimate.
+        return None
+    failed = 0
+    for entry in actions or ():
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("tool_id") or "") != SKILL_LOAD_TOOL:
+            continue
+        past = entry.get("arguments")
+        if not isinstance(past, Mapping):
+            continue
+        if str(past.get("name") or "").strip() != name:
+            continue
+        result = entry.get("tool_result")
+        if isinstance(result, Mapping) and not result.get("success"):
+            failed += 1
+    if failed < int(limit):
+        return None
+    if not list(known):
+        return UNKNOWN_SKILL_EMPTY_CATALOGUE.format(
+            name=name, catalogue=catalogue or "?", tool=SKILL_LOAD_TOOL
+        )
+    return UNKNOWN_SKILL_REFUSAL.format(
+        name=name,
+        count=failed,
+        catalogue=catalogue or "?",
+        known=", ".join(sorted(str(item) for item in known)),
+        tool=SKILL_LOAD_TOOL,
+    )
+
+
 def closed_branch_refusal(
     *,
     tool_id: Any,
@@ -448,6 +529,10 @@ __all__ = [
     "CLOSED_BRANCH_BLOCK_TURNS",
     "CONCULSIVE_ATTEMPT_OUTCOMES",
     "REDUNDANT_FACT_GUIDANCE",
+    "SKILL_LIST_TOOL",
+    "SKILL_LOAD_TOOL",
+    "UNKNOWN_SKILL_REFUSAL",
+    "UNKNOWN_SKILL_RETRY_LIMIT",
     "VERIFIER_OWNED_FACT_TYPES",
     "conclusive_attempt",
     "redundant_fact_refusal",
@@ -460,4 +545,5 @@ __all__ = [
     "distinct_attempts",
     "opening_fact_recorded",
     "preview_executed_recently",
+    "unknown_skill_refusal",
 ]

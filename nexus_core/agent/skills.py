@@ -21,12 +21,17 @@ from collections.abc import Mapping, Set
 from dataclasses import dataclass
 import hashlib
 import hmac
+import os
 from pathlib import Path
 
 from .injection import scan_untrusted_text, wrap_untrusted_output
 
 #: Directory (relative to the project root) that holds skills.
 SKILLS_DIRNAME = ".agents/skills"
+#: Absolute path of the catalogue an operator wants to use. It is the only way
+#: to point the agent at a catalogue outside the installation without widening
+#: the search to arbitrary directories.
+SKILLS_ROOT_ENV = "NEXUS_SKILLS_ROOT"
 #: File name of one skill body.
 SKILL_FILENAME = "SKILL.md"
 #: Suffix of the optional HMAC signature file.
@@ -81,9 +86,67 @@ class Skill:
         }
 
 
+def installation_root() -> Path:
+    """The installation that ships the code: the parent of ``nexus_core``.
+
+    Same rule ``cli.update`` and the packaging installers use, so the catalogue
+    is found wherever the package lives (checkout, pip, npm postinstall).
+    """
+    import nexus_core
+
+    return Path(nexus_core.__file__).resolve().parent.parent
+
+
+def default_skills_root() -> Path:
+    """The catalogue the agent must read: the installation's, never the
+    engagement workspace's by accident.
+
+    Why this is not ``Path.cwd()`` (measured in the Bounty Hacker run,
+    2026-10-30): the CLI is started from the engagement workspace, so
+    ``discover_skills()`` looked for ``<workspace>/.agents/skills`` and answered
+    "no skills found" while the repository shipped ``web-recon-master`` and the
+    rest. The model could not load any recipe and repeated the name.
+
+    Resolution order:
+
+    1. ``NEXUS_SKILLS_ROOT`` (a directory the operator chose);
+    2. ``<cwd>/.agents/skills`` when that directory exists (a checkout run from
+       its own root, or an operator who keeps the catalogue with the project);
+    3. ``<installation>/.agents/skills`` -the fallback that fixes the measured
+       run, where the CLI ran from the engagement workspace and the repository's
+       own catalogue was never looked at.
+
+    Everything found under (2) that came with a cloned repository is still
+    *unsigned*, so it loads only as delimited, injection-scanned untrusted data
+    (:func:`render_skill_index` labels every line): a target cannot make its text
+    trusted, and the trust tier is the defence, not the directory. Nothing is
+    searched in sibling or parent directories: the roots are exactly the three
+    above.
+    """
+    configured = str(os.getenv(SKILLS_ROOT_ENV) or "").strip()
+    if configured:
+        base = Path(configured).expanduser()
+        if (base / SKILLS_DIRNAME).is_dir():
+            return base / SKILLS_DIRNAME
+        if base.is_dir() and any(
+            (child / SKILL_FILENAME).is_file() for child in base.iterdir() if child.is_dir()
+        ):
+            return base
+        return base / SKILLS_DIRNAME
+    local = Path.cwd() / SKILLS_DIRNAME
+    if local.is_dir():
+        return local
+    installed = installation_root() / SKILLS_DIRNAME
+    if installed.is_dir():
+        return installed
+    return local
+
+
 def skills_root(root: str | Path | None = None) -> Path:
-    base = Path(root) if root is not None else Path.cwd()
-    return base / SKILLS_DIRNAME
+    """Directory holding the skills for ``root``, or the resolved default."""
+    if root is not None:
+        return Path(root) / SKILLS_DIRNAME
+    return default_skills_root()
 
 
 #: A skill name is either ``<name>`` or one namespace plus the name
@@ -242,6 +305,8 @@ def skill_description(content: str, *, limit: int = SKILL_DESCRIPTION_CHARS) -> 
 
 def render_skill_index(
     skills: Mapping[str, Skill] | list[Skill] | tuple[Skill, ...],
+    *,
+    catalogue: str | Path | None = None,
 ) -> str:
     """Render ``name: one sentence`` per skill for the system prompt.
 
@@ -263,7 +328,11 @@ def render_skill_index(
             label += " · señales de inyección: " + ", ".join(skill.signals)
         lines.append(f"- {skill.name}: {skill_description(skill.content)} ({label})")
     if not lines:
-        return "(sin skills disponibles)"
+        # Naming the directory is the difference between "there is no recipe"
+        # and "the catalogue was looked for in the wrong place" -the measured
+        # Bounty Hacker failure-; it is one line of prompt, once.
+        location = Path(catalogue) if catalogue is not None else default_skills_root()
+        return f"(sin skills disponibles en {location})"
     return wrap_untrusted_output("\n".join(lines))
 
 
@@ -306,13 +375,16 @@ __all__ = [
     "MAX_SKILL_NAME_PARTS",
     "SIGNATURE_SUFFIX",
     "SKILLS_DIRNAME",
+    "SKILLS_ROOT_ENV",
     "SKILL_FILENAME",
     "TRUST_INVALID",
     "TRUST_SIGNED",
     "TRUST_UNSIGNED",
     "Skill",
     "activate_skills",
+    "default_skills_root",
     "discover_skills",
+    "installation_root",
     "load_skill",
     "render_skill_index",
     "render_skills",

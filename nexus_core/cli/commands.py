@@ -1548,7 +1548,12 @@ def cmd_roe(session: "OmniSession", args: list[str]) -> None:
 
 def cmd_skills(session: "OmniSession", args: list[str]) -> None:
     """Lista, previsualiza y activa skills (`.agents/skills/<nombre>/SKILL.md`)."""
-    from nexus_core.agent.skills import TRUST_SIGNED, discover_skills, load_skill
+    from nexus_core.agent.skills import (
+        TRUST_SIGNED,
+        default_skills_root,
+        discover_skills,
+        load_skill,
+    )
     from nexus_core.kernel.scope_loader import scope_signing_secret
 
     secret = scope_signing_secret()
@@ -1556,7 +1561,10 @@ def cmd_skills(session: "OmniSession", args: list[str]) -> None:
     if action in {"list", "ls"}:
         found = discover_skills(secret=secret)
         if not found:
-            render.write("  (sin skills en .agents/skills/)")
+            # Name the directory: run from an engagement workspace, the old
+            # message made an empty catalogue indistinguishable from a wrong
+            # root (measured in the Bounty Hacker run).
+            render.write(f"  (sin skills en {default_skills_root()})")
             return
         active_names = set(getattr(session, "active_skills", None) or [])
         for name, skill in sorted(found.items()):

@@ -9,7 +9,11 @@ prompt carries a one-line index of every discovered skill and the model decides
 when to load one.
 
 Both tools are read-only, scope-free and never touch a target: they read
-``.agents/skills/<name>/SKILL.md`` from the project directory the CLI runs in.
+``.agents/skills/<name>/SKILL.md`` from the catalogue
+:func:`nexus_core.agent.skills.default_skills_root` resolves -the installation's
+own, ``NEXUS_SKILLS_ROOT`` when the operator set it-, never from an implicit
+``Path.cwd()``. Both the prompt index and these tools share that one resolution,
+so the model can only load what the index advertised.
 The trust tiers of :mod:`nexus_core.agent.skills` still apply:
 
 * an unsigned skill loads as *untrusted data* (the observation is wrapped by the
@@ -30,12 +34,14 @@ from __future__ import annotations
 from typing import Any
 
 from nexus_core.agent.skills import (
+    default_skills_root,
     discover_skills,
     load_skill,
     render_skill_index,
     skill_description,
     skills_root,
 )
+from nexus_core.kernel.errors import ToolInputError
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.schema_validation import validate
 
@@ -111,6 +117,7 @@ async def skill_list_handler(
 ) -> ToolResult:
     """List every discovered skill with its one-line description."""
     validate(arguments, skill_list_definition().input_schema)
+    root = default_skills_root()
     found = discover_skills(secret=_secret())
     entries = [
         {
@@ -127,20 +134,24 @@ async def skill_list_handler(
     ]
     return ToolResult(
         output={
-            "root": str(skills_root()),
+            # Explicit provenance: which directory was read. Without it "no
+            # skills" cannot be told apart from "wrong directory" (the measured
+            # Bounty Hacker run).
+            "root": str(root),
             "count": len(entries),
             "skills": entries,
+            "names": sorted(found),
             "load_with": LOAD_TOOL_ID,
             # The same text the system prompt carries, so the model can read the
             # catalogue in one place instead of re-deriving it from the list.
-            "index": render_skill_index(found),
+            "index": render_skill_index(found, catalogue=root),
         },
         # The post-condition is about the local catalogue, never the target: the
         # enumeration is complete when every entry names a SKILL.md that was read
         # (count == len(entries)). The gateway refuses an unverified result.
         verified=True,
         verification_method="skills_listed",
-        evidence={"count": len(entries), "root": str(skills_root())},
+        evidence={"count": len(entries), "root": str(root)},
     )
 
 
@@ -153,10 +164,21 @@ async def skill_load_handler(
     skill = load_skill(name, secret=_secret())
     if skill is None:
         known = sorted(discover_skills(secret=_secret()))
-        raise ValueError(
-            f"unknown skill {name!r}"
-            + (f" (available: {', '.join(known)})" if known else " (no skills found)")
-        )
+        root = default_skills_root()
+        if known:
+            detail = f"available: {', '.join(known)}"
+        else:
+            # Naming the directory turns "no skills found" -which the model
+            # retried with the same name- into an actionable statement about the
+            # catalogue itself.
+            detail = (
+                f"the catalogue at {root} is empty or missing; do not retry this "
+                f"name, use nexus.skill.list to confirm and continue with the "
+                "tools you already have"
+            )
+        # A name that does not exist is bad *input*, not an unknown effect: it is
+        # classified as such (``tool.rejected``) instead of a failed invocation.
+        raise ToolInputError(f"unknown skill {name!r} ({detail})")
     if not skill.usable:
         # A tampered skill is a supply-chain event, not a malformed argument: it
         # is refused exactly like the CLI refuses `/skills use`, never rendered.
@@ -174,6 +196,7 @@ async def skill_load_handler(
     return ToolResult(
         output={
             "name": skill.name,
+            "root": str(skills_root()),
             "trust": skill.trust,
             "signed": skill.signed,
             "sha256": skill.sha256,

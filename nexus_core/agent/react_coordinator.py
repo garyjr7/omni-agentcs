@@ -38,9 +38,11 @@ from .branch_discipline import (
     BARRIER_ATTEMPT_WINDOW,
     BARRIER_INSISTENCE_LIMIT,
     BARRIER_MIN_DISTINCT_TOOLS,
+    SKILL_LOAD_TOOL,
     barrier_refusal,
     closed_branch_refusal,
     redundant_fact_refusal,
+    unknown_skill_refusal,
 )
 
 from .react_types import (
@@ -3334,6 +3336,42 @@ class ReActCoordinator:
             extra={"branch_closed_recent": True},
         )
 
+    def _refuse_repeated_unknown_skill(self) -> Transition | None:
+        """Refuse a second load of a skill name the catalogue already refused.
+
+        The handler answers the first miss with the real catalogue; repeating the
+        name is a loop that costs a model call per turn and was measured in the
+        Bounty Hacker run (2026-10-30). The rule is pure and unit-tested in
+        ``branch_discipline.unknown_skill_refusal``; here the catalogue is read
+        once so the refusal can name it instead of only forbidding the call.
+        """
+        if str(getattr(self.action, "tool_id", "") or "") != SKILL_LOAD_TOOL:
+            return None
+        arguments = self.action.arguments if isinstance(self.action.arguments, dict) else None
+        if not arguments:
+            return None
+        try:
+            from nexus_core.agent.skills import default_skills_root, discover_skills
+
+            known = sorted(discover_skills())
+            catalogue = str(default_skills_root())
+        except Exception:  # noqa: BLE001 - a catalogue read must never abort a turn
+            known, catalogue = [], ""
+        guidance = unknown_skill_refusal(
+            self.actions, arguments, known=known, catalogue=catalogue
+        )
+        if guidance is None:
+            return None
+        return self._refuse_before_execution(
+            outcome="unknown_skill",
+            guidance=guidance,
+            extra={
+                "unknown_skill": str(arguments.get("name") or ""),
+                "skill_catalogue": known,
+                "skill_catalogue_root": catalogue,
+            },
+        )
+
     def _refuse_redundant_fact(self) -> Transition | None:
         """Refuse a ``record_fact`` of something the verifier already proved.
 
@@ -4038,6 +4076,9 @@ class ReActCoordinator:
         redundant_fact = self._refuse_redundant_fact()
         if redundant_fact is not None:
             return redundant_fact
+        unknown_skill = self._refuse_repeated_unknown_skill()
+        if unknown_skill is not None:
+            return unknown_skill
         unroutable = await self._correct_unroutable_sweep()
         if unroutable is not None:
             return unroutable
@@ -5125,8 +5166,19 @@ class ReActCoordinator:
 
     def _result(self) -> ReActResult:
         if self.status == STATUS_MAX_ITERATIONS and (not self.final_summary):
+            # The terminal state must say what is true: the limit was reached, the
+            # work did not close, and which branches are still open. Without the
+            # last part the operator reads a budget number and nothing about the
+            # engagement (the measured Bounty Hacker run ended exactly so).
+            coverage = getattr(getattr(self, "snapshot", None), "coverage", None)
+            open_work = list(getattr(coverage, "open_work", []) or [])
+            labels = "; ".join(
+                str(getattr(entry, "label", "") or "") for entry in open_work[:4]
+            )
             self.final_summary = (
-                f"iteration budget exhausted ({self.config.max_iterations}) without task_complete"
+                f"iteration budget exhausted ({self.config.max_iterations}) without "
+                f"task_complete; findings={len(self.findings)}; "
+                f"open branches: {labels or 'ninguna identificada'}"
             )
         self.context.event(
             "react.finished",

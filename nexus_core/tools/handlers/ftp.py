@@ -109,11 +109,38 @@ def run_op(ftp, action, remote, local_dir):
             text = bytes(buf).decode("utf-8", "replace")
             printable = sum(c.isprintable() or c in "\n\r\t" for c in text)
             if not text.strip() or printable < len(text) * 0.85:
+                # Binary: reported, never persisted as text and never read as one
+                # (a downloaded image is not an analysed image).
+                info["files"].append({
+                    "name": name,
+                    "remote": name,
+                    "size": size if size is not None else len(buf),
+                    "content_kind": "binary",
+                })
                 continue
+            digest = hashlib.sha256(bytes(buf)).hexdigest()
+            saved = ""
+            # A listing that only previews forces a second call to get the file,
+            # and the natural second call is another listing. Persisting the
+            # text here makes the same turn feed the next step (a password list
+            # is usable as `password_file` the moment it is on disk).
+            try:
+                os.makedirs(local_dir, exist_ok=True)
+                saved = os.path.join(local_dir, os.path.basename(str(name).rstrip("/")))
+                with open(saved, "wb") as handle:
+                    handle.write(bytes(buf))
+            except Exception:
+                saved = ""
             info["files"].append({
                 "name": name,
+                "remote": name,
+                "path": saved or name,
+                "saved": bool(saved),
                 "size": size if size is not None else len(buf),
+                "sha256": digest,
+                "content_kind": "text",
                 "preview": text[:PREVIEW_BYTES],
+                "preview_truncated": bool(size is not None and size > len(buf)),
             })
     elif action == "download":
         os.makedirs(local_dir, exist_ok=True)
@@ -134,13 +161,24 @@ def run_op(ftp, action, remote, local_dir):
             ftp.retrbinary("RETR " + remote, writer)
         finally:
             handle.close()
+        preview = bytes(head).decode("utf-8", "replace")
+        printable = sum(c.isprintable() or c in "\n\r\t" for c in preview)
         info["file"] = name
         info["path"] = path
         info["size"] = size
         info["sha256"] = digest.hexdigest()
-        info["preview"] = bytes(head).decode("utf-8", "replace")
+        info["preview"] = preview
         info["preview_bytes"] = len(head)
         info["preview_truncated"] = size > len(head)
+        # "Downloaded" and "analysed" are different facts: a binary artifact is
+        # stored here, and nothing about it has been read yet.
+        info["content_kind"] = (
+            "text"
+            if preview and printable >= len(preview) * 0.85
+            else "binary"
+        )
+        if info["content_kind"] == "binary":
+            info["preview"] = ""
     return info
 
 def has_data(action, info):
@@ -275,6 +313,146 @@ def _validate_text(value: Any, field: str, *, max_length: int) -> str:
     return text
 
 
+def _workspace_path(path: str, workspace_root: str) -> str:
+    """The saved file as a workspace-relative path (``""`` when outside it).
+
+    ``password_file`` and ``nexus.workspace.read`` resolve relative names against
+    the engagement workspace, so this is the spelling that keeps working after
+    the sandbox that wrote the file is gone.
+    """
+    if not path:
+        return ""
+    try:
+        relative = os.path.relpath(
+            os.path.realpath(path), os.path.realpath(workspace_root)
+        )
+    except (OSError, ValueError):
+        return ""
+    if relative.startswith(".."):
+        return ""
+    return relative.replace(os.sep, "/")
+
+
+def _other_services(context: RunContext, host: str, port: int) -> list[dict[str, Any]]:
+    """Services the board already proved on ``host``, minus the one just used.
+
+    This is the cross-service link the run was missing: a password list found on
+    FTP is only actionable if the agent knows *which* other service of the same
+    host authenticates. The board already holds that map (``nmap`` derives
+    ``service`` facts), so the observation names the remaining ports instead of
+    leaving the model to re-scan or to guess.
+    """
+    from nexus_core.kernel.credentials import board_facts
+
+    found: list[dict[str, Any]] = []
+    try:
+        facts = board_facts(context, "service")
+    except Exception:  # noqa: BLE001 - the board never breaks a recon call
+        return found
+    prefix = f"{host}:"
+    for fact in facts:
+        key = str(fact.get("key") or "")
+        if not key.startswith(prefix):
+            continue
+        value = fact.get("value") if isinstance(fact.get("value"), dict) else {}
+        try:
+            service_port = int(value.get("port") or key.split(":")[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if service_port == port or service_port in {item["port"] for item in found}:
+            continue
+        found.append(
+            {
+                "port": service_port,
+                "service": str(value.get("service") or ""),
+                "ref": key,
+            }
+        )
+    found.sort(key=lambda item: item["port"])
+    return found
+
+
+def _record_loot_facts(
+    context: RunContext,
+    *,
+    target: str,
+    port: int,
+    files: list[dict[str, Any]],
+    usernames: list[dict[str, Any]],
+) -> list[str]:
+    """Persist the loot as board *leads* with provenance (never raises).
+
+    Without this the content of ``task.txt`` travelled once in an observation and
+    was gone: the next turn's prompt reads the board, not the transcript (the
+    measured Bounty Hacker run read the files and derived nothing). The facts are
+    unverified by construction -a file name and its bytes are evidence of what is
+    *on the server*, not proof a credential works-, so they can never advance a
+    phase; they only stop the run from re-reading the same directory.
+    """
+    store = getattr(context, "store", None)
+    engagement_id = str(getattr(context, "engagement_id", "") or "")
+    if store is None or not engagement_id:
+        return []
+    from nexus_core.kernel.blackboard import Blackboard
+
+    board = Blackboard(store)
+    recorded: list[str] = []
+    common = {
+        "tenant_id": str(getattr(context, "tenant_id", "system") or "system"),
+        "engagement_id": engagement_id,
+        "source": "nexus.recon.ftp",
+        "created_by": "nexus.recon.ftp",
+        "verified": False,
+    }
+    for item in files or ():
+        if not isinstance(item, dict):
+            continue
+        remote = str(item.get("remote") or item.get("name") or item.get("path") or "").strip()
+        if not remote:
+            continue
+        key = f"ftp:{target}:{port}:{remote}"
+        try:
+            board.record(
+                fact_type="loot",
+                key=key,
+                value={
+                    "host": target,
+                    "port": int(port),
+                    "remote": remote,
+                    "path": str(item.get("workspace_path") or ""),
+                    "size": item.get("size"),
+                    "sha256": str(item.get("sha256") or ""),
+                    "content_kind": str(item.get("content_kind") or "text"),
+                    "truncated": bool(item.get("preview_truncated")),
+                    "via": "ftp-anonymous",
+                },
+                **common,
+            )
+            recorded.append(key)
+        except Exception:  # noqa: BLE001 - memory must never break a tool
+            continue
+    for entry in usernames or ():
+        name = str((entry or {}).get("username") or "").strip()
+        if not name:
+            continue
+        key = f"user:{target}:{name}"
+        try:
+            board.record(
+                fact_type="user",
+                key=key,
+                value={
+                    "username": name,
+                    "host": target,
+                    "source": str((entry or {}).get("source") or ""),
+                },
+                **common,
+            )
+            recorded.append(key)
+        except Exception:  # noqa: BLE001 - same contract as the loot fact
+            continue
+    return recorded
+
+
 def _parse_last_json(stdout: str) -> dict[str, Any]:
     """Return the last JSON object printed by the client, else raise ValueError."""
     for line in reversed(stdout.splitlines()):
@@ -389,11 +567,71 @@ async def ftp_handler(arguments: dict, context: RunContext) -> ToolResult:
         error = str(payload.get("error") or "")
         if "530" in error or "login" in error.lower():
             outcome = "denied"
-    loot = loot_summary(
-        [item for item in (payload.get("files") or []) if isinstance(item, dict)]
-    )
+    # The saved copy is the one a later call can use (``password_file``,
+    # ``workspace.read``): annotate it before the shared summary so the chain
+    # names a path that survives the sandbox.
+    files = [item for item in (payload.get("files") or []) if isinstance(item, dict)]
+    for item in files:
+        item["workspace_path"] = _workspace_path(str(item.get("path") or ""), workspace_root)
+    if action == "download" and ok:
+        payload["workspace_path"] = _workspace_path(
+            str(payload.get("path") or ""), workspace_root
+        )
+        # One downloaded file is one loot answer: the shared summary must see it
+        # so a password list retrieved explicitly feeds the same chain the
+        # listing's auto-loot does.
+        files = [
+            {
+                "name": payload.get("file"),
+                "remote": payload.get("file"),
+                "path": str(payload.get("path") or ""),
+                "workspace_path": payload["workspace_path"],
+                "size": payload.get("size"),
+                "sha256": payload.get("sha256"),
+                "content_kind": payload.get("content_kind"),
+                "preview": payload.get("preview") or "",
+                "preview_truncated": payload.get("preview_truncated"),
+            }
+        ]
+    loot = loot_summary(files)
     evidence["files_total"] = int(loot.get("files_total") or 0)
     evidence["credentials_found"] = len(loot.get("credentials") or [])
+    # The other half of the chain: which services of this same host the board
+    # proved. A password list is only usable where authentication happens.
+    other_services = _other_services(context, target, port)
+    if other_services:
+        loot["other_services"] = other_services
+        chain = loot.get("chain")
+        if isinstance(chain, dict):
+            chain["service_candidates"] = [
+                {
+                    "service": item["service"],
+                    "port": item["port"],
+                    "call": {
+                        "tool": "nexus.cred.bruteforce",
+                        "service": item["service"] or "ssh",
+                        "target": target,
+                        "port": item["port"],
+                    },
+                }
+                for item in other_services
+                # Keep suggestions inside the credential tool's actual direct
+                # service contract. HTTP forms need a verified route and form
+                # parameters; SMB/RDP/WinRM use different tools and must not be
+                # passed as ``nexus.cred.bruteforce.service``.
+                if item["service"] in {"ssh", "ftp"}
+            ]
+    recorded = _record_loot_facts(
+        context,
+        target=target,
+        port=port,
+        files=files,
+        usernames=list(loot.get("usernames") or []),
+    )
+    if recorded:
+        evidence["board_facts"] = recorded
+    evidence["wordlists_found"] = len(loot.get("wordlists") or [])
+    evidence["usernames_found"] = len(loot.get("usernames") or [])
     if action == "list":
         listing = list(payload.get("listing") or [])
         names = list(payload.get("names") or [])
@@ -416,8 +654,21 @@ async def ftp_handler(arguments: dict, context: RunContext) -> ToolResult:
                     "sha256": payload.get("sha256"),
                     "preview_bytes": payload.get("preview_bytes"),
                     "preview_truncated": payload.get("preview_truncated"),
+                    "content_kind": payload.get("content_kind"),
                 }
             )
+            if payload.get("content_kind") == "binary":
+                # Downloaded is not analysed. Saying so is the difference between
+                # "we have the artifact" and "we read the artifact".
+                loot["artifact_status"] = "descargado, sin analizar"
+                loot.setdefault("next_steps", []).append(
+                    "`" + str(payload.get("file") or "artefacto") + "` es BINARIO: "
+                    "está descargado en el workspace pero NO analizado. "
+                    "Queda el paso de analizarlo (file/strings/exiftool/binwalk o "
+                    "la skill linux/forensics-basics) si tu objetivo lo requiere; "
+                    "si ninguna tool disponible puede hacerlo, regístralo como "
+                    "limitación y sigue con otra rama -no lo des por analizado."
+                )
         verification_method = "ftp_download_verified" if ok else "ftp_download_failed"
 
     return ToolResult(
