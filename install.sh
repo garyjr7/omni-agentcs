@@ -144,6 +144,11 @@ if [[ "$DRY_RUN" == 1 ]]; then
         log "plan: $VENV_DIR/bin/python -m pip install --upgrade \"$SOURCE\""
         log "plan: ln -sf $VENV_DIR/bin/omni $BIN_DIR/omni"
     fi
+    if command -v nuclei >/dev/null 2>&1; then
+        log "plan: nuclei -update-templates -update-template-dir $HOME/.local/nuclei-templates (si aún no hay templates)"
+    else
+        log "plan: omitir templates de nuclei (binario nuclei ausente)"
+    fi
     log "configuración del operador: $CONFIG_DIR (no se toca)"
     exit 0
 fi
@@ -179,6 +184,34 @@ install_from_source() {
     fail "no se pudo instalar '$SOURCE'."
 }
 
+install_nuclei_templates() {
+    # Nuclei is an external system tool, not a Python dependency. When it is
+    # already installed, provision its community templates once into the user
+    # location that the handler knows how to discover. Do not make an optional
+    # scanner feed failure abort the Omni installation.
+    if ! command -v nuclei >/dev/null 2>&1; then
+        log "nuclei templates: omitido (nuclei no está instalado)"
+        return 0
+    fi
+
+    local templates="${HOME}/.local/nuclei-templates"
+    if find "$templates" -type f -name '*.yaml' -print -quit 2>/dev/null | grep -q .; then
+        log "nuclei templates: ya disponibles en $templates"
+        return 0
+    fi
+
+    log "nuclei templates: descargando a $templates"
+    if nuclei -update-templates -update-template-dir "$templates"; then
+        if find "$templates" -type f -name '*.yaml' -print -quit 2>/dev/null | grep -q .; then
+            log "nuclei templates: listos en $templates"
+        else
+            log "AVISO: nuclei terminó sin dejar templates YAML; doctor lo reportará"
+        fi
+    else
+        log "AVISO: no se pudieron descargar templates de nuclei; la instalación de Omni continúa"
+    fi
+}
+
 if command -v pipx >/dev/null 2>&1; then
     log "pipx detectado: instalando desde $SOURCE"
     install_from_source pipx
@@ -191,6 +224,8 @@ else
     ln -sf "$VENV_DIR/bin/omni" "$BIN_DIR/omni"
     log "enlace creado: $BIN_DIR/omni"
 fi
+
+install_nuclei_templates
 
 # --- Verificación de que la configuración del operador sobrevive --------------
 AFTER_CONFIG="$(config_hash)"

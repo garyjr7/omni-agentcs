@@ -269,7 +269,9 @@ def assess_environment(
         )
     )
 
-    nuclei_templates = env.get("NEXUS_NUCLEI_TEMPLATES", "").strip()
+    from nexus_core.tools.handlers.nuclei import nuclei_templates_dir
+
+    nuclei_templates = str(nuclei_templates_dir()).strip()
     nuclei_ready = bool(nuclei_templates) and path_exists(nuclei_templates)
     components.append(
         ComponentStatus(
@@ -282,7 +284,7 @@ def assess_environment(
             ""
             if nuclei_ready
             else (
-                "Instala las plantillas (`nuclei -update-templates`) y exporta "
+                "Instala las plantillas (`nuclei -update-templates`) o configura "
                 "NEXUS_NUCLEI_TEMPLATES al directorio."
             ),
         )

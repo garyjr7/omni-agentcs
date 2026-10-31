@@ -175,6 +175,13 @@ PyPI. Así el one-liner funciona hoy contra el repositorio y no solo si el
 paquete está publicado. `bash install.sh --dry-run` muestra la fuente y el plan
 sin instalar nada.
 
+Si `nuclei` ya está instalado, `install.sh` descarga sus templates en
+`~/.local/nuclei-templates` cuando todavía no hay ninguno. Si Nuclei no está
+instalado o la descarga falla, Omni sigue instalándose y `omni --doctor` indica
+la precondición pendiente. El handler y el doctor comparten la detección de esa
+ruta, así que no hace falta exportar `NEXUS_NUCLEI_TEMPLATES` para la instalación
+predeterminada.
+
 ### Actualización
 
 ```bash
@@ -305,14 +312,11 @@ y `evidence.missing_env=["MSF_LHOST"]`, así que el agente pivota en vez de
 reintentar MSF en bucle (antes era un fallo de contrato `msf_lhost_missing`). En
 Kali la dirección es la de `tun0` (la VPN):
 
-```bash
-ip -o -4 addr show tun0 | awk '{print $4}'   # p.ej. 10.0.0.1/23
-export MSF_LHOST=10.0.0.1                  # o escríbela en el .env del proyecto
-```
-
-El wizard de primer arranque autodetecta esa IP y la persiste en el `.env` del
-proyecto (el fichero que carga el runtime); si no hay `tun0`, avisa y deja el
-campo vacío. `omni --doctor` valida la precondición **antes** de lanzar un run:
+Al arrancar, Omni detecta la IPv4 actual de `tun0` si `MSF_LHOST` no se
+configuró explícitamente en el shell; usa `4444` como `MSF_LPORT` por defecto.
+La detección se hace en cada proceso para no reutilizar una IP de VPN antigua.
+Si no hay `tun0`, se conserva el `MSF_LHOST` del `.env`, si existe, y
+`omni --doctor` valida la precondición **antes** de lanzar un run:
 con `msfrpcd` escuchando y `MSF_LHOST` sin definir emite un *warning* con la
 acción concreta, y el detalle viaja en el bloque `runtime_preconditions` de
 `omni --doctor --json`.

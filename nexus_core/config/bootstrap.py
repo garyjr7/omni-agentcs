@@ -1,5 +1,7 @@
 """Shared CLI/worker startup: shell > .env > secret store; no import side effects."""
 import os
+import re
+import subprocess
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -50,13 +52,60 @@ def set_env_values(root, values: Mapping[str, str]) -> Path:
     return path
 
 
+def detect_tun0_ipv4() -> str | None:
+    """Return the current IPv4 address on Kali's VPN interface, when available.
+
+    The Metasploit callback is session-specific: persisting the address detected
+    during installation leaves a stale LHOST after reconnecting to the VPN. Read
+    it at process startup instead, and leave explicit shell/.env configuration
+    available for hosts that use a different route or interface.
+    """
+    try:
+        completed = subprocess.run(
+            ["ip", "-o", "-4", "addr", "show", "dev", "tun0"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    match = re.search(r"\binet (\d+\.\d+\.\d+\.\d+)/", completed.stdout)
+    if not match or match.group(1).startswith("127."):
+        return None
+    return match.group(1)
+
+
+def configure_runtime_callbacks(*, shell_lhost: str = "") -> None:
+    """Fill safe Metasploit callback defaults for this process, without writes.
+
+    Explicit shell variables win. Otherwise the current tun0 address takes
+    priority over a potentially stale .env value. If the VPN is down, retain the
+    operator's .env value. LPORT has the same 4444 default as the MSF handler.
+    """
+    explicit_lhost = str(shell_lhost or "").strip()
+    if explicit_lhost:
+        os.environ["MSF_LHOST"] = explicit_lhost
+    else:
+        detected = detect_tun0_ipv4()
+        if detected:
+            os.environ["MSF_LHOST"] = detected
+    if str(os.getenv("MSF_LHOST") or "").strip():
+        if not str(os.getenv("MSF_LPORT") or "").strip():
+            os.environ["MSF_LPORT"] = "4444"
+
+
 def bootstrap_secrets_and_config(root, *, load_configuration=True):
     from dotenv import load_dotenv
     from .secrets import load_secrets_into_env
     from .loader import load_config, apply_environment
     from .xdg import resolve_xdg_paths
 
+    shell_lhost = str(os.getenv("MSF_LHOST") or "").strip()
     load_dotenv(Path(root) / ".env", override=False)
+    configure_runtime_callbacks(shell_lhost=shell_lhost)
     load_secrets_into_env()
     if not load_configuration:
         return None

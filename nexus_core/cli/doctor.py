@@ -57,10 +57,6 @@ def _rpc_status():
     }
 
 
-#: Where nuclei looks for its templates when the env var is not set.
-NUCLEI_DEFAULT_TEMPLATES = "/opt/nuclei-templates"
-
-
 def _sandbox_report() -> dict:
     """The active mode and its real guarantees, or why it was refused.
 
@@ -195,8 +191,12 @@ def _runtime_preconditions(tools, rpc) -> list[dict]:
             }
         )
     if getattr(tools.get("nuclei"), "present", False):
-        configured = str(os.getenv("NEXUS_NUCLEI_TEMPLATES") or "").strip()
-        templates = Path(configured) if configured else Path(NUCLEI_DEFAULT_TEMPLATES)
+        # Use the same env/default/user-directory resolution as the handler.
+        # Nuclei's updater commonly installs into ~/.local/nuclei-templates;
+        # warning against /opt when that directory exists was a false alarm.
+        from nexus_core.tools.handlers.nuclei import nuclei_templates_dir
+
+        templates = Path(nuclei_templates_dir()).expanduser()
         if not templates.is_dir():
             entries.append(
                 {
@@ -204,8 +204,9 @@ def _runtime_preconditions(tools, rpc) -> list[dict]:
                     "missing_env": ["NEXUS_NUCLEI_TEMPLATES"],
                     "severity": "warning",
                     "action": (
-                        f"instala los templates en {NUCLEI_DEFAULT_TEMPLATES} "
-                        "o exporta NEXUS_NUCLEI_TEMPLATES=<ruta>"
+                        "ejecuta `nuclei -update-templates -update-template-dir "
+                        "~/.local/nuclei-templates` o configura "
+                        "NEXUS_NUCLEI_TEMPLATES=<ruta>"
                     ),
                     "observed": f"templates_dir={templates}",
                 }
