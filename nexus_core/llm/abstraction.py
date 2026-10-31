@@ -474,6 +474,56 @@ def completion_token_parameter(
     return "max_completion_tokens" if resolved is LLMProvider.OPENAI else "max_tokens"
 
 
+#: Families from :data:`NEW_COMPLETION_TOKEN_MODELS` that still take a custom
+#: temperature. gpt-4o/gpt-4.1 and the open-weight gpt-oss are conventional
+#: samplers; only the reasoning families pin it to their default.
+TEMPERATURE_TOLERANT_MODELS: tuple[str, ...] = ("gpt-4o", "gpt-4.1", "gpt-oss")
+
+
+def omits_temperature(model: str) -> bool:
+    """True when the model rejects any ``temperature`` but its default (1).
+
+    A reasoning model (o1, o3, o4, gpt-5, gpt-6) answers the operator's 0.1 with
+    ``400 Unsupported value: 'temperature' does not support 0.1 with this
+    model``. The rename and the pinned temperature share the same model table:
+    a family new enough to demand ``max_completion_tokens`` is the one whose
+    sampling is fixed, minus the families that were only renamed.
+    """
+    name = (model or "").strip().lower()
+    if not any(name.startswith(prefix) for prefix in NEW_COMPLETION_TOKEN_MODELS):
+        return False
+    return not any(name.startswith(prefix) for prefix in TEMPERATURE_TOLERANT_MODELS)
+
+
+def _chat_request_params(
+    config: LLMConfig,
+    api_messages: List[Dict[str, Any]],
+    options: Dict[str, Any],
+    token_key: str,
+) -> Dict[str, Any]:
+    """The Chat Completions payload shared by ``complete`` and ``stream``.
+
+    Two keys follow the model rather than the configuration:
+
+    * the output ceiling is serialised as ``token_key`` (``max_completion_tokens``
+      for the renamed families, ``max_tokens`` otherwise);
+    * ``temperature`` is **omitted** for a reasoning model, which only accepts its
+      default. Dropping the key is cleaner than forcing ``1``: the provider
+      applies its own default and the payload never carries a value the model
+      would reject.
+    """
+    params: Dict[str, Any] = {
+        "model": config.model,
+        "messages": api_messages,
+        token_key: options.get(
+            "max_tokens", options.get("max_completion_tokens", config.max_tokens)
+        ),
+    }
+    if not omits_temperature(config.model):
+        params["temperature"] = options.get("temperature", config.temperature)
+    return params
+
+
 class OpenAIClient(BaseLLMClient):
     """LLM client for OpenAI models."""
 
@@ -512,14 +562,9 @@ class OpenAIClient(BaseLLMClient):
         # contract every caller and sub-agent already uses); only the wire key
         # changes, because the new model families reject the old one.
         token_key = completion_token_parameter(self.config.model, self.config.provider)
-        request_params: Dict[str, Any] = {
-            "model": self.config.model,
-            "messages": api_messages,
-            "temperature": kwargs.get("temperature", self.config.temperature),
-            token_key: kwargs.get(
-                "max_tokens", kwargs.get("max_completion_tokens", self.config.max_tokens)
-            ),
-        }
+        request_params = _chat_request_params(
+            self.config, api_messages, kwargs, token_key
+        )
 
         max_retries = 3
         backoff_factor = backoff_base_seconds()
@@ -611,15 +656,10 @@ class OpenAIClient(BaseLLMClient):
             api_messages.insert(0, {"role": "system", "content": self.config.system_prompt})
 
         token_key = completion_token_parameter(self.config.model, self.config.provider)
-        request_params: Dict[str, Any] = {
-            "model": self.config.model,
-            "messages": api_messages,
-            "temperature": kwargs.get("temperature", self.config.temperature),
-            token_key: kwargs.get(
-                "max_tokens", kwargs.get("max_completion_tokens", self.config.max_tokens)
-            ),
-            "stream": True,
-        }
+        request_params = _chat_request_params(
+            self.config, api_messages, kwargs, token_key
+        )
+        request_params["stream"] = True
         if self.config.provider in (LLMProvider.OPENAI, LLMProvider.GROQ):
             request_params["stream_options"] = {"include_usage": True}
 

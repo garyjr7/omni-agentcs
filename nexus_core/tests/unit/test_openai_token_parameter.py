@@ -4,9 +4,10 @@ OpenAI renamed the completion ceiling to ``max_completion_tokens`` and answers
 the old ``max_tokens`` with a 400 *Unsupported parameter* for every model
 released since (gpt-4o, the o-series, gpt-5, gpt-6). A run on ``gpt-6-luna``
 therefore died before the first token, while ``gpt-4-turbo`` still expects the
-old key. These tests pin both halves: the capability table, and the wire payload
-of ``complete``, ``stream`` and the fallback provider (which every sub-agent
-shares, since sub-agents never build their own payload).
+old key. The same families pin ``temperature`` to its default, so the operator's
+0.1 is a second 400 (*Unsupported value*). These tests pin the capability table
+and the wire payload of ``complete``, ``stream`` and the fallback provider (which
+every sub-agent shares, since sub-agents never build their own payload).
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from nexus_core.llm.abstraction import (
     NexusLLMError,
     OpenAIClient,
     completion_token_parameter,
+    omits_temperature,
 )
 
 REPORTED_ERROR = (
@@ -34,8 +36,15 @@ REPORTED_ERROR = (
     "Use 'max_completion_tokens' instead."
 )
 
-#: What the real API does: the new families reject ``max_tokens``.
+TEMPERATURE_ERROR = (
+    "Unsupported value: 'temperature' does not support 0.1 with this model. "
+    "Only the default (1) value is supported."
+)
+
+#: What the real API does: the renamed families reject ``max_tokens``.
 _NEW_FAMILIES = ("gpt-4o", "gpt-4.1", "gpt-5", "gpt-6", "chatgpt-4o", "o1", "o3", "o4")
+#: The reasoning families among them reject any non-default temperature.
+_REASONING_FAMILIES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
 
 
 @pytest.fixture(autouse=True)
@@ -62,11 +71,15 @@ class _OpenAICompletions:
 
     async def create(self, **kwargs):
         self.calls.append(dict(kwargs))
-        if str(kwargs.get("model", "")).startswith(_NEW_FAMILIES):
+        model = str(kwargs.get("model", ""))
+        if model.startswith(_NEW_FAMILIES):
             if "max_tokens" in kwargs:
                 raise _bad_request(REPORTED_ERROR)
             if "max_completion_tokens" not in kwargs:
                 raise _bad_request("Missing required parameter: 'max_completion_tokens'.")
+        if model.startswith(_REASONING_FAMILIES):
+            if "temperature" in kwargs and kwargs["temperature"] != 1:
+                raise _bad_request(TEMPERATURE_ERROR)
         if kwargs.get("stream"):
             return _chunks()
         return SimpleNamespace(
@@ -122,6 +135,21 @@ def test_a_compatible_gateway_keeps_the_key_it_already_accepts():
     assert completion_token_parameter("mystery", "not-a-provider") == "max_tokens"
 
 
+# ----------------------------------------------------- temperature capability
+@pytest.mark.parametrize(
+    "model", ["gpt-6-luna", "gpt-6", "gpt-5", "gpt-5.1", "o1", "o1-mini", "o3-mini", "o4-mini"]
+)
+def test_reasoning_families_omit_temperature(model):
+    assert omits_temperature(model) is True
+
+
+@pytest.mark.parametrize(
+    "model", ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-oss-120b", "gpt-4-turbo", "gpt-3.5-turbo"]
+)
+def test_conventional_samplers_keep_temperature(model):
+    assert omits_temperature(model) is False
+
+
 # ------------------------------------------------------------------ wire payload
 def test_complete_sends_max_completion_tokens_for_gpt_6_luna():
     completions = _OpenAICompletions()
@@ -162,6 +190,82 @@ def test_the_new_key_accepts_an_explicit_completion_tokens_kwarg():
     asyncio.run(client.complete([LLMMessage("user", "hi")], max_completion_tokens=256))
 
     assert completions.calls[0]["max_completion_tokens"] == 256
+
+
+def test_complete_omits_temperature_for_gpt_6_luna():
+    completions = _OpenAICompletions()
+    client = _client("gpt-6-luna", completions=completions)
+
+    asyncio.run(client.complete([LLMMessage("user", "hi")], max_tokens=512))
+
+    payload = completions.calls[0]
+    assert "temperature" not in payload  # the 0.1 default would be a 400
+    assert payload["max_completion_tokens"] == 512
+
+
+def test_an_explicit_temperature_is_dropped_for_a_reasoning_model():
+    completions = _OpenAICompletions()
+    client = _client("gpt-6-luna", completions=completions)
+
+    asyncio.run(client.complete([LLMMessage("user", "hi")], temperature=0.3))
+
+    assert "temperature" not in completions.calls[0]
+
+
+def test_a_legacy_model_keeps_the_configured_temperature():
+    completions = _OpenAICompletions()
+    client = _client("gpt-4-turbo", completions=completions)
+
+    asyncio.run(client.complete([LLMMessage("user", "hi")]))
+
+    assert completions.calls[0]["temperature"] == client.config.temperature
+
+
+def test_a_renamed_but_temperature_tolerant_model_keeps_it():
+    """gpt-4o needs the new token key but still samples at the operator's 0.1."""
+    completions = _OpenAICompletions()
+    client = _client("gpt-4o", completions=completions)
+
+    asyncio.run(client.complete([LLMMessage("user", "hi")], temperature=0.2))
+
+    payload = completions.calls[0]
+    assert payload["temperature"] == 0.2
+    assert "max_completion_tokens" in payload
+
+
+def test_another_provider_keeps_the_configured_temperature():
+    completions = _OpenAICompletions()
+    client = _client("llama-3.3-70b", provider=LLMProvider.GROQ, completions=completions)
+
+    asyncio.run(client.complete([LLMMessage("user", "hi")]))
+
+    payload = completions.calls[0]
+    assert payload["temperature"] == client.config.temperature
+    assert "max_tokens" in payload
+
+
+def test_stream_omits_temperature_for_a_reasoning_model():
+    completions = _OpenAICompletions()
+    client = _client("gpt-6-luna", completions=completions)
+
+    async def run():
+        return [piece async for piece in client.stream([LLMMessage("user", "hi")])]
+
+    assert asyncio.run(run()) == ["ok"]
+    payload = completions.calls[0]
+    assert "temperature" not in payload
+    assert payload["max_completion_tokens"] == client.config.max_tokens
+
+
+def test_stream_keeps_temperature_for_a_legacy_model():
+    completions = _OpenAICompletions()
+    client = _client("gpt-4-turbo", completions=completions)
+
+    async def run():
+        return [piece async for piece in client.stream([LLMMessage("user", "hi")])]
+
+    asyncio.run(run())
+    assert completions.calls[0]["temperature"] == client.config.temperature
 
 
 def test_stream_sends_max_completion_tokens_for_gpt_6_luna():
@@ -227,6 +331,20 @@ def test_the_double_reproduces_the_reported_production_failure():
     with pytest.raises(openai.BadRequestError) as caught:
         asyncio.run(send_old_key())
     assert "Use 'max_completion_tokens' instead" in str(caught.value)
+
+
+def test_the_double_reproduces_the_reported_temperature_rejection():
+    async def send_temperature():
+        return await _OpenAICompletions().create(
+            model="gpt-6-luna",
+            messages=[{"role": "user", "content": "hi"}],
+            max_completion_tokens=512,
+            temperature=0.1,
+        )
+
+    with pytest.raises(openai.BadRequestError) as caught:
+        asyncio.run(send_temperature())
+    assert "'temperature' does not support 0.1" in str(caught.value)
 
 
 def test_an_old_key_rejection_surfaces_as_a_typed_llm_error():
