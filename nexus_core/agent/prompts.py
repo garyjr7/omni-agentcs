@@ -418,6 +418,10 @@ valida scope/RoE/aprobación por cada una y te devuelve un solo bloque `results`
 si una falla, las demás siguen: lee `results` y no repitas las que ya terminaron.
 Si hay dependencia, usa un `tool_call` normal.
 
+EN SEGUNDO PLANO: para una tool LARGA (escaneo completo, fuerza bruta) usa
+{{"action":"spawn_subagent","tool_id":…,"arguments":{{…}}}}. Mismo gobierno;
+su resultado llega luego como observación `background: true`. No la repitas.
+
 Los hechos registrados por knowledge.record_fact son hipótesis, aunque se envíe
 verified=true. Solo assertions emitidas por verificadores deterministas permiten
 avanzar el plan o confirmar hallazgos. Conserva invocation_id, target, fact_type y

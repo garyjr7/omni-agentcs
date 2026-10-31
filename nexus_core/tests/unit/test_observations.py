@@ -100,6 +100,57 @@ def test_large_nmap_observation_is_summarized_and_archived():
     assert store.puts[0][1] >= len(content)
 
 
+def test_a_50kb_stdout_reaches_the_model_as_a_summary_and_a_reference():
+    """Pillar 2: raw tool output lives in the artifact store, not in the prompt.
+
+    A shell command dumping 60 KB is the measured case: the model must read a
+    bounded summary plus the SHA256 of what was stored, never the dump.
+    """
+    stdout = "\n".join(f"line {index:06d} " + "x" * 40 for index in range(1200))
+    assert len(stdout) > 50_000
+    observation = {
+        "success": True,
+        "verification_method": "exit_code",
+        "output": {"stdout": stdout, "target": "10.0.0.5"},
+    }
+    store = RecordingArtifactStore()
+
+    content, compacted, artifact = prepare_observation(
+        "nexus.shell.exec",
+        observation,
+        artifact_store=store,
+        tenant_id="system",
+        run_id="run-50kb",
+    )
+
+    assert compacted is True
+    assert artifact is not None
+    assert len(content) <= MAX_OBSERVATION_CHARS
+    assert "line 001199" not in content
+    payload = json.loads(content)
+    assert payload["artifact"]["sha256"] == artifact["sha256"]
+    assert payload["artifact"]["size_bytes"] >= 50_000
+    assert store.puts and store.puts[0][1] >= 50_000
+    assert store.puts[0][2] == "application/json"
+
+
+def test_the_archive_is_content_addressed():
+    """Two identical oversized outputs resolve to the same digest."""
+    observation = {"success": True, "output": {"stdout": "y" * 60_000}}
+    first = RecordingArtifactStore()
+    second = RecordingArtifactStore()
+
+    _, _, left = prepare_observation(
+        "nexus.shell.exec", observation, artifact_store=first, tenant_id="system"
+    )
+    _, _, right = prepare_observation(
+        "nexus.shell.exec", observation, artifact_store=second, tenant_id="system"
+    )
+
+    assert left is not None and right is not None
+    assert left["sha256"] == right["sha256"]
+
+
 def test_compact_nmap_shrinks_the_payload_substantially():
     observation = _big_nmap_observation()
     full = len(json.dumps(observation, default=str))

@@ -70,6 +70,11 @@ PYTHON_HANDLERS = frozenset(
         "winrm",
         "pwn",
         "wp",
+        # Theseus: the SSTI engine driver sends HTTP with stdlib/httpx and the
+        # PwnKit path runs CVE-2021-4034 over an owned SSH session via paramiko;
+        # neither shells out to a pentest binary.
+        "web_ssti",
+        "pwnkit",
     }
 )
 INTERNAL_HANDLERS = frozenset(

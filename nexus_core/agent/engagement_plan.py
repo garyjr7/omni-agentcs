@@ -80,6 +80,9 @@ FACT_TYPES = (
     #: path (`nexus.post.verify_route`), never by a tunnel the model says it
     #: opened.
     "route",
+    #: ``task`` mirrors the blackboard's background-task outcome type; a TODO can
+    #: declare it when the deliverable is "the scan already ran".
+    "task",
 )
 
 ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")

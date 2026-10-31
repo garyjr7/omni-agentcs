@@ -533,6 +533,82 @@ class SliverClient:
         result = await self._stub_call("Upload", request, timeout=timeout_seconds)
         return {"path": _decode(getattr(result, "Path", remote_path))}
 
+    #: Ceiling on one download, mirroring the artifact store's own limit. A
+    #: whole-disk pull from a session is not a download; it is an incident.
+    MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
+
+    async def download_file(
+        self,
+        session_id: str,
+        remote_path: str,
+        *,
+        kind: str = "session",
+        max_bytes: int = MAX_DOWNLOAD_BYTES,
+        timeout_seconds: float | None = None,
+    ) -> dict:
+        """Download one file from an owned session's host.
+
+        Sliver streams the file in chunks (``Download`` server-streaming RPC), so
+        the bytes are accumulated with an explicit ceiling: the handler stores
+        them as an artifact and the result only ever carries metadata plus a
+        SHA256, never the content.
+        """
+        from sliver.protobuf import sliver_pb2
+
+        if not isinstance(remote_path, str) or not remote_path.strip():
+            raise ValueError("remote_path must be a non-empty string")
+        limit = int(max_bytes)
+        if limit <= 0:
+            raise ValueError("max_bytes must be positive")
+        request = self._bind_request(
+            sliver_pb2.DownloadReq(Path=str(remote_path)), session_id, kind
+        )
+        stub = getattr(self._require_client(), "_stub", None)
+        if stub is None:  # pragma: no cover - a connected client always has one
+            raise SliverUnavailable("sliver stub unavailable")
+        wait = self._config.timeout_seconds if timeout_seconds is None else float(timeout_seconds)
+        chunks: list[bytes] = []
+        total = 0
+        is_dir = False
+        encoder = ""
+        try:
+            async with asyncio.timeout(wait + RPC_SLACK_SECONDS):
+                async for message in stub.Download(request, timeout=wait):
+                    data = bytes(getattr(message, "Data", b"") or b"")
+                    is_dir = is_dir or bool(getattr(message, "IsDir", False))
+                    encoder = encoder or _decode(getattr(message, "Encoder", ""))
+                    if not data:
+                        continue
+                    total += len(data)
+                    if total > limit:
+                        raise ValueError(
+                            f"download exceeds the {limit}-byte ceiling"
+                        )
+                    chunks.append(data)
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise SliverUnavailable("sliver download timed out") from exc
+        except ValueError:
+            raise
+        except SliverError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise SliverUnavailable(
+                f"sliver download failed: {type(exc).__name__}"
+            ) from exc
+        import hashlib
+
+        data = b"".join(chunks)
+        return {
+            "session_id": str(session_id),
+            "kind": kind,
+            "path": str(remote_path),
+            "encoder": encoder,
+            "is_dir": is_dir,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "data": data,
+        }
+
     async def execute_path(
         self,
         session_id: str,

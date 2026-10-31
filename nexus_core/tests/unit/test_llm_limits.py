@@ -212,7 +212,10 @@ def test_deepseek_is_a_supported_openai_compatible_provider():
     assert client.config.provider == LLMProvider.DEEPSEEK
 
 
-def test_deepseek_client_is_built_only_when_the_key_is_exported(monkeypatch, tmp_path):
+def test_deepseek_client_is_built_only_when_the_key_is_exported(
+    monkeypatch, tmp_path, no_stored_keys
+):
+    """Only the exported key counts: a stored key must not build the client."""
     for name in ("OPENAI_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY",
                  "OLLAMA_BASE_URL", "DEEPSEEK_API_KEY"):
         monkeypatch.delenv(name, raising=False)

@@ -371,7 +371,7 @@ def test_describe_routing_shows_every_task_and_its_backups():
     assert summary["tasks"]["executor"]["source"] == "inherit"
 
 
-def test_doctor_reports_the_active_policy(onboarding_env, capsys):
+def test_doctor_reports_the_active_policy(onboarding_env, capsys, no_stored_keys):
     from nexus_core.cli import doctor as doctor_module
 
     config = OmniConfig()

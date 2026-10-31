@@ -9,12 +9,13 @@ claim "the TUI gets priority" is only true if the kernel received it.
 from __future__ import annotations
 
 import asyncio
+import shutil
 import stat
 from pathlib import Path
 
 import pytest
 
-from nexus_core.kernel import hardware
+from nexus_core.kernel import hardware, sandbox as sandbox_module
 from nexus_core.kernel.sandbox import LocalSandbox
 
 pytestmark = pytest.mark.unit
@@ -134,14 +135,27 @@ def test_a_tool_that_is_not_cpu_heavy_gets_no_ceiling(tmp_path, monkeypatch):
 
 
 def test_a_missing_cpulimit_never_stops_the_tool(tmp_path, monkeypatch):
-    """``cpulimit`` is optional on most distros; the tool must still run."""
+    """``cpulimit`` is optional on most distros; the tool must still run.
+
+    The absence is simulated on **PATH**, not on ``NEXUS_TOOL_BIN_DIR``: the
+    sandbox's base PATH is ``/usr/local/bin:/usr/bin:/bin``, so on a host that
+    happens to ship ``cpulimit`` the guard would never be exercised.
+    """
+    path_dir = tmp_path / "path"
+    path_dir.mkdir()
+    for program in ("python3", "nice"):
+        resolved = shutil.which(program)
+        assert resolved is not None, f"the test needs a real {program} to run"
+        (path_dir / program).symlink_to(resolved)
+    monkeypatch.setitem(sandbox_module.SANDBOX_BASE_ENV, "PATH", str(path_dir))
     monkeypatch.setenv(hardware.CPU_HEAVY_ENV, "python3")
     monkeypatch.setenv("NEXUS_TOOL_BIN_DIR", str(tmp_path / "does-not-exist"))
 
     result = _run(tmp_path, ["python3", "-c", "print('hello')"])
 
     assert result.exit_code == 0 and "hello" in result.stdout
-    assert "cpulimit" not in " ".join(result.priority)
+    # Compare basenames: ``tmp_path`` itself contains the test's name.
+    assert all(Path(entry).name != "cpulimit" for entry in result.priority)
 
 
 def test_the_allowlist_is_checked_before_the_prologue(tmp_path):

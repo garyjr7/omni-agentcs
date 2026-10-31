@@ -122,6 +122,41 @@ class ToolCallBatch(AgentAction):
         return tuple(call.tool_id for call in self.calls)
 
 
+class SpawnSubAgent(AgentAction):
+    """A long call the model wants to run in the background.
+
+    The payload is a normal tool call (catalog membership, subagent subset,
+    policy, approval and the gateway all still apply); the only difference is
+    *when* the loop awaits it. ``label`` is prompt-visible, so it is short and
+    descriptive (``"nmap full TCP"``), never a command line.
+    """
+
+    action: Literal["spawn_subagent"] = "spawn_subagent"
+    tool_id: str = Field(min_length=1)
+    arguments: dict[str, JsonValue]
+    label: str | None = Field(default=None, max_length=80)
+    expected_outcome: str | None = None
+
+    @field_validator("tool_id")
+    @classmethod
+    def nonempty_subagent_tool(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("tool_id must be nonempty")
+        return value.strip()
+
+    @property
+    def summary(self) -> None:
+        return None
+
+    @property
+    def findings(self) -> list[dict[str, Any]]:
+        return []
+
+    @property
+    def question(self) -> None:
+        return None
+
+
 class TaskComplete(AgentAction):
     action: Literal["task_complete"] = "task_complete"
     summary: str = Field(min_length=1)
@@ -184,7 +219,7 @@ class RequestClarification(AgentAction):
 
 
 Action = Annotated[
-    ToolCall | ToolCallBatch | TaskComplete | RequestClarification,
+    ToolCall | ToolCallBatch | SpawnSubAgent | TaskComplete | RequestClarification,
     Field(discriminator="action"),
 ]
 ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)

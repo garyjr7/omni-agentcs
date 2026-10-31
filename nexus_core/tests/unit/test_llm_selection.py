@@ -19,8 +19,12 @@ TENANT = "system"
 
 
 @pytest.fixture()
-def clean_env(monkeypatch):
-    """A provider environment with no keys and no explicit choice."""
+def clean_env(monkeypatch, no_stored_keys):
+    """A provider environment with no keys and no explicit choice.
+
+    ``no_stored_keys`` keeps the operator's ``omni auth login`` store out of the
+    picture: ``resolve_api_key`` prefers it over the environment.
+    """
     for key in llm_env.PROVIDER_KEY_ENVS.values():
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv(llm_env.DEFAULT_PROVIDER_ENV, raising=False)

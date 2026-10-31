@@ -16,7 +16,6 @@ nunca; y no hay ping-pong entre rechazo y hecho nuevo.
 from __future__ import annotations
 
 import asyncio
-import json
 
 from nexus_core.agent.react import ReActConfig
 from nexus_core.agent.react_coordinator import ReActCoordinator
@@ -28,7 +27,6 @@ from nexus_core.tests.unit.test_react_pivot_forcing import (
     _call,
     _catalog,
     _events,
-    _invocation,
     _loop_context,
     _observations,
 )

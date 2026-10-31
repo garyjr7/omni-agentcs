@@ -201,10 +201,14 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # the injectable parameter and run the engine payload) and ``nexus.post.pwnkit``
     # (CVE-2021-4034 over SSH): 85. Measured 18,980 for 85 tools (223,3 per
     # tool), still inside the per-tool bound; only the total moves.
-    assert len(catalog) == 85
+    # ``nexus.c2.sliver_download`` (86th): the governed way to pull a file back
+    # from a session, with its three optional arguments.
+    assert len(catalog) == 86
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 19_050
+    # ``sliver_download`` adds its line: measured 19,227 for 86 tools (223,6 per
+    # tool), still inside the per-tool bound; only the total moves.
+    assert len(text) < 19_350
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -308,7 +312,9 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # pays nothing for it.
     # Theseus adds the two catalog lines and the SSTI order (gated on
     # ``nexus.web.ssti``): measured 34,714; ceiling 34_800.
-    assert len(_prompt(catalog)) < 34_800
+    # The background order (``spawn_subagent``) plus the ``sliver_download``
+    # catalog line: measured 35,187; ceiling 35_300.
+    assert len(_prompt(catalog)) < 35_300
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -351,7 +357,9 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # The scope + install orders move with the static prompt: measured 34,448;
     # ceiling 34_530. The block itself is unchanged.
     # Theseus moves with the static prompt: measured 35,341; ceiling 35_450.
-    assert len(prompt) < 35_450
+    # The background order moves with the static prompt: measured 35,814;
+    # ceiling 36_000. The block itself is unchanged.
+    assert len(prompt) < 36_000
     assert len(block) < 1_200
 
 
@@ -550,7 +558,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # ceiling 7_590 (250k buys ~33 turns).
     # Theseus adds two compact catalog lines and the SSTI order: measured 7,704;
     # ceiling 7_760 (250k still buys ~32 compact turns).
-    assert tokens < 7_760
+    # The background order and the ``sliver_download`` line: measured 7,780;
+    # ceiling 7_840 (250k still buys ~32 compact turns).
+    assert tokens < 7_840
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -601,7 +611,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # average; ceiling 8_330, ~30 turns.
     # Theseus adds two catalog lines and the SSTI order on every turn: measured
     # 8,419 average; ceiling 8_470, ~29 turns.
-    assert sum(totals) / len(totals) < 8_470
+    # The background order is paid every turn as well: measured 8,504 average;
+    # ceiling 8_560, ~29 turns.
+    assert sum(totals) / len(totals) < 8_560
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -638,7 +650,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # The scope + install orders land here too: measured 10,624; ceiling 10_700.
     # Theseus adds the two catalog lines and the SSTI order to the refresh turn:
     # measured 10,848; ceiling 10_910.
-    assert max(totals) < 10_910
+    # The background order and the ``sliver_download`` line land here too:
+    # measured 10,966; ceiling 11_050.
+    assert max(totals) < 11_050
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):
@@ -751,7 +765,8 @@ def test_the_compact_catalog_carries_a_hard_ceiling(catalog):
 
     compact = render_tool_catalog(catalog, compact=True)
     full = render_tool_catalog(catalog)
-    assert len(compact) < 6_300
+    # ``nexus.c2.sliver_download`` adds one line: measured 6,320; ceiling 6_400.
+    assert len(compact) < 6_400
     # Same whole-line tolerance as ``test_compact_catalog_is_a_third_of_the_full_one``.
     assert len(compact) < len(full) / 3 + 40
 

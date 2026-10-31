@@ -24,12 +24,14 @@ from nexus_core.kernel.serialization import decode_json
 
 ACTION_TOOL_CALL = "tool_call"
 ACTION_TOOL_CALLS = "tool_calls"
+ACTION_SPAWN_SUBAGENT = "spawn_subagent"
 ACTION_TASK_COMPLETE = "task_complete"
 ACTION_REQUEST_CLARIFICATION = "request_clarification"
 
 KNOWN_ACTIONS = (
     ACTION_TOOL_CALL,
     ACTION_TOOL_CALLS,
+    ACTION_SPAWN_SUBAGENT,
     ACTION_TASK_COMPLETE,
     ACTION_REQUEST_CLARIFICATION,
 )

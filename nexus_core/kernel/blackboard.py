@@ -45,6 +45,10 @@ FACT_TYPES = (
     "artifact",
     "loot",
     "hint",
+    #: Outcome of a background task (``spawn_subagent``): which tool ran, how it
+    #: ended and what evidence it left. Agent-asserted, so it never substitutes
+    #: for a verified fact; it is how a later turn knows a scan already happened.
+    "task",
     #: A *verified* path from one host to another ("from 192.168.11.200 I reach
     #: 192.168.11.100:445"). This is what closes a pivot TODO and what the
     #: pre-scan gate reads instead of guessing from an ``ssh -D`` string in the

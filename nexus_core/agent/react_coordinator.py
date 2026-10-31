@@ -220,11 +220,13 @@ from nexus_core.scope import EngagementScope
 from nexus_core.kernel.domain_dto import (
     Action,
     RequestClarification,
+    SpawnSubAgent,
     TaskComplete,
     ToolCall,
     ToolCallBatch,
     ToolCallSpec,
 )
+from .task_manager import TaskManager, TaskManagerError, TaskRecord
 from .parallel import (
     CallExecution,
     call_timeout,
@@ -992,6 +994,14 @@ class ReActCoordinator:
         self.completion_verified_override = None
         self.telemetry = TurnTelemetryRecorder(
             store=self.store, tenant_id=self.tenant_id, run_id=self.run_id
+        )
+        # Background scheduling: the runner is the same governed invocation a
+        # foreground call uses, so ``spawn_subagent`` changes *when* the loop
+        # awaits, never what is authorized. One manager per run keeps the caps
+        # and the wake-up signal scoped to this engagement.
+        self.task_manager = TaskManager(
+            runner=self._background_runner,
+            on_complete=self._background_completed,
         )
         for tool_id in sorted(self.unavailable_tools):
             self.store.append_run_event(
@@ -2433,7 +2443,7 @@ class ReActCoordinator:
                 self.tenant_id,
                 self.conversation_id,
                 "user",
-                f"Tu respuesta anterior no era JSON válido y no se ejecutó nada. Error del parser: {str(exc)[:300]}. Responde de nuevo con UN solo objeto JSON que cumpla el contrato (tool_call, tool_calls, task_complete o request_clarification).",
+                f"Tu respuesta anterior no era JSON válido y no se ejecutó nada. Error del parser: {str(exc)[:300]}. Responde de nuevo con UN solo objeto JSON que cumpla el contrato (tool_call, tool_calls, spawn_subagent, task_complete o request_clarification).",
                 {"kind": "react.correction", "iteration": self.iteration, "run_id": self.run_id},
             )
             self.telemetry.note_action(action="parse_error")
@@ -5164,47 +5174,58 @@ class ReActCoordinator:
 
     async def run(self) -> ReActResult:
         await self._initialize()
-        while self.iteration < self.iteration_limit:
-            if self._guard() is Transition.STOP:
-                break
-            await self._build_context()
-            if await self._select_profile() is Transition.STOP:
-                break
-            self._advance_phase()
-            # The turn is opened only once the phase, the profile and the
-            # allowed catalog of this iteration are known, so the record is
-            # attributable from the first millisecond.
-            self.telemetry.begin_turn(
-                iteration=self.iteration,
-                phase=self.plan.current,
-                subagent_id=self.subagent.id,
-                facts_total=self.plan.facts_total,
-                counts=self.plan.counts,
-            )
-            turn_started = time.perf_counter()
-            try:
-                transition = await self._iteration_body()
-            except BaseException:
-                # A turn that died mid-way is exactly what the operator needs to
-                # see, so the record is published before the exception travels on.
+        try:
+            while self.iteration < self.iteration_limit:
+                if self._guard() is Transition.STOP:
+                    break
+                # Background results are injected *before* the context is built,
+                # so the model reads them in the same turn that decides the next
+                # step instead of one turn later.
+                self._deliver_background_results()
+                await self._build_context()
+                if await self._select_profile() is Transition.STOP:
+                    break
+                self._advance_phase()
+                # The turn is opened only once the phase, the profile and the
+                # allowed catalog of this iteration are known, so the record is
+                # attributable from the first millisecond.
+                self.telemetry.begin_turn(
+                    iteration=self.iteration,
+                    phase=self.plan.current,
+                    subagent_id=self.subagent.id,
+                    facts_total=self.plan.facts_total,
+                    counts=self.plan.counts,
+                )
+                turn_started = time.perf_counter()
+                try:
+                    transition = await self._iteration_body()
+                except BaseException:
+                    # A turn that died mid-way is exactly what the operator needs to
+                    # see, so the record is published before the exception travels on.
+                    self.telemetry.finish(
+                        outcome=self.status or "exception",
+                        turn_ms=_elapsed_ms(turn_started),
+                    )
+                    raise
+                counts = self._blackboard_counts()
+                if counts is not None:
+                    self.telemetry.note_blackboard(
+                        facts_total=sum(counts.values()), counts=counts
+                    )
+                    self._track_no_progress()
                 self.telemetry.finish(
-                    outcome=self.status or "exception",
+                    outcome=self._turn_outcome(transition),
                     turn_ms=_elapsed_ms(turn_started),
                 )
-                raise
-            counts = self._blackboard_counts()
-            if counts is not None:
-                self.telemetry.note_blackboard(facts_total=sum(counts.values()), counts=counts)
-                self._track_no_progress()
-            self.telemetry.finish(
-                outcome=self._turn_outcome(transition),
-                turn_ms=_elapsed_ms(turn_started),
-            )
-            self._note_completed_turn()
-            if transition is Transition.STOP:
-                break
-        await self.telemetry.flush()
-        return self._result()
+                self._note_completed_turn()
+                if transition is Transition.STOP:
+                    break
+            await self.telemetry.flush()
+            return self._result()
+        finally:
+            # No background task outlives the run that spawned it: a scan still
+            # writing after the loop ended would be an unattributed effect.
+            await self.task_manager.cancel_all()
 
     async def _iteration_body(self) -> Transition:
         """One model turn and the transition it asked for (the loop's unit)."""
@@ -5215,6 +5236,8 @@ class ReActCoordinator:
             return request
         if self._decode_action() is Transition.NEXT_TURN:
             return Transition.NEXT_TURN
+        if isinstance(self.action, SpawnSubAgent):
+            return await self._spawn_turn()
         if isinstance(self.action, TaskComplete):
             return await self._complete()
         if isinstance(self.action, RequestClarification):
@@ -5246,6 +5269,234 @@ class ReActCoordinator:
         if isinstance(self.action, ToolCallBatch):
             return await self._batch_turn()
         return await self._tool_turn()
+
+    # ------------------------------------------------- background sub-agents
+    async def _background_runner(
+        self, payload: dict[str, Any], cancel_event: asyncio.Event
+    ) -> dict[str, Any]:
+        """Execute one spawned call through the same governed path.
+
+        ``spawn_subagent`` is a scheduling decision, not a waiver: the payload is
+        the engine's own (catalog, subagent subset, scope, RoE, policy, approval
+        and journal all still apply) and the gateway sees exactly what a
+        foreground call would have sent. ``cancel_event`` belongs to the task, so
+        cancelling it cannot stop the run.
+        """
+        invocation, cancelled = await self.tool_execution.execute(
+            payload,
+            self.context,
+            timeout=self.config.timeout_per_tool_seconds,
+            cancel_event=cancel_event,
+        )
+        if cancelled or invocation is None:
+            return {"success": False, "outcome": "cancelled"}
+        return _observation_payload(invocation)
+
+    async def _background_completed(self, record: TaskRecord) -> None:
+        """Persist a finished task: blackboard fact, run event and audit.
+
+        The fact is agent-asserted on purpose (``verified=False``): a background
+        scan is evidence to *parse*, and only a verifier can promote it. The
+        completion hook never raises back into the task, so a store problem
+        cannot turn a finished scan into a lost result.
+        """
+        if self.engagement_id:
+            try:
+                from nexus_core.kernel.blackboard import Blackboard
+
+                Blackboard(self.store).record(
+                    tenant_id=self.tenant_id,
+                    engagement_id=self.engagement_id,
+                    fact_type="task",
+                    key=f"{record.tool_id}:{record.task_id}",
+                    value={
+                        "label": record.label,
+                        "status": record.status,
+                        "outcome": (record.result or {}).get("outcome"),
+                        "verification_method": (record.result or {}).get(
+                            "verification_method"
+                        ),
+                        "evidence": (record.result or {}).get("evidence"),
+                        "error": record.error,
+                    },
+                    source=f"tool:{record.tool_id}",
+                    created_by=self.agent_id,
+                )
+            except Exception:  # noqa: BLE001 - the delivery must survive a bad write
+                pass
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.background_finished",
+            {**record.to_dict(), "iteration": self.iteration},
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="spawn_subagent",
+            decision="allow",
+            tool_id=record.tool_id,
+            task_id=record.task_id,
+            status=record.status,
+        )
+
+    def _deliver_background_results(self) -> None:
+        """Feed finished background tasks back to the model, exactly once."""
+        for record in self.task_manager.pending_results():
+            observation = {
+                **record.observation(),
+                "running_tasks": [
+                    item
+                    for item in self.task_manager.list_tasks()
+                    if item["status"] == "running"
+                ],
+            }
+            _inject_observation(
+                self.store,
+                self.tenant_id,
+                self.conversation_id,
+                self.run_id,
+                self.iteration,
+                _BatchObservationAction(record.tool_id),
+                observation,
+                subagent_id=self.active_subagent_id,
+            )
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                "react.background_delivered",
+                {**record.to_dict(), "iteration": self.iteration},
+            )
+
+    async def _spawn_turn(self) -> Transition:
+        """Start one long call in the background and answer the model at once.
+
+        The order is the same as a foreground turn up to the spawn: catalog and
+        subagent subset, PLAN-FIRST, vector lock, then policy + operator
+        approval. Only the *await* moves to a task.
+        """
+        assert isinstance(self.action, SpawnSubAgent)
+        spawn = self.action
+        self.entry = _action_entry(
+            self.iteration,
+            spawn.action,
+            thought=spawn.thought,
+            tool_id=spawn.tool_id,
+            arguments=memory._redact_arguments(spawn.arguments),
+            warnings=spawn.warnings,
+            expected_outcome=spawn.expected_outcome,
+            label=spawn.label,
+            invocation_signature=_invocation_signature(spawn.tool_id, spawn.arguments),
+        )
+        refusal = self._call_refusal(spawn)
+        if refusal is not None:
+            reason, observation = refusal
+            return self._record_background_refusal(reason, observation)
+        payload = self._call_payload(spawn)
+        if self.config.on_approval_needed is not None:
+            denial = self._review_call(spawn, payload)
+            if denial is not None:
+                self.telemetry.flag(FrictionFlag.OPERATOR_DENIAL)
+                return self._record_background_refusal(
+                    "denied_by_operator", denial, operator_reason=denial.get("reason")
+                )
+        try:
+            record = await self.task_manager.spawn_task(
+                tool_id=spawn.tool_id,
+                arguments=spawn.arguments,
+                payload=payload,
+                label=spawn.label,
+                timeout_seconds=self.config.timeout_per_tool_seconds,
+            )
+        except TaskManagerError as error:
+            return self._record_background_refusal(
+                "background_refused",
+                {
+                    "success": False,
+                    "outcome": "background_refused",
+                    "error": str(error)[:500],
+                    "running_tasks": self.task_manager.list_tasks(),
+                    "guidance": (
+                        "No se pudo lanzar en background. Sigue con trabajo de bajo "
+                        "riesgo y reintenta cuando una tarea termine, o ejecútala "
+                        "como tool_call normal si necesitas el resultado ya."
+                    ),
+                },
+            )
+        observation = {
+            "success": True,
+            "outcome": "background_task_started",
+            "background": True,
+            "task_id": record.task_id,
+            "label": record.label,
+            "tool_id": record.tool_id,
+            "status": record.status,
+            # The model can only reason about what it can see: the snapshot is
+            # what makes "what is still running" answerable without a new tool.
+            "running_tasks": self.task_manager.list_tasks(),
+            "guidance": (
+                f"Tarea '{record.label}' ({record.task_id}) lanzada en background con el "
+                "mismo gobierno que una llamada normal. NO esperes su resultado: "
+                "continúa con trabajo independiente de bajo riesgo. Cuando termine "
+                "llegará como observación con `background: true` y su `task_id`."
+            ),
+        }
+        self.observation = observation
+        self.entry["tool_result"] = observation
+        self.actions.append(self.entry)
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            spawn,
+            observation,
+            subagent_id=self.active_subagent_id,
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.background_started",
+            {**record.to_dict(), "iteration": self.iteration},
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=spawn.action,
+            decision="allow",
+            tool_id=spawn.tool_id,
+            task_id=record.task_id,
+            label=record.label,
+        )
+        return Transition.NEXT_TURN
+
+    def _record_background_refusal(
+        self, reason: str, observation: dict[str, Any], **extra: Any
+    ) -> Transition:
+        """A spawn that never started: refusal observation, turn consumed."""
+        assert isinstance(self.action, SpawnSubAgent)
+        self.observation = observation
+        self.consecutive_failures += 1
+        self.entry["tool_result"] = observation
+        self.actions.append(self.entry)
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            self.action,
+            observation,
+            subagent_id=self.active_subagent_id,
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=self.action.action,
+            decision="deny",
+            tool_id=self.action.tool_id,
+            reason=reason,
+            **extra,
+        )
+        return Transition.NEXT_TURN
 
     async def _tool_turn(self) -> Transition:
         self._tool_entry()

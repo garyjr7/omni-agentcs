@@ -161,6 +161,10 @@ def durable_tool_definitions(
         sliver_deploy_handler,
     )
     from .handlers.sliver_loot import sliver_loot_definition, sliver_loot_handler
+    from .handlers.sliver_download import (
+        sliver_download_definition,
+        sliver_download_handler,
+    )
     from .handlers.playbook import playbook_definition, playbook_handler
     from .handlers.plan_engagement import (
         create_plan_definition,
@@ -368,6 +372,10 @@ def durable_tool_definitions(
             sliver_deploy_handler,
         ),
         "nexus.c2.sliver_loot": (sliver_loot_definition(tenant_id), sliver_loot_handler),
+        "nexus.c2.sliver_download": (
+            sliver_download_definition(tenant_id),
+            sliver_download_handler,
+        ),
         "nexus.orchestrator.playbook": (
             playbook_definition(tenant_id),
             playbook_handler,

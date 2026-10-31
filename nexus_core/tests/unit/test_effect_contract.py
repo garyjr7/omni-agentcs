@@ -49,6 +49,7 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.attack.impacket_secretsdump",
     "nexus.attack.nopac",
     "nexus.c2.sliver_deploy",
+    "nexus.c2.sliver_download",
     "nexus.c2.sliver_exec",
     "nexus.c2.sliver_generate",
     "nexus.c2.sliver_loot",
@@ -198,6 +199,8 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # B1 adds one *active* enum tool (nexus.attack.ad_user_enum): 83 - 50 = 33.
     # Theseus adds two *active* tools (nexus.web.ssti and nexus.post.pwnkit):
     # 85 - 52 = 33, so the read-only count is unchanged again.
+    # nexus.c2.sliver_download pulls a file from an owned session (an active
+    # post-exploitation effect): 86 - 53 = 33.
     assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 33
 
 

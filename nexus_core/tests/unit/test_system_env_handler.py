@@ -108,4 +108,4 @@ def test_check_env_registered_in_catalog():
     # 83 with nexus.attack.ad_user_enum (B1: confirm an account without a
     # password, before spending a lockout attempt on it).
     # 85 with nexus.web.ssti and nexus.post.pwnkit (Theseus).
-    assert len(catalog) == 85
+    assert len(catalog) == 86

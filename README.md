@@ -198,7 +198,7 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **85 herramientas** —la cifra la publica
+El catálogo durable contiene **86 herramientas** —la cifra la publica
 `tool_catalog()` y la comprueba un test—; esta es una selección de las
 principales:
 
@@ -235,7 +235,9 @@ principales:
   `nexus.c2.sliver_exec` (HIGH), `nexus.c2.sliver_pivot` (HIGH),
   `nexus.c2.sliver_generate` (HIGH, compila implantes, nunca devuelve los bytes),
   `nexus.c2.sliver_deploy` (DESTRUCTIVE, movimiento lateral upload+execute),
-  `nexus.c2.sliver_loot` (LOW, loot y cadena de custodia).
+  `nexus.c2.sliver_download` (MEDIUM, trae un fichero de una session propia al
+  artifact store con su SHA256), `nexus.c2.sliver_loot` (LOW, loot y cadena de
+  custodia).
 - `nexus.orchestrator.playbook` (READ_ONLY): sugiere el siguiente paso gated de
   los playbooks deterministas.
 - `nexus.report.generate`.
@@ -396,7 +398,7 @@ que no registra fila en `kernel_sessions`.
 
 ### Sliver C2
 
-Ocho tools integran el C2 moderno **Sliver** vía gRPC (`sliver-py`), sin
+Nueve tools integran el C2 moderno **Sliver** vía gRPC (`sliver-py`), sin
 subprocess: el bridge habla mTLS con el *multiplayer* del team server usando el
 operator config que indica `SLIVER_OPERATOR_CONFIG`.
 
@@ -419,6 +421,11 @@ operator config que indica `SLIVER_OPERATOR_CONFIG`.
   genera un implante, lo sube (`Upload`) a un host nuevo a través de una session
   propia y lo ejecuta (`Execute`). La nueva session aparece en
   `nexus.c2.sliver_sessions`, que la registra como evidencia del salto.
+- `nexus.c2.sliver_download` (MEDIUM, scope): trae **un** fichero de una
+  session propia. Los bytes no vuelven al prompt: se guardan
+  content-addressed en el artifact store del engagement y el resultado solo
+  lleva ruta, tamaño y **SHA256**. Un fichero mayor que el techo configurado
+  falla cerrado (`sliver_download_refused`) en vez de llenar el workspace.
 - `nexus.c2.sliver_loot` (LOW): lista el loot del team server, lee una entrada
   y con `record` persiste un hecho `loot` del engagement con su **SHA256** — la
   cadena de custodia que el reporte convierte en evidencia verificable.

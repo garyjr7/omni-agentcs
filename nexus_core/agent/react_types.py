@@ -24,7 +24,8 @@ INVALID_JSON_EVENT_TYPE = "react.invalid_json_retry"
 #: shape so the retry is actionable, not just a complaint.
 INVALID_JSON_CORRECTION = (
     "Tu respuesta anterior no fue un JSON válido. Debes devolver un objeto JSON "
-    "con la acción (tool_call, task_complete o request_clarification)."
+    "con la acción (tool_call, tool_calls, spawn_subagent, task_complete o "
+    "request_clarification)."
 )
 CANCEL_EVENT_TYPE = "react.cancel_requested"
 #: A tool that fails this many times **in a row** *as a tool* (not as invalid

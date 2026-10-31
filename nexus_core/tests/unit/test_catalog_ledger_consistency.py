@@ -80,7 +80,7 @@ def test_handlers_ast_runtime_cli_and_json_agree():
     runtime_ids = {entry["tool_id"] for entry in catalog["tools"]}
 
     assert ast_ids == runtime_ids, ast_ids.symmetric_difference(runtime_ids)
-    assert catalog["tool_count"] == len(runtime_ids) == 85
+    assert catalog["tool_count"] == len(runtime_ids) == 86
 
     committed = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
     assert committed == catalog, "catalog.json is stale: run scripts/omni_catalog.py"
@@ -104,7 +104,7 @@ def test_audit_ledger_catalog_and_result_versions_consistent(capsys):
     ast_ids = _ast_tool_ids()
     catalog = tool_catalog()
     runtime_ids = {entry["tool_id"] for entry in catalog["tools"]}
-    assert ast_ids == runtime_ids and len(runtime_ids) == 85
+    assert ast_ids == runtime_ids and len(runtime_ids) == 86
     list_tools("system")
     cli_ids = {line.split("\t", 1)[0] for line in capsys.readouterr().out.splitlines() if line}
     assert cli_ids == runtime_ids

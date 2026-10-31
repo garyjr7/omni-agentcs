@@ -41,7 +41,9 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # + nexus.web.ssti (Theseus: the page evaluated a parameter nothing in the
     #   catalog could name) and nexus.post.pwnkit (local root on a host reached
     #   only by SSH): 85.
-    assert len(catalog) == 85
+    # + nexus.c2.sliver_download (a C2 session could run commands but had no
+    #   governed way to pull a file back): 86.
+    assert len(catalog) == 86
 
 
 def test_read_only_profiles_list_no_active_tool():

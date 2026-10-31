@@ -38,6 +38,24 @@ def _neutralize_no_color(request):
 
 
 @pytest.fixture
+def no_stored_keys(tmp_path, monkeypatch):
+    """Isolate the operator's secret store from a provider-resolution test.
+
+    ``resolve_api_key`` reads the store **before** the environment, by design.
+    On a machine where the operator ran ``omni auth login`` that means a test
+    exporting only ``GROQ_API_KEY`` still finds a stored OpenAI/DeepSeek key, so
+    an unrelated cloud client is built and can win the primary slot. CI has no
+    store and never saw it; a developer box lies. The replacement backend is an
+    empty ``0600`` file under ``tmp_path``, which cannot fall back to keyring.
+    """
+    from nexus_core.config import secrets
+
+    empty = secrets.SecretStore(secrets.FileBackend(tmp_path / "secrets.json"))
+    monkeypatch.setattr(secrets, "SecretStore", lambda backend=None: empty)
+    return empty
+
+
+@pytest.fixture
 def tui_factory(tmp_path, monkeypatch):
     """Real prompt_toolkit sessions on pipes; no terminal or user files."""
     from contextlib import ExitStack

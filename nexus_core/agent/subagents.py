@@ -137,6 +137,7 @@ ACTIVE_TOOLS: frozenset[str] = frozenset(
         "nexus.c2.sliver_implants",
         "nexus.c2.sliver_sessions",
         "nexus.c2.sliver_exec",
+        "nexus.c2.sliver_download",
         "nexus.c2.sliver_pivot",
         "nexus.c2.sliver_generate",
         "nexus.c2.sliver_deploy",
@@ -508,6 +509,7 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.session.kill",
                 "nexus.c2.sliver_sessions",
                 "nexus.c2.sliver_exec",
+                "nexus.c2.sliver_download",
                 "nexus.c2.sliver_loot",
             }
         ),
