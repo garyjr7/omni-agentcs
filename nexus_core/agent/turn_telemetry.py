@@ -102,6 +102,13 @@ class FrictionFlag(str, Enum):
     INPUT_REJECTED = "input_rejected"
     #: The tool itself failed (missing binary, non-zero post-condition).
     TOOL_FAILURE = "tool_failure"
+    #: The tool ran and answered *no*: the target was observed, so this is
+    #: information, not friction. Kept apart from ``TOOL_FAILURE`` because the
+    #: measured SMB enumeration read as a broken tool in telemetry.
+    TOOL_NEGATIVE = "tool_negative"
+    #: The identical step was already in flight, so this call did not run. It is
+    #: coordination, not a target answer and not a broken tool.
+    TOOL_IN_FLIGHT = "tool_in_flight"
     #: The tool was retired for the rest of the run after repeated failures.
     TOOL_RETIRED = "tool_retired"
     #: Policy/scope/approval refused the call before executing it.
@@ -369,14 +376,38 @@ class TurnTelemetryRecorder:
         draft.prompt_tokens = _int_attr(response, "tokens_input")
         draft.completion_tokens = _int_attr(response, "tokens_output")
 
-    def note_tool(self, *, duration_ms: int, success: bool, error_type: str | None = None) -> None:
-        """Record the tool call wall-clock and the outcome of a failed call."""
+    def note_tool(
+        self,
+        *,
+        duration_ms: int,
+        success: bool,
+        error_type: str | None = None,
+        outcome: str | None = None,
+    ) -> None:
+        """Record the tool call wall-clock and the outcome of a failed call.
+
+        A determinate ``negative``/``denied``/``unsupported`` result reached the
+        target and answered the question: it is flagged as ``tool_negative``, not
+        as a broken tool. ``unavailable``/``timeout``/``error`` keep the failure
+        classification, because those really are "could not look".
+        """
         draft = self._draft
         if draft is None:
             return
         draft.tool_ms = _nonnegative(duration_ms)
-        if not success:
-            self.flag(flag_for_error(error_type))
+        label = str(outcome or "").strip().lower()
+        # The outcome is checked before ``success``: a negative observation can be
+        # ``verified`` (the handler proved the directory is empty) and still be a
+        # determinate answer, never a positive finding nor a broken tool.
+        if label == "in_flight":
+            self.flag(FrictionFlag.TOOL_IN_FLIGHT)
+            return
+        if label in DETERMINATE_NEGATIVE_OUTCOMES:
+            self.flag(FrictionFlag.TOOL_NEGATIVE)
+            return
+        if success:
+            return
+        self.flag(flag_for_error(error_type))
 
     def flag(self, flag: FrictionFlag | str) -> None:
         """Add a friction flag (idempotent, keeps first-seen order)."""
@@ -504,6 +535,17 @@ class TurnTelemetryRecorder:
             )
         except Exception:  # noqa: BLE001 - the durable sink is best-effort too
             self.publish_failures += 1
+
+
+#: Outcomes that answered the question the call asked (the target was reached)
+#: even though the answer was "no". They are not a tool failure and must not
+#: retire the tool or count toward the consecutive-failure streak.
+DETERMINATE_NEGATIVE_OUTCOMES = frozenset({"negative", "denied", "unsupported"})
+
+#: Every outcome that is *determinate* but not a positive finding. ``in_flight``
+#: belongs here and not above: it is coordination (the identical step was already
+#: running), so it is neither an observation of the target nor a broken tool.
+DETERMINATE_NON_FAILURE_OUTCOMES = DETERMINATE_NEGATIVE_OUTCOMES | {"in_flight"}
 
 
 def flag_for_error(error_type: str | None) -> FrictionFlag:

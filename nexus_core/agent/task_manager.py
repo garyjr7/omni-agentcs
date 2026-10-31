@@ -23,15 +23,17 @@ and a finished task is delivered exactly once.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
-import json
 import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from nexus_core.kernel.models import utc_now
+from nexus_core.kernel.step_signature import (
+    INCIDENTAL_ARGUMENT_KEYS,
+    semantic_signature,
+)
 
 #: Concurrent background tasks allowed per run (a Kali box is also scanning).
 DEFAULT_MAX_CONCURRENT = 3
@@ -78,13 +80,11 @@ def max_concurrent_from_env(env: Mapping[str, str] | None = None) -> int:
     return max(1, min(value, 8))
 
 
-#: Arguments that only tune *how long* the engine waits, not what the call does.
-#: Two spawns that differ only here are the same scan (Bounty Hacker, 2026-10-31:
-#: ``nmap full_tcp`` was launched four times, the first with
-#: ``timeout_seconds=300`` and the rest without it, while the first was running).
-#: Objective/profile/ports/scripts remain part of the signature, so a *different*
-#: scan is always a different intent and really runs.
-EQUIVALENCE_IGNORED_KEYS = frozenset({"timeout_seconds"})
+#: Kept as a public alias of the shared policy: the journal, the loop's repeat
+#: guard and this manager must agree on what "the same scan" means, or the same
+#: work is paid for once per layer (measured: ``nmap full_tcp`` launched four
+#: times, the first with ``timeout_seconds=300`` and the rest without it).
+EQUIVALENCE_IGNORED_KEYS = INCIDENTAL_ARGUMENT_KEYS
 
 
 def invocation_signature(
@@ -92,19 +92,12 @@ def invocation_signature(
 ) -> str:
     """Canonical signature of one call for background reconciliation.
 
-    Empty values are dropped (``""``/``None`` are the same as absent to the
-    handlers) and the tuning keys above are ignored. Anything else -target,
-    profile, ports, flags, wordlist, share- changes the signature.
+    Delegates to :func:`nexus_core.kernel.step_signature.semantic_signature` so
+    every dedup layer shares one definition: empty values and wrapper-only keys
+    (timeouts/scheduling) are ignored; target, profile, ports, flags, wordlist
+    and share still change the signature.
     """
-    cleaned = {
-        str(key): value
-        for key, value in dict(arguments or {}).items()
-        if value not in (None, "", [], {}) and str(key) not in EQUIVALENCE_IGNORED_KEYS
-    }
-    payload = json.dumps(
-        [str(tool_id or ""), cleaned], sort_keys=True, separators=(",", ":"), default=str
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return semantic_signature(tool_id, arguments)
 
 
 def _clean_label(value: object, *, fallback: str) -> str:

@@ -962,6 +962,19 @@ servicios y alcance adecuados. No se ejecutan automáticamente al correr la
 suite normal. Los scripts manuales pueden ejecutar acciones reales; se invocan
 explícitamente. CI prueba el CLI y el backend PostgreSQL del kernel.
 
+La autonomía del bucle se evalúa además con un benchmark sintético y offline
+(sin red, sin modelo y sin salas reales):
+
+```bash
+python bench/autonomy/run.py --json /tmp/autonomy.json
+```
+
+Los escenarios están separados en `calibration` y `reserved`; el informe publica
+las métricas por separado (objetivos con evidencia verificable, invocaciones
+repetidas sin progreso, ramas resueltas/pendientes, precisión de provenance,
+coste/tiempo y detenciones correctas). El 90 % es una meta para las condiciones
+declaradas del benchmark, nunca una garantía para cualquier sala.
+
 Las decisiones y el balance de tests del cleanup están en
 [CLEANUP_DECISIONS.md](docs/missions/CLEANUP_DECISIONS.md) y
 [el informe final](docs/missions/CLEANUP_RESULT_V3.md).

@@ -898,6 +898,17 @@ def sql_error_signature(text: str) -> tuple[str, str] | None:
 
 
 def derive_assertions(tool_id, arguments, result, context):
+    # A determinate "no" is never evidence *for* anything. Some handlers mark a
+    # negative observation as ``verified`` (they proved the directory is empty),
+    # which makes ``success`` true while the outcome is still ``negative``; the
+    # contract is explicit, so no parser branch may promote it into a fact.
+    if str(getattr(result, "outcome", "") or "") in {
+        "negative",
+        "denied",
+        "unsupported",
+        "in_flight",
+    }:
+        return []
     if not result.success or not context.invocation_id:
         return []
     output = result.output

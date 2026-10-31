@@ -139,6 +139,10 @@ async def jobs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRe
         tenant_id=context.tenant_id, run_id=context.run_id, task_type='tool.invoke',
         max_attempts=1, timeout_seconds=definition.timeout_seconds + 30,
         payload={'job_authority': authority.model_dump(mode='json'), 'job_owner': context.identity.subject_id, 'tool_id': request.tool_id, 'arguments': request.arguments,
+                 # The same intent key as the direct path: without the phase and
+                 # objective the worker journals a different step for the same
+                 # work, so a direct call and its queued copy both execute.
+                 'phase': context.phase, 'objective': context.objective,
                  'engagement_id': context.engagement_id,
                  'identity': {'subject_id': context.identity.subject_id,
                               'roles': list(context.identity.roles), 'kind': context.identity.kind},

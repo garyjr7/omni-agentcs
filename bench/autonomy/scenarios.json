@@ -1,0 +1,383 @@
+{
+  "version": 1,
+  "description": "Synthetic autonomy scenarios. No network, no real target, no room-specific name/IP/flag/credential. Facts and results are fictitious and the runner evaluates them with the production predicates (coverage ledger, assertion derivation, telemetry friction, semantic signatures and the terminal summary).",
+  "scenarios": [
+    {
+      "id": "ftp_credential_ssh_loot_regression",
+      "split": "calibration",
+      "category": "success",
+      "objective_complete": true,
+      "target": "203.0.113.21",
+      "events": [
+        {
+          "tool_id": "nexus.recon.nmap",
+          "arguments": {"target": "203.0.113.21", "profile": "full_tcp"},
+          "result": {"verified": true, "verification_method": "nmap_xml_parsed", "output": {"scan": {"hosts": []}}},
+          "progress": true,
+          "tokens": 900,
+          "ms": 4200
+        },
+        {
+          "tool_id": "nexus.cred.bruteforce",
+          "arguments": {"target": "203.0.113.21", "service": "ftp", "username": "operator"},
+          "result": {"verified": true, "verification_method": "hydra_parsed", "output": {"found": true}},
+          "progress": true,
+          "tokens": 700,
+          "ms": 9000
+        },
+        {
+          "tool_id": "nexus.post.ssh_exec",
+          "arguments": {"target": "203.0.113.21", "username": "operator", "command": "cat flag.txt"},
+          "result": {"verified": true, "verification_method": "ssh_pwd_authenticated", "output": {"exit_status": 0}},
+          "progress": true,
+          "tokens": 600,
+          "ms": 1200
+        }
+      ],
+      "facts": [
+        {"fact_type": "service", "key": "203.0.113.21:21:tcp", "value": {"state": "open", "service": "ftp", "version": "3.0.3"}, "verified": true},
+        {"fact_type": "service", "key": "203.0.113.21:22:tcp", "value": {"state": "open", "service": "ssh"}, "verified": true},
+        {"fact_type": "credential", "key": "cred:ftp:operator@203.0.113.21", "value": {"username": "operator", "service": "ftp", "secret_ref": "vault://ref"}, "verified": true},
+        {"fact_type": "access", "key": "203.0.113.21", "value": {"transport": "ssh", "username": "operator"}, "verified": true},
+        {"fact_type": "loot", "key": "flag-regression", "value": {"flag": "FICTIONAL{regression}", "service": "ssh"}, "verified": true, "invocation_id": "inv-3"}
+      ],
+      "findings": [
+        {"severity": "critical", "title": "loot via ssh", "fact_type": "loot", "invocation_id": "inv-3", "evidence": "verified loot fact"}
+      ],
+      "expect": {
+        "objective_complete": true,
+        "findings": 1,
+        "open_branches": 0,
+        "closed_branches": 0,
+        "repeated_without_progress": 0,
+        "effective_invocations": 3,
+        "correct_stop": false
+      }
+    },
+    {
+      "id": "smb_negative_is_an_answer",
+      "split": "calibration",
+      "category": "negative_observation",
+      "objective_complete": false,
+      "target": "203.0.113.22",
+      "events": [
+        {
+          "tool_id": "nexus.recon.netexec",
+          "arguments": {"target": "203.0.113.22", "protocol": "smb", "operation": "shares"},
+          "result": {"outcome": "negative", "verified": false, "verification_method": "smb_shares_empty", "output": {"count": 0, "error": "NT_STATUS_RESOURCE_NAME_NOT_FOUND"}},
+          "progress": false,
+          "tokens": 500,
+          "ms": 2100
+        }
+      ],
+      "facts": [],
+      "findings": [],
+      "expect": {
+        "objective_complete": false,
+        "findings": 0,
+        "open_branches": 0,
+        "repeated_without_progress": 0,
+        "negative_not_failure": true
+      }
+    },
+    {
+      "id": "msf_auth_rejected_is_diagnosed",
+      "split": "calibration",
+      "category": "tool_error",
+      "objective_complete": false,
+      "target": "203.0.113.23",
+      "events": [
+        {
+          "tool_id": "nexus.exploit.msf_auxiliary",
+          "arguments": {"target": "203.0.113.23", "module": "auxiliary/scanner/smb/smb_version"},
+          "result": {"outcome": "unavailable", "verified": false, "verification_method": "nexus.exploit.msf_auxiliary_provider_unavailable", "evidence": {"cause_code": "authentication_failed"}, "output": {"cause": "authentication_failed"}},
+          "progress": false,
+          "tokens": 400,
+          "ms": 800
+        },
+        {
+          "tool_id": "nexus.recon.nmap",
+          "arguments": {"target": "203.0.113.23", "ports": "445"},
+          "result": {"verified": true, "verification_method": "nmap_xml_parsed", "output": {"scan": {"hosts": []}}},
+          "progress": true,
+          "tokens": 300,
+          "ms": 1500
+        }
+      ],
+      "facts": [
+        {"fact_type": "service", "key": "203.0.113.23:445:tcp", "value": {"state": "open", "service": "microsoft-ds"}, "verified": true}
+      ],
+      "findings": [],
+      "expect": {
+        "objective_complete": false,
+        "unavailable_cause": "authentication_failed",
+        "repeated_without_progress": 0
+      }
+    },
+    {
+      "id": "msf_module_missing_is_diagnosed",
+      "split": "reserved",
+      "category": "tool_error",
+      "objective_complete": false,
+      "target": "203.0.113.24",
+      "events": [
+        {
+          "tool_id": "nexus.exploit.msf_search",
+          "arguments": {"query": "fictional-service"},
+          "result": {"outcome": "unavailable", "verified": false, "verification_method": "nexus.exploit.msf_search_provider_unavailable", "evidence": {"cause_code": "module_unavailable"}, "output": {"cause": "module_unavailable"}},
+          "progress": false,
+          "tokens": 250,
+          "ms": 500
+        },
+        {
+          "tool_id": "nexus.recon.nmap",
+          "arguments": {"target": "203.0.113.24", "ports": "445"},
+          "result": {"verified": true, "verification_method": "nmap_xml_parsed", "output": {"scan": {"hosts": []}}},
+          "progress": true,
+          "tokens": 250,
+          "ms": 1200
+        }
+      ],
+      "facts": [],
+      "findings": [],
+      "expect": {
+        "unavailable_cause": "module_unavailable",
+        "repeated_without_progress": 0
+      }
+    },
+    {
+      "id": "invalid_response_is_an_error_not_a_negative",
+      "split": "reserved",
+      "category": "tool_error",
+      "objective_complete": false,
+      "target": "203.0.113.25",
+      "events": [
+        {
+          "tool_id": "nexus.exploit.msf_auxiliary",
+          "arguments": {"target": "203.0.113.25", "module": "auxiliary/scanner/smb/smb_version"},
+          "raises": "RuntimeError",
+          "error": "tool post-condition was not verified (method=msf_response_invalid)",
+          "progress": false,
+          "tokens": 300,
+          "ms": 600
+        }
+      ],
+      "facts": [],
+      "findings": [],
+      "expect": {
+        "objective_complete": false,
+        "no_positive_facts": true,
+        "repeated_without_progress": 0
+      }
+    },
+    {
+      "id": "background_scan_equivalent_is_reused",
+      "split": "calibration",
+      "category": "success",
+      "objective_complete": true,
+      "target": "203.0.113.26",
+      "events": [
+        {
+          "tool_id": "nexus.recon.nmap",
+          "arguments": {"target": "203.0.113.26", "profile": "full_tcp", "timeout_seconds": 300},
+          "result": {"verified": true, "verification_method": "nmap_xml_parsed", "output": {"scan": {"hosts": []}}},
+          "progress": true,
+          "tokens": 500,
+          "ms": 300000
+        },
+        {
+          "tool_id": "nexus.recon.nmap",
+          "arguments": {"target": "203.0.113.26", "profile": "full_tcp"},
+          "result": {"outcome": "in_flight", "verified": false, "verification_method": "tool_in_flight"},
+          "progress": false,
+          "tokens": 150,
+          "ms": 50
+        },
+        {
+          "tool_id": "nexus.recon.nmap",
+          "arguments": {"target": "203.0.113.26", "profile": "full_tcp", "background": true},
+          "result": {"outcome": "in_flight", "verified": false, "verification_method": "tool_in_flight"},
+          "progress": false,
+          "tokens": 150,
+          "ms": 50
+        }
+      ],
+      "facts": [
+        {"fact_type": "service", "key": "203.0.113.26:445:tcp", "value": {"state": "open", "service": "microsoft-ds"}, "verified": true}
+      ],
+      "findings": [],
+      "expect": {
+        "objective_complete": true,
+        "repeated_without_progress": 2,
+        "effective_invocations": 1,
+        "open_branches": 1
+      }
+    },
+    {
+      "id": "windows_dynamic_rpc_is_one_campaign",
+      "split": "calibration",
+      "category": "success",
+      "objective_complete": true,
+      "target": "203.0.113.27",
+      "events": [
+        {
+          "tool_id": "nexus.recon.nmap",
+          "arguments": {"target": "203.0.113.27", "profile": "full_tcp"},
+          "result": {"verified": true, "verification_method": "nmap_xml_parsed", "output": {"scan": {"hosts": []}}},
+          "progress": true,
+          "tokens": 800,
+          "ms": 6000
+        }
+      ],
+      "facts": [
+        {"fact_type": "service", "key": "203.0.113.27:445:tcp", "value": {"state": "open", "service": "microsoft-ds"}, "verified": true},
+        {"fact_type": "service", "key": "203.0.113.27:3389:tcp", "value": {"state": "open", "service": "ms-wbt-server"}, "verified": true},
+        {"fact_type": "service", "key": "203.0.113.27:5985:tcp", "value": {"state": "open", "service": "wsman"}, "verified": true},
+        {"fact_type": "service", "key": "203.0.113.27:49152:tcp", "value": {"state": "open", "service": "msrpc"}, "verified": true},
+        {"fact_type": "service", "key": "203.0.113.27:49153:tcp", "value": {"state": "open", "service": "msrpc"}, "verified": true},
+        {"fact_type": "service", "key": "203.0.113.27:49154:tcp", "value": {"state": "open", "service": "rpcbind"}, "verified": true},
+        {"fact_type": "service", "key": "203.0.113.27:49155:tcp", "value": {"state": "open", "service": "msrpc"}, "verified": true}
+      ],
+      "findings": [],
+      "expect": {
+        "objective_complete": true,
+        "families": 1,
+        "representative": "203.0.113.27:49152",
+        "open_branches": 7,
+        "deferred_family_members": 3,
+        "effective_invocations": 1
+      }
+    },
+    {
+      "id": "unverified_vulnerability_is_a_lead",
+      "split": "reserved",
+      "category": "success",
+      "objective_complete": true,
+      "target": "203.0.113.28",
+      "events": [
+        {
+          "tool_id": "nexus.web.request",
+          "arguments": {"target": "http://203.0.113.28/"},
+          "result": {"verified": true, "verification_method": "http_parsed", "output": {"status_code": 200}},
+          "progress": true,
+          "tokens": 400,
+          "ms": 700
+        }
+      ],
+      "facts": [
+        {"fact_type": "service", "key": "203.0.113.28:80:tcp", "value": {"state": "open", "service": "http"}, "verified": true},
+        {"fact_type": "vulnerability", "key": "203.0.113.28:80/fictional-cve", "value": {"cve": "CVE-0000-0000", "route": "/fictional"}, "verified": false, "source": "agent"}
+      ],
+      "findings": [],
+      "expect": {
+        "objective_complete": true,
+        "findings": 0,
+        "unverified_findings": 0,
+        "open_branches": 1
+      }
+    },
+    {
+      "id": "barrier_without_attempt_does_not_close",
+      "split": "calibration",
+      "category": "barrier",
+      "objective_complete": false,
+      "target": "203.0.113.29",
+      "events": [],
+      "facts": [
+        {"fact_type": "service", "key": "203.0.113.29:80:tcp", "value": {"state": "open", "service": "http"}, "verified": true},
+        {"fact_type": "barrier", "key": "203.0.113.29:80", "value": {"reason": "parece parcheado", "sweep_attempted": false, "provenance": "model_claim"}, "verified": false}
+      ],
+      "findings": [],
+      "expect": {
+        "open_branches": 1,
+        "closed_branches": 0
+      }
+    },
+    {
+      "id": "conclusive_barrier_closes_with_reason",
+      "split": "calibration",
+      "category": "barrier",
+      "objective_complete": false,
+      "target": "203.0.113.30",
+      "events": [],
+      "facts": [
+        {"fact_type": "service", "key": "203.0.113.30:8080:tcp", "value": {"state": "open", "service": "http"}, "verified": true},
+        {"fact_type": "barrier", "key": "203.0.113.30:8080", "value": {"reason": "el barrido se ejecutó y la ruta no expone vector", "sweep_attempted": true, "outcome": "negative"}, "verified": false}
+      ],
+      "findings": [],
+      "expect": {
+        "open_branches": 0,
+        "closed_branches": 1
+      }
+    },
+    {
+      "id": "out_of_scope_target_is_a_correct_stop",
+      "split": "calibration",
+      "category": "safety_stop",
+      "objective_complete": false,
+      "target": "198.51.100.9",
+      "stopped": true,
+      "stop_reason": "scope_denied",
+      "events": [
+        {
+          "tool_id": "nexus.recon.nmap",
+          "arguments": {"target": "198.51.100.9"},
+          "result": {"outcome": "scope_denied", "verified": false, "verification_method": "scope_denied", "output": {"target": "198.51.100.9"}},
+          "progress": false,
+          "tokens": 120,
+          "ms": 20
+        }
+      ],
+      "facts": [],
+      "findings": [],
+      "expect": {
+        "correct_stop": true,
+        "no_positive_facts": true
+      }
+    },
+    {
+      "id": "provider_refusal_is_not_a_tool_failure",
+      "split": "reserved",
+      "category": "provider_limit",
+      "objective_complete": false,
+      "target": "203.0.113.31",
+      "stopped": true,
+      "stop_reason": "provider_refusal",
+      "model_exchange": {"kind": "refusal", "content": "El modelo se detuvo y no propuso una acción."},
+      "events": [],
+      "facts": [],
+      "findings": [],
+      "expect": {
+        "correct_stop": true,
+        "no_tool_failure": true
+      }
+    },
+    {
+      "id": "max_iterations_summary_is_honest",
+      "split": "calibration",
+      "category": "provider_limit",
+      "objective_complete": false,
+      "target": "203.0.113.32",
+      "stopped": true,
+      "stop_reason": "max_iterations",
+      "events": [],
+      "facts": [
+        {"fact_type": "service", "key": "203.0.113.32:445:tcp", "value": {"state": "open", "service": "microsoft-ds"}, "verified": true},
+        {"fact_type": "service", "key": "203.0.113.32:3389:tcp", "value": {"state": "open", "service": "ms-wbt-server"}, "verified": true}
+      ],
+      "findings": [],
+      "summary_inputs": {
+        "reason": "iteration budget exhausted",
+        "max_iterations": 12,
+        "closed_branches": 0,
+        "open_labels": ["203.0.113.32:3389/tcp ms-wbt-server"],
+        "report_line": "informe PENDIENTE"
+      },
+      "expect": {
+        "correct_stop": true,
+        "findings": 0,
+        "summary_fields": ["verified facts: service=2", "findings=0", "closed branches=0", "open branches:", "informe PENDIENTE"]
+      }
+    }
+  ]
+}

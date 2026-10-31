@@ -13,7 +13,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import httpx
 import msgpack
@@ -38,6 +38,19 @@ class MetasploitUnavailable(MetasploitError):
 
 class MetasploitAuthError(MetasploitError):
     """Credentials were missing or rejected."""
+
+
+class MetasploitRPCError(MetasploitError):
+    """The daemon answered the RPC with an error.
+
+    ``method`` is the only remote detail kept: it lets the handler say *which*
+    operation failed (``module.execute`` -> the module is not available) without
+    echoing the daemon's body, which can carry paths or session data.
+    """
+
+    def __init__(self, message: str, *, method: str = "") -> None:
+        super().__init__(message)
+        self.method = str(method or "")
 
 
 def normalize(value: Any) -> Any:
@@ -85,7 +98,13 @@ class MetasploitConfig:
             url=os.getenv("MSF_RPC_URL", "http://127.0.0.1:55552"),
             user=os.getenv("MSF_RPC_USER", "msf"),
             password=os.getenv("MSF_RPC_PASSWORD", ""),
-            transport=os.getenv("MSF_RPC_TRANSPORT", "msgpack").lower(),
+            # ``__post_init__`` rejects any value outside the two transports;
+            # the cast documents that check to the type checker without
+            # weakening it at runtime.
+            transport=cast(
+                Literal["json", "msgpack"],
+                os.getenv("MSF_RPC_TRANSPORT", "msgpack").lower(),
+            ),
         )
 
 
@@ -186,10 +205,14 @@ class MetasploitClient:
                 or "result" not in data
                 or data.get("error")
             ):
-                raise MetasploitError("invalid JSON-RPC result or RPC error")
+                raise MetasploitRPCError(
+                    "invalid JSON-RPC result or RPC error", method=method
+                )
             data = data["result"]
         if isinstance(data, dict) and data.get("error") and data.get("status") != "errored":
-            raise MetasploitError("RPC error")
+            # Keep the method: it is what distinguishes "the catalog query is "
+            # not available" from "the daemon is down" without guessing.
+            raise MetasploitRPCError("RPC error", method=method)
         return data
 
     async def is_available(self) -> bool:

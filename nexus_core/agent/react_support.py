@@ -9,7 +9,7 @@ import asyncio
 import json
 import os
 import time
-from typing import Any, Callable, Mapping, cast
+from typing import Any, Callable, Iterable, Mapping, cast
 
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.llm.abstraction import LLMMessage, is_invalid_json_error
@@ -228,6 +228,55 @@ def command_failed_guidance(tool_id: Any) -> str:
     )
 
 
+#: Fact types that count as the run's useful output in a terminal summary. Kept
+#: here (not in the coordinator) so the benchmark and the loop render the same
+#: honest sentence.
+SUMMARY_FACT_TYPES = (
+    "service",
+    "endpoint",
+    "credential",
+    "session",
+    "access",
+    "privilege",
+    "vulnerability",
+    "loot",
+    "artifact",
+    "user",
+)
+
+
+def termination_summary(
+    *,
+    reason: str,
+    max_iterations: int,
+    counts: Mapping[str, Any] | None,
+    findings: int,
+    closed_branches: int,
+    open_labels: Iterable[str] = (),
+    report_line: str = "informe PENDIENTE",
+) -> str:
+    """One truthful terminal sentence: what was proven, not just why it stopped.
+
+    A run that ends on ``max_iterations`` with verified facts used to report only
+    ``findings=0`` and the open branches, so an operator could not tell a run
+    that proved a surface from one that did nothing. Findings are *supported*
+    vulnerabilities; verified facts are the observable board and must be shown
+    even when the findings list is empty.
+    """
+    shown = ", ".join(
+        f"{name}={int(amount or 0)}"
+        for name, amount in sorted((counts or {}).items())
+        if str(name) in SUMMARY_FACT_TYPES and int(amount or 0) > 0
+    )
+    labels = "; ".join(str(label) for label in open_labels if str(label))
+    return (
+        f"{reason} (iteration budget {max_iterations}); termination_reason={reason}; "
+        f"verified facts: {shown or 'ninguno'}; findings={int(findings)}; "
+        f"closed branches={int(closed_branches)}; "
+        f"open branches: {labels or 'ninguna identificada'}; {report_line}"
+    )
+
+
 def repeated_action_correction(tool_id: Any) -> str:
     """Model-facing correction for an identical repeat of a failed action (V1-26).
 
@@ -275,16 +324,15 @@ def _invocation_signature(tool_id: Any, arguments: Any) -> str:
     The loop uses it to tell a repeat of the *immediately preceding* action from a
     new attempt (V1-26). The arguments are redacted with the same field policy
     used to persist them, so the signature never carries a credential and still
-    matches the copy kept in the action log.
+    matches the copy kept in the action log. The *semantic* normalisation is the
+    shared one (``step_signature``): a repeat that only changes the timeout is
+    the same work for every layer, direct or background -the measured
+    ``nmap full_tcp`` launched four times with and without ``timeout_seconds``.
     """
-    import hashlib
+    from nexus_core.kernel.step_signature import semantic_signature
 
-    payload = [str(tool_id or ""), memory._redact_arguments(arguments or {})]
-    try:
-        text = json.dumps(payload, sort_keys=True, default=str)
-    except (TypeError, ValueError, RecursionError):
-        text = str(payload)
-    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+    redacted = memory._redact_arguments(arguments or {})
+    return semantic_signature(tool_id, redacted)
 
 
 def _failure_kind(exc: BaseException) -> str:

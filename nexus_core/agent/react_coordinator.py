@@ -107,8 +107,31 @@ from .react_types import (
     ReActConfig,
     ReActResult,
 )
-from .turn_telemetry import FrictionFlag, TurnTelemetryRecorder
+from .turn_telemetry import (
+    DETERMINATE_NON_FAILURE_OUTCOMES,
+    FrictionFlag,
+    TurnTelemetryRecorder,
+)
+
+#: Fact types that represent *actionable* progress: something the next decision
+#: can use (a service/version, a user, an endpoint, a credential, a vulnerability,
+#: access, loot or an artifact). `host` only repeats that the target answered;
+#: `barrier`, `lead` and the agent's hypotheses are bookkeeping, and counting them
+#: let a run reset its stagnation counter by writing barriers forever.
+ACTIONABLE_FACT_TYPES = frozenset({
+    "service",
+    "endpoint",
+    "credential",
+    "session",
+    "access",
+    "privilege",
+    "vulnerability",
+    "loot",
+    "artifact",
+    "user",
+})
 from .react_support import (
+    termination_summary,
     _task_payload,
     _cancellation_requested,
     _audit_step,
@@ -976,6 +999,11 @@ class ReActCoordinator:
         self.premature_rejections = 0
         self.completion_objections = []
         self.consecutive_no_progress = 0
+        #: Last ``(actionable facts, closed branches)`` reading, the baseline of
+        #: the stagnation guard. A turn that only adds a model-written barrier
+        #: does not move it: the streak must survive a branch that refuses to
+        #: produce evidence (see ``_actionable_progress``).
+        self._progress_baseline: tuple[int, int] | None = None
         #: R7: consecutive turns rejected for their *arguments* (schema, flag,
         #: placeholder, ``invalid_*`` verdict). They are friction, not a target
         #: verdict, so they do not move the pivot until the free budget is spent.
@@ -3892,7 +3920,9 @@ class ReActCoordinator:
             output=observation.get("output"),
             error=observation.get("error"),
         )
-        self.telemetry.note_tool(duration_ms=result["duration_ms"], success=success)
+        self.telemetry.note_tool(
+            duration_ms=result["duration_ms"], success=success, outcome=outcome
+        )
         if success:
             self.scope_denial_target = None
             self.scope_denial_streak = 0
@@ -3933,7 +3963,12 @@ class ReActCoordinator:
         else:
             self.scope_denial_target = None
             self.scope_denial_streak = 0
-        if outcome != "command_failed":
+        if outcome in DETERMINATE_NON_FAILURE_OUTCOMES or outcome == "command_failed":
+            # A determinate answer (including "no") proves the tool works: it
+            # neither retires the tool nor extends the failure streak.
+            self.consecutive_failures = 0
+            self.tool_failures.clear()
+        else:
             self.consecutive_failures += 1
         if outcome in {"unavailable", "timeout"}:
             self.observation = result
@@ -3943,8 +3978,13 @@ class ReActCoordinator:
             else:
                 reason = observation.get("failure_kind") or "backend unavailable"
                 evidence = observation.get("evidence")
-                if isinstance(evidence, dict) and evidence.get("provider"):
-                    reason = str(evidence["provider"])
+                if isinstance(evidence, dict):
+                    reason = str(
+                        evidence.get("cause_code")
+                        or evidence.get("detail")
+                        or evidence.get("provider")
+                        or reason
+                    )
                 result["guidance"] = unavailable_guidance(spec.tool_id, reason)
         elif outcome == "command_failed":
             result["guidance"] = command_failed_guidance(spec.tool_id)
@@ -4127,9 +4167,16 @@ class ReActCoordinator:
             self.audit_step(
                 iteration=self.iteration,
                 action=batch.action,
-                decision="allow" if result.get("success") else "deny",
+                decision=(
+                    "allow"
+                    if result.get("success")
+                    or str(result.get("outcome") or "")
+                    in (DETERMINATE_NON_FAILURE_OUTCOMES | {"command_failed"})
+                    else "deny"
+                ),
                 tool_id=spec.tool_id,
                 success=bool(result.get("success")),
+                outcome=str(result.get("outcome") or ""),
                 batch=True,
                 batch_index=execution.index,
             )
@@ -4482,6 +4529,7 @@ class ReActCoordinator:
             self.telemetry.note_tool(
                 duration_ms=_elapsed_ms(tool_started),
                 success=bool(self.observation.get("success")),
+                outcome=str(self.observation.get("outcome") or ""),
             )
             if self.observation.get("success"):
                 self.scope_denial_target = None
@@ -4546,14 +4594,19 @@ class ReActCoordinator:
                     # the insistence streak is broken, whatever the outcome.
                     self.scope_denial_target = None
                     self.scope_denial_streak = 0
-                if failure_outcome == "command_failed":
-                    # The tool worked: the channel reached the target and the
-                    # command ran. A non-zero exit is about the command, so it is
-                    # not the "this tool is broken" signal that aborts the run
-                    # after N failures -three failed ``sudo`` invocations must not
-                    # end the engagement. The stuck/no-progress counter still
-                    # sees the barren turn.
+                if (
+                    failure_outcome in DETERMINATE_NON_FAILURE_OUTCOMES
+                    or failure_outcome == "command_failed"
+                ):
+                    # The tool worked: the channel reached the target and it
+                    # answered. A ``negative`` SMB listing, a ``denied`` share or
+                    # a command that exited non-zero are observations about the
+                    # target, not the "this tool is broken" signal. Counting
+                    # them here retired the tool and made a legitimate "no" read
+                    # as a tool failure in telemetry. The stuck/no-progress
+                    # counter still sees the barren turn.
                     self.consecutive_failures = 0
+                    self.tool_failures.clear()
                 else:
                     self.consecutive_failures += 1
                 if failure_outcome == "unavailable":
@@ -4563,8 +4616,17 @@ class ReActCoordinator:
                     # attempts and the next prompt offers the remaining routes.
                     reason = self.observation.get("failure_kind") or "backend unavailable"
                     evidence = self.observation.get("evidence")
-                    if isinstance(evidence, dict) and evidence.get("provider"):
-                        reason = str(evidence["provider"])
+                    if isinstance(evidence, dict):
+                        # A concrete cause (``authentication_failed``,
+                        # ``module_unavailable``, ``rpc_unreachable``) is what
+                        # tells the model whether a retry can ever help; the bare
+                        # provider name did not.
+                        reason = str(
+                            evidence.get("cause_code")
+                            or evidence.get("detail")
+                            or evidence.get("provider")
+                            or reason
+                        )
                     self.observation["guidance"] = unavailable_guidance(
                         self.action.tool_id, reason
                     )
@@ -4608,12 +4670,16 @@ class ReActCoordinator:
         self._account_vector(
             str(self.action.tool_id), self.action.arguments, self.observation
         )
+        determinate = str(self.observation.get("outcome") or "") in (
+            DETERMINATE_NON_FAILURE_OUTCOMES | {"command_failed"}
+        )
         self.audit_step(
             iteration=self.iteration,
             action=self.action.action,
-            decision="allow" if self.observation.get("success") else "deny",
+            decision="allow" if (self.observation.get("success") or determinate) else "deny",
             tool_id=self.action.tool_id,
             success=bool(self.observation.get("success")),
+            outcome=str(self.observation.get("outcome") or ""),
             consecutive_failures=self.consecutive_failures,
             error=self.observation.get("error"),
         )
@@ -5132,6 +5198,23 @@ class ReActCoordinator:
         delta = self.telemetry.current_delta()
         if delta is None:
             return
+        # Progress is *actionable*: new service/version/user/endpoint/credential/
+        # vulnerability/access/loot/artifact information, or a branch that really
+        # closed (with a reason and a scope). A new ``barrier`` otherwise is
+        # bookkeeping: the run can write one per turn and keep the same branch,
+        # and before this the streak reset on it every time (the measured
+        # dynamic-RPC loop: barriers counted as learning while nothing was
+        # identified).
+        actionable, closures = self._actionable_progress()
+        previous = getattr(self, "_progress_baseline", None)
+        if previous is None:
+            # The first reading is the baseline: a board that was already
+            # populated when the run started is not something *this* turn
+            # learned, so only a real delta counts.
+            progressed = delta > 0 and actionable > 0
+        else:
+            progressed = actionable > previous[0] or closures > previous[1]
+        self._progress_baseline = (actionable, closures)
         # R7: an argument rejection is friction (it already carries its own
         # telemetry flag), never a reason to abandon the branch. The first two
         # consecutive ones leave the pivot counter untouched; from the third the
@@ -5145,7 +5228,9 @@ class ReActCoordinator:
                 return
         else:
             self.argument_rejections = 0
-        self.consecutive_no_progress = self.consecutive_no_progress + 1 if delta <= 0 else 0
+        self.consecutive_no_progress = (
+            0 if progressed else self.consecutive_no_progress + 1
+        )
         self.telemetry.note_no_progress(consecutive=self.consecutive_no_progress)
         self._track_repeated_tool(delta)
         threshold = self.stuck_threshold
@@ -5165,6 +5250,41 @@ class ReActCoordinator:
             subagent_id=self.subagent.id,
             last_tools=self._last_tools(),
         )
+
+    def _actionable_progress(self) -> tuple[int, int]:
+        """``(actionable facts on the board, branch closures)`` of this turn.
+
+        The first number counts only :data:`ACTIONABLE_FACT_TYPES`, so a model
+        that registers barriers (or hypotheses) turn after turn cannot make the
+        loop believe it is learning. The second adds the branches the loop
+        closed itself plus a model-written barrier that *proves an attempt* and
+        carries its reason: that is the other legitimate form of progress the
+        loop is allowed to reward -a branch closed with evidence, not a branch
+        marked with a wish.
+        """
+        counts = self._blackboard_counts() or {}
+        actionable = sum(
+            int(amount or 0)
+            for fact_type, amount in counts.items()
+            if str(fact_type) in ACTIONABLE_FACT_TYPES
+        )
+        closures = len(getattr(self, "closed_branches", ()) or ())
+        action = getattr(self, "action", None)
+        observation = getattr(self, "observation", None)
+        executed = isinstance(observation, dict) and observation.get("success") is True
+        if executed and str(getattr(action, "tool_id", "") or "") == "nexus.knowledge.record_fact":
+            arguments = getattr(action, "arguments", None)
+            arguments = arguments if isinstance(arguments, dict) else {}
+            value = arguments.get("value")
+            value = value if isinstance(value, dict) else {}
+            reason = str(value.get("reason") or value.get("detail") or "").strip()
+            if (
+                str(arguments.get("fact_type") or "") == "barrier"
+                and value.get("sweep_attempted") is True
+                and reason
+            ):
+                closures += 1
+        return actionable, closures
 
     def _track_repeated_tool(self, delta: int) -> None:
         """Count turns that repeat one tool without adding a fact (WP4).
@@ -5375,14 +5495,21 @@ class ReActCoordinator:
             # engagement (the measured Bounty Hacker run ended exactly so).
             coverage = getattr(getattr(self, "snapshot", None), "coverage", None)
             open_work = list(getattr(coverage, "open_work", []) or [])
-            labels = "; ".join(
-                str(getattr(entry, "label", "") or "") for entry in open_work[:4]
-            )
-            self.final_summary = (
-                f"iteration budget exhausted ({self.config.max_iterations}) without "
-                f"task_complete; findings={len(self.findings)}; "
-                f"open branches: {labels or 'ninguna identificada'}; "
-                + self._report_status_line()
+            closed_work = list(getattr(coverage, "closed", []) or [])
+            # Verified facts are the run's actual output; hiding them because the
+            # findings list ended up empty made a run with a proven surface read
+            # as "nothing was done". The counts are the planner's own snapshot of
+            # ``Blackboard.summary`` (verifier-owned facts), never the model's.
+            self.final_summary = termination_summary(
+                reason="iteration budget exhausted without task_complete",
+                max_iterations=self.config.max_iterations,
+                counts=getattr(self.plan, "counts", {}) or {},
+                findings=len(self.findings),
+                closed_branches=len(closed_work),
+                open_labels=[
+                    str(getattr(entry, "label", "") or "") for entry in open_work[:4]
+                ],
+                report_line=self._report_status_line(),
             )
         self.context.event(
             "react.finished",

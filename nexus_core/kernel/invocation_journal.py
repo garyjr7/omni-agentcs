@@ -88,10 +88,19 @@ class InvocationJournal:
 
     @staticmethod
     def step_key(tool_id: str, arguments: dict[str, Any], *, phase: str = '', objective: str = '') -> str:
-        """Stable intent key: tool + canonical args + phase + objective prefix."""
+        """Stable intent key: tool + semantic args + phase + objective prefix.
+
+        The arguments are normalised by the shared ``semantic_signature``: a
+        repeat that only changes ``timeout_seconds`` (or any other wrapper-only
+        key) is the same work, whether it arrives directly, from the background
+        manager or as a retry. Phase and objective remain part of the key, so an
+        intentional re-scan in a new phase is still a new intent.
+        """
+        from .step_signature import semantic_signature
+
+        signature = semantic_signature(tool_id, arguments)
         payload = json.dumps(
-            [str(tool_id), arguments, str(phase or ''),
-             str(objective or '')[:200]],
+            [signature, str(phase or ''), str(objective or '')[:200]],
             sort_keys=True, separators=(',', ':'), default=str,
         )
         return hashlib.sha256(payload.encode()).hexdigest()

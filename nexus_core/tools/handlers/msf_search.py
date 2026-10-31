@@ -5,10 +5,10 @@ import re
 from nexus_core.integrations.metasploit.client import (
     MetasploitClient,
     MetasploitConfig,
-    MetasploitError,
 )
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.schema_validation import validate
+from nexus_core.tools.handlers._msf import msf_failure_result
 from nexus_core.tools.parsers.metasploit import parse_msf_search
 
 # LLMs routinely fill optional filters with empty or placeholder values; those
@@ -75,10 +75,26 @@ async def msf_search_handler(arguments: dict, context: RunContext) -> ToolResult
     try:
         config = MetasploitConfig.from_env()
         if not config.password:
-            return ToolResult(verification_method="msf_credentials_missing")
+            return ToolResult(
+                output={
+                    "status": "unavailable",
+                    "cause": "credentials_missing",
+                    "message": "MSF_RPC_PASSWORD is not set",
+                },
+                verification_method="msf_credentials_missing",
+                evidence={"cause_code": "credentials_missing"},
+            )
         async with MetasploitClient(config) as client:
             if not await client.is_available():
-                return ToolResult(verification_method="msf_unavailable")
+                return ToolResult(
+                    output={
+                        "status": "unavailable",
+                        "cause": "rpc_unreachable",
+                        "message": "the RPC daemon is not reachable on the configured address",
+                    },
+                    verification_method="msf_rpc_unavailable",
+                    evidence={"cause_code": "rpc_unreachable"},
+                )
             raw = await client.search_modules(**arguments)
             parsed = parse_msf_search(raw, arguments.get("query", ""))
             return ToolResult(
@@ -87,9 +103,16 @@ async def msf_search_handler(arguments: dict, context: RunContext) -> ToolResult
                 verification_method="msf_search_rpc_parsed",
                 evidence={"count": len(parsed.modules), "raw_sha256": parsed.raw_sha256},
             )
-    except MetasploitError as exc:
-        return ToolResult(
-            verification_method="msf_rpc_failed", evidence={"error_type": type(exc).__name__}
-        )
     except (ValueError, TypeError):
-        return ToolResult(verification_method="msf_response_invalid")
+        return ToolResult(
+            output={
+                "status": "error",
+                "cause": "invalid_response",
+                "message": "the RPC answer was not a valid module catalog",
+            },
+            outcome="error",
+            verification_method="msf_response_invalid",
+            evidence={"cause_code": "invalid_response"},
+        )
+    except Exception as exc:  # noqa: BLE001 - mapped to a determinate MSF diagnosis
+        return msf_failure_result("nexus.exploit.msf_search", exc)

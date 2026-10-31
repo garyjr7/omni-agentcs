@@ -65,6 +65,41 @@ OWNERSHIP_TYPES: tuple[str, ...] = (
     "artifact",
 )
 
+#: Service names that describe one *family* rather than one independent branch.
+#: A Windows host with SMB/RDP/WinRM also exposes a block of dynamic RPC ports
+#: (49152-65535 by default); each is the same endpoint mapper, not a new vector.
+#: Treating every port as its own campaign spends the budget on near-identical
+#: probes, so the ledger groups them and works one representative (see
+#: ``SurfaceEntry.family`` and ``Coverage.first_open``). The set is evidence-based
+#: (the service name nmap/the parser actually reported), never a room rule.
+RPC_FAMILY_SERVICES = frozenset({
+    "rpcbind",
+    "msrpc",
+    "dcerpc",
+    "epmap",
+    "rpc",
+    "ncacn_http",
+})
+FAMILY_RPC = "rpc"
+
+
+def service_family(service: Any, product: Any = "") -> str:
+    """Family a service belongs to (``""`` when it is its own branch).
+
+    Only families with an engine-level reason to be merged are named here: the
+    ports of a dynamic RPC range answer the same endpoint mapper and share the
+    same enumeration path. An unknown high port is *not* folded into a family:
+    nothing proves it is the same service, and hiding an open port would be the
+    opposite of the ledger's purpose.
+    """
+    name = str(service or "").strip().lower()
+    if name in RPC_FAMILY_SERVICES:
+        return FAMILY_RPC
+    if FAMILY_RPC in str(product or "").lower().split():
+        return FAMILY_RPC
+    return ""
+
+
 #: Ports a bare ``http://host/`` (or ``https://host/``) can reach: the scheme's
 #: own default. A URL that omits the port is not evidence about 8080/8443 -a
 #: measured false positive: one endpoint on :80 marked an unrelated Squid on
@@ -189,6 +224,20 @@ class SurfaceEntry:
     #: ("this port has a vulnerability") is a reason to keep the branch open but
     #: names no path, so it cannot appear in the per-path ledger.
     vulnerabilities: int = 0
+    #: Service family (``"rpc"`` for dynamic RPC ports, ``""`` otherwise).
+    #: Members of one family are branches of the same campaign: the ledger works
+    #: the representative and leaves the siblings deferred, not discarded.
+    family: str = ""
+
+    @property
+    def family_key(self) -> tuple[str, str]:
+        """``(host, family)`` - hashable key of the campaign (empty when none)."""
+        return (self.host.strip().lower(), self.family) if self.family else ("", "")
+
+    @property
+    def family_ref(self) -> str:
+        """``host:rpc`` - key that closes/defers the whole family at once."""
+        return f"{self.host}:{self.family}" if self.family else ""
 
     @property
     def vector_count(self) -> int:
@@ -255,6 +304,7 @@ class SurfaceEntry:
             "vulnerabilities": self.vulnerabilities,
             "vector_count": self.vector_count,
             "vectors": [item.to_dict() for item in self.vectors],
+            "family": self.family,
         }
 
 
@@ -337,13 +387,85 @@ class Coverage:
             if item.status in (STATUS_PENDING, STATUS_PROBED)
         )
 
+    @property
+    def families(self) -> dict[tuple[str, str], tuple[SurfaceEntry, ...]]:
+        """Open services grouped by ``(host, family)`` (only real families).
+
+        The siblings are *not* dropped: every port keeps its own entry and its
+        own verdict. Grouping only changes *which* entry the ledger proposes
+        next and tells the model the campaign is shared, so a block of dynamic
+        RPC ports is probed once instead of once per port.
+        """
+        grouped: dict[tuple[str, str], list[SurfaceEntry]] = {}
+        for item in self.entries:
+            key = item.family_key
+            if not key[1]:
+                continue
+            grouped.setdefault(key, []).append(item)
+        return {
+            key: tuple(sorted(items, key=lambda entry: entry.port))
+            for key, items in grouped.items()
+            if len(items) > 1
+        }
+
+    def _family_representative(self, item: SurfaceEntry, seen: set[tuple[str, str]]) -> bool:
+        """Whether ``item`` is the one branch of its family to work right now.
+
+        The lowest-port member of the family that still needs a verdict is the
+        representative. Skipping the rest is deliberate: they answer the same
+        endpoint mapper, and one campaign over the family is the honest unit.
+        """
+        key = item.family_key
+        if not key[1]:
+            return True
+        if key in seen:
+            return False
+        members = self.families.get(key, ())
+        if not members:
+            return True
+        open_members = [entry for entry in members if entry.status in (STATUS_PENDING, STATUS_PROBED)]
+        if not open_members:
+            return True
+        if open_members[0].ref != item.ref:
+            return False
+        seen.add(key)
+        return True
+
     def first_open(self) -> SurfaceEntry | None:
-        """The next branch to work: pending first, then probed, in port order."""
+        """The next branch to work: pending first, then probed, in port order.
+
+        Members of one service family are proposed through a single
+        representative (see :meth:`_family_representative`); the other ports
+        stay in ``open_work`` as deferred, not discarded.
+        """
         open_items = self.open_work
+        seen_families: set[tuple[str, str]] = set()
         for item in open_items:
-            if item.status == STATUS_PENDING:
+            if item.status == STATUS_PENDING and self._family_representative(item, seen_families):
                 return item
-        return open_items[0] if open_items else None
+        for item in open_items:
+            if self._family_representative(item, seen_families):
+                return item
+        return None
+
+    def family_representative(self, host: str, family: str) -> SurfaceEntry | None:
+        """Lowest-port open member of ``(host, family)`` (the one to work)."""
+        members = self.families.get((str(host).strip().lower(), str(family)))
+        if not members:
+            return None
+        open_members = [
+            item for item in members if item.status in (STATUS_PENDING, STATUS_PROBED)
+        ]
+        return open_members[0] if open_members else None
+
+    def deferred_family_members(self, entry: SurfaceEntry) -> tuple[SurfaceEntry, ...]:
+        """Siblings of ``entry``'s family that wait behind its verdict."""
+        members = self.families.get(entry.family_key, ())
+        return tuple(
+            item
+            for item in members
+            if item.ref != entry.ref and item.status in (STATUS_PENDING, STATUS_PROBED)
+        )
 
     def find(self, ref: str) -> SurfaceEntry | None:
         """Look one entry up by ``host:port`` (case-insensitive)."""
@@ -359,6 +481,10 @@ class Coverage:
         return {
             "counts": dict(self.counts),
             "entries": [item.to_dict() for item in self.entries],
+            "families": {
+                f"{host}:{family}": [item.ref for item in members]
+                for (host, family), members in self.families.items()
+            },
         }
 
 
@@ -377,14 +503,17 @@ def _parse_service_fact(fact: Mapping[str, Any]) -> SurfaceEntry | None:
     raw_value = fact.get("value")
     value: Mapping[str, Any] = raw_value if isinstance(raw_value, Mapping) else {}
     protocol = str(match.group("proto") or value.get("protocol") or "tcp").lower()
+    service = str(value.get("service") or "").strip().lower()
+    product = str(value.get("product") or "").strip()
     return SurfaceEntry(
         host=str(match.group("host")),
         port=port,
         protocol=protocol,
-        service=str(value.get("service") or "").strip().lower(),
-        product=str(value.get("product") or "").strip(),
+        service=service,
+        product=product,
         version=str(value.get("version") or "").strip(),
         key=key,
+        family=service_family(service, product),
     )
 
 
@@ -442,6 +571,8 @@ def _same_ref(fact: Mapping[str, Any], entry: SurfaceEntry) -> bool:
     if not key:
         return False
     wanted = {entry.key.lower(), entry.ref.lower(), f"{entry.ref.lower()}:{entry.protocol}"}
+    if entry.family_ref:
+        wanted.add(entry.family_ref.lower())
     return key in wanted
 
 
@@ -761,6 +892,7 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
                 evidence=evidence,
                 vulnerabilities=len(vectors),
                 vectors=vector_entries,
+                family=service_family(entry.service, entry.product),
             )
         )
 
@@ -926,6 +1058,24 @@ def render_coverage(
     hidden = len(coverage.entries) - len(visible)
     if hidden:
         lines.append(f"- … y {hidden} servicio(s) más (ordenados por estado y puerto)")
+    for (host, family), members in sorted(coverage.families.items()):
+        opened = [item for item in members if item.status in (STATUS_PENDING, STATUS_PROBED)]
+        if not opened:
+            continue
+        ports = ", ".join(str(item.port) for item in members)
+        representative = coverage.family_representative(host, family)
+        lead = (
+            f" representante {representative.ref}"
+            if representative is not None
+            else ""
+        )
+        lines.append(
+            f"- familia {family.upper()} en {host}: {len(members)} puertos ({ports})."
+            f" Es UNA campaña, no {len(members)} ramas:{lead or ' un solo sondeo de familia'}."
+            " Los puertos hermanos quedan APLAZADOS (no descartados) hasta que la "
+            "familia tenga veredicto; registra qué quedó sin identificar y por qué "
+            "se cierra o se aplaza."
+        )
     open_count = len(coverage.open_work)
     total = len(coverage.entries)
     bounds = directive if directive is not None and directive.active else None
@@ -962,7 +1112,8 @@ def render_coverage(
         "REGLA DE COBERTURA: trabaja UNA rama a la vez y no más de 3 turnos "
         "seguidos sobre la misma sin un hecho nuevo; si el vector está parcheado "
         "o no existe, ciérralo con nexus.knowledge.record_fact fact_type=\"barrier\" "
-        "(key \"<host>:<puerto>\" cierra el servicio entero; key "
+        "(key \"<host>:<familia>\", p. ej. \"<host>:rpc\", cierra/aplaza la familia "
+        "entera con una sola razón; key "
         "\"<host>:<puerto><ruta>\" o una razón que nombre la ruta cierra solo ese "
         "camino; value con la razón) y pasa al siguiente camino. Un servicio con "
         "caminos pendientes no está cerrado: no repitas el que ya tiene veredicto, "

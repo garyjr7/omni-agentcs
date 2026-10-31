@@ -274,6 +274,8 @@ COMPLETED_OUTCOMES = frozenset({
 PROVIDER_UNAVAILABLE_SUFFIXES = (
     "_rpc_failed",
     "_credentials_missing",
+    "_auth_failed",
+    "_module_unavailable",
     "_unavailable",
     "_timeout",
 )
@@ -344,14 +346,24 @@ def provider_unavailable_result(tool_id: str, result: "ToolResult") -> "ToolResu
             provider = provider[: -len(suffix)]
             break
     provider = provider or tool_id or method
+    # The cause code is the only thing the model can act on: "msf didn't work"
+    # is not actionable, "the daemon rejected the configured credentials" is.
+    # It travels as a short code (never a body or a secret) and is preserved
+    # across the re-classification below.
+    cause_code = str((result.evidence or {}).get("cause_code") or method)
     evidence: Dict[str, Any] = {
         "provider": provider,
+        "cause_code": cause_code,
         "detail": f"{method} (the backend did not serve the call)",
     }
     if result.evidence:
         evidence["cause"] = dict(result.evidence)
+    output = dict(result.output or {})
+    output.setdefault("status", "unavailable")
+    output.setdefault("cause", cause_code)
     return replace(
         result,
+        output=output,
         verified=False,
         outcome="unavailable",
         verification_method=f"{tool_id}_{PROVIDER_UNAVAILABLE_METHOD}",

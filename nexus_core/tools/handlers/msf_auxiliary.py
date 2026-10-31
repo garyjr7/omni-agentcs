@@ -11,6 +11,7 @@ from nexus_core.integrations.metasploit.client import (
     MetasploitConfig,
     MetasploitError,
 )
+from nexus_core.tools.handlers._msf import msf_failure_result
 from nexus_core.kernel.models import (
     RiskLevel,
     RunContext,
@@ -191,7 +192,15 @@ async def msf_auxiliary_handler(arguments: dict, context: RunContext) -> ToolRes
     try:
         config = MetasploitConfig.from_env()
         if not config.password:
-            return ToolResult(verification_method="msf_credentials_missing")
+            return ToolResult(
+                output={
+                    "status": "unavailable",
+                    "cause": "credentials_missing",
+                    "message": "MSF_RPC_PASSWORD is not set",
+                },
+                verification_method="msf_credentials_missing",
+                evidence={"cause_code": "credentials_missing"},
+            )
         client = MetasploitClient(config)
         # Covers authentication, execution and polling; cleanup has a separate cap.
         try:
@@ -199,7 +208,18 @@ async def msf_auxiliary_handler(arguments: dict, context: RunContext) -> ToolRes
                 async with asyncio.timeout(timeout):
                     await client.authenticate()
                     if not await client.is_available():
-                        return ToolResult(verification_method="msf_unavailable")
+                        return ToolResult(
+                            output={
+                                "status": "unavailable",
+                                "cause": "rpc_unreachable",
+                                "message": (
+                                    "the RPC daemon is not reachable on the "
+                                    "configured address"
+                                ),
+                            },
+                            verification_method="msf_rpc_unavailable",
+                            evidence={"cause_code": "rpc_unreachable"},
+                        )
                     execution = await client.execute_module(module, options)
                     job_id, uuid = execution.get("job_id"), execution["uuid"]
                     raw = await _poll(client, uuid)
@@ -233,10 +253,19 @@ async def msf_auxiliary_handler(arguments: dict, context: RunContext) -> ToolRes
                 )
         finally:
             await client.aclose()
-    except MetasploitError as exc:
-        return ToolResult(
-            verification_method="msf_rpc_failed",
-            evidence={"error_type": type(exc).__name__, "uuid": uuid, "job_id": job_id},
-        )
     except (ValueError, TypeError):
-        return ToolResult(verification_method="msf_response_invalid")
+        return ToolResult(
+            output={
+                "status": "error",
+                "cause": "invalid_response",
+                "message": "the RPC answer was not a valid auxiliary result",
+                "uuid": uuid,
+                "job_id": job_id,
+            },
+            outcome="error",
+            verification_method="msf_response_invalid",
+            evidence={"cause_code": "invalid_response", "uuid": uuid, "job_id": job_id},
+        )
+    except Exception as exc:  # noqa: BLE001 - mapped to a determinate MSF diagnosis
+        result = msf_failure_result("nexus.exploit.msf_auxiliary", exc)
+        return result
