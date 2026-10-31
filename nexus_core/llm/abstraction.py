@@ -414,6 +414,66 @@ def trim_oldest_messages(
     return system + rest[-keep:]
 
 
+#: Model families that only accept ``max_completion_tokens``. OpenAI retired
+#: ``max_tokens`` for these: sending it is a 400 *Unsupported parameter*.
+NEW_COMPLETION_TOKEN_MODELS: tuple[str, ...] = (
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-5",
+    "gpt-6",
+    "chatgpt-4o",
+    "o1",
+    "o3",
+    "o4",
+    "gpt-oss",
+)
+
+#: Model families that predate the rename and still expect ``max_tokens``.
+#: Checked *after* the new ones, so ``gpt-4o`` is never read as ``gpt-4``.
+LEGACY_COMPLETION_TOKEN_MODELS: tuple[str, ...] = (
+    "gpt-3.5",
+    "gpt-4",
+    "text-davinci",
+    "davinci",
+    "babbage",
+    "ada",
+    "curie",
+)
+
+
+def completion_token_parameter(
+    model: str, provider: LLMProvider | str = LLMProvider.OPENAI
+) -> str:
+    """The Chat Completions key that caps output tokens for ``model``.
+
+    OpenAI renamed the output ceiling to ``max_completion_tokens`` and rejects
+    ``max_tokens`` for the models released since (gpt-4o, the o-series, gpt-5,
+    gpt-6). Sending the old key there is a 400 that fails the whole turn, so the
+    payload key has to follow the model, not the client.
+
+    Resolution order:
+
+    1. a known *new* family -> ``max_completion_tokens``;
+    2. a known *legacy* family -> ``max_tokens`` (gpt-3.5, gpt-4, gpt-4-turbo);
+    3. an unknown name from the OpenAI provider -> ``max_completion_tokens``,
+       because a model we do not know is far more likely to be newer than the
+       rename than older; any other provider keeps the OpenAI-compatible
+       ``max_tokens`` that every compatible gateway already accepts.
+    """
+    name = (model or "").strip().lower()
+    for prefix in NEW_COMPLETION_TOKEN_MODELS:
+        if name.startswith(prefix):
+            return "max_completion_tokens"
+    for prefix in LEGACY_COMPLETION_TOKEN_MODELS:
+        if name.startswith(prefix):
+            return "max_tokens"
+    try:
+        resolved = provider if isinstance(provider, LLMProvider) else LLMProvider(provider)
+    except ValueError:
+        return "max_tokens"
+    return "max_completion_tokens" if resolved is LLMProvider.OPENAI else "max_tokens"
+
+
 class OpenAIClient(BaseLLMClient):
     """LLM client for OpenAI models."""
 
@@ -448,11 +508,17 @@ class OpenAIClient(BaseLLMClient):
         if self.config.system_prompt and api_messages[0]["role"] != "system":
             api_messages.insert(0, {"role": "system", "content": self.config.system_prompt})
 
-        request_params = {
+        # ``kwargs`` always names the ceiling ``max_tokens`` (the internal
+        # contract every caller and sub-agent already uses); only the wire key
+        # changes, because the new model families reject the old one.
+        token_key = completion_token_parameter(self.config.model, self.config.provider)
+        request_params: Dict[str, Any] = {
             "model": self.config.model,
             "messages": api_messages,
             "temperature": kwargs.get("temperature", self.config.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            token_key: kwargs.get(
+                "max_tokens", kwargs.get("max_completion_tokens", self.config.max_tokens)
+            ),
         }
 
         max_retries = 3
@@ -463,7 +529,7 @@ class OpenAIClient(BaseLLMClient):
             await pace_request(
                 self.config.provider,
                 estimated_tokens=estimate_request_tokens(
-                    messages, request_params["max_tokens"]
+                    messages, request_params[token_key]
                 ),
             )
             try:
@@ -501,13 +567,13 @@ class OpenAIClient(BaseLLMClient):
                     status == 429 and mentions_output_token_limit(e)
                 ):
                     shrunk = max(
-                        MIN_COMPLETION_TOKENS, int(request_params["max_tokens"]) // 2
+                        MIN_COMPLETION_TOKENS, int(request_params[token_key]) // 2
                     )
                     self._logger.warning(
                         f"Provider rejected the request as too large (status {status}); "
-                        f"shrinking max_tokens {request_params['max_tokens']} -> {shrunk}."
+                        f"shrinking {token_key} {request_params[token_key]} -> {shrunk}."
                     )
-                    request_params["max_tokens"] = shrunk
+                    request_params[token_key] = shrunk
                 # An *input*-token rejection cannot be fixed by shrinking the
                 # reservation: trim the oldest conversation turns instead.
                 if status == 413 and mentions_input_token_limit(e):
@@ -544,11 +610,14 @@ class OpenAIClient(BaseLLMClient):
         if self.config.system_prompt and api_messages[0]["role"] != "system":
             api_messages.insert(0, {"role": "system", "content": self.config.system_prompt})
 
+        token_key = completion_token_parameter(self.config.model, self.config.provider)
         request_params: Dict[str, Any] = {
             "model": self.config.model,
             "messages": api_messages,
             "temperature": kwargs.get("temperature", self.config.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            token_key: kwargs.get(
+                "max_tokens", kwargs.get("max_completion_tokens", self.config.max_tokens)
+            ),
             "stream": True,
         }
         if self.config.provider in (LLMProvider.OPENAI, LLMProvider.GROQ):
@@ -560,7 +629,7 @@ class OpenAIClient(BaseLLMClient):
         await pace_request(
             self.config.provider,
             estimated_tokens=estimate_request_tokens(
-                messages, request_params["max_tokens"]
+                messages, request_params[token_key]
             ),
         )
         try:
