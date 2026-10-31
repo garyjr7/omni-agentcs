@@ -223,6 +223,12 @@ OUTCOME_TAXONOMY = frozenset({
     #: nothing and closes no branch; ``next_start_at`` tells the caller where the
     #: next slice begins.
     "partial",
+    #: The *identical* step is already running in this run, so this call did not
+    #: execute (the journal holds it ``prepared``/``running``). It is neither a
+    #: verdict about the target nor a broken post-condition: nothing was
+    #: observed yet. Measured in Bounty Hacker and Blue (2026-10-31), where the
+    #: coordination refusal reached the loop as a tool that does not work.
+    "in_flight",
     #: Anything else, including an unparsed or corrupt answer.
     "error",
 })
@@ -253,6 +259,11 @@ COMPLETED_OUTCOMES = frozenset({
     # something about the slice it ran, so it must not raise (the caller asks for
     # the next one instead) nor be read as a negative verdict about the target.
     "partial",
+    # The identical step is still running: the call decided nothing about the
+    # target but *did* decide that no second execution happens, so it completes
+    # and the loop reconciles with the invocation in flight instead of reading a
+    # coordination refusal as a broken tool.
+    "in_flight",
 })
 
 #: ``verification_method`` suffixes that mean "the backend this tool talks to did

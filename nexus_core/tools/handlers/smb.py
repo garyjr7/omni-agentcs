@@ -143,9 +143,40 @@ NT_STATUS_OUTCOMES = {
 }
 
 
+#: ``NT_STATUS`` tokens that answer the *share enumeration* question with
+#: "there is no such share here". For ``action=shares`` they are a negative
+#: (the server decided; the listing is empty), while the same token on a
+#: ``list``/``get`` of a named share means the requested path does not exist
+#: and stays ``unsupported``. Measured in Blue (2026-10-31): an anonymous
+#: ``nexus.recon.smb action=shares`` returned ``NT_STATUS_RESOURCE_NAME_NOT_FOUND``
+#: with ``count=0``, the gateway raised ``post-condition was not verified``, and
+#: the agent read a perfectly determinate answer as a broken check.
+SHARE_LIST_NEGATIVE_TOKENS = frozenset({
+    "NT_STATUS_RESOURCE_NAME_NOT_FOUND",
+    "NT_STATUS_NETWORK_NAME_DELETED",
+    "NT_STATUS_NO_SUCH_GROUP",
+})
+
+
 def _nt_status_outcome(token: str | None) -> str:
     """Outcome for a determinate ``NT_STATUS`` answer, or ``""`` when unknown."""
     return NT_STATUS_OUTCOMES.get((token or "").upper(), "")
+
+
+def _share_list_outcome(failure: str | None) -> str:
+    """Outcome of a share enumeration that listed nothing.
+
+    Three determinate shapes, in order: an empty answer (``failure is None``),
+    a token the handler already classifies (``denied``/``unsupported``), and a
+    token that means "this server has no such share". Anything else stays
+    unclassified and keeps failing closed: an I/O token is not an answer.
+    """
+    if failure is None:
+        return "negative"
+    outcome = _nt_status_outcome(failure)
+    if outcome:
+        return outcome
+    return "negative" if failure.upper() in SHARE_LIST_NEGATIVE_TOKENS else ""
 
 
 def _parse_shares(stdout: str) -> list[dict[str, Any]]:
@@ -377,10 +408,7 @@ async def smb_handler(arguments: dict, context: RunContext) -> ToolResult:
         evidence["nt_status"] = failure
         # No shares is a determinate answer: the server listed nothing, or it
         # refused. An unrecognised NT_STATUS stays unclassified (fail closed).
-        if shares:
-            outcome = ""
-        else:
-            outcome = _nt_status_outcome(failure) or ("negative" if failure is None else "")
+        outcome = "" if shares else _share_list_outcome(failure)
         return ToolResult(
             output=output,
             verified=bool(shares) and result.exit_code == 0,

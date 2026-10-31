@@ -470,6 +470,16 @@ async def build_report(
         notes = (notes + " " if notes else "") + (
             "La cadena de auditoría NO se pudo verificar: trátese como no confiable."
         )
+    if not mitre.dataset_available():
+        # Measured in Bounty Hacker v2 (2026-10-31): the pipx install shipped
+        # without ``report/data/*.json`` and report generation died. The report
+        # must be produced from the durable record even then, and say what it
+        # could not enrich.
+        notes = (notes + " " if notes else "") + (
+            "El catálogo MITRE ATT&CK no está instalado en este entorno: el "
+            "reporte omite ese enriquecimiento (los hallazgos y su evidencia "
+            "siguen completos)."
+        )
 
     report = EngagementReport(
         engagement_id=str(metadata["engagement_id"]),

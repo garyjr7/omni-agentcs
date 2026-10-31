@@ -23,7 +23,9 @@ and a finished task is delivered exactly once.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json
 import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -74,6 +76,35 @@ def max_concurrent_from_env(env: Mapping[str, str] | None = None) -> int:
     except ValueError:
         return DEFAULT_MAX_CONCURRENT
     return max(1, min(value, 8))
+
+
+#: Arguments that only tune *how long* the engine waits, not what the call does.
+#: Two spawns that differ only here are the same scan (Bounty Hacker, 2026-10-31:
+#: ``nmap full_tcp`` was launched four times, the first with
+#: ``timeout_seconds=300`` and the rest without it, while the first was running).
+#: Objective/profile/ports/scripts remain part of the signature, so a *different*
+#: scan is always a different intent and really runs.
+EQUIVALENCE_IGNORED_KEYS = frozenset({"timeout_seconds"})
+
+
+def invocation_signature(
+    tool_id: str, arguments: Mapping[str, Any] | None
+) -> str:
+    """Canonical signature of one call for background reconciliation.
+
+    Empty values are dropped (``""``/``None`` are the same as absent to the
+    handlers) and the tuning keys above are ignored. Anything else -target,
+    profile, ports, flags, wordlist, share- changes the signature.
+    """
+    cleaned = {
+        str(key): value
+        for key, value in dict(arguments or {}).items()
+        if value not in (None, "", [], {}) and str(key) not in EQUIVALENCE_IGNORED_KEYS
+    }
+    payload = json.dumps(
+        [str(tool_id or ""), cleaned], sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _clean_label(value: object, *, fallback: str) -> str:
@@ -295,6 +326,28 @@ class TaskManager:
         record = self._records.get(str(task_id or ""))
         return record.to_dict() if record is not None else None
 
+    def find_equivalent(
+        self, tool_id: str, arguments: Mapping[str, Any] | None
+    ) -> TaskRecord | None:
+        """Newest background task that is the *same call*, or ``None``.
+
+        Reconciliation, not refusal: the caller decides what to tell the model.
+        A running equivalent is work already in flight, and one that finished
+        successfully already produced evidence -spawning a second copy would pay
+        for the same scan twice. A failed/timed-out equivalent is *not* returned:
+        retrying a scan that did not complete is a legitimate new attempt.
+        """
+        wanted = invocation_signature(tool_id, arguments)
+        for key in reversed(self._order):
+            record = self._records.get(key)
+            if record is None or record.tool_id != str(tool_id or ""):
+                continue
+            if invocation_signature(record.tool_id, record.arguments) != wanted:
+                continue
+            if record.status == RUNNING or (record.terminal and record.status == SUCCEEDED):
+                return record
+        return None
+
     def list_tasks(self) -> list[dict[str, Any]]:
         """Status of every retained task, oldest first."""
         return [self._records[key].to_dict() for key in self._order if key in self._records]
@@ -371,7 +424,9 @@ __all__ = [
     "DEFAULT_MAX_CONCURRENT",
     "DEFAULT_MAX_TOTAL",
     "DEFAULT_RETENTION",
+    "EQUIVALENCE_IGNORED_KEYS",
     "FAILED",
+    "invocation_signature",
     "MAX_CONCURRENT_ENV",
     "MAX_LABEL_CHARS",
     "RUNNING",

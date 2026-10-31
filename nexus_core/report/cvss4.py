@@ -154,8 +154,18 @@ LLM_PROMPT = (
 
 @lru_cache(maxsize=1)
 def lookup_table() -> dict[str, float]:
-    """Return the parsed ``{macro_vector: base_score}`` table (official data)."""
-    data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    """Return the parsed ``{macro_vector: base_score}`` table (official data).
+
+    A wheel that lost ``data/`` still produces a report: the table is empty and
+    every vector resolves to ``None`` (the caller keeps the deterministic
+    heuristic score) instead of raising ``FileNotFoundError`` mid-report.
+    Corrupt data keeps failing, because that is a broken install, not a missing
+    optional dataset.
+    """
+    try:
+        data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
     scores = data.get("scores") if isinstance(data, dict) else None
     if not isinstance(scores, dict) or not scores:
         raise ValueError("cvss4_lookup.json must carry a non-empty 'scores' object")

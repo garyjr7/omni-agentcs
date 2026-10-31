@@ -703,13 +703,17 @@ def http_channel_assertions(add, *, target: str, command: str, body: str, method
         return
     captured = FLAG_RE.findall(text)
     for flag in captured:
-        add("loot", flag,
+        # The flag is the *key* (its identity on the board); the target stays the
+        # host that produced it. Measured in Bounty Hacker v2 (2026-10-31): the
+        # loot fact carried the flag as ``target``, so the closure and the report
+        # attributed the capture to a string that is not a host.
+        add("loot", target,
             {"flag": flag, "command": remote, "service": "http", "via": "web"},
             flag, method=method)
     path = flag_file_path(remote)
     content = flag_file_text(remote, text) if path else ""
     if content and content not in captured:
-        add("loot", content,
+        add("loot", target,
             {"content": content, "flag": content, "command": remote,
              "path": path, "service": "http", "via": "web"},
             f"http:file:{path}", method=method)
@@ -978,7 +982,8 @@ def derive_assertions(tool_id, arguments, result, context):
         if output.get('exit_status') == 0:
             captured = FLAG_RE.findall(stdout)
             for flag in captured:
-                add('loot', flag, {'flag': flag, 'command': command, 'service': 'ssh'}, flag)
+                add('loot', target,
+                    {'flag': flag, 'command': command, 'service': 'ssh'}, flag)
             # A verified read of a conventional flag file is loot on its own
             # evidence: the SSH channel is proven (exit 0) and the path says what
             # the text is, so a room whose flags carry no prefix still registers
@@ -990,7 +995,7 @@ def derive_assertions(tool_id, arguments, result, context):
             path = flag_file_path(command)
             text = flag_file_text(command, stdout)
             if text and text not in captured:
-                add('loot', text,
+                add('loot', target,
                     {'content': text, 'flag': text, 'command': command,
                      'path': path, 'service': 'ssh'},
                     f"ssh:file:{path}")
@@ -1052,7 +1057,7 @@ def derive_assertions(tool_id, arguments, result, context):
                         method=SHELLPASS_METHOD)
                 captured = FLAG_RE.findall(text)
                 for flag in captured:
-                    add('loot', flag,
+                    add('loot', first.target,
                         {'flag': flag, 'command': first.command,
                          'service': 'ssh', 'via': 'shell.exec'}, flag,
                         method=SHELLPASS_METHOD)
@@ -1064,7 +1069,7 @@ def derive_assertions(tool_id, arguments, result, context):
                 path = flag_file_path(first.command)
                 content = shell_read_text(first.command, text) if path else ''
                 if content and content not in captured:
-                    add('loot', content,
+                    add('loot', first.target,
                         {'content': content, 'flag': content,
                          'command': first.command, 'path': path,
                          'service': 'ssh', 'via': 'shell.exec'},
@@ -1146,7 +1151,7 @@ def derive_assertions(tool_id, arguments, result, context):
         add('privilege', target, {'uid': 0, 'user': 'root'})
         flag = output.get('flag')
         if flag:
-            add('loot', flag, {'flag': flag, 'libc_base': output.get('libc_base')}, flag)
+            add('loot', target, {'flag': flag, 'libc_base': output.get('libc_base')}, flag)
     elif tool_id == 'nexus.web.ssti' and result.verification_method == 'ssti_command_output':
         # Theseus (2026-10-30): the page rendered ``?key={{...}}`` and the engine
         # ran the command. The fact carries what is proven -parameter, engine and
@@ -1169,7 +1174,7 @@ def derive_assertions(tool_id, arguments, result, context):
                  'username': identity.group(2), 'parameter': parameter})
         flag = output.get('flag')
         if flag:
-            add('loot', flag, {'flag': flag, 'parameter': parameter}, flag)
+            add('loot', parts.hostname or url, {'flag': flag, 'parameter': parameter}, flag)
     elif tool_id == 'nexus.post.pwnkit' and result.verification_method == 'pwnkit_root_command':
         # The nonce block reported ``uid=0(root)``: local root on a host reached
         # only through SSH. Same shape as the ret2libc proof.
@@ -1177,7 +1182,7 @@ def derive_assertions(tool_id, arguments, result, context):
         add('privilege', target, {'uid': 0, 'user': 'root'})
         flag = output.get('flag')
         if flag:
-            add('loot', flag, {'flag': flag}, flag)
+            add('loot', target, {'flag': flag}, flag)
     elif tool_id == 'nexus.web.wp_enum' and result.verification_method == 'wp_enum_completed':
         findings = output.get('findings') or {}
         url = output.get('url')
@@ -1270,7 +1275,8 @@ def derive_assertions(tool_id, arguments, result, context):
             ):
                 add('privilege', target, {'uid': 0, 'user': 'root'})
             for flag in FLAG_RE.findall(stdout):
-                add('loot', flag, {'flag': flag, 'command': command, 'service': 'wordpress'}, flag)
+                add('loot', target,
+                    {'flag': flag, 'command': command, 'service': 'wordpress'}, flag)
     elif (tool_id == 'nexus.recon.netexec'
           and result.verification_method == 'netexec_text_parsed'):
         # F1 (DeadDrop, 2026-10-23): the run reached the DC through a
@@ -1393,7 +1399,7 @@ def derive_assertions(tool_id, arguments, result, context):
         read = _WIN_READ_RE.match(command)
         path = read.group('path').strip('"\'') if read else ''
         for flag in FLAG_RE.findall(text):
-            add('loot', flag,
+            add('loot', target,
                 {'flag': flag, 'command': command, 'path': path or None,
                  'service': 'smb-exec', 'via': 'psexec'},
                 path or flag)
@@ -1433,8 +1439,8 @@ def derive_assertions(tool_id, arguments, result, context):
         if read:
             path = read.group('path').strip('"\'')
             for flag in FLAG_RE.findall(stdout):
-                add('loot', flag, {'flag': flag, 'path': path, 'command': command,
-                                   'service': 'winrm'}, path)
+                add('loot', target, {'flag': flag, 'path': path, 'command': command,
+                                     'service': 'winrm'}, path)
             # The file name is the proof, not the format: ``Get-Content
             # user.txt``/``type user.txt`` printing one short line of any text is
             # the capture (Vulnversity's ``user.txt`` is an MD5). The channel is
@@ -1442,7 +1448,7 @@ def derive_assertions(tool_id, arguments, result, context):
             # answer, so a wrapped/loud read promotes nothing.
             content = flag_file_text(command, stdout)
             if content and not any(row['value'].get('flag') == content for row in rows):
-                add('loot', content,
+                add('loot', target,
                     {'content': content, 'flag': content, 'path': path,
                      'command': command, 'service': 'winrm'}, path)
     elif tool_id == 'nexus.post.dpapi' and result.verification_method == 'dpapi_unwrapped':
@@ -1472,7 +1478,9 @@ def derive_assertions(tool_id, arguments, result, context):
                      'service': 'keepass'},
                     f"keepass:{entry.get('group')}/{title}")
             for flag in FLAG_RE.findall(password):
-                add('loot', flag,
+                # The entry is the resource that held the flag; the flag is only
+                # the key/value of the loot.
+                add('loot', title,
                     {'flag': flag, 'title': title, 'group': entry.get('group'),
                      'service': 'keepass'}, title)
     elif tool_id == 'nexus.recon.dns' and result.verification_method == 'dns_response_parsed':
@@ -1481,8 +1489,10 @@ def derive_assertions(tool_id, arguments, result, context):
         # (measured: the room's flag lived in a TXT record of the domain).
         server = output.get('server')
         for flag in output.get('flags') or ():
-            add('loot', flag, {'flag': flag, 'record_type': output.get('record_type'),
-                               'name': output.get('name'), 'server': server}, flag)
+            # The DNS server/record is the resource; the flag is the capture.
+            add('loot', str(server or output.get('name') or 'dns'),
+                {'flag': flag, 'record_type': output.get('record_type'),
+                 'name': output.get('name'), 'server': server}, flag)
     elif (tool_id == 'nexus.exploit.msf_exploit'
           and result.verification_method == _MSF_SESSION_RESULT_METHOD):
         # A session the provenance verifier accepted (V1-24): the exploit really
@@ -1521,8 +1531,8 @@ def derive_assertions(tool_id, arguments, result, context):
     elif tool_id == 'nexus.c2.sliver_loot' and result.verification_method == 'sliver_loot_recorded':
         loot = output.get('loot') or {}
         if loot.get('sha256'):
-            add('loot', loot.get('loot_id') or loot.get('name'),
-                {'sha256': loot['sha256'], 'size': loot.get('size')},loot.get('name'))
+            add('loot', loot.get('name') or loot.get('loot_id'),
+                {'sha256': loot['sha256'], 'size': loot.get('size')}, loot.get('name'))
     elif (tool_id == 'nexus.post.shell_exec'
           and result.verification_method in {
               'session_pty_command', 'session_raw_command', 'session_webshell_command'}):
@@ -1548,7 +1558,7 @@ def derive_assertions(tool_id, arguments, result, context):
                  'session_ref': session_ref},
                 method=method)
         for flag in FLAG_RE.findall(text):
-            add('loot', flag,
+            add('loot', target or session_ref,
                 {'flag': flag, 'service': transport, 'session_ref': session_ref},
                 flag, method=method)
     elif (tool_id == 'nexus.session.pty'
@@ -1563,7 +1573,7 @@ def derive_assertions(tool_id, arguments, result, context):
         session_id = str(output.get('session_id') or 'pty')
         text = str(output.get('output') or '')
         for flag in FLAG_RE.findall(text):
-            add('loot', flag,
+            add('loot', session_id,
                 {'flag': flag, 'service': 'pty', 'session_id': session_id},
                 flag, method='pty_capture_observed')
         if re.search(r'uid=0\(root\) gid=\d+', text):

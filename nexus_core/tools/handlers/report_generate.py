@@ -143,6 +143,45 @@ def _select_llm() -> Any:
         return None
 
 
+def _storage_failure(
+    engagement_id: str, exc: OSError, *, stage: str, directory: str = ""
+) -> ToolResult:
+    """Determinate result for a report that could not be read/written.
+
+    Measured in Bounty Hacker v2 (2026-10-31): the pipx install shipped without
+    ``nexus_core/report/data/*.json``, ``tool_map()`` raised ``FileNotFoundError``
+    and the generic ``OSError`` envelope of the execution contract turned it into
+    ``outcome=unavailable`` with no message -the operator could not tell a
+    packaging defect from a broken database. This keeps the outcome determinate
+    (the loop must not read it as the target's answer) and carries the *actual*
+    error and the path that failed.
+    """
+    filename = str(getattr(exc, "filename", "") or "")[:1000]
+    detail = str(exc)[:500]
+    payload = {
+        "status": "report_unavailable",
+        "stage": stage,
+        "error_type": type(exc).__name__,
+        "error": detail,
+        "filename": filename,
+    }
+    if directory:
+        payload["directory"] = directory
+    return ToolResult(
+        output=payload,
+        verified=False,
+        outcome="unavailable",
+        verification_method="report_generation_failed",
+        evidence={
+            "engagement_id": engagement_id,
+            "stage": stage,
+            "error_type": type(exc).__name__,
+            "error": detail,
+            "filename": filename,
+        },
+    )
+
+
 async def report_generate_handler(arguments: dict, context: RunContext) -> ToolResult:
     validate(arguments, report_generate_definition().input_schema)
     # Inherit the active engagement when none is passed (H2): the session already
@@ -179,6 +218,8 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
             verification_method="report_unknown_engagement",
             evidence={"engagement_id": engagement_id},
         )
+    except OSError as exc:
+        return _storage_failure(engagement_id, exc, stage="build")
 
     if llm_cvss:
         client = _select_llm()
@@ -192,10 +233,15 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
 
             report = with_digest(report)
 
-    markdown_text = render_markdown(report)
-    html_text = render_html(report)
-    json_text = render_markdown_json(report)
-    sarif_text = render_sarif(report)
+    try:
+        markdown_text = render_markdown(report)
+        html_text = render_html(report)
+        json_text = render_markdown_json(report)
+        sarif_text = render_sarif(report)
+    except OSError as exc:
+        # Rendering reads the packaged reference data (ATT&CK, CVSS v4.0). A
+        # missing file there is an incomplete installation, not a finding.
+        return _storage_failure(engagement_id, exc, stage="render")
 
     directory = Path(requested_dir).expanduser() if requested_dir else report_directory(
         report.engagement_name
@@ -233,10 +279,8 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
 
         write_checksums(directory, files)
     except OSError as exc:
-        return ToolResult(
-            output={"status": "write_failed", "error": type(exc).__name__},
-            verification_method="report_write_failed",
-            evidence={"engagement_id": engagement_id, "directory": str(directory)},
+        return _storage_failure(
+            engagement_id, exc, stage="write", directory=str(directory)
         )
 
     counts = report.findings_by_severity

@@ -20,6 +20,14 @@ class JobRequest(BaseModel):
     approval_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+def _job_owner(payload: str) -> str:
+    """``job_owner`` recorded when the durable job was enqueued (never raises)."""
+    try:
+        return str(json.loads(payload).get('job_owner') or '')
+    except (TypeError, ValueError):
+        return ''
+
+
 def jobs_definition(tenant_id: str = 'system') -> ToolDefinition:
     return ToolDefinition(
         tool_id='nexus.post.job', tenant_id=tenant_id, name='Durable tool jobs',
@@ -42,10 +50,57 @@ async def jobs_handler(arguments: dict[str, Any], context: RunContext) -> ToolRe
                 'JOIN kernel_runs r ON r.id=t.run_id AND r.tenant_id=t.tenant_id '
                 'WHERE t.id=? AND t.tenant_id=?', (request.job_id, context.tenant_id),
             ).fetchone()
+            # The ids this API owns, so an unknown id reads as "that one is not
+            # mine" with the right list in hand instead of a bare failure.
+            owned = [
+                item['id']
+                for item in conn.execute(
+                    'SELECT id,payload FROM kernel_tasks WHERE tenant_id=? AND run_id=?'
+                    ' ORDER BY created_at DESC LIMIT 20',
+                    (context.tenant_id, context.run_id),
+                ).fetchall()
+                if _job_owner(item['payload']) == context.identity.subject_id
+            ]
         owner = json.loads(row['payload']) if row else {}
         if (not row or owner.get('job_owner') != context.identity.subject_id
                 or owner.get('engagement_id') != context.engagement_id):
-            return ToolResult(verification_method='job_not_found')
+            # A determinate answer, not a broken post-condition: the id exists in
+            # no durable job of this run. Measured in Bounty Hacker and Blue
+            # (2026-10-31): the model asked for the ReAct coordinator's ``bg-1``
+            # here, the gateway raised ``tool post-condition was not verified``,
+            # and two turns later it asked again. The observation now names the
+            # registry that owns each id so the loop stops polling the wrong one.
+            coordinator_id = str(request.job_id).startswith('bg-')
+            return ToolResult(
+                output={
+                    'status': 'job_not_found',
+                    'job_id': request.job_id,
+                    'registry': 'nexus.post.job',
+                    'known_job_ids': owned,
+                    'reason': (
+                        'coordinator_task_id' if coordinator_id
+                        else 'not_a_durable_job_of_this_run'
+                    ),
+                    'hint': (
+                        f"'{request.job_id}' pertenece al coordinador ReAct "
+                        '(tareas en background del bucle), no a nexus.post.job: su '
+                        'resultado se entrega solo como observación con '
+                        '`background: true`; no lo consultes aquí. Los IDs de esta '
+                        'API son los que devolvió nexus.post.job action=start'
+                        + (f" ({', '.join(owned)})" if owned else '')
+                        + '.'
+                        if coordinator_id
+                        else 'Ningún job durable de este run tiene ese ID. Usa '
+                        'solo los IDs devueltos por nexus.post.job action=start'
+                        + (f" ({', '.join(owned)})" if owned else ' (ninguno aún)')
+                        + '.'
+                    ),
+                },
+                outcome='negative',
+                verification_method='job_not_found',
+                evidence={'job_id': request.job_id, 'run_id': context.run_id,
+                          'registry': 'nexus.post.job'},
+            )
         # Results remain in the governed journal; do not duplicate secret-bearing
         # output or load an arbitrarily large JSON result into an observation.
         return ToolResult(output={'job_id': row['id'], 'status': row['status'],

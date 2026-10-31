@@ -1845,7 +1845,17 @@ class TargetReached:
 
 
 def _fact_target(fact: Mapping[str, Any]) -> str:
-    """Best target of a loot fact: its value fields, else its key (never raises)."""
+    """Best target of a loot fact: its provenance column, value fields, else key.
+
+    The board's ``target`` column is the host/resource the verifier attributed the
+    fact to, so it wins. Measured in Bounty Hacker v2 (2026-10-31): the loot row
+    carried the flag in ``target`` (the verifier wrote ``add('loot', flag, ...)``)
+    and, even once the row was fixed, this helper still answered with the key, so
+    the closure reported the capture as having happened *on* the flag string.
+    """
+    column = str(fact.get("target") or "").strip()
+    if column:
+        return column
     value = _fact_value(fact)
     for name in ("target", "url", "host", "address"):
         text = str(value.get(name) or "").strip()

@@ -71,10 +71,39 @@ COMMAND_TECHNIQUES: dict[str, tuple[str, ...]] = {
 TOKEN_SPLIT = re.compile(r"[^A-Za-z0-9_.-]")
 
 
+def dataset_available() -> bool:
+    """Whether both ATT&CK data files are installed.
+
+    A wheel built without ``package-data`` for this package loses them (measured:
+    ``nexus.report.generate`` died with ``FileNotFoundError`` on
+    ``tool_ttp_map.json`` after a pipx install and the gateway reported the tool
+    as ``unavailable``). The report can still be produced -ATT&CK enrichment is
+    metadata- but it must say that it omitted it.
+    """
+    return TECHNIQUES_FILE.is_file() and TOOL_MAP_FILE.is_file()
+
+
+def _read_dataset(path: Path, name: str) -> Any:
+    """Read one dataset: missing file means "not installed", corrupt still fails.
+
+    An absent optional dataset must not destroy a report that is otherwise
+    complete (the durable record is the source of truth). A *malformed* file is a
+    different thing -a broken install- and keeps raising.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    except ValueError as error:
+        raise ValueError(f"{name} is not valid JSON: {error}") from error
+
+
 @lru_cache(maxsize=1)
 def techniques() -> dict[str, dict[str, str]]:
     """Return the parsed ``{technique_id: {name, tactic}}`` reference table."""
-    data = json.loads(TECHNIQUES_FILE.read_text(encoding="utf-8"))
+    data = _read_dataset(TECHNIQUES_FILE, "mitre_techniques.json")
+    if data is None:
+        return {}
     if not isinstance(data, dict) or not data:
         raise ValueError("mitre_techniques.json must be a non-empty object")
     for technique_id, value in data.items():
@@ -86,7 +115,9 @@ def techniques() -> dict[str, dict[str, str]]:
 @lru_cache(maxsize=1)
 def tool_map() -> dict[str, tuple[str, ...]]:
     """Return the parsed ``{tool_id: (technique_id, ...)}`` map."""
-    data = json.loads(TOOL_MAP_FILE.read_text(encoding="utf-8"))
+    data = _read_dataset(TOOL_MAP_FILE, "tool_ttp_map.json")
+    if data is None:
+        return {}
     if not isinstance(data, dict):
         raise ValueError("tool_ttp_map.json must be an object")
     return {
@@ -148,6 +179,7 @@ def enrich_finding_with_mitre(finding: Any) -> Any:
 
 __all__ = [
     "COMMAND_TECHNIQUES",
+    "dataset_available",
     "enrich_finding_with_mitre",
     "merge_techniques",
     "technique_name",

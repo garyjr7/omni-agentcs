@@ -1019,6 +1019,12 @@ El código del proceso sigue esta tabla versionada:
 | `4` | Denegación de gobernanza: scope, RoE, policy o configuración de sandbox inválida |
 | `130` | Interrupción SIGINT/cancelación |
 
+`termination_reason` distingue por qué paró un run que no cerró: una negativa del
+modelo/proveedor a continuar se publica como `provider_refusal` (el `status`
+sigue siendo `clarification`, porque el operador aún decide) y `findings`
+conserva los hechos ya verificados en el tablero. No es un fallo de Omni, de una
+herramienta ni falta de progreso, y no cambia el código de salida (`1`).
+
 Un texto final sin pruebas **no** produce éxito CI. `completion_verified`
 expresa que pasaron las puertas deterministas implementadas y que existen
 assertions verificadas del run; no constituye una prueba universal de cualquier

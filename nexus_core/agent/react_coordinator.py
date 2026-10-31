@@ -77,6 +77,8 @@ from .react_types import (
     STATUS_BLOCKED,
     STATUS_BUDGET_EXCEEDED,
     STATUS_SUBAGENT_BUDGET,
+    PROVIDER_REFUSAL_EVENT_TYPE,
+    TERMINATION_PROVIDER_REFUSAL,
     SUBAGENT_EVENT_TYPE,
     BUDGET_EVENT_TYPE,
     BUDGET_SUBJECT_ID,
@@ -534,6 +536,49 @@ def _render_vectors(vectors: list[dict[str, str]]) -> str:
     return "; ".join(f"{item['key']} → {item['suggested_tool']}" for item in vectors)
 
 
+#: Sentences that mean the *model itself* declined the action (a refusal), as
+#: opposed to a question it needs answered. Measured in Blue (2026-10-31): after
+#: ``nmap --script smb-vuln-ms17-010`` proved the vector, the answer to the next
+#: prompt was ``request_clarification`` with "No puedo ayudar a explotar el
+#: host", and the run record said nothing about the stop being the model's own
+#: decision. Deliberately narrow: an unambiguous first-person refusal only, so a
+#: conditional question ("¿no puedo continuar sin credenciales?") never matches.
+_REFUSAL_MARKERS: tuple[str, ...] = (
+    "no puedo ayudar",
+    "no puedo colaborar",
+    "no puedo asistir",
+    "no voy a ayudar",
+    "no voy a explotar",
+    "no realizaré la explotación",
+    "no llevaré a cabo la explotación",
+    "no puedo ejecutar la explotación",
+    "me niego a",
+    "declino",
+    "i can't help",
+    "i cannot help",
+    "i can't assist",
+    "i cannot assist",
+    "i won't help",
+    "i will not help",
+    "i must decline",
+    "i'm not able to help",
+    "i am not able to help",
+)
+
+
+def _refusal_kind(text: str) -> str:
+    """``"model_declined"`` when the model's own words decline the action.
+
+    Empty for every other answer, including a genuine clarification request: the
+    classifier only labels the stop, it never changes the status, the evidence or
+    what the operator is asked.
+    """
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return ""
+    return "model_declined" if any(marker in normalized for marker in _REFUSAL_MARKERS) else ""
+
+
 class ReActCoordinator:
     """One run's state and explicit transitions; services own boundary logic."""
 
@@ -554,6 +599,9 @@ class ReActCoordinator:
     iteration: int
     status: str
     final_summary: str
+    #: Machine-readable reason for a stop the status alone does not explain
+    #: (``provider_refusal``), empty when the status *is* the reason.
+    termination_reason: str
     findings: list[dict[str, Any]]
     question: str | None
     consecutive_failures: int
@@ -674,6 +722,11 @@ class ReActCoordinator:
     #: the captured evidence, not by the old "no objections" derivation.
     forced_completion: bool
     completion_verified_override: bool | None
+    #: Last report that really produced deliverables (``directory`` and the
+    #: invocation that made it), or ``None``. The technical objective and the
+    #: engagement report are two different claims: a flag capture must not make
+    #: the run say "engaged and reported" when no artifact exists.
+    report_artifact: dict[str, Any] | None
     #: Per-turn operational telemetry (tokens, reasoning duration, friction,
     #: blackboard delta). Built in ``_initialize`` and published one record per
     #: iteration; it is the only place those four signals are joined.
@@ -870,6 +923,7 @@ class ReActCoordinator:
         self.iteration = _last_persisted_iteration(self.actions)
         self.status = STATUS_MAX_ITERATIONS
         self.final_summary = ""
+        self.termination_reason = ""
         self.findings = []
         self.question = None
         self.consecutive_failures = 0
@@ -994,6 +1048,7 @@ class ReActCoordinator:
         self.tool_calls_since_target_reached = 0
         self.forced_completion = False
         self.completion_verified_override = None
+        self.report_artifact = None
         self.telemetry = TurnTelemetryRecorder(
             store=self.store, tenant_id=self.tenant_id, run_id=self.run_id
         )
@@ -1896,6 +1951,35 @@ class ReActCoordinator:
         plan = self.engagement_plan
         return bool(plan is not None and plan.flags_pending)
 
+    def _note_report_artifact(self, spec: Any | None = None) -> None:
+        """Remember a report that really wrote its deliverables.
+
+        Only a successful ``nexus.report.generate`` counts: the handler returns
+        the directory it created plus the artifact hashes, so a failed run of the
+        tool (``outcome=unavailable``/``negative``) leaves this ``None`` and the
+        closure can say "objective met, report pending" instead of implying a
+        report that does not exist.
+        """
+        action = spec if spec is not None else self.action
+        if str(getattr(action, "tool_id", "") or "") != "nexus.report.generate":
+            return
+        observation = self.observation or {}
+        if not observation.get("success"):
+            return
+        raw_output = observation.get("output")
+        output: dict[str, Any] = raw_output if isinstance(raw_output, dict) else {}
+        raw_evidence = observation.get("evidence")
+        evidence: dict[str, Any] = raw_evidence if isinstance(raw_evidence, dict) else {}
+        directory = str(output.get("directory") or "")
+        if not directory:
+            return
+        self.report_artifact = {
+            "directory": directory,
+            "findings_count": output.get("findings_count"),
+            "report_sha256": output.get("report_sha256") or evidence.get("report_sha256"),
+            "invocation_id": str(observation.get("invocation_id") or ""),
+        }
+
     def _note_observed_flags(self, spec: Any | None = None) -> None:
         """Keep every flag seen in the successful output of this run (WP5).
 
@@ -2654,8 +2738,26 @@ class ReActCoordinator:
         return Transition.STOP
 
     def _clarify(self) -> Transition:
+        """Pause for the operator without throwing away what the run proved.
+
+        Measured in Blue (2026-10-31): the run stopped as ``clarification`` with
+        ``findings: []`` although the board held a verified host and 13 verified
+        services, and the record never said the model had *declined* to go on.
+        The status stays ``clarification`` (an operator answer is still what
+        unblocks the engagement); the summary, the findings and -when the model's
+        own words are a refusal- ``termination_reason`` now say which of the two
+        things stopped the run and what is still owed.
+        """
         self.status = STATUS_CLARIFICATION
         self.question = self.action.question
+        text = f"{getattr(self.action, 'thought', '') or ''}\n{self.question or ''}"
+        refusal = _refusal_kind(text)
+        # The evidence outlives the pause: a stop that is not ``task_complete``
+        # must not publish an empty finding list over a full board.
+        self.findings = self._preserved_findings()
+        self.final_summary = self._clarification_summary(refusal)
+        if refusal:
+            self.termination_reason = TERMINATION_PROVIDER_REFUSAL
         self.actions.append(
             _action_entry(
                 self.iteration,
@@ -2673,19 +2775,100 @@ class ReActCoordinator:
             self.question or "",
             {"kind": "react.clarification", "iteration": self.iteration, "run_id": self.run_id},
         )
+        if refusal:
+            # An explicit, separate record: the provider/model declined. It is
+            # neither an Omni defect, nor a tool failure, nor "no progress".
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                PROVIDER_REFUSAL_EVENT_TYPE,
+                {
+                    "iteration": self.iteration,
+                    "refusal": refusal,
+                    "question": self.question,
+                    "findings_count": len(self.findings),
+                    "open_work": self._open_branch_labels(),
+                    "report": self.report_artifact or {"generated": False},
+                    "note": (
+                        "El modelo/proveedor declinó continuar: no es un fallo de "
+                        "Omni, de una herramienta ni falta de progreso. Los "
+                        "hallazgos no intrusivos ya verificados se conservan en "
+                        "el tablero y en run.complete.findings."
+                    ),
+                },
+            )
         self.store.append_run_event(
             self.tenant_id,
             self.run_id,
             "react.clarification_requested",
-            {"question": self.question},
+            {
+                "question": self.question,
+                "refusal": refusal or None,
+                "findings_count": len(self.findings),
+            },
         )
         self.audit_step(
             iteration=self.iteration,
             action=self.action.action,
             decision="allow",
             thought=self.action.thought,
+            refusal=refusal or None,
+            findings_count=len(self.findings),
         )
         return Transition.STOP
+
+    def _open_branch_labels(self, limit: int = 4) -> str:
+        """Labels of the surfaces the ledger still holds open (never raises)."""
+        coverage = getattr(getattr(self, "snapshot", None), "coverage", None)
+        open_work = list(getattr(coverage, "open_work", []) or [])
+        labels = [str(getattr(entry, "label", "") or "") for entry in open_work[:limit]]
+        return "; ".join(label for label in labels if label)
+
+    def _clarification_summary(self, refusal: str = "") -> str:
+        """What stopped the run, what was preserved and what is still owed."""
+        preserved = len(self.findings)
+        pending = self._open_branch_labels() or "ninguna identificada"
+        head = (
+            "Negativa del modelo/proveedor a continuar el engagement (no es un "
+            "fallo de Omni, de una herramienta ni falta de progreso)"
+            if refusal
+            else "Pausa para aclaración del operador"
+        )
+        return (
+            f"{head}: {preserved} hallazgo(s) no intrusivo(s) conservado(s); "
+            f"ramas pendientes: {pending}; {self._report_status_line()}."
+        )
+
+    def _preserved_findings(self, limit: int = 25) -> list[dict[str, Any]]:
+        """Verified board facts as findings for a stop that is not a closure.
+
+        Only what the verifier proved is listed, each with its own invocation and
+        method; nothing is promoted and no severity is invented beyond ``info``.
+        A board that cannot be read yields ``[]`` (the stop must never raise).
+        """
+        findings: list[dict[str, Any]] = []
+        for fact in self._blackboard_facts():
+            if not isinstance(fact, dict) or not fact.get("verified"):
+                continue
+            fact_type = str(fact.get("fact_type") or "")
+            key = str(fact.get("key") or "")
+            if not fact_type or not key:
+                continue
+            findings.append(
+                {
+                    "severity": "info",
+                    "title": f"{fact_type}: {key}",
+                    "fact_type": fact_type,
+                    "target": str(fact.get("target") or key),
+                    "invocation_id": str(fact.get("invocation_id") or ""),
+                    "verification_method": str(fact.get("verification_method") or ""),
+                    "value": fact.get("value") if isinstance(fact.get("value"), dict) else {},
+                    "evidence": "hecho verificado en el tablero durante el run",
+                }
+            )
+            if len(findings) >= limit:
+                break
+        return findings
 
     def _tool_entry(self) -> Transition:
         self.entry = _action_entry(
@@ -3696,6 +3879,7 @@ class ReActCoordinator:
         observation = _observation_payload(execution.invocation or {})
         self.observation = observation
         self._note_observed_flags(spec)
+        self._note_report_artifact(spec)
         success = bool(observation.get("success"))
         outcome = str(observation.get("outcome") or "")
         result.update(
@@ -4294,6 +4478,7 @@ class ReActCoordinator:
                 return Transition.STOP
             self.observation = _observation_payload(invocation or {})
             self._note_observed_flags()
+            self._note_report_artifact()
             self.telemetry.note_tool(
                 duration_ms=_elapsed_ms(tool_started),
                 success=bool(self.observation.get("success")),
@@ -5101,9 +5286,15 @@ class ReActCoordinator:
             if isinstance(fact, dict)
         ]
         self.findings = self._flag_findings()
+        # Two different claims: the technical objective (access/privileges/loot
+        # verified) and the engagement deliverable (a report that really exists).
+        # The measured Bounty Hacker v2 run closed as "objective met" while
+        # ``report.generate`` had failed, and the operator had no line saying the
+        # report was still owed.
         self.final_summary = (
-            "Cierre forzado por objetivo cumplido: "
-            f"{len(flags)} flag(s) capturada(s) - " + ", ".join(flags)
+            "Cierre forzado por objetivo técnico cumplido: "
+            f"{len(flags)} flag(s) capturada(s) - " + ", ".join(flags) + "; "
+            + self._report_status_line()
         )
         self.status = STATUS_COMPLETED
         # The evidence is the captured flags, not a model summary: the closure is
@@ -5131,6 +5322,7 @@ class ReActCoordinator:
                 "tool_calls": self.tool_calls_since_target_reached,
                 "flags": flags,
                 "board_facts": board_facts,
+                "report": self.report_artifact or {"generated": False},
                 "tool_id": str(getattr(self.action, "tool_id", "") or ""),
                 "subagent_id": self.last_subagent_id,
             },
@@ -5164,6 +5356,17 @@ class ReActCoordinator:
         )
         return Transition.STOP
 
+    def _report_status_line(self) -> str:
+        """One operator-facing sentence about the report, never an assumption."""
+        report = self.report_artifact or {}
+        directory = str(report.get("directory") or "")
+        if directory:
+            return f"informe generado en {directory}"
+        return (
+            "informe PENDIENTE: nexus.report.generate no produjo un artefacto "
+            "verificable"
+        )
+
     def _result(self) -> ReActResult:
         if self.status == STATUS_MAX_ITERATIONS and (not self.final_summary):
             # The terminal state must say what is true: the limit was reached, the
@@ -5178,7 +5381,8 @@ class ReActCoordinator:
             self.final_summary = (
                 f"iteration budget exhausted ({self.config.max_iterations}) without "
                 f"task_complete; findings={len(self.findings)}; "
-                f"open branches: {labels or 'ninguna identificada'}"
+                f"open branches: {labels or 'ninguna identificada'}; "
+                + self._report_status_line()
             )
         self.context.event(
             "react.finished",
@@ -5206,6 +5410,7 @@ class ReActCoordinator:
                 else None
             ),
             completion_objections=list(self.completion_objections),
+            termination_reason=self.termination_reason,
             budget_tokens=int(self.budget or 0),
             budget_used=(
                 _budget_used(self.store, self.tenant_id, self.run_id)
@@ -5443,6 +5648,16 @@ class ReActCoordinator:
         if refusal is not None:
             reason, observation = refusal
             return self._record_background_refusal(reason, observation)
+        # The identical call is already running (or already produced evidence):
+        # reconcile with that task instead of spawning a second copy. The old
+        # behavior launched it and the journal then refused the execution with a
+        # ``PermissionError``, which the model read as a broken tool (Bounty
+        # Hacker and Blue, 2026-10-31: four ``nmap full_tcp`` spawns for one
+        # target). A *different* target/profile/port set is a different
+        # signature and still runs, so a real rescan is never blocked.
+        equivalent = self.task_manager.find_equivalent(spawn.tool_id, spawn.arguments)
+        if equivalent is not None:
+            return self._reconcile_background(equivalent)
         payload = self._call_payload(spawn)
         if self.config.on_approval_needed is not None:
             denial = self._review_call(spawn, payload)
@@ -5518,6 +5733,80 @@ class ReActCoordinator:
             tool_id=spawn.tool_id,
             task_id=record.task_id,
             label=record.label,
+        )
+        return Transition.NEXT_TURN
+
+    def _reconcile_background(self, record: TaskRecord) -> Transition:
+        """Answer a duplicate spawn with the task that already covers it.
+
+        A turn spent here is cheaper than a second ``nmap -p-`` and it teaches
+        the loop the right model of the world: background work is delivered, not
+        re-requested. Nothing is invented -the record is the task's own state-;
+        a finished task carries exactly the outcome it had.
+        """
+        assert isinstance(self.action, SpawnSubAgent)
+        running = record.status == "running"
+        outcome = "background_already_running" if running else "background_already_completed"
+        observation: dict[str, Any] = {
+            "success": False,
+            "outcome": outcome,
+            "background": True,
+            "task_id": record.task_id,
+            "label": record.label,
+            "tool_id": record.tool_id,
+            "status": record.status,
+            "running_tasks": self.task_manager.list_tasks(),
+            "guidance": (
+                f"Ya hay una tarea idéntica en curso ({record.task_id}). No lances "
+                "otra: su resultado llegará como observación. Mientras tanto avanza "
+                "en una rama distinta."
+                if running
+                else (
+                    f"La tarea idéntica {record.task_id} ya terminó con "
+                    f"outcome='{(record.result or {}).get('outcome') or record.status}'. "
+                    "Usa su resultado (está en la observación de entrega) en lugar de "
+                    "repetir el escaneo."
+                )
+            ),
+        }
+        if not running and record.result is not None:
+            observation["result"] = {
+                key: record.result.get(key)
+                for key in ("outcome", "verification_method", "evidence", "assertions")
+                if record.result.get(key) not in (None, [], {})
+            }
+        self.observation = observation
+        self.entry["tool_result"] = observation
+        self.actions.append(self.entry)
+        _inject_observation(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            self.run_id,
+            self.iteration,
+            self.action,
+            observation,
+            subagent_id=self.active_subagent_id,
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            "react.background_reconciled",
+            {
+                "iteration": self.iteration,
+                "task_id": record.task_id,
+                "status": record.status,
+                "tool_id": record.tool_id,
+                "outcome": outcome,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=self.action.action,
+            decision="allow",
+            tool_id=self.action.tool_id,
+            reason=outcome,
+            task_id=record.task_id,
         )
         return Transition.NEXT_TURN
 

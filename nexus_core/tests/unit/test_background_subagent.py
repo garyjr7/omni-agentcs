@@ -202,11 +202,15 @@ async def test_a_finished_task_is_delivered_once_and_written_to_the_board(tmp_pa
 
 
 async def test_a_saturated_manager_refuses_the_second_spawn(tmp_path, monkeypatch):
-    """The cap is a real refusal with guidance, not a silent queue."""
+    """The cap is a real refusal with guidance, not a silent queue.
+
+    The second spawn names a *different* target: an identical one is reconciled
+    with the task in flight (see the test below), so it never reaches the cap.
+    """
     monkeypatch.setenv("NEXUS_BACKGROUND_TASKS", "1")
     exec_ctx = _loop_context(tmp_path, monkeypatch)
     service = FakeService(delay=5)
-    llm = ScriptedLLM(_spawn(), _spawn(), _CLARIFY)
+    llm = ScriptedLLM(_spawn(target="10.0.0.5"), _spawn(target="10.0.0.6"), _CLARIFY)
     coordinator = _coordinator(exec_ctx, llm, ("local.one",), service)
 
     await coordinator.run()
@@ -221,6 +225,34 @@ async def test_a_saturated_manager_refuses_the_second_spawn(tmp_path, monkeypatc
     assert refusals[0]["running_tasks"]
     assert "background" in refusals[0]["error"] or "saturated" in refusals[0]["error"]
     assert service.calls == ["local.one"]  # only the accepted spawn ran
+
+
+async def test_an_identical_spawn_is_reconciled_instead_of_duplicated(tmp_path, monkeypatch):
+    """Bounty Hacker v2 / Blue (2026-10-31): four ``nmap full_tcp`` spawns for one host.
+
+    The second call differed only in ``timeout_seconds`` and the journal refused
+    it with ``PermissionError: invocation is already running or prepared``, which
+    the model read as a broken tool. Now the coordinator answers with the task
+    that already covers the work and names its id.
+    """
+    exec_ctx = _loop_context(tmp_path, monkeypatch)
+    service = FakeService(delay=5)
+    llm = ScriptedLLM(_spawn(target="10.0.0.5"), _spawn(target="10.0.0.5", timeout_seconds=120), _CLARIFY)
+    coordinator = _coordinator(exec_ctx, llm, ("local.one",), service)
+
+    await coordinator.run()
+
+    assert service.calls == ["local.one"], "the identical scan never ran twice"
+    assert coordinator.task_manager.count() == 1
+    reconciled = [
+        observation
+        for observation in _observations(exec_ctx, coordinator)
+        if observation.get("outcome") == "background_already_running"
+    ]
+    assert len(reconciled) == 1
+    assert reconciled[0]["task_id"].startswith("bg-")
+    assert reconciled[0]["status"] == "running"
+    assert "No lances otra" in reconciled[0]["guidance"]
 
 
 def test_a_background_observation_keeps_the_foreground_contract(tmp_path):

@@ -11,8 +11,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 
-import pytest
-
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.invocation_journal import InvocationJournal
 from nexus_core.tests.unit.test_hooks_lifecycle import context
@@ -60,8 +58,11 @@ def test_two_workers_cannot_replay_same_step(tmp_path, monkeypatch):
     journal, _ = running_invocation(ctx, lease="worker-A")
     calls = []
     governed = gateway(ctx, lambda a, c: calls.append(1))
-    with pytest.raises(PermissionError):
-        asyncio.run(governed.invoke("probe", {}, replace(ctx, worker_id="worker-B")))
+    # Fencing still prevents the second execution; the answer is now the
+    # determinate ``in_flight`` result (see test_invocation_journal), not a
+    # ``PermissionError`` that reads like a broken tool.
+    result = asyncio.run(governed.invoke("probe", {}, replace(ctx, worker_id="worker-B")))
+    assert result["outcome"] == "in_flight"
     assert not calls
 
 

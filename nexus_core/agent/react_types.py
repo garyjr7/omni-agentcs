@@ -231,6 +231,20 @@ RUN_EVIDENCE_MAX_OBSERVATIONS = 40
 STATUS_COMPLETED = "completed"
 STATUS_MAX_ITERATIONS = "max_iterations"
 STATUS_CLARIFICATION = "clarification"
+#: ``termination_reason`` of a run that stopped because the *model/provider* said
+#: it would not continue the engagement, not because Omni, a tool or the target
+#: failed. Measured in Blue (2026-10-31): ``nmap --script smb-vuln-ms17-010``
+#: proved the vector, then the model answered ``request_clarification`` declining
+#: exploitation, and the run record carried no line telling the operator that
+#: the stop was the model's decision -not a broken loop- while 13 verified
+#: service facts and the report stayed unreferenced. Keep the status
+#: ``clarification`` (the operator still has to decide) and use this reason to
+#: distinguish the refusal from a missing answer.
+TERMINATION_PROVIDER_REFUSAL = "provider_refusal"
+#: Emitted once when a clarification is, in the model's own words, a refusal.
+#: It authorizes nothing and changes no status: it records the answer's kind
+#: together with the non-intrusive findings the run had already proved.
+PROVIDER_REFUSAL_EVENT_TYPE = "react.provider_refusal"
 STATUS_FAILED = "failed"
 #: The model kept declaring the task complete while the plan said otherwise, or
 #: while its findings cited evidence from nowhere (B8.2.2/B8.2.3).
@@ -393,6 +407,11 @@ class ReActResult:
     #: Why the completion was refused, when ``status`` is
     #: ``premature_completion``.
     completion_objections: list[str] = field(default_factory=list)
+    #: Machine-readable reason for a stop that ``status`` alone cannot tell
+    #: apart: ``provider_refusal`` means the model/provider declined to go on
+    #: (see :data:`TERMINATION_PROVIDER_REFUSAL`). Empty means "the status is
+    #: the reason", which keeps ``run.complete`` consumers unchanged.
+    termination_reason: str = ""
     completion_verified: bool = False
     #: R1: the token ceiling this run actually ran under (``0`` = unlimited) and
     #: what it booked. ``run.complete`` publishes them next to the derived

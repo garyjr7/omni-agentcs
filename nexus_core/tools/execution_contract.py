@@ -92,9 +92,24 @@ def with_execution_contract(definition: ToolDefinition, handler: Handler) -> Han
         try:
             result = await handler(arguments, context)
         except OSError as exc:
+            # A local I/O failure is *not* a verdict about the target, so it stays
+            # ``unavailable`` -but it used to carry only the exception type.
+            # Measured in Bounty Hacker v2 (2026-10-31): ``nexus.report.generate``
+            # answered ``outcome=unavailable`` with ``{"error_type":
+            # "FileNotFoundError"}`` and no path, so a missing packaged dataset was
+            # indistinguishable from a dead service. The failing *path* now
+            # travels with the result; the exception message does not, because an
+            # ``OSError`` text is arbitrary and has leaked user paths before (the
+            # contract in ``test_missing_binary_returns_explicit_tool_result``).
+            filename = str(getattr(exc, "filename", "") or "")[:1000]
             result = ToolResult(
+                output={
+                    "status": "execution_unavailable",
+                    "error_type": type(exc).__name__,
+                    "filename": filename,
+                },
                 verification_method="tool_execution_unavailable",
-                evidence={"error_type": type(exc).__name__},
+                evidence={"error_type": type(exc).__name__, "filename": filename},
                 outcome="unavailable",
             )
         finally:

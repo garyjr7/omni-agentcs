@@ -89,6 +89,11 @@ include = ["nexus_core*"]
 #   * binary install recipes (nexus_core/provisioner/recipes.py)
 "nexus_core.playbooks" = ["*.yaml"]
 "nexus_core.provisioner" = ["data/*.json"]
+#   * report reference data read through ``Path(__file__)``: ATT&CK techniques,
+#     the tool/technique map and the CVSS v4.0 lookup table. Without this entry a
+#     wheel loses them and report generation failed (Bounty Hacker v2,
+#     2026-10-31: FileNotFoundError in mitre.tool_map -> outcome=unavailable).
+"nexus_core.report" = ["data/*.json"]
 
 # Boundary DTOs must be checked against Pydantic's real types, even when the
 # incremental gate skips unrelated repository imports.

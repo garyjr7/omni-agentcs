@@ -62,6 +62,63 @@ def _bounded(text: str, limit: int = _FAILURE_DETAIL_MAX) -> str:
 #: executed again. The data of the previous invocation travels with it; what the
 #: model was missing is the *fact* that it is the same data.
 ALREADY_INVOKED_METHOD = "tool_already_invoked"
+#: Verification method of a call that never ran because the identical step is
+#: still in flight in this run (``prepared``/``running`` in the journal).
+IN_FLIGHT_METHOD = "tool_in_flight"
+
+
+def _in_flight_result(
+    tool_id: str, previous: Dict[str, Any], context: RunContext
+) -> Dict[str, Any]:
+    """Answer an identical step that is still running, without executing it.
+
+    The journal has always refused the second execution (a ``PermissionError``
+    from ``prepare``), which is correct: the effect must not happen twice. What
+    was wrong is the *answer*: an exception reached the loop as a broken
+    post-condition, so a background scan the model had just launched looked
+    like a tool that does not work. Measured in Bounty Hacker and Blue
+    (2026-10-31): the model spawned ``nmap full_tcp`` again while the identical
+    invocation was still running, the task failed with ``PermissionError:
+    invocation is already running or prepared``, and the run spent the next
+    turns polling instead of waiting for the result that was on its way.
+
+    The result is determinate and invents nothing: ``outcome=in_flight`` (never
+    ``negative``, nothing was observed about the target), no assertion, and the
+    ``invocation_id``/state of the call that *is* running so the loop can
+    reconcile instead of duplicating it.
+    """
+    previous_id = str(previous.get("invocation_id") or "")
+    state = str(previous.get("state") or "running")
+    return {
+        "success": False,
+        "outcome": "in_flight",
+        "verified": False,
+        "verification_method": IN_FLIGHT_METHOD,
+        "output": {
+            "status": "in_flight",
+            "tool_id": tool_id,
+            "in_flight_invocation_id": previous_id,
+            "state": state,
+            "message": (
+                "La misma invocación con los mismos argumentos sigue en curso en "
+                f"este run (invocación {previous_id}, estado {state}): no se ha "
+                "lanzado otra y el objetivo todavía no ha sido observado. Su "
+                "resultado llegará solo; mientras tanto trabaja en una rama "
+                "distinta o espera. Si hace falta repetirla de verdad, cambia los "
+                "argumentos (otro perfil, otros puertos, otro objetivo)."
+            ),
+        },
+        "evidence": {
+            "in_flight_invocation_id": previous_id,
+            "state": state,
+            "tool_id": tool_id,
+            "run_id": context.run_id,
+        },
+        "assertions": [],
+        "invocation_id": context.invocation_id,
+        "run_id": context.run_id,
+        "engagement_id": context.engagement_id,
+    }
 
 
 def _already_invoked(result: Dict[str, Any], previous: Dict[str, Any]) -> Dict[str, Any]:
@@ -493,7 +550,16 @@ class ToolGateway:
                     )
                 return _already_invoked(reused, previous)
             if previous and previous['state'] in {'running', 'prepared'}:
-                raise PermissionError('invocation is already running or prepared; reconcile before retry')
+                # The identical step is in flight: answer it (never execute it
+                # twice, never raise a broken post-condition). See
+                # ``_in_flight_result`` for the measured run that motivated it.
+                self.audit.append(tenant_id=context.tenant_id, trace_id=context.trace_id,
+                    actor_id=context.identity.subject_id, action='invocation.in_flight',
+                    resource_type='tool', resource_id=tool_id,
+                    payload={'invocation_id': previous['invocation_id'], 'run_id': context.run_id,
+                             'step_key': step_key, 'state': previous['state'],
+                             'verification_method': IN_FLIGHT_METHOD}, decision='allow')
+                return _in_flight_result(tool_id, previous, context)
             if previous and previous['state'] == 'unknown':
                 retry_of = previous['invocation_id']
                 if not definition.idempotent:
@@ -507,8 +573,19 @@ class ToolGateway:
                 if retry_of:
                     journal.claim_retry(retry_of, context.tenant_id)
             target = arguments.get(definition.scope_target_field, '') if definition.scope_target_field else ''
-            journal.prepare(context, tool_id, arguments, target, retry_of=retry_of,
-                            step_key=step_key, lease_id=getattr(context, 'worker_id', '') or None)
+            try:
+                journal.prepare(context, tool_id, arguments, target, retry_of=retry_of,
+                                step_key=step_key, lease_id=getattr(context, 'worker_id', '') or None)
+            except PermissionError as exc:
+                # Same race as above, one layer down: another worker (a
+                # background task) prepared the identical step between the
+                # lookup and this insert. It is coordination, not a defect.
+                if 'already running or prepared' not in str(exc):
+                    raise
+                running = journal.matching(context, tool_id, arguments, step_key=step_key)
+                if running is None:
+                    raise
+                return _in_flight_result(tool_id, running, context)
             journal.start(context.invocation_id, context.tenant_id)
             store.record_usage(
                 context.tenant_id, context.run_id, "tool", tool_id, "calls", 1,

@@ -172,8 +172,20 @@ def test_worker_resume_recovers_only_under_owned_lease(tmp_path,monkeypatch):
 
 
 def test_running_invocation_is_not_concurrently_replayed(tmp_path,monkeypatch):
+    """The identical step is answered as ``in_flight``, never executed twice.
+
+    The journal still refuses the second execution -that is the invariant- but
+    the refusal is a determinate result naming the running invocation instead of
+    a ``PermissionError`` the loop reads as a broken tool (Bounty Hacker/Blue,
+    2026-10-31).
+    """
     from nexus_core.kernel.invocation_journal import InvocationJournal
     ctx=context(tmp_path,monkeypatch);j=InvocationJournal(ctx.store)
     i=j.prepare(ctx,'probe',{},'');j.start(i['invocation_id'],'system')
-    with pytest.raises(PermissionError,match='running'):
-        asyncio.run(gateway(ctx,lambda a,c:ToolResult({},True),idempotent=True).invoke('probe',{},ctx))
+    calls=[]
+    result=asyncio.run(gateway(ctx,lambda a,c:calls.append(1) or ToolResult({},True),
+                                idempotent=True).invoke('probe',{},ctx))
+    assert calls==[]
+    assert result['outcome']=='in_flight'
+    assert result['verification_method']=='tool_in_flight'
+    assert result['output']['in_flight_invocation_id']==i['invocation_id']
