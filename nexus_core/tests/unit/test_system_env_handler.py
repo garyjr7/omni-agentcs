@@ -107,4 +107,5 @@ def test_check_env_registered_in_catalog():
     # (Tanda G: host the payload an SSRF has to fetch back).
     # 83 with nexus.attack.ad_user_enum (B1: confirm an account without a
     # password, before spending a lockout attempt on it).
-    assert len(catalog) == 83
+    # 85 with nexus.web.ssti and nexus.post.pwnkit (Theseus).
+    assert len(catalog) == 85

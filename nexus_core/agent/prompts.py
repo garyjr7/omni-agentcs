@@ -78,6 +78,21 @@ PASSIVE_WAIT_RULE_PROMPT = (
     "  nexus.post.job; si no sabes qué hacer, registra un barrier y pivota.\n"
 )
 
+#: The SSTI order (Theseus, 2026-10-30). The page reflected the operator's
+#: value and the only written hint was a scytale cipher ending in "MAKE USE OF
+#: THE KEY": nothing named the parameter, and nothing in the catalog could tell
+#: XSS apart from a template engine. The tool discovers the parameter with an
+#: arithmetic canary, so the order is "probe before hand-writing payloads".
+#: Gated on the tool, same rule as :data:`LOGIN_RULE_PROMPT`.
+SSTI_RULE_PROMPT = (
+    "- SSTI ANTES QUE XSS/SQLI MANUAL: si un valor que enviaste aparece en la\n"
+    "  respuesta, o la página habla de una `key`/plantilla/render, NO escribas\n"
+    "  payloads a mano con nexus.web.request: llama a nexus.web.ssti sin `param`\n"
+    "  (descubre el parámetro con la canaria 7351*3=22053), confirma el motor y\n"
+    "  luego action=\"exec\" con command=\"id\". Con RCE, lee /etc/passwd, los\n"
+    "  home y los backups del usuario del servicio antes de escalar.\n"
+)
+
 #: The web-login order. It is *not* a permanent line of the prompt: it names
 #: ``nexus.cred.bruteforce``, and the per-subagent gating (asserted in
 #: ``test_subagent_gating``) forbids a prompt from even mentioning a tool that
@@ -338,7 +353,7 @@ REGLAS:
   (hydra sin credenciales, un endpoint sin SQLi), no insistas más de 2 veces:
   registra un barrier para ese vector y PIVOTA al siguiente. Mapea todas las
   vulnerabilidades, no solo la primera que veas.
-{engagement_plan_rule}{passive_wait_rule}{pivot_route_rule}{ad_tunnel_rule}{preview_module_rule}{credential_family_rule}{denied_patterns}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
+{engagement_plan_rule}{passive_wait_rule}{pivot_route_rule}{ad_tunnel_rule}{preview_module_rule}{ssti_rule}{credential_family_rule}{denied_patterns}- PLAN POR FASES: el engagement avanza por fases (reconocimiento →
   enumeración → acceso inicial → escalada → post-explotación → reporte). El
   plan vigente se muestra más abajo: trabaja SIEMPRE la fase actual y usa su
   foco y su siguiente paso sugerido como guía. Cuando completes la fase, tus
@@ -888,6 +903,9 @@ def render_system_prompt(
         if "nexus.web.request" in catalog and "nexus.web.upload" in catalog
         else ""
     )
+    # The SSTI order names the tool that does the discovery, so it is only
+    # rendered for a catalog that offers it.
+    ssti_rule = SSTI_RULE_PROMPT if "nexus.web.ssti" in catalog else ""
     # Only a subagent that can try a remote account needs the family rule.
     credential_family_rule = (
         CREDENTIAL_FAMILIES_RULE_PROMPT
@@ -914,6 +932,7 @@ def render_system_prompt(
         pivot_route_rule=pivot_route_rule,
         ad_tunnel_rule=ad_tunnel_rule,
         preview_module_rule=preview_module_rule,
+        ssti_rule=ssti_rule,
         credential_family_rule=credential_family_rule,
         # Built from the catalog that is actually being sent, so the block never
         # names a channel this model cannot call (subagent gating).

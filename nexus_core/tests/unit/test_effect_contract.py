@@ -77,6 +77,9 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.post.ntlm_capture",
     "nexus.post.pivot_bruteforce",
     "nexus.post.pivot_http",
+    # Theseus: PwnKit writes and compiles three files on the target and runs
+    # pkexec with an empty argv -it is the escalation, not a hint-.
+    "nexus.post.pwnkit",
     "nexus.post.smb_upload",
     "nexus.post.ssh_exec",
     "nexus.post.ssh_upload",
@@ -94,6 +97,9 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.web.request",
     "nexus.web.upload",
     "nexus.web.sqlmap",
+    # Theseus: SSTI discovery sends an arithmetic canary through every candidate
+    # parameter and ``exec`` runs a command through the engine (RCE).
+    "nexus.web.ssti",
     "nexus.web.wp_bruteforce",
     "nexus.web.wp_exec",
     "nexus.win.winrm_exec",
@@ -190,6 +196,8 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # starts a network service, so it is post_exploitation): 82 - 49 = 33, the
     # read-only count is unchanged.
     # B1 adds one *active* enum tool (nexus.attack.ad_user_enum): 83 - 50 = 33.
+    # Theseus adds two *active* tools (nexus.web.ssti and nexus.post.pwnkit):
+    # 85 - 52 = 33, so the read-only count is unchanged again.
     assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 33
 
 

@@ -1147,6 +1147,37 @@ def derive_assertions(tool_id, arguments, result, context):
         flag = output.get('flag')
         if flag:
             add('loot', flag, {'flag': flag, 'libc_base': output.get('libc_base')}, flag)
+    elif tool_id == 'nexus.web.ssti' and result.verification_method == 'ssti_command_output':
+        # Theseus (2026-10-30): the page rendered ``?key={{...}}`` and the engine
+        # ran the command. The fact carries what is proven -parameter, engine and
+        # the account the process runs as-, never the payload itself, so the
+        # ledger can attribute the vector to the right port and the run stops
+        # re-testing a page it already owns.
+        url = output.get('url')
+        parameter = output.get('parameter')
+        parts = urlsplit(str(url or ''))
+        endpoint = f"{parts.scheme or 'http'}://{parts.netloc}{parts.path or '/'}"
+        add('vulnerability', url,
+            {'class': 'server-side template injection',
+             'engine': output.get('engine'), 'parameter': parameter,
+             'rce': True, 'url': endpoint},
+            f"ssti:{parts.path or '/'}:{parameter}")
+        identity = _WEB_IDENTITY_RE.search(str(output.get('output') or ''))
+        if identity:
+            add('access', parts.hostname or url,
+                {'transport': 'http', 'service': 'web', 'uid': int(identity.group(1)),
+                 'username': identity.group(2), 'parameter': parameter})
+        flag = output.get('flag')
+        if flag:
+            add('loot', flag, {'flag': flag, 'parameter': parameter}, flag)
+    elif tool_id == 'nexus.post.pwnkit' and result.verification_method == 'pwnkit_root_command':
+        # The nonce block reported ``uid=0(root)``: local root on a host reached
+        # only through SSH. Same shape as the ret2libc proof.
+        target = output.get('target')
+        add('privilege', target, {'uid': 0, 'user': 'root'})
+        flag = output.get('flag')
+        if flag:
+            add('loot', flag, {'flag': flag}, flag)
     elif tool_id == 'nexus.web.wp_enum' and result.verification_method == 'wp_enum_completed':
         findings = output.get('findings') or {}
         url = output.get('url')

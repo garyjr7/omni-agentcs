@@ -38,7 +38,10 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # to fetch a file back from us, and no tool could serve it).
     # + nexus.attack.ad_user_enum (B1: an account derived from a page is a
     # hypothesis until Kerberos confirms it, and this oracle sends no password).
-    assert len(catalog) == 83
+    # + nexus.web.ssti (Theseus: the page evaluated a parameter nothing in the
+    #   catalog could name) and nexus.post.pwnkit (local root on a host reached
+    #   only by SSH): 85.
+    assert len(catalog) == 85
 
 
 def test_read_only_profiles_list_no_active_tool():

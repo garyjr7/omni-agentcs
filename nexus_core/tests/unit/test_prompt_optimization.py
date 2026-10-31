@@ -197,10 +197,14 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # B1 adds ``nexus.attack.ad_user_enum`` (the 83rd): one line with its three
     # required arguments. Measured 18,519 for 83 tools (223,1 per tool), still
     # inside the per-tool bound; only the total moves.
-    assert len(catalog) == 83
+    # Theseus (2026-10-30) adds two active tools: ``nexus.web.ssti`` (discover
+    # the injectable parameter and run the engine payload) and ``nexus.post.pwnkit``
+    # (CVE-2021-4034 over SSH): 85. Measured 18,980 for 85 tools (223,3 per
+    # tool), still inside the per-tool bound; only the total moves.
+    assert len(catalog) == 85
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 225
-    assert len(text) < 18_600
+    assert len(text) < 19_050
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -302,7 +306,9 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # bullet: measured 33,821; ceiling 33_900. The install rule is gated on the
     # catalog offering ``nexus.system.install_tool``, so a restricted profile
     # pays nothing for it.
-    assert len(_prompt(catalog)) < 33_900
+    # Theseus adds the two catalog lines and the SSTI order (gated on
+    # ``nexus.web.ssti``): measured 34,714; ceiling 34_800.
+    assert len(_prompt(catalog)) < 34_800
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -344,7 +350,8 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # ceiling 34,320. The block itself is unchanged.
     # The scope + install orders move with the static prompt: measured 34,448;
     # ceiling 34_530. The block itself is unchanged.
-    assert len(prompt) < 34_530
+    # Theseus moves with the static prompt: measured 35,341; ceiling 35_450.
+    assert len(prompt) < 35_450
     assert len(block) < 1_200
 
 
@@ -541,7 +548,9 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # ceiling 7_450 (250k buys ~33 turns).
     # The parallel contract lands here too (+130 tokens): measured 7,531;
     # ceiling 7_590 (250k buys ~33 turns).
-    assert tokens < 7_590
+    # Theseus adds two compact catalog lines and the SSTI order: measured 7,704;
+    # ceiling 7_760 (250k still buys ~32 compact turns).
+    assert tokens < 7_760
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -590,7 +599,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # measured 8,222; ceiling 8_270, ~30 turns.
     # The scope + install orders cost the same on every turn: measured 8,272
     # average; ceiling 8_330, ~30 turns.
-    assert sum(totals) / len(totals) < 8_330
+    # Theseus adds two catalog lines and the SSTI order on every turn: measured
+    # 8,419 average; ceiling 8_470, ~29 turns.
+    assert sum(totals) / len(totals) < 8_470
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -625,7 +636,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # which is why the run budget is planned by ``budget_tokens_for_iterations``
     # and not by a fixed 250k).
     # The scope + install orders land here too: measured 10,624; ceiling 10_700.
-    assert max(totals) < 10_700
+    # Theseus adds the two catalog lines and the SSTI order to the refresh turn:
+    # measured 10,848; ceiling 10_910.
+    assert max(totals) < 10_910
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):

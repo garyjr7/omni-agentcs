@@ -381,7 +381,9 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
             # Enumerating the *application boundary* includes touching it: probing
             # a panel and staging a component against it are part of phase 2 of
             # red_team_base, which starts while the phase is still `enumeration`.
-            | {"nexus.web.request", "nexus.web.upload"}
+            # ``nexus.web.ssti`` is the prober that names the parameter a page
+            # evaluates (Theseus: the only hint was a scytale cipher).
+            | {"nexus.web.request", "nexus.web.upload", "nexus.web.ssti"}
         ),
         token_budget=80_000,
         max_iterations=10,
@@ -430,6 +432,11 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.post.http_server",
                 "nexus.pwn.analyze",
                 "nexus.pwn.ret2libc",
+                # Theseus: the foothold is SSH to a host that is only reachable
+                # through the pivot, and local root is PwnKit. Both happen before
+                # a session exists, so the initial-access profile owns them.
+                "nexus.web.ssti",
+                "nexus.post.pwnkit",
                 "nexus.web.wp_bruteforce",
                 "nexus.web.wp_exec",
                 # Application-boundary staging/triggering (red_team_base phase 2)
@@ -527,6 +534,10 @@ SUBAGENTS: tuple[SubAgentDefinition, ...] = (
                 "nexus.session.list",
                 "nexus.post.shell_exec",
                 "nexus.post.job",
+                # Theseus: ``sudo -l`` -> ``(root) NOPASSWD: /usr/bin/nmap`` has a
+                # GTFOBins template in privesc_hints (write an NSE script, load
+                # it as root); when the vector is pkexec, pwnkit is the executor.
+                "nexus.post.pwnkit",
             }
         ),
         token_budget=60_000,

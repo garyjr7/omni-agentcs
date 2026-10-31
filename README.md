@@ -198,7 +198,7 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **83 herramientas** —la cifra la publica
+El catálogo durable contiene **85 herramientas** —la cifra la publica
 `tool_catalog()` y la comprueba un test—; esta es una selección de las
 principales:
 
