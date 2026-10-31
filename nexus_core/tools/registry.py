@@ -176,6 +176,8 @@ def durable_tool_definitions(
         ret2libc_definition,
         ret2libc_handler,
     )
+    from .handlers.pwnkit import pwnkit_definition, pwnkit_handler
+    from .handlers.web_ssti import ssti_definition, ssti_handler
     from .handlers.wp import (
         wp_bruteforce_definition,
         wp_bruteforce_handler,
@@ -269,6 +271,12 @@ def durable_tool_definitions(
         "nexus.recon.nikto": (nikto_definition(tenant_id), nikto_handler),
         "nexus.recon.whatweb": (whatweb_definition(tenant_id), whatweb_handler),
         "nexus.web.request": (http_request_definition(tenant_id), http_request_handler),
+        # Theseus: the page evaluates a parameter the catalog could not even
+        # name (the hint is a scytale, not a parameter list), so the tool
+        # discovers it with an arithmetic canary and then runs the engine's
+        # payload. Without it the run had no way from ``?key=`` to a shell.
+        "nexus.web.ssti": (ssti_definition(tenant_id), ssti_handler),
+        "nexus.post.pwnkit": (pwnkit_definition(tenant_id), pwnkit_handler),
         "nexus.post.listener": (listener_definition(tenant_id), listener_handler),
         # Tanda G: the target has to be able to *fetch* something back (SSRF,
         # ``targetmachine``). The run de HackSmarter had the OpenManage PoC in the
