@@ -354,8 +354,8 @@ class TuiSession:
     def bind_engagement_source(self, source: Callable[[], str | None]) -> None:
         """Read the active engagement from the session state on every frame.
 
-        The CLI binds ``lambda: engagement.name or engagement_id``: the badge is
-        then correct as soon as an engagement is initialized or loaded, without
+        The CLI binds ``lambda: self.engagement_id``: the badge names the id and
+        is correct as soon as an engagement is initialized or loaded, without
         waiting for a status push (and without a stale copy after a switch).
         """
         self._engagement_source = source
@@ -870,6 +870,39 @@ class TuiSession:
             return
         self.append_scrollback(str(text) + end)
 
+    def _block_break(self) -> str:
+        """One blank line before a new block, never two.
+
+        The transcript is a concatenation of segments, so a block that starts
+        right after a line ending in ``\n`` used to be glued to it (the tool
+        invocation and the following thought read as one paragraph). Reading
+        the previous segment instead of the rendered buffer keeps this correct
+        while a typewriter reveal is still drawing.
+        """
+        with self._lock:
+            if not self._segments:
+                return ""
+            last = self._segments[-1]
+            tail = str(last.get("_type_full") or self._segment_text(last))
+        if not tail:
+            return ""
+        if tail.endswith("\n\n"):
+            return ""
+        return "\n" if tail.endswith("\n") else "\n\n"
+
+    def append_execution_block(self, text: str) -> None:
+        """Append a tool invocation as its own paragraph.
+
+        ``· fase · [tool]`` opens an execution block: one blank line separates
+        it from the previous block, and the result card renders on the next
+        line under it. The spacing is stored in the segment text, so rebuilding
+        the transcript (a card toggle) reproduces it exactly.
+        """
+        body = str(text or "").rstrip("\n")
+        if not body:
+            return
+        self.append_scrollback(self._block_break() + body + "\n")
+
     def append_scrollback(self, text: str, *, typed: bool = False) -> None:
         if not self.use_tui:
             print(text, end="")
@@ -1042,6 +1075,8 @@ class TuiSession:
         schedule = False
         typed_block = False
         with self._lock:
+            # The card is a block of its own: keep it off the previous line.
+            card["lead"] = self._block_break()
             self._next_card_id += 1
             self._cards[card["id"]] = card
             text = self._card_text(card)
@@ -1066,6 +1101,7 @@ class TuiSession:
     def _card_text(self, card: dict[str, Any]) -> str:
         from .stream import render_tool_result
 
+        lead = str(card.get("lead") or "")
         if card.get("pasted_input") is not None:
             from rich.text import Text
             from .presentation import clean_text, input_chip, input_quote, render_rich
@@ -1077,7 +1113,7 @@ class TuiSession:
             quote = input_quote(prefix + visible, width=width, no_color=self.no_color)
             footer = render_rich(Text('[ Show less ]' if expanded else '[ Show pasted input ]', style='dim'),
                                  width=width, no_color=self.no_color)
-            return quote + '\n' + footer + '\n\n'
+            return lead + quote + '\n' + footer + '\n\n'
         if card.get("thought") is not None:
             from rich.console import Group
             from rich.text import Text
@@ -1086,12 +1122,12 @@ class TuiSession:
             expanded = bool(card.get("expanded"))
             footer = Text("[ Show less ]" if expanded else "[ Show thinking ]", style="dim cyan")
             width = int(self._session.output.get_size().columns) if self.use_tui else 100
-            return render_rich(Group(thinking(str(card["thought"]), expanded=expanded), footer),
-                               width=max(1, width - 2), no_color=self.no_color) + "\n\n"
+            return lead + render_rich(Group(thinking(str(card["thought"]), expanded=expanded), footer),
+                                      width=max(1, width - 2), no_color=self.no_color) + "\n\n"
         width = int(self._session.output.get_size().columns) if self.use_tui else 100
-        return render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded")),
-                                  max_lines=5, width=max(1, width - 2),
-                                  no_color=self.no_color) + "\n\n"
+        return lead + render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded")),
+                                         max_lines=5, width=max(1, width - 2),
+                                         no_color=self.no_color) + "\n\n"
 
     def _segment_text(self, segment: dict[str, Any]) -> str:
         # A card being revealed shows what has been typed so far, not its full

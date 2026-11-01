@@ -56,9 +56,11 @@ def startup_banner(engagement: str, version: str, *, width: int = 80,
         Text(f"[+] [ {clean_text(engagement)} ] [+]", style="bold white"),
     )
     # The official masthead floats freely. Rich styles the contents, but no
-    # Panel/Rule/box renderable is used around the art or metadata.
+    # Panel/Rule/box renderable is used around the art or metadata. It closes
+    # with a blank line: the masthead is its own block, so the first echoed
+    # turn cannot be glued to its last metadata row.
     return render_rich(Group(logo, Text(""), metadata),
-                       width=max(40, width), no_color=no_color) + "\n"
+                       width=max(40, width), no_color=no_color) + "\n\n"
 
 
 def clean_text(value: str) -> str:

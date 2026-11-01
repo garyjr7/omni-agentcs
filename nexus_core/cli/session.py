@@ -961,7 +961,7 @@ class OmniSession:
         try:
             if self._tui.use_tui:
                 from .tui.stream import format_tool_invocation
-                self._output.write(format_tool_invocation(tool_id, arguments))
+                self._tui.append_execution_block(format_tool_invocation(tool_id, arguments))
             with self._busy(self._describe_tool_call(tool_id, arguments)), Spinner(
                 self._describe_tool_call(tool_id, dict(arguments or {})),
                 enabled=self._spinner_enabled(),
@@ -1566,7 +1566,7 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
                     message = {**message, "metadata": {**meta, "thought": ""}}
                 text = render_message(message, expanded=session._tui.expand_cards)
                 if text:
-                    session._output.write(text)
+                    session._tui.append_execution_block(text)
         else:
             _render_message(message)
     state["messages"] = len(messages)
@@ -1584,7 +1584,9 @@ def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
         from .tui.stream import format_tool_invocation
 
         if event_type == "react.action" and "arguments" in payload:
-            session._output.write(format_tool_invocation(payload.get("tool_id", "?"), payload["arguments"]))
+            session._tui.append_execution_block(
+                format_tool_invocation(payload.get("tool_id", "?"), payload["arguments"])
+            )
         elif event_type in {"tool.complete", "tool.failed"}:
             result = payload.get("tool_result") or payload
             if event_type == "tool.failed":

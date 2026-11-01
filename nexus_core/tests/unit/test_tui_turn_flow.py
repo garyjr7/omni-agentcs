@@ -32,6 +32,62 @@ def test_echoed_turn_keeps_the_chevron_and_does_not_reprint_the_chips(tui_factor
     assert "[TRUST MODE]" not in ui.transcript
 
 
+def test_the_masthead_is_separated_from_the_first_turn(tui_factory: Any) -> None:
+    from nexus_core.cli.tui.presentation import clean_text, startup_banner
+
+    ui = tui_factory(enable_completion=False).session
+    ui.print(startup_banner("scanme-lab", "3.0.0", no_color=True), end="")
+    ui.mark_startup_banner()
+    ui._input.insert_text("revisa el objetivo")
+    ui._accept(ui._input)
+    ui.flush()
+    transcript = clean_text(ui.transcript)
+    # The masthead is its own block: the echoed turn begins after one blank
+    # line instead of being glued to the last metadata row.
+    assert "[+] [ scanme-lab ] [+]\n\n▌ > revisa el objetivo" in transcript
+    assert "\n\n\n" not in transcript
+
+
+def test_execution_blocks_are_separated_by_one_blank_line(tui_factory: Any) -> None:
+    from nexus_core.cli.tui.presentation import clean_text
+
+    ui = tui_factory(enable_completion=False).session
+    ui.print("Reviso el servicio 80/tcp.")
+    ui.append_execution_block(
+        "· Enumeration · [nexus.recon.nmap]\n  [Recon-NMAP] nmap -sV -p 80 lab"
+    )
+    ui.append_card({"success": True, "tool_id": "nexus.recon.nmap",
+                    "stdout": "80/tcp open http"})
+    ui.append_execution_block(
+        "· Web · [nexus.web.curl]\n  [Tool] nexus.web.curl {\"url\": \"http://lab/\"}"
+    )
+    ui.append_card({}, thought="El puerto responde.")
+    ui.print("Confirmado el servicio web.")
+    ui.flush()
+    transcript = clean_text(ui.transcript)
+    assert "Reviso el servicio 80/tcp.\n\n· Enumeration" in transcript
+    # The call and its result are distinct blocks, one blank line apart...
+    assert "[Recon-NMAP] nmap -sV -p 80 lab\n\n   └─ 80/tcp open http" in transcript
+    # ...while each following block starts after exactly one blank line.
+    assert "✓ completado\n\n· Web · [nexus.web.curl]" in transcript
+    assert "[Tool] nexus.web.curl {\"url\": \"http://lab/\"}\n\n• Thinking..." in transcript
+    assert "[ Show thinking ]\n\nConfirmado el servicio web." in transcript
+    assert "\n\n\n" not in transcript
+
+
+def test_toggling_a_card_keeps_the_block_separation(tui_factory: Any) -> None:
+    from nexus_core.cli.tui.presentation import clean_text
+
+    ui = tui_factory(enable_completion=False).session
+    ui.print("intro")
+    ui.append_card({}, thought="razonamiento")
+    ui.flush()
+    assert "intro\n\n• Thinking..." in clean_text(ui.transcript)
+    assert ui.toggle_card_at_line(max(ui._toggle_rows))
+    # The rebuilt transcript reproduces the same paragraph break.
+    assert "intro\n\n• Thinking..." in clean_text(ui.transcript)
+
+
 def test_turn_history_spaces_user_thought_and_response(tui_factory: Any) -> None:
     from nexus_core.cli.tui.presentation import clean_text
 
