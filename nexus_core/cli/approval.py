@@ -9,6 +9,7 @@ before the loop hands the ``approval_id`` to ``execute_tool``.
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import re
 from typing import TYPE_CHECKING, Any, Callable
@@ -24,12 +25,21 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 APPROVE_WORDS = frozenset({"y", "yes", "s", "si", "sí", "ok"})
 DENY_WORDS = frozenset({"n", "no", "reject", "rechazar"})
+#: ``Sí, siempre en este engagement``. It skips the *question*, never the
+#: durable row: each later call still registers and consumes its own approval.
+ALWAYS_WORDS = frozenset({"a", "always", "siempre"})
+#: Risks an engagement-wide answer may cover. ``destructive`` is excluded, and
+#: so is an unresolvable risk: without a known level a previous answer must not
+#: authorize a later call.
+SCOPABLE_RISKS = frozenset({"low", "medium", "high"})
 MAX_PROMPT_ATTEMPTS = 5
 EDITABLE_SEPARATOR = re.compile(r"[,\s]+")
 
 #: Risk levels ``--trust-mode`` must never authorize on its own.
 NEVER_TRUSTED_RISKS = frozenset({"destructive"})
 TRUST_MODE_ACTION = "tool.trust_mode_approved"
+#: Audit action for a call covered by an earlier ``Sí, siempre`` answer.
+SCOPE_APPROVAL_ACTION = "tool.engagement_approved"
 
 
 def os_user() -> str:
@@ -217,6 +227,59 @@ def _trust_authorization(
     return ApprovalDecision(approved=True, approval_id=approval_id, reason="trust_mode")
 
 
+def _scope_key(action: str, arguments: dict[str, Any]) -> str:
+    """Identity of one engagement-wide answer: exact action *and* arguments.
+
+    The gateway action is per tool (``execute:tool:<id>``), so remembering only
+    the action would silently cover a different target. The digest keeps the
+    same option from becoming a blank cheque for the whole tool.
+    """
+    payload = json.dumps(arguments or {}, sort_keys=True, default=str, ensure_ascii=False)
+    return f"{action}#{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:32]}"
+
+
+def _scope_authorization(
+    session: "OmniSession",
+    service: ApprovalService,
+    tenant_id: str,
+    run_id: str,
+    tool_id: str,
+    arguments: dict[str, Any],
+    action: str,
+) -> ApprovalDecision:
+    """Re-authorize an exact action the operator already approved this run.
+
+    Only the question is skipped. The durable, single-use row is still created
+    and later consumed, and the automatic authorization is audited separately,
+    so the trail never implies the operator answered this particular call.
+    """
+    approval_id = _register_approval(session, service, tenant_id, run_id, action)
+    if approval_id is None:
+        return ApprovalDecision(
+            approved=False, reason="durable approval could not be registered"
+        )
+    AuditWriter(session.store).append(
+        tenant_id=tenant_id,
+        trace_id=run_id,
+        actor_id=session.operator_id,
+        action=SCOPE_APPROVAL_ACTION,
+        resource_type="tool",
+        resource_id=tool_id,
+        payload={
+            "scope": "engagement",
+            "tool_id": tool_id,
+            "run_id": run_id,
+            "approval_id": approval_id,
+            "argument_keys": sorted(arguments or {}),
+        },
+        decision="allow",
+    )
+    render.render_status(
+        f"aprobado en este engagement por {session.operator_id} ({approval_id})"
+    )
+    return ApprovalDecision(approved=True, approval_id=approval_id, reason="engagement_scope")
+
+
 def make_approval_callback(
     session: "OmniSession",
     store: Any,
@@ -232,47 +295,74 @@ def make_approval_callback(
     ``y/n/e/?`` prompt.
     """
     service = ApprovalService(store)
+    #: Exact actions the operator covered with ``Sí, siempre en este
+    #: engagement``. Scoped to this callback, which lives for one run.
+    always: set[str] = set()
+
+    def action_for(tool_id: str, arguments: dict[str, Any], *, show_plan: bool) -> str | None:
+        """The action the gateway will consume for this call."""
+        if tool_id != "nexus.system.install_tool":
+            return f"execute:tool:{tool_id}"
+        try:
+            return _exact_action(tenant_id, tool_id, arguments, show_plan=show_plan)
+        except (ValueError, KeyError, AttributeError):
+            return None
 
     def callback(tool_id: str, arguments: dict[str, Any], decision: Any) -> ApprovalDecision:
-        action = f"execute:tool:{tool_id}"
         reader = session.input_reader
         if reader is None and session._tui.use_tui:
             reader = session._tui.prompt
-        if trust_mode and _risk_of(tenant_id, tool_id) not in NEVER_TRUSTED_RISKS:
+        risk = _risk_of(tenant_id, tool_id)
+        action = action_for(tool_id, arguments, show_plan=False)
+        if action is None:
+            return ApprovalDecision(approved=False, reason="no valid install plan")
+        if trust_mode and risk not in NEVER_TRUSTED_RISKS:
             # Same exact action as the interactive path: an install is approved
             # for its plan, and trust mode must not weaken that invariant.
-            try:
-                action = _exact_action(tenant_id, tool_id, arguments)
-            except (ValueError, KeyError, AttributeError):
-                return ApprovalDecision(approved=False, reason="no valid install plan")
             return _trust_authorization(
                 session, service, tenant_id, run_id, tool_id, arguments, action
             )
+        if _scope_key(action, arguments) in always:
+            return _scope_authorization(
+                session, service, tenant_id, run_id, tool_id, arguments, action
+            )
         for _ in range(MAX_PROMPT_ATTEMPTS):
-            if tool_id == "nexus.system.install_tool":
-                try:
-                    action = _exact_action(
-                        tenant_id, tool_id, arguments, show_plan=True
-                    )
-                except (ValueError, KeyError, AttributeError):
-                    return ApprovalDecision(approved=False, reason="no valid install plan")
+            # An install is approved per exact plan, and the operator reads that
+            # plan before answering; every attempt recomputes it after an edit.
+            planned = action_for(tool_id, arguments, show_plan=True)
+            if planned is None:
+                return ApprovalDecision(approved=False, reason="no valid install plan")
+            action = planned
+            key = _scope_key(action, arguments)
             try:
                 answer = render.render_approval_prompt(
-                    tool_id, arguments, decision, reader=reader,
-                    risk=_risk_of(tenant_id, tool_id),
+                    tool_id, arguments, decision, reader=reader, risk=risk,
                 )
             except (EOFError, KeyboardInterrupt):
                 render.render_status("aprobación interrumpida: se trata como rechazo")
                 return ApprovalDecision(approved=False, reason="operator interrupted")
             choice = str(answer or "").strip().lower()
 
-            if choice in APPROVE_WORDS:
+            if choice in ALWAYS_WORDS and risk not in SCOPABLE_RISKS:
+                render.render_error(
+                    "esa acción no se autoriza para todo el engagement: "
+                    "usa y para autorizarla una sola vez"
+                )
+                continue
+
+            if choice in APPROVE_WORDS or choice in ALWAYS_WORDS:
                 approval_id = _register_approval(session, service, tenant_id, run_id, action)
                 if approval_id is None:
                     return ApprovalDecision(
                         approved=False, reason="durable approval could not be registered"
                     )
-                render.render_status(f"aprobado por {session.operator_id} ({approval_id})")
+                if choice in ALWAYS_WORDS:
+                    always.add(key)
+                    render.render_status(
+                        f"aprobado para este engagement por {session.operator_id} ({approval_id})"
+                    )
+                else:
+                    render.render_status(f"aprobado por {session.operator_id} ({approval_id})")
                 return ApprovalDecision(approved=True, approval_id=approval_id, edited_arguments=arguments if tool_id == "nexus.system.install_tool" else None)
 
             if choice in DENY_WORDS:

@@ -170,7 +170,7 @@ def render_approval_prompt(
     reason = getattr(decision, "reason", "") or ""
     requires = getattr(decision, "requires_approval", False)
     declared_risk = risk or ("alto (requiere aprobación)" if requires else "normal")
-    question = "   Opción [y/n/e/?]: "
+    question = "   Opción [y/n/a/e/?]: "
     safe = display_arguments(arguments)
     owner = getattr(reader, "__self__", None)
     tui_session = owner if getattr(owner, "use_tui", False) else None
@@ -193,7 +193,10 @@ def render_approval_prompt(
     write(f"   riesgo: {declared_risk}")
     write(f"   motivo: {reason}")
     write(f"   args:   {json.dumps(safe, ensure_ascii=False, default=str)}")
-    write("   opciones: [y] aprobar  [n] rechazar  [e] editar argumentos  [?] ver definición")
+    write(
+        "   opciones: [y] aprobar una vez  [a] aprobar en este engagement  "
+        "[n] rechazar  [e] editar argumentos  [?] ver definición"
+    )
     if reader is None:
         return input(question)
     write(question, end="", flush=True)
