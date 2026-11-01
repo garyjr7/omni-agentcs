@@ -70,7 +70,7 @@ def test_streamed_results_push_history_up_while_the_frame_stays_fixed(tui_factor
     children = ui._session.app.layout.container.content.children
     assert children[0] is ui._badge_window and children[-3] is ui._hints_top_margin
     # Tool output stays in the scrollable transcript, never in the prompt dock.
-    assert fragment_list_to_text(ui._header_badge()) == "BW · OMNI [ workspace ]"
+    assert fragment_list_to_text(ui._header_badge()) == "BW • OMNI [ workspace ]"
     assert "salida" not in fragment_list_to_text(ui._workspace_footer())
     assert "salida" not in fragment_list_to_text(ui._toolbar())
 

@@ -121,25 +121,34 @@ def test_indicator_keeps_the_requested_static_activity_label() -> None:
     assert text == '[+][+][+][+][+][+][+] · esc interrupt'
 
 
-def test_header_badge_shows_the_active_engagement(tui_factory: Any) -> None:
+def test_header_badge_shows_the_active_engagement_id(tui_factory: Any) -> None:
     ui = tui_factory().session
-    ui.set_status(engagement='rootme')
-    assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ rootme ]'
+    ui.bind_engagement_source(lambda: 'eng-7f3a91')
+    assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ eng-7f3a91 ]'
     assert not ui._show_engagement_badge()
 
 
-def test_header_badge_pulls_the_live_engagement_name_then_its_id(tui_factory: Any) -> None:
-    """The badge tracks the session state, not a one-shot status push."""
-    engagement: dict[str, Any] = {'name': None, 'id': None}
+def test_header_badge_uses_the_id_never_the_name_nor_the_folder(tui_factory: Any) -> None:
+    """The bracket carries the engagement id; model and folder stay in the footer."""
     ui = tui_factory().session
-    ui.bind_engagement_source(lambda: engagement['name'] or engagement['id'])
+    ui.set_status(engagement='scanme-lab', provider_model='deepseek-v4',
+                  workspace_path='/home/operator/lab')
+    footer = fragment_list_to_text(ui._workspace_footer())
+    assert 'deepseek-v4' in footer and 'lab' in footer
+    hints = ui._hints_window.content.text
+    # A status push names the engagement but never its id, so it cannot fill
+    # the badge: without an id the header says there is no engagement.
     assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ workspace ]'
+    assert 'scanme-lab' not in fragment_list_to_text(ui._header_badge())
     # An engagement initialized/loaded after the first frame is reflected at once.
-    engagement.update(name='scanme-lab', id='eng-scanme')
-    assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ scanme-lab ]'
-    # A nameless engagement falls back to its id instead of "workspace".
-    engagement.update(name='', id='eng-scanme')
+    ui.bind_engagement_source(lambda: 'eng-scanme')
     assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ eng-scanme ]'
+    # Switching engagement is reflected on the next frame.
+    ui.bind_engagement_source(lambda: 'eng-other')
+    assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ eng-other ]'
+    # The footer and the helper hints never move with the badge.
+    assert fragment_list_to_text(ui._workspace_footer()) == footer
+    assert hints == ui._hints_window.content.text == '← for history · ? for help'
 
 
 def test_cli_session_badge_follows_the_active_engagement(tui_factory: Any, monkeypatch: Any) -> None:
@@ -157,8 +166,8 @@ def test_cli_session_badge_follows_the_active_engagement(tui_factory: Any, monke
         monkeypatch.setattr(module, 'should_use_tui', lambda: True)
         session = OmniSession(store=None, engagement=scope)
     try:
-        assert fragment_list_to_text(session._tui._header_badge()) == 'BW • OMNI [ scanme-lab ]'
-        session.engagement = SimpleNamespace(engagement_id='eng-2', name='')
+        assert fragment_list_to_text(session._tui._header_badge()) == 'BW • OMNI [ eng-1 ]'
+        session.engagement = SimpleNamespace(engagement_id='eng-2', name='renamed')
         assert fragment_list_to_text(session._tui._header_badge()) == 'BW • OMNI [ eng-2 ]'
     finally:
         session._tui.close()

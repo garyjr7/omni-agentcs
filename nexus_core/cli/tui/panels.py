@@ -133,13 +133,16 @@ def panel_style() -> dict[str, str]:
 
 
 def approval_lines(payload: dict[str, Any] | None, *, width: int = 62,
-                   selected: int | None = None) -> list[tuple[str, str]]:
+                   selected: int | None = None, armed: bool = False,
+                   max_rows: int | None = None) -> list[tuple[str, str]]:
     """The permission menu that grows upward out of the input panel.
 
     It names the exact command (``[+] ¿Puedo ejecutar ...?``), the tool, its
     declared risk, the reason and every argument: the durable-approval contract
     requires the operator to see what they sign. The chosen row carries the red
-    background; the default is the single-use authorization.
+    background; the default is the single-use authorization. ``armed`` is the
+    second step: the first Enter only selects, and this row states which option
+    the next Enter would submit.
     """
     from .frame import APPROVAL_DEFAULT, APPROVAL_OPTIONS, approval_command, approval_question
 
@@ -161,7 +164,8 @@ def approval_lines(payload: dict[str, Any] | None, *, width: int = 62,
         fragments.extend(("class:approval", line) for line in _wrap(f" motivo: {reason}", inner))
     arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
     if arguments:
-        fragments.append(("class:approval-title", " argumentos"))
+        # The section header folded into the rows themselves: on an 80x24
+        # terminal one saved row is one row the decision keys keep.
         for key in sorted(arguments):
             fragments.extend(
                 ("class:approval", line)
@@ -172,11 +176,61 @@ def approval_lines(payload: dict[str, Any] | None, *, width: int = 62,
         style = "class:approval-selected" if is_selected else "class:approval-options"
         marker = "▸" if is_selected else " "
         fragments.append((style, f" {marker} {label}"))
-    fragments.append((
-        "class:approval-hint",
-        " ↑↓ elegir · Enter confirmar · [e] editar · [?] definición",
-    ))
-    return fragments
+    if armed:
+        # Step two: the option is selected, the decision is not sent yet.
+        fragments.append((
+            "class:approval-submit",
+            _clip_line(f" Submit: {APPROVAL_OPTIONS[chosen][0]}", inner),
+        ))
+        hint_rows: tuple[str, ...] = (" Enter enviar · ↑↓ cambiar · Esc cancelar",)
+    else:
+        hint_rows = (" ↑↓ elegir · Enter seleccionar", " [e] editar · [?] definición")
+    # Two short rows instead of one long one: on a narrow terminal the keys stay
+    # readable (and reachable) instead of being clipped away.
+    fragments.extend(
+        ("class:approval-hint", _clip_line(row, inner)) for row in hint_rows
+    )
+    return _fit_menu(fragments, max_rows)
+
+
+def _clip_line(text: str, width: int) -> str:
+    """One menu row that never wraps into a second, unaccounted line."""
+    return text if len(text) <= width else text[: max(0, width - 1)] + "…"
+
+
+#: Styles that start the part of the menu the operator must always read: the
+#: options, the Submit line and the keys.
+_DECISION_STYLES = frozenset({
+    "class:approval-selected", "class:approval-options", "class:approval-submit",
+    "class:approval-hint",
+})
+
+
+def _fit_menu(rows: list[tuple[str, str]], max_rows: int | None) -> list[tuple[str, str]]:
+    """Keep the decision rows when the menu is taller than the dock allows.
+
+    ``Window`` clips from the bottom, which silently hid the Submit line and the
+    keys on an 80x24 terminal. When a long reason or many arguments overflow the
+    budget, the *detail* rows are folded first, with an explicit marker (``[e]``
+    prints every value); the question, the options and the keys always stay.
+    """
+    if max_rows is None or len(rows) <= max_rows:
+        return rows
+    first_decision = next(
+        (index for index, (style, _) in enumerate(rows) if style in _DECISION_STYLES),
+        len(rows),
+    )
+    head, detail, tail = rows[:2], rows[2:first_decision], rows[first_decision:]
+    room = max(0, max_rows - len(head) - len(tail) - 1)
+    if len(detail) > room:
+        hidden = len(detail) - room
+        detail = detail[:room] + [
+            ("class:approval-hint", f" … {hidden} línea(s) de detalle · [e] las muestra")
+        ]
+    fitted = head + detail + tail
+    # Last resort (a dock with almost no room): the head is what a request can
+    # never lose, so the excess is cut from the end.
+    return fitted[:max_rows] if len(fitted) > max_rows else fitted
 
 
 def approval_style() -> dict[str, str]:
@@ -190,6 +244,8 @@ def approval_style() -> dict[str, str]:
         # The selected option is a solid red row, the only filled block in the
         # menu: the operator reads the choice before the arguments.
         "approval-selected": "bg:#ff0055 #ffffff bold",
+        # Step two of the decision: the selected option is not submitted yet.
+        "approval-submit": "bg:#1a0d11 #ffc950 bold",
         "approval-hint": "bg:#1a0d11 #9aa0a6",
     }
 

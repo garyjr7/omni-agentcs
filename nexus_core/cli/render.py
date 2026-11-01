@@ -161,19 +161,22 @@ def render_approval_prompt(
 ) -> str:
     """Show the human approval request and return the operator's raw answer.
 
-    With the TUI the request becomes a dedicated modal overlay (exact tool,
-    risk, reason and arguments) instead of scrolling text; the answer is read
-    through the normal input bar and the modal is hidden right after.
+    With the TUI the request is the dock's permission menu (exact tool, risk,
+    reason and redacted arguments) and the answer is read through the normal
+    input bar. Nothing is echoed into the transcript and the editor keeps its
+    standard chevron, so no raw ``[y/n/a/e/?]`` question is interleaved with the
+    log while the operator decides.
     """
     reason = getattr(decision, "reason", "") or ""
     requires = getattr(decision, "requires_approval", False)
     declared_risk = risk or ("alto (requiere aprobación)" if requires else "normal")
     question = "   Opción [y/n/e/?]: "
     safe = display_arguments(arguments)
-    tui = getattr(getattr(reader, "__self__", None), "use_tui", False)
-    if tui:
-        tui_session = reader.__self__
-        write(paint(f"⚠️  aprobación pendiente: {tool_id}", YELLOW, BOLD))
+    owner = getattr(reader, "__self__", None)
+    tui_session = owner if getattr(owner, "use_tui", False) else None
+    if tui_session is not None:
+        from .tui.session import PROMPT_PREFIX
+
         tui_session.set_approval({
             "tool_id": tool_id,
             "risk": declared_risk,
@@ -181,7 +184,7 @@ def render_approval_prompt(
             "arguments": safe,
         })
         try:
-            return reader(question)
+            return str(tui_session.prompt(PROMPT_PREFIX))
         finally:
             tui_session.clear_approval()
     write()

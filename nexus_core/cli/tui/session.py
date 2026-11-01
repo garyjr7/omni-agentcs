@@ -134,6 +134,9 @@ class TuiSession:
         self.expand_cards = False
         self._approval: dict[str, Any] | None = None
         self._approval_selected = 0
+        #: First Enter selects the option, the second one submits it. Nothing
+        #: is authorized until the operator confirms the highlighted row.
+        self._approval_armed = False
         self._banner_end_line: int | None = None
         self._completion_status: str | None = None
         #: Accumulated text of an answer streaming into the live overlay.
@@ -228,23 +231,39 @@ class TuiSession:
 
         @keys.add("enter", eager=True)
         def submit(event: Any) -> None:
-            if self._can_edit:
-                if self.approval_active and not event.current_buffer.text:
-                    from .frame import APPROVAL_TOKENS
-                    event.current_buffer.insert_text(APPROVAL_TOKENS[self._approval_selected])
-                event.current_buffer.validate_and_handle()
+            if not self._can_edit:
+                return
+            if self.approval_active and not event.current_buffer.text:
+                from .frame import APPROVAL_TOKENS
+                # Two-step confirmation: the first Enter only *selects* the
+                # highlighted option (the row already carries the red
+                # background), so one stray Enter cannot authorize a command.
+                if not self._arm_approval():
+                    return
+                event.current_buffer.insert_text(APPROVAL_TOKENS[self._approval_selected])
+            event.current_buffer.validate_and_handle()
 
         @keys.add("up", filter=Condition(lambda: self.approval_active))
         def approval_previous(event: Any) -> None:
             from .frame import APPROVAL_TOKENS
             self._approval_selected = (self._approval_selected - 1) % len(APPROVAL_TOKENS)
+            # Changing the choice withdraws the previous selection: Submit must
+            # always describe the option that is highlighted now.
+            self._approval_armed = False
             self.invalidate()
 
         @keys.add("down", filter=Condition(lambda: self.approval_active))
         def approval_next(event: Any) -> None:
             from .frame import APPROVAL_TOKENS
             self._approval_selected = (self._approval_selected + 1) % len(APPROVAL_TOKENS)
+            self._approval_armed = False
             self.invalidate()
+
+        @keys.add("escape", filter=Condition(lambda: self.approval_active))
+        def approval_cancel(event: Any) -> None:
+            # Leaving the menu is a refusal, never the highlighted answer: no
+            # option is authorized by default.
+            self._cancel_approval()
 
         @keys.add("c-d", eager=True)
         def eof(event: Any) -> None:
@@ -343,7 +362,15 @@ class TuiSession:
         self.invalidate()
 
     def _engagement_label(self) -> str:
-        """Live engagement name (or id) for the compact header badge."""
+        """Active engagement *id* for the compact header badge.
+
+        The badge names the engagement the run is bound to (``eng-...``), never
+        the descriptive name and never the working directory: the footer below
+        the input already shows the folder, so the header answers a different
+        question. With no engagement bound, it keeps a clear workspace label
+        instead of borrowing a name from the status bar.
+        """
+        from .frame import DEFAULT_ENGAGEMENT
         from .presentation import clean_text
         value: Any = None
         if self._engagement_source is not None:
@@ -351,8 +378,8 @@ class TuiSession:
                 value = self._engagement_source()
             except Exception:  # noqa: BLE001 - a frame must never fail to render
                 value = None
-        name = ' '.join(clean_text(value or self._status.engagement_name or 'workspace').split())
-        return name or 'workspace'
+        label = ' '.join(clean_text(value or '').split())
+        return label or DEFAULT_ENGAGEMENT
 
     def _header_badge(self) -> StyleAndTextTuples:
         """Fixed top row: brand, engagement and -only while working- a timer."""
@@ -567,20 +594,77 @@ class TuiSession:
         self._approval = dict(payload) if isinstance(payload, dict) else None
         # Enter must authorize once, not for the whole engagement.
         self._approval_selected = APPROVAL_DEFAULT
+        self._approval_armed = False
         self.invalidate()
         return self.approval_active
 
     def clear_approval(self) -> None:
         """Hide the approval modal (called once the operator decided)."""
         self._approval = None
+        self._approval_armed = False
         self.invalidate()
 
-    def _approval_formatted(self) -> StyleAndTextTuples:
+    def _arm_approval(self) -> bool:
+        """Select the highlighted option; ``True`` once Enter may submit it.
+
+        The two-step answer is what keeps a reflexive Enter from authorizing a
+        call: the first one only asks for confirmation and the dock says which
+        option would be sent.
+        """
+        if self._approval_armed:
+            return True
+        self._approval_armed = True
+        self.invalidate()
+        return False
+
+    def _cancel_approval(self) -> None:
+        """Esc closes the menu as an explicit refusal (nothing is granted)."""
+        from .frame import APPROVAL_TOKENS
+
+        self._approval_armed = False
+        self._input.reset()
+        self._answer(APPROVAL_TOKENS[APPROVAL_TOKENS.index("n")])
+
+    def _approval_width(self) -> int:
+        """Menu width: 62 cells, shrunk to fit an 80-column terminal."""
+        try:
+            columns = int(self._session.output.get_size().columns)
+        except Exception:  # noqa: BLE001 - cosmetic sizing only
+            columns = 80
+        return max(32, min(62, columns - 4))
+
+    def _approval_capacity(self) -> int:
+        """Rows the dock can give the menu without pushing the editor away."""
+        try:
+            rows = int(self._session.output.get_size().rows)
+        except Exception:  # noqa: BLE001 - cosmetic sizing only
+            rows = 24
+        return max(6, min(12, rows - 10))
+
+    def _approval_lines(self) -> list[tuple[str, str]]:
+        """One ``(style, text)`` row of the permission menu, in reading order."""
         from .panels import approval_lines
 
-        return [(style, text) for style, text in approval_lines(
-            self._approval, width=62, selected=self._approval_selected
-        )]
+        return approval_lines(
+            self._approval, width=self._approval_width(),
+            selected=self._approval_selected, armed=self._approval_armed,
+            max_rows=self._approval_capacity(),
+        )
+
+    def _approval_formatted(self) -> StyleAndTextTuples:
+        """The menu rows, separated by newlines.
+
+        ``FormattedTextControl`` concatenates its fragments, so without the
+        separator every row would render as one glued paragraph (``tool:``
+        followed by ``riesgo:`` on the same wrapped line) and the panel height
+        would not match what is actually drawn.
+        """
+        fragments: StyleAndTextTuples = []
+        for index, (style, text) in enumerate(self._approval_lines()):
+            if index:
+                fragments.append(("", "\n"))
+            fragments.append((style, text))
+        return fragments
 
     def set_status_bar_enabled(self, enabled: bool) -> None:
         self.status_bar_enabled = bool(enabled)

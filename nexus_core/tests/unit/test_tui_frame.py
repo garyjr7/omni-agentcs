@@ -66,12 +66,12 @@ def test_enter_authorizes_once_not_for_the_whole_engagement() -> None:
 
 def test_the_header_row_carries_the_live_timer_and_drops_it_when_idle(tui_factory) -> None:
     session = tui_factory().session
-    session.set_status(engagement="scanme-lab")
-    assert fragment_list_to_text(session._header_badge()) == "BW • OMNI [ scanme-lab ]"
+    session.bind_engagement_source(lambda: "eng-scanme")
+    assert fragment_list_to_text(session._header_badge()) == "BW • OMNI [ eng-scanme ]"
     session.set_busy("Ejecutando nmap")
     session._status.busy_started_at -= 3014
     assert fragment_list_to_text(session._header_badge()) == (
-        "BW • OMNI [ scanme-lab ]   50m 14s"
+        "BW • OMNI [ eng-scanme ]   50m 14s"
     )
     # Fixed during a run, even before the startup masthead scrolls away.
     assert session._show_engagement_badge()

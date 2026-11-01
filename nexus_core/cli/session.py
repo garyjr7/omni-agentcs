@@ -293,10 +293,9 @@ class OmniSession:
         )
         # The badge pulls the engagement from this session on every frame: it is
         # right on the first frame and after any ``set_engagement``, not only
-        # after a status-bar push.
-        self._tui.bind_engagement_source(
-            lambda: getattr(self.engagement, "name", None) or self.engagement_id
-        )
+        # after a status-bar push. It shows the **id** (``eng-...``), never the
+        # descriptive name: the folder already lives in the input footer.
+        self._tui.bind_engagement_source(lambda: self.engagement_id)
         self._tui.set_status(
             workspace_path=str(self.workspace_root),
             engagement_name=getattr(self.engagement, "name", None),

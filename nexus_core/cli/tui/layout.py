@@ -324,7 +324,13 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     def approval_height() -> int:
         if not ui.approval_active:
             return 0
-        return min(12, max(4, len(ui._approval_formatted())))
+        # The menu shares the dock with the input panel, so on a short terminal
+        # it yields rows instead of pushing the editor off the screen.
+        try:
+            rows = int(ui._session.output.get_size().rows)
+        except Exception:  # noqa: BLE001 - cosmetic sizing only
+            rows = 24
+        return min(12, max(4, len(ui._approval_lines())), max(4, rows - 8))
 
     ui._approval_window = Window(
         FormattedTextControl(ui._approval_formatted), wrap_lines=True,
