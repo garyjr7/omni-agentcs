@@ -133,20 +133,27 @@ def panel_style() -> dict[str, str]:
 
 
 def approval_lines(payload: dict[str, Any] | None, *, width: int = 62,
-                   selected: int = 0) -> list[tuple[str, str]]:
-    """Render a HIGH/DESTRUCTIVE approval request as (style, text) fragments.
+                   selected: int | None = None) -> list[tuple[str, str]]:
+    """The permission menu that grows upward out of the input panel.
 
-    Shows the exact tool, its declared risk, the reason and every argument —
-    the durable-approval contract requires the operator to see what they sign.
+    It names the exact command (``[+] ¿Puedo ejecutar ...?``), the tool, its
+    declared risk, the reason and every argument: the durable-approval contract
+    requires the operator to see what they sign. The chosen row carries the red
+    background; the default is the single-use authorization.
     """
+    from .frame import APPROVAL_DEFAULT, APPROVAL_OPTIONS, approval_command, approval_question
+
     inner = max(1, width - 2)
-    fragments: list[tuple[str, str]] = [("class:approval-title", " [+] AUTORIZACIÓN REQUERIDA")]
+    chosen = APPROVAL_DEFAULT if selected is None else int(selected)
+    chosen = max(0, min(chosen, len(APPROVAL_OPTIONS) - 1))
+    fragments: list[tuple[str, str]] = [("class:approval-title", " PERMISO REQUERIDO")]
     if not isinstance(payload, dict):
         fragments.append(("class:approval", " (solicitud no disponible)"))
         return fragments
     tool_id = _safe(payload.get("tool_id") or "?")
     risk = _safe(payload.get("risk") or "normal")
-    fragments.append(("class:approval-question", f" [+] ¿Autorizar {tool_id}?") )
+    question = _wrap(approval_question(approval_command(payload, width=inner - 8)), inner)
+    fragments.extend(("class:approval-question", " " + line) for line in question)
     fragments.append(("class:approval", f" tool:   {tool_id}"))
     fragments.append(("class:approval-risk", f" riesgo: {risk}"))
     reason = payload.get("reason")
@@ -160,16 +167,14 @@ def approval_lines(payload: dict[str, Any] | None, *, width: int = 62,
                 ("class:approval", line)
                 for line in _wrap(f"  {key}: {arguments[key]}", inner)
             )
-    options = (("Sí / aprobar", "y"), ("No / rechazar", "n"), ("Custom / editar", "e"))
-    for index, (label, _value) in enumerate(options):
-        marker = "›" if index == selected else "•"
-        style = "class:approval-selected" if index == selected else "class:approval-options"
+    for index, (label, _token) in enumerate(APPROVAL_OPTIONS):
+        is_selected = index == chosen
+        style = "class:approval-selected" if is_selected else "class:approval-options"
+        marker = "▸" if is_selected else " "
         fragments.append((style, f" {marker} {label}"))
-    fragments.extend((
-        ("class:approval-submit", " ┌─────────┐"),
-        ("class:approval-submit", " │ Submit  │"),
-        ("class:approval-submit", " └─────────┘"),
-        ("class:approval-hint", " ↑↓ navigate · Enter select · [?] definición"),
+    fragments.append((
+        "class:approval-hint",
+        " ↑↓ elegir · Enter confirmar · [e] editar · [?] definición",
     ))
     return fragments
 
@@ -180,10 +185,11 @@ def approval_style() -> dict[str, str]:
         "approval": "bg:#1a0d11 #e0e4ea",
         "approval-title": "bg:#1a0d11 #ffc950 bold",
         "approval-risk": "bg:#1a0d11 #ff4054 bold",
-        "approval-options": "bg:#1a0d11 #00e5ff",
+        "approval-options": "bg:#1a0d11 #e0e4ea",
         "approval-question": "bg:#1a0d11 #ffffff bold",
+        # The selected option is a solid red row, the only filled block in the
+        # menu: the operator reads the choice before the arguments.
         "approval-selected": "bg:#ff0055 #ffffff bold",
-        "approval-submit": "bg:#1a0d11 #ff0055 bold",
         "approval-hint": "bg:#1a0d11 #9aa0a6",
     }
 

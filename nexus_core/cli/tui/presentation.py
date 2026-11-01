@@ -157,14 +157,22 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
 
 
 class WorkingIndicator:
-    """Pure pulse frames sampled by the existing terminal refresh loop."""
+    """Pure pulse frames sampled by the existing terminal refresh loop.
+
+    The seven cells and their sweep live in :mod:`nexus_core.cli.tui.frame`, so
+    the pulse the transcript shows and the one the header timer accompanies are
+    the same widget. ``message`` and ``elapsed`` stay in the signature because
+    the loop samples this every frame; the mock keeps the label static.
+    """
 
     def frame(self, message: str, *, now: float, elapsed: int, width: int,
               no_color: bool = False) -> str:
-        pulse = int(now * 5) % 5
+        from .frame import busy_cells
+
+        del message, elapsed
         text = Text()
-        for index in range(5):
-            text.append('[+]', style='#ff0055 bold' if index == pulse else 'white dim')
+        for style, cell in busy_cells(now):
+            text.append(cell, style=style)
         text.append(' · esc interrupt', style='dim')
         return render_rich(text, width=width, no_color=no_color).split('\n')[0]
 

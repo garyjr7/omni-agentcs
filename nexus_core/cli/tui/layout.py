@@ -299,11 +299,6 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     ui._status_window = Window(FormattedTextControl(ui._toolbar),
                                height=lambda: int(bool(ui._toolbar())), left_margins=inset)
     ui._regions = [ui._scrollback_window, ui._input_window]
-    # Keep the prompt dock fixed, with the transcript as the only execution
-    # output surface. No activity, answer, task, or status overlay occupies the
-    # rows below it.
-    ui._rows = [badge, ui._scrollback_window, chips, ui._input_window,
-                hints_top_margin, hints, hints_bottom_margin]
     # The engagement plan is an overlay Float; it does not consume space in
     # the transcript or prompt dock.
     from .panels import approval_style, panel_style
@@ -318,19 +313,31 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         ),
         top=1, right=0, width=46,
     )
-    # The approval request is a modal Float: it only appears while a HIGH/
-    # DESTRUCTIVE tool waits for the operator and never becomes a fifth region.
+    # The permission request grows out of the input panel instead of floating
+    # over the transcript: it is zero rows while idle, and while a HIGH/
+    # DESTRUCTIVE call waits for the operator the prompt docks upward, showing
+    # the question, the arguments and the three options inside the same panel
+    # (same red left bar, dark background).
+    def approval_height() -> int:
+        if not ui.approval_active:
+            return 0
+        return min(12, max(4, len(ui._approval_formatted())))
+
     ui._approval_window = Window(
-        FormattedTextControl(ui._approval_formatted), width=D(64), wrap_lines=True,
-        height=lambda: min(20, max(3, len(ui._approval_formatted()))),
-        style="bg:#1a0d11",
+        FormattedTextControl(ui._approval_formatted), wrap_lines=True,
+        height=approval_height, style="bg:#1a0d11",
     )
-    ui._approval_float = Float(
-        content=ConditionalContainer(
-            ui._approval_window, filter=Condition(lambda: bool(ui.approval_active))
-        ),
-        top=2, right=2, width=64,
+    ui._approval_bar = Window(width=1, char="│", style=PANEL_BAR_STYLE)
+    ui._approval_panel = VSplit(
+        [outer_input_gap, ui._approval_bar, input_gap, ui._approval_window],
+        height=approval_height,
     )
+    # Keep the prompt dock fixed, with the transcript as the only execution
+    # output surface. The completion line and the permission menu are rows of
+    # the dock itself: never overlays, never a fifth region.
+    ui._rows = [badge, ui._scrollback_window, chips, ui._completion_window,
+                ui._approval_panel, ui._input_window,
+                hints_top_margin, hints, hints_bottom_margin]
     # The streaming answer is a live overlay above the input bar: it re-renders
     # the markdown of the growing answer and is committed to the scrollback when
     # the stream ends. Like the panel and the modal, it is not a fifth region.
@@ -367,7 +374,6 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     root = FloatContainer(HSplit(ui._rows), [
         Float(xcursor=True, ycursor=True, content=MultiColumnCompletionsMenu(show_meta=True)),
         ui._panel_float,
-        ui._approval_float,
     ])
     ui._app = RegionApplication(
         layout=Layout(root, focused_element=editor), full_screen=bool(full_screen),

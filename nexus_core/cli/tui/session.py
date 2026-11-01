@@ -223,17 +223,20 @@ class TuiSession:
         def submit(event: Any) -> None:
             if self._can_edit:
                 if self.approval_active and not event.current_buffer.text:
-                    event.current_buffer.insert_text(("y", "n", "e")[self._approval_selected])
+                    from .frame import APPROVAL_TOKENS
+                    event.current_buffer.insert_text(APPROVAL_TOKENS[self._approval_selected])
                 event.current_buffer.validate_and_handle()
 
         @keys.add("up", filter=Condition(lambda: self.approval_active))
         def approval_previous(event: Any) -> None:
-            self._approval_selected = (self._approval_selected - 1) % 3
+            from .frame import APPROVAL_TOKENS
+            self._approval_selected = (self._approval_selected - 1) % len(APPROVAL_TOKENS)
             self.invalidate()
 
         @keys.add("down", filter=Condition(lambda: self.approval_active))
         def approval_next(event: Any) -> None:
-            self._approval_selected = (self._approval_selected + 1) % 3
+            from .frame import APPROVAL_TOKENS
+            self._approval_selected = (self._approval_selected + 1) % len(APPROVAL_TOKENS)
             self.invalidate()
 
         @keys.add("c-d", eager=True)
@@ -344,8 +347,16 @@ class TuiSession:
         return name or 'workspace'
 
     def _header_badge(self) -> StyleAndTextTuples:
+        """Fixed top row: brand, engagement and -only while working- a timer."""
+        from .frame import header_text
+
+        elapsed = (
+            time.monotonic() - self._status.busy_started_at
+            if self._status.busy
+            else None
+        )
         return [("" if self.no_color else "#ff0055",
-                 f"BW · OMNI [ {self._engagement_label()} ]")]
+                 header_text(self._engagement_label(), elapsed_seconds=elapsed))]
 
     def mark_startup_banner(self) -> None:
         """Record the banner's last transcript row for scroll-aware branding."""
@@ -353,7 +364,14 @@ class TuiSession:
         self.invalidate()
 
     def _show_engagement_badge(self) -> bool:
-        """Show the brand only after scrolling the startup masthead away."""
+        """The header is fixed while working; idle keeps the masthead rule.
+
+        During a run the timer in the header is the operator's anchor, so it
+        cannot wait for the startup banner to scroll away. Idle behaviour is
+        unchanged: no duplicate brand while the masthead is still on screen.
+        """
+        if self._status.busy:
+            return True
         return (self._banner_end_line is not None
                 and self._scrollback_window.vertical_scroll > self._banner_end_line)
 
@@ -535,9 +553,12 @@ class TuiSession:
         return self._approval is not None
 
     def set_approval(self, payload: dict[str, Any] | None) -> bool:
-        """Show the approval modal for ``payload``; returns whether it is shown."""
+        """Open the permission menu for ``payload``; returns whether it is shown."""
+        from .frame import APPROVAL_DEFAULT
+
         self._approval = dict(payload) if isinstance(payload, dict) else None
-        self._approval_selected = 0
+        # Enter must authorize once, not for the whole engagement.
+        self._approval_selected = APPROVAL_DEFAULT
         self.invalidate()
         return self.approval_active
 
@@ -1025,11 +1046,11 @@ class TuiSession:
         self._cancel_event.clear()
         self._completion_status = None
         if self.use_tui and not self._status.busy:
-            self.append_scrollback("[+][+][+][+][+] · esc interrupt\n\n", busy_marker=True)
+            from .frame import busy_text
+            self.append_scrollback(busy_text() + "\n\n", busy_marker=True)
         self.set_status(busy=True, busy_message=message)
 
     def clear_busy(self) -> None:
-        from datetime import datetime
         self.flush()
         with self._lock:
             was_busy = self._status.busy
@@ -1047,14 +1068,13 @@ class TuiSession:
                 cursor = len(plain) if self._auto_scroll else min(cursor, len(plain))
                 self._busy_segment = None
         if was_busy and self.use_tui:
-            minutes, seconds = divmod(elapsed, 60)
-            self._completion_status = (
-                f"Worked for {minutes}m {seconds}s · {datetime.now().strftime('%I:%M %p')}"
-            )
+            from .frame import completion_text
+            self._completion_status = completion_text(elapsed)
             if plain is not None:
                 self._dispatch(lambda: self._commit_transcript(plain, cursor))
             self.set_status(busy=False)
-            self.append_scrollback(self._completion_status + "\n\n")
+            # The completion line takes the pulse's place above the input panel
+            # (``_completion_window``); it is status, not transcript history.
             self.invalidate()
         else:
             self.set_status(busy=False)
