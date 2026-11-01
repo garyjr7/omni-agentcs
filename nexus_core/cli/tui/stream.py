@@ -5,7 +5,7 @@ import re
 import shlex
 from typing import Any
 
-from ..theme import AQUA_DIM, RESET
+from ..theme import AQUA, AQUA_DIM, OFFWHITE, RESET
 from .presentation import clean_text, render_rich, result_diff, thinking, trace_block
 
 PREFIXES = {
@@ -98,8 +98,12 @@ def format_tool_invocation(tool_id: str, arguments: Any) -> str:
         # honestly rather than inventing a shell command they may not execute.
         text = str(tool_id) + " " + json.dumps(args, ensure_ascii=False, default=str)
     from .presentation import tactical_phase
-    # Preserve exact identifiers as secondary dispatch metadata.
-    return f"· {tactical_phase(tool_id)} · [{tool_id}]\n{AQUA_DIM}  {tool_prefix(tool_id)} {_line(text)}{RESET}"
+    # The tool being invoked is the one aqua element of the line; its output is
+    # off-white and the phase stays muted, so the eye follows the action. The
+    # exact identifier stays as secondary dispatch metadata.
+    return (f"{AQUA_DIM}· {tactical_phase(tool_id)} · {RESET}{AQUA}[{tool_id}]{RESET}\n"
+            f"{AQUA_DIM}  {RESET}{AQUA}{tool_prefix(tool_id)}{RESET} "
+            f"{OFFWHITE}{_line(text)}{RESET}")
 
 
 def output_text(result: dict[str, Any]) -> str:

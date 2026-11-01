@@ -20,11 +20,17 @@ def test_busy_shows_pulsing_block_indicator(tui_factory):
     ui = tui_factory()
     ui.session.set_busy()
     text = fragment_list_to_text(ui.session._render_busy())
-    assert "[+][+][+][+][+] · esc interrupt" in text
-    assert ui.session._busy_line is not None
+    assert "[+][+][+][+][+][+][+] · esc interrupt" in text
+    # The pulse is a row of the dock, so it is never a transcript line that a
+    # growing chat can scroll away.
+    assert ui.session._busy_window in ui.session._rows
+    assert ui.session._busy_window.height() == 1
     lexer = ui.session._scrollback_window.content.lexer
-    active_line = lexer.lex_document(ui.session._scrollback.document)(ui.session._busy_line)
-    assert fragment_list_to_text(active_line) == "[+][+][+][+][+] · esc interrupt"
+    lines = lexer.lex_document(ui.session._scrollback.document)
+    assert all(
+        "esc interrupt" not in fragment_list_to_text(lines(number))
+        for number in range(ui.session._scrollback.document.line_count)
+    )
 
 
 def test_busy_completion_logs_worked_for_duration(tui_factory):
@@ -36,10 +42,13 @@ def test_busy_completion_logs_worked_for_duration(tui_factory):
     # ...the duration is recorded once the turn completes.
     ui.session.clear_busy()
     assert ui.session._completion_status is not None
-    assert ui.session._completion_status.startswith("Worked for 0m 3s ·")
+    assert ui.session._completion_status.startswith("Worked for 3s •")
     assert ui.session._completion_window.height() == 1
-    assert "Worked for" in ui.session.transcript
-    assert "[+][+][+][+][+] · esc interrupt" not in ui.session.transcript
+    # The completion replaces the pulse above the input; it is status, not
+    # transcript history, so the run's log stays clean.
+    assert fragment_list_to_text(ui.session._completion_formatted()).startswith("Worked for 3s •")
+    assert "Worked for" not in ui.session.transcript
+    assert "[+][+][+][+][+][+][+] · esc interrupt" not in ui.session.transcript
 
 
 def test_busy_shows_custom_message(tui_factory):
@@ -104,9 +113,17 @@ def test_busy_does_not_flicker(tui_factory):
 
 def test_busy_visible_above_input(tui_factory):
     ui = tui_factory()
+    ui.pipe.send_text("start\r")
+    ui.session.prompt()
     ui.session.set_busy()
-    assert "[+][+][+][+][+] · esc interrupt" in ui.session.transcript
-    assert ui.session._busy_window not in ui.session._rows
+    ui.session.flush()
+    # The chat advances and the pulse keeps its own row, pinned in the dock.
+    ui.session.print("tool output\n" * 10)
+    ui.session.flush()
+    assert "[+][+][+][+][+][+][+]" not in ui.session.transcript
+    rows = ui.session._rows
+    assert ui.session._busy_window.height() == 1
+    assert rows.index(ui.session._busy_window) == rows.index(ui.session._input_window) - 3
 
 
 def test_direct_operation_cancel_without_run_does_not_write_audit(tui_factory):

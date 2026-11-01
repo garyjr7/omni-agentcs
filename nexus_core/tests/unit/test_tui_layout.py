@@ -10,15 +10,17 @@ def test_layout_locks_bottom_to_editor_and_helper_hints(tui_factory):
         ui.session._badge_window,
         ui.session._scrollback_window,
         ui.session._chips_window,
+        ui.session._busy_window,
+        ui.session._completion_window,
+        ui.session._approval_panel,
         ui.session._input_window,
         ui.session._hints_top_margin,
         ui.session._hints_window,
         ui.session._hints_bottom_margin,
     ]
     assert ui.session._regions == [ui.session._scrollback_window, ui.session._input_window]
-    assert ui.session._busy_window not in children
+    assert ui.session._busy_window in children
     assert ui.session._status_window not in children
-    assert ui.session._completion_window not in children
     assert ui.session._hints_window not in ui.session._regions
 
 
@@ -32,12 +34,15 @@ def test_engagement_badge_appears_only_after_startup_banner_scrolls_off(tui_fact
     assert ui._show_engagement_badge()
 
 
-def test_completion_summary_is_kept_in_scrollable_history(tui_factory):
+def test_completion_summary_replaces_the_pulse_above_the_input(tui_factory):
     ui = tui_factory().session
     ui.set_busy()
     ui.clear_busy()
-    assert "Worked for " in ui.transcript
-    assert ui._completion_window not in ui._rows
+    # It is the run's status line, not a log entry: it sits right above the
+    # input panel where the working pulse was.
+    assert "Worked for " in fragment_list_to_text(ui._completion_formatted())
+    assert "Worked for " not in ui.transcript
+    assert ui._completion_window in ui._rows
 
 
 def test_full_screen_true_by_default(tui_factory):

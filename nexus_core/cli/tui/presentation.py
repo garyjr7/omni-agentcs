@@ -18,6 +18,26 @@ _CONTROLS = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-
 PANEL_STYLE = 'bg:#2a2a2a'
 PANEL_BAR_STYLE = 'fg:#ff0055 bg:#2a2a2a'
 
+#: Semantic hierarchy of the log (Codex style): reasoning is muted, the tool
+#: being invoked is aqua, a verified result is green and a failure is red. The
+#: branch glyph indents tool output under its invocation so a card reads as a
+#: tree instead of a wall of text.
+THINKING_STYLE = 'dim'
+TOOL_STYLE = '#00e5ff'
+RESULT_OK_STYLE = '#56e696'
+RESULT_ERROR_STYLE = '#ff4054'
+BRANCH = '└─'
+
+#: Typewriter pacing of the transcript: one reveal every 12 ms, at most 96 per
+#: block, so a block never lags more than about a second behind the agent. A
+#: backlog of more than two blocks is committed whole (the log must not fall
+#: behind the run) and very large outputs are never paced at all.
+TYPEWRITER_INTERVAL = 0.012
+TYPEWRITER_MAX_STEPS = 96
+TYPEWRITER_MAX_CHARS = 12_000
+TYPEWRITER_MAX_BACKLOG = 2
+_WORD = re.compile(r'\s*\S+\s*')
+
 
 def startup_banner(engagement: str, version: str, *, width: int = 80,
                    no_color: bool = False) -> str:
@@ -106,10 +126,31 @@ def input_quote(value: str, *, width: int = 100, no_color: bool = False) -> str:
     return render_rich(Group(*rows), width=width, no_color=no_color)
 
 
+def typewriter_steps(text: str, *, max_steps: int = TYPEWRITER_MAX_STEPS,
+                     max_chars: int = TYPEWRITER_MAX_CHARS) -> list[str]:
+    """Split ``text`` into the word groups a revealer prints one step at a time.
+
+    ``''.join(typewriter_steps(value)) == value`` always holds: a reveal never
+    loses, duplicates or reorders a character, so the transcript can be rebuilt
+    from the same string. Pacing is skipped (a single step) for outputs larger
+    than ``max_chars``; whitespace-only values are one step too.
+    """
+    value = str(text or '')
+    if not value:
+        return []
+    if len(value) > max_chars or max_steps < 1:
+        return [value]
+    tokens = _WORD.findall(value)
+    if not tokens:
+        return [value]
+    step = max(1, -(-len(tokens) // max_steps))
+    return [''.join(tokens[index:index + step]) for index in range(0, len(tokens), step)]
+
+
 def thinking(value: str, *, expanded: bool = False) -> Text:
-    text = Text('• Thinking...', style='dim', no_wrap=False, overflow='fold')
+    text = Text('• Thinking...', style=THINKING_STYLE, no_wrap=False, overflow='fold')
     if expanded and value.strip():
-        text.append('\n' + clean_text(value), style='dim')
+        text.append('\n' + clean_text(value), style=THINKING_STYLE)
     elif value.strip():
         summary = ' '.join(clean_text(value).split())
         text.append(' ' + summary[:100] + ('…' if len(summary) > 100 else ''))
@@ -137,18 +178,23 @@ def result_diff(result: dict[str, Any]) -> str | None:
 def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
                 expanded: bool = False, limit: int = 5, diff: bool = False) -> Group:
     folded = fold_lines(value, expanded=expanded, limit=limit)
+    # One semantic colour for the whole card: green when the run produced a
+    # usable result, red when it failed. Never mixed, so the verdict is read
+    # before the text.
+    color = RESULT_OK_STYLE if success else RESULT_ERROR_STYLE
     body: list[RenderableType] = []
     if not success:
-        body.append(Text(f'× failed · {clean_text(tool_id) or "tool"}', style='red'))
+        body.append(Text(f'× failed · {clean_text(tool_id) or "tool"}',
+                         style=f'bold {RESULT_ERROR_STYLE}'))
     for index, lines in enumerate((folded.head, folded.tail)):
         if index and folded.hidden:
             body.append(Text('   ...', style='dim'))
         if diff and lines:
             body.append(diff_block('\n'.join(lines)))
         else:
-            body.extend(Text('   -> ' + line, style='default') for line in lines)
+            body.extend(Text(f'   {BRANCH} ' + line, style=color) for line in lines)
     body.append(Text(f'   {"✓" if success else "×"} {clean_text(summary)}',
-                     style='green' if success else 'dim red'))
+                     style=f'bold {color}'))
     if folded.hidden:
         body.append(Text(f'   [ Show more... · {folded.hidden} lines ]', style='dim cyan'))
     elif expanded and len(clean_text(value).splitlines()) > limit:

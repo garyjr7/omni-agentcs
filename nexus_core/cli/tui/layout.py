@@ -86,13 +86,11 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
 
     class ScrollbackLexer(Lexer):
         def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
+            del document
             # Styles are parsed once when appended, never over the whole log
-            # on each frame. The Buffer itself contains plain text. Only the
-            # active marker line is recolored per pulse; its text and position
-            # remain part of the scrollable transcript.
+            # on each frame. The Buffer itself contains plain text, so a line
+            # never changes identity: the working pulse is not one of them.
             def get_line(n: int) -> StyleAndTextTuples:
-                if ui._status.busy and n == ui._busy_line:
-                    return ui._render_busy()
                 return ui._styled_lines[n] if n < len(ui._styled_lines) else []
             return get_line
 
@@ -237,6 +235,11 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         ),
         wrap_lines=True, always_hide_cursor=True, left_margins=inset,
     )
+    # The working pulse and the "Worked for" summary are the same fixed row of
+    # the dock, right above the input panel -never transcript lines, so they
+    # cannot scroll away while the chat advances. They are mutually exclusive:
+    # while the agent works the pulse has one row, when it stops the completion
+    # line takes it.
     ui._busy_window = Window(FormattedTextControl(ui._render_busy),
                              height=lambda: int(ui._status.busy), left_margins=inset)
     ui._completion_window = Window(FormattedTextControl(ui._completion_formatted),
@@ -335,8 +338,8 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     # Keep the prompt dock fixed, with the transcript as the only execution
     # output surface. The completion line and the permission menu are rows of
     # the dock itself: never overlays, never a fifth region.
-    ui._rows = [badge, ui._scrollback_window, chips, ui._completion_window,
-                ui._approval_panel, ui._input_window,
+    ui._rows = [badge, ui._scrollback_window, chips, ui._busy_window,
+                ui._completion_window, ui._approval_panel, ui._input_window,
                 hints_top_margin, hints, hints_bottom_margin]
     # The streaming answer is a live overlay above the input bar: it re-renders
     # the markdown of the growing answer and is committed to the scrollback when

@@ -104,8 +104,15 @@ class TuiSession:
         self._segments: list[dict[str, Any]] = []
         self._write_queue: list[dict[str, Any]] = []
         self._flush_scheduled = False
-        self._busy_segment: dict[str, Any] | None = None
-        self._busy_line: int | None = None
+        #: Typewriter reveal. Blocks waiting to be printed, the task pacing
+        #: them, the committed text the partial block is drawn over and whether
+        #: a flush arrived while it was typing. The pulse is a fixed row of the
+        #: layout, so none of this touches a row height.
+        self._typing_queue: list[dict[str, Any]] = []
+        self._typing_task: Any = None
+        self._typing_active = False
+        self._typing_deferred = False
+        self._typed_base: str | None = None
         #: Per-block accordion: card state, toggle-line index and id counter.
         self._cards: dict[int, dict[str, Any]] = {}
         self._toggle_rows: dict[int, int] = {}
@@ -315,8 +322,9 @@ class TuiSession:
 
     @property
     def transcript(self) -> str:
+        """What the operator can read right now, including a block mid-reveal."""
         with self._lock:
-            return "".join(self._lines)
+            return "".join(self._segment_text(segment) for segment in self._segments)
 
     def _formatted(self, text: str) -> StyleAndTextTuples:
         from prompt_toolkit.formatted_text import ANSI, to_formatted_text
@@ -778,35 +786,165 @@ class TuiSession:
             return
         self.append_scrollback(str(text) + end)
 
-    def append_scrollback(self, text: str, *, busy_marker: bool = False) -> None:
+    def append_scrollback(self, text: str, *, typed: bool = False) -> None:
         if not self.use_tui:
             print(text, end="")
             return
         segment = {"kind": "text", "text": str(text)}
+        schedule = False
+        typed_block = False
         with self._lock:
-            if busy_marker:
-                previous = self._lines[-1] if self._lines else ""
-                if previous and not previous.endswith("\n"):
-                    segment["text"] = "\n" + segment["text"]
-                    segment["busy_line_offset"] = 1
-                else:
-                    segment["busy_line_offset"] = 0
-                segment["busy_marker"] = True
-                self._busy_segment = segment
             self._lines.append(segment["text"])
             self._segments.append(segment)
-            self._write_queue.append(segment)
-            if self._flush_scheduled:
-                return
-            self._flush_scheduled = True
+            typed_block = bool(typed) and self._typewriter_enabled()
+            if typed_block:
+                segment["_type_full"] = segment["text"]
+                segment["text"] = ""
+                # Visible to ``flush``/``close`` at once: a block waiting for
+                # its dispatch can never be lost.
+                self._typing_queue.append(segment)
+                self._typing_active = True
+            else:
+                self._write_queue.append(segment)
+                schedule = not self._flush_scheduled
+                self._flush_scheduled = True
+        if typed_block:
+            self._dispatch(self._start_typing)
+        elif schedule:
+            self._schedule_flush()
+
+    def _schedule_flush(self) -> None:
         if self._loop is not None and self._loop.is_running():
             self._dispatch(lambda: self._loop.call_later(0.05, self._flush_scrollback))
         else:
             self._flush_scrollback()
 
+    # -- transcript typewriter --------------------------------------------
+    def _typewriter_enabled(self) -> bool:
+        """True when a reveal can be paced: a running UI loop on a real session.
+
+        ``NEXUS_TUI_TYPEWRITER=0`` turns it off for dumps and recordings; without
+        a running loop (pipe capture, headless render) every block is written
+        whole, so nothing is ever left invisible.
+        """
+        if not self.use_tui:
+            return False
+        if os.getenv("NEXUS_TUI_TYPEWRITER", "").strip().lower() in {"0", "false", "no"}:
+            return False
+        return self._loop is not None and self._loop.is_running()
+
+    def _start_typing(self) -> None:
+        """Start the reveal pump (runs on the UI loop).
+
+        Anything older than the queued block is written first, so the log keeps
+        the order the agent produced.
+        """
+        self._append_pending()
+        if self._typing_task is None or self._typing_task.done():
+            self._typing_task = asyncio.ensure_future(self._type_pending())
+
+    async def _type_pending(self) -> None:
+        from .presentation import (
+            TYPEWRITER_INTERVAL,
+            TYPEWRITER_MAX_BACKLOG,
+            typewriter_steps,
+        )
+
+        try:
+            while self._typing_queue:
+                # The agent can produce faster than the reveal. An older block
+                # is committed whole rather than letting the log lag behind.
+                while len(self._typing_queue) > TYPEWRITER_MAX_BACKLOG:
+                    self._commit_typed_block(self._typing_queue.pop(0))
+                segment = self._typing_queue[0]
+                full = str(segment.get("_type_full") or "")
+                if not full:
+                    self._typing_queue.pop(0)
+                    self._commit_typed_block(segment)
+                    continue
+                base = self._scrollback.text
+                revealed = ""
+                for chunk in typewriter_steps(full):
+                    revealed += chunk
+                    with self._lock:
+                        segment["text"] = revealed
+                    self._commit_partial(base, revealed)
+                    await asyncio.sleep(TYPEWRITER_INTERVAL)
+                self._typing_queue.pop(0)
+                with self._lock:
+                    segment["text"] = full
+                self._commit_typed_block(segment, base=base)
+        finally:
+            self._typing_active = False
+            if self._typing_deferred:
+                self._typing_deferred = False
+                self._append_pending()
+            if self._typing_queue:
+                # A block arrived while the reveal was closing: keep the pump
+                # running instead of leaving it queued forever.
+                self._typing_active = True
+                self._typing_task = asyncio.ensure_future(self._type_pending())
+            else:
+                self._typing_task = None
+
+    def _commit_partial(self, base: str, revealed: str) -> None:
+        """Draw the block being typed over the committed transcript.
+
+        The partial text lives only in the document: the ``_write_queue`` keeps
+        receiving whole segments meanwhile, and none of them can be appended
+        while a reveal is open (that would duplicate the tail).
+        """
+        from prompt_toolkit.document import Document
+
+        from .presentation import wrap_terminal_text
+
+        self._typed_base = base
+        tail = (wrap_terminal_text(revealed, width=self._scrollback_width(),
+                                  no_color=self.no_color) if revealed else "")
+        plain = base + tail
+        self._scrollback.set_document(Document(plain, len(plain)), bypass_readonly=True)
+
+    def _commit_typed_block(self, segment: dict[str, Any], *, base: str | None = None) -> None:
+        """Close a reveal: the block becomes an ordinary transcript segment."""
+        from prompt_toolkit.document import Document
+
+        committed = self._typed_base if base is None else base
+        if committed is not None and self._scrollback.text != committed:
+            self._scrollback.set_document(Document(committed, len(committed)),
+                                          bypass_readonly=True)
+        self._typed_base = None
+        with self._lock:
+            segment.pop("_type_full", None)
+            segment["text"] = str(segment.get("text") or "")
+            self._write_queue.append(segment)
+            self._flush_scheduled = True
+            self._append_pending()
+
+    def _reveal_typed_now(self) -> None:
+        """Commit every block still being typed (``flush`` never splits a block)."""
+        from prompt_toolkit.document import Document
+
+        task, pending = self._typing_task, self._typing_queue
+        self._typing_queue = []
+        if self._typed_base is not None:
+            self._scrollback.set_document(Document(self._typed_base, len(self._typed_base)),
+                                          bypass_readonly=True)
+            self._typed_base = None
+        with self._lock:
+            for segment in pending:
+                full = segment.pop("_type_full", None)
+                if full is not None:
+                    segment["text"] = str(full)
+                self._write_queue.append(segment)
+            self._flush_scheduled = True
+        self._typing_active = False
+        self._typing_deferred = False
+        if task is not None and not task.done():
+            task.cancel()
+
     def append_card(self, result: dict[str, Any], *, expanded: bool | None = None,
                     thought: str | None = None, pasted_input: str | None = None,
-                    input_prefix: str | None = None) -> None:
+                    input_prefix: str | None = None, typed: bool | None = None) -> None:
         """Append a tool-result card that expands/collapses on its own (click)."""
         card: dict[str, Any] = {
             "kind": "card",
@@ -817,20 +955,29 @@ class TuiSession:
             "result": result if isinstance(result, dict) else {},
             "expanded": bool(self.expand_cards if expanded is None else expanded),
         }
+        schedule = False
+        typed_block = False
         with self._lock:
             self._next_card_id += 1
             self._cards[card["id"]] = card
             text = self._card_text(card)
             self._lines.append(text)
             self._segments.append(card)
-            self._write_queue.append(card)
-            if self._flush_scheduled:
-                return
-            self._flush_scheduled = True
-        if self._loop is not None and self._loop.is_running():
-            self._dispatch(lambda: self._loop.call_later(0.05, self._flush_scrollback))
-        else:
-            self._flush_scrollback()
+            typed_block = (self._typewriter_enabled() if typed is None
+                           else bool(typed) and self._typewriter_enabled())
+            if typed_block:
+                card["_type_full"] = text
+                card["text"] = ""
+                self._typing_queue.append(card)
+                self._typing_active = True
+            else:
+                self._write_queue.append(card)
+                schedule = not self._flush_scheduled
+                self._flush_scheduled = True
+        if typed_block:
+            self._dispatch(self._start_typing)
+        elif schedule:
+            self._schedule_flush()
 
     def _card_text(self, card: dict[str, Any]) -> str:
         from .stream import render_tool_result
@@ -863,6 +1010,10 @@ class TuiSession:
                                   no_color=self.no_color) + "\n\n"
 
     def _segment_text(self, segment: dict[str, Any]) -> str:
+        # A card being revealed shows what has been typed so far, not its full
+        # rendering; once committed it is rebuilt from its result again.
+        if segment.get("_type_full") is not None:
+            return str(segment.get("text") or "")
         if segment.get("kind") == "card":
             return self._card_text(segment)
         return str(segment.get("text") or "")
@@ -944,6 +1095,15 @@ class TuiSession:
         return plain
 
     def _flush_scrollback(self) -> None:
+        """Append queued segments, unless a typewriter reveal is open."""
+        if self._typing_active:
+            # Appending now would duplicate the partial block that only lives in
+            # the document; the reveal flushes the queue when it closes.
+            self._typing_deferred = True
+            return
+        self._append_pending()
+
+    def _append_pending(self) -> None:
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import fragment_list_to_text
         from prompt_toolkit.formatted_text.utils import split_lines
@@ -960,8 +1120,6 @@ class TuiSession:
             text = self._segment_text(segment)
             if not text:
                 continue
-            if segment.get("busy_marker"):
-                self._busy_line = len(self._styled_lines) - 1 + int(segment.get("busy_line_offset") or 0)
             wrapped = wrap_terminal_text(text, width=self._scrollback_width(), no_color=self.no_color)
             fragments = self._formatted(wrapped)
             lines = list(split_lines(fragments))
@@ -1043,38 +1201,25 @@ class TuiSession:
         return self._formatted(text)
 
     def set_busy(self, message: str = "") -> None:
+        """Start the fixed work row: the pulse replaces the completion line.
+
+        Nothing is written to the transcript, so the pulse cannot scroll away
+        while the chat advances.
+        """
         self._cancel_event.clear()
         self._completion_status = None
-        if self.use_tui and not self._status.busy:
-            from .frame import busy_text
-            self.append_scrollback(busy_text() + "\n\n", busy_marker=True)
         self.set_status(busy=True, busy_message=message)
 
     def clear_busy(self) -> None:
+        """Stop the pulse; the same row now shows ``Worked for Xs • hh:mm``."""
         self.flush()
         with self._lock:
             was_busy = self._status.busy
             elapsed = max(0, int(time.monotonic() - self._status.busy_started_at))
-            plain: str | None = None
-            cursor = self._scrollback.cursor_position if self.use_tui else 0
-            if was_busy and self._busy_segment is not None:
-                self._busy_segment["text"] = "\n\n"
-                self._busy_segment.pop("busy_marker", None)
-                self._busy_segment.pop("busy_line_offset", None)
-                self._busy_line = None
-                self._write_queue = [segment for segment in self._write_queue
-                                     if segment is not self._busy_segment]
-                plain = self._rebuild_state_locked()
-                cursor = len(plain) if self._auto_scroll else min(cursor, len(plain))
-                self._busy_segment = None
         if was_busy and self.use_tui:
             from .frame import completion_text
             self._completion_status = completion_text(elapsed)
-            if plain is not None:
-                self._dispatch(lambda: self._commit_transcript(plain, cursor))
             self.set_status(busy=False)
-            # The completion line takes the pulse's place above the input panel
-            # (``_completion_window``); it is status, not transcript history.
             self.invalidate()
         else:
             self.set_status(busy=False)
@@ -1100,7 +1245,8 @@ class TuiSession:
 
         def drain() -> None:
             try:
-                self._flush_scrollback()
+                self._reveal_typed_now()
+                self._append_pending()
             finally:
                 done.set()
 

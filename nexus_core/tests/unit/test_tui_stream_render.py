@@ -28,7 +28,7 @@ def test_file_operations_use_read_create_edit_labels():
 
 def test_tool_complete_shows_five_lines_max():
     text = render_tool_result({"success": True, "stdout": "a\nb\nc\nd\ne"})
-    assert len([line for line in text.splitlines() if "->" in line]) == 5
+    assert len([line for line in text.splitlines() if "└─" in line]) == 5
 
 
 def test_tool_complete_shows_ellipsis_when_truncated():
@@ -56,7 +56,7 @@ def test_expanded_card_shows_every_line():
     text = render_tool_result(
         {"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))}, expanded=True
     )
-    assert text.count("->") == 10
+    assert text.count("└─") == 10
     assert "oculta" not in text
 
 

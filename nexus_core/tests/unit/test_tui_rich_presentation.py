@@ -111,20 +111,20 @@ def test_indicator_is_a_pure_frame_renderer_with_no_cursor_controls() -> None:
     first = spinner.frame('', now=0.0, elapsed=0, width=100)
     second = spinner.frame('', now=0.4, elapsed=1, width=100)
     # The required literal stays intact and the red block advances between frames.
-    assert '[+][+][+][+][+] · esc interrupt' in clean_text(first)
+    assert '[+][+][+][+][+][+][+] · esc interrupt' in clean_text(first)
     assert first != second
     assert '\r' not in first and '\x1b[2J' not in first
 
 
 def test_indicator_keeps_the_requested_static_activity_label() -> None:
     text = clean_text(WorkingIndicator().frame('Ejecutando nmap', now=0.0, elapsed=0, width=100))
-    assert text == '[+][+][+][+][+] · esc interrupt'
+    assert text == '[+][+][+][+][+][+][+] · esc interrupt'
 
 
 def test_header_badge_shows_the_active_engagement(tui_factory: Any) -> None:
     ui = tui_factory().session
     ui.set_status(engagement='rootme')
-    assert fragment_list_to_text(ui._header_badge()) == 'BW · OMNI [ rootme ]'
+    assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ rootme ]'
     assert not ui._show_engagement_badge()
 
 
@@ -133,13 +133,13 @@ def test_header_badge_pulls_the_live_engagement_name_then_its_id(tui_factory: An
     engagement: dict[str, Any] = {'name': None, 'id': None}
     ui = tui_factory().session
     ui.bind_engagement_source(lambda: engagement['name'] or engagement['id'])
-    assert fragment_list_to_text(ui._header_badge()) == 'BW · OMNI [ workspace ]'
+    assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ workspace ]'
     # An engagement initialized/loaded after the first frame is reflected at once.
     engagement.update(name='scanme-lab', id='eng-scanme')
-    assert fragment_list_to_text(ui._header_badge()) == 'BW · OMNI [ scanme-lab ]'
+    assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ scanme-lab ]'
     # A nameless engagement falls back to its id instead of "workspace".
     engagement.update(name='', id='eng-scanme')
-    assert fragment_list_to_text(ui._header_badge()) == 'BW · OMNI [ eng-scanme ]'
+    assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ eng-scanme ]'
 
 
 def test_cli_session_badge_follows_the_active_engagement(tui_factory: Any, monkeypatch: Any) -> None:
@@ -157,9 +157,9 @@ def test_cli_session_badge_follows_the_active_engagement(tui_factory: Any, monke
         monkeypatch.setattr(module, 'should_use_tui', lambda: True)
         session = OmniSession(store=None, engagement=scope)
     try:
-        assert fragment_list_to_text(session._tui._header_badge()) == 'BW · OMNI [ scanme-lab ]'
+        assert fragment_list_to_text(session._tui._header_badge()) == 'BW • OMNI [ scanme-lab ]'
         session.engagement = SimpleNamespace(engagement_id='eng-2', name='')
-        assert fragment_list_to_text(session._tui._header_badge()) == 'BW · OMNI [ eng-2 ]'
+        assert fragment_list_to_text(session._tui._header_badge()) == 'BW • OMNI [ eng-2 ]'
     finally:
         session._tui.close()
 
@@ -303,4 +303,4 @@ def test_wrapped_footer_remains_clickable(tui_factory: Any, monkeypatch: Any) ->
     ui.append_card({'success': True, 'stdout': '\n'.join(str(i) for i in range(10))})
     ui.flush()
     assert ui.toggle_card_at_line(min(ui._toggle_rows))
-    assert '-> 4' in ui._scrollback.text
+    assert '└─ 4' in ui._scrollback.text

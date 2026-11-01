@@ -157,7 +157,9 @@ def test_completion_menu_can_use_space_above_prompt(tui_factory):
     # completion line, the permission menu and the external hint line are fixed
     # presentation rows.
     assert root.content.children == ui.session._rows
-    assert len(root.content.children) == 4 + 3 + 2
+    # badge, transcript, chips, pulse, completion, permission menu, input panel,
+    # then the hint line's top margin, the hint line and its bottom margin.
+    assert len(root.content.children) == 4 + 3 + 2 + 1
     rows = ui.session._rows
     assert rows.index(ui.session._approval_panel) == rows.index(ui.session._input_window) - 1
     assert rows.index(ui.session._completion_window) == rows.index(ui.session._input_window) - 2
