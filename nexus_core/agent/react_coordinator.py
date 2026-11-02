@@ -2458,6 +2458,14 @@ class ReActCoordinator:
             subject_ids=(BUDGET_SUBJECT_ID, subagent_budget_subject(self.subagent.id)),
         )
         self.raw_response = str(getattr(response, "content", "") or "")
+        # R-4c: the provider's own reasoning travels as its own event. It never
+        # replaces or rewrites the model's JSON ``thought``; the TUI only shows
+        # it when that thought is too short to be useful.
+        reasoning = str(getattr(response, "reasoning", "") or "").strip()
+        if reasoning:
+            self.context.event(
+                "react.reasoning", reasoning=reasoning[:2000], iteration=self.iteration
+            )
         return Transition.READY
 
     def _invalid_json_retry(

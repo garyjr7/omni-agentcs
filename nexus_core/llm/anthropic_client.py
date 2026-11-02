@@ -37,6 +37,10 @@ class AnthropicClient(BaseLLMClient):
                 response.raise_for_status()
                 data = response.json()
             content = "".join(part["text"] for part in data["content"] if part["type"] == "text")
+            reasoning = "\n\n".join(
+                part.get("thinking", "") for part in data["content"]
+                if part.get("type") == "thinking"
+            ).strip()
             usage = data.get("usage", {})
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             raise NexusLLMError("Anthropic request failed") from None
@@ -47,5 +51,6 @@ class AnthropicClient(BaseLLMClient):
             tokens_input=usage.get("input_tokens", 0),
             tokens_output=usage.get("output_tokens", 0),
             duration_ms=(time.perf_counter() - start) * 1000,
+            reasoning=reasoning[:2000] or None,
             raw_response=data,
         )

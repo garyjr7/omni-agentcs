@@ -309,6 +309,10 @@ class LLMResponse:
     tokens_input: int = 0
     tokens_output: int = 0
     duration_ms: float = 0.0
+    #: Razonamiento nativo del proveedor (Anthropic ``thinking`` o
+    #: ``reasoning_content`` de OpenAI-compatible). Nunca entra en el historial
+    #: del prompt; es solo una fuente de respaldo para la tarjeta Thinking.
+    reasoning: Optional[str] = None
     raw_response: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
     @property
@@ -495,6 +499,43 @@ def omits_temperature(model: str) -> bool:
     return not any(name.startswith(prefix) for prefix in TEMPERATURE_TOLERANT_MODELS)
 
 
+REASONING_EFFORT_ENV = "NEXUS_REASONING_EFFORT"
+
+
+def _reasoning_from_raw(raw: Any) -> Optional[str]:
+    """Provider-native reasoning text, capped, from a raw response dict."""
+    if not isinstance(raw, dict):
+        return None
+    parts: List[str] = []
+    for block in raw.get("content", []) or []:
+        if isinstance(block, dict) and block.get("type") == "thinking":
+            text = str(block.get("thinking") or block.get("text") or "")
+            if text.strip():
+                parts.append(text)
+    choices = raw.get("choices") or []
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message") or {}
+        if isinstance(message, dict):
+            text = str(message.get("reasoning_content") or message.get("reasoning") or "")
+            if text.strip():
+                parts.append(text)
+    text = "\n\n".join(parts).strip()
+    return text[:2000] or None
+
+
+def _reasoning_effort_option(model: str) -> Optional[str]:
+    """``NEXUS_REASONING_EFFORT`` only for the families that accept it."""
+    value = str(os.getenv(REASONING_EFFORT_ENV, "") or "").strip().lower()
+    if not value:
+        return None
+    if value not in {"low", "medium", "high"}:
+        logging.getLogger("nexus.llm").debug(
+            "[omni.llm] NEXUS_REASONING_EFFORT ignorado: %r", value
+        )
+        return None
+    return value if omits_temperature(model) else None
+
+
 def _chat_request_params(
     config: LLMConfig,
     api_messages: List[Dict[str, Any]],
@@ -521,6 +562,9 @@ def _chat_request_params(
     }
     if not omits_temperature(config.model):
         params["temperature"] = options.get("temperature", config.temperature)
+    effort = _reasoning_effort_option(config.model)
+    if effort:
+        params["reasoning_effort"] = effort
     return params
 
 
@@ -594,6 +638,7 @@ class OpenAIClient(BaseLLMClient):
                     tokens_input=tokens_input,
                     tokens_output=tokens_output,
                     duration_ms=duration_ms,
+                    reasoning=_reasoning_from_raw(response.model_dump()),
                     raw_response=response.model_dump(),
                 )
             except openai.APIStatusError as e:
