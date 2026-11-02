@@ -69,7 +69,9 @@ class ScrollbackControl(BufferControl):
 
 #: Hint drawn inside an empty editor. It is a rendering processor, never text:
 #: it is not in the buffer, the history, the transcript or a submitted turn.
-PLACEHOLDER = "[ Enter a task or / for commands ]"
+from .strings import HISTORY_HINT, HELP_HINT, PLACEHOLDER_TEXT
+
+PLACEHOLDER = PLACEHOLDER_TEXT
 
 
 class PlaceholderProcessor(Processor):
@@ -335,7 +337,7 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     )
     # The helper hints are a static footer line outside the panel, and the
     # operational bar only occupies a row when it has an alert to show.
-    hints = Window(FormattedTextControl("← for history · ? for help"), height=1,
+    hints = Window(FormattedTextControl(f"← {HISTORY_HINT} · ? {HELP_HINT}"), height=1,
                    style="#ffffff", left_margins=inset)
     hints_top_margin = Window(height=1)
     hints_bottom_margin = Window(height=1)
@@ -387,9 +389,16 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     # Keep the prompt dock fixed, with the transcript as the only execution
     # output surface. The completion line and the permission menu are rows of
     # the dock itself: never overlays, never a fifth region.
-    ui._rows = [badge, ui._scrollback_window, chips, ui._busy_window,
-                ui._completion_window, ui._approval_panel, ui._input_window,
-                hints_top_margin, hints, hints_bottom_margin]
+    ui._thought_row = ConditionalContainer(
+        Window(
+            FormattedTextControl(ui._thought_formatted), wrap_lines=True,
+            height=ui.thought_height,
+        ),
+        filter=Condition(lambda: bool(ui.thought_active and not ui.answer_active)),
+    )
+    ui._rows = [badge, ui._scrollback_window, chips, ui._thought_row,
+                ui._busy_window, ui._completion_window, ui._approval_panel,
+                ui._input_window, hints_top_margin, hints, hints_bottom_margin]
     # The streaming answer is a live overlay above the input bar: it re-renders
     # the markdown of the growing answer and is committed to the scrollback when
     # the stream ends. Like the panel and the modal, it is not a fifth region.
@@ -403,8 +412,10 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         ),
         bottom=3, left=2, right=2,
     )
-    # Live ReAct "thinking": one or two wrapped lines above the input bar,
-    # showing the model's reasoning as it streams. Not a fifth region.
+    # Live ReAct "thinking": one to three wrapped lines above the input bar,
+    # showing the model's reasoning as it streams. Not a fifth region. The
+    # ``_thought_float`` below stays built but unmounted: its contract is
+    # asserted by test_tui_accordion and the live surface is ``_thought_row``.
     ui._thought_window = Window(
         FormattedTextControl(ui._thought_formatted), wrap_lines=True, height=2,
     )

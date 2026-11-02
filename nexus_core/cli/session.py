@@ -985,7 +985,8 @@ class OmniSession:
         except (PermissionError, ValueError, RuntimeError, KeyError, TypeError) as exc:
             from .tui.stream import render_tool_result
             self._output.write(render_tool_result(
-                {"success": False, "tool_id": tool_id, "error": f"{type(exc).__name__}: {exc}"},
+                {"success": False, "tool_id": tool_id,
+                 "error": f"{tool_id}: {type(exc).__name__}: {exc}"},
                 no_color=self.no_color or not self._tui.use_tui))
             return None
         self.record_tool_result(run_id, tool_id, dict(arguments or {}), result)
@@ -1511,7 +1512,9 @@ def _stream_run_events(session: OmniSession, stop_event: threading.Event) -> Non
     Runs in a background thread while ``run_react_loop`` owns the main thread,
     so the human approval prompt always reads from a real terminal.
     """
-    state: dict[str, Any] = {"run_id": None, "sequence": 0, "messages": 0}
+    state: dict[str, Any] = {
+        "run_id": None, "sequence": 0, "message_sequence": None, "turn": 0,
+    }
     while True:
         _drain_stream(session, state)
         if stop_event.wait(session.stream_interval):
@@ -1524,18 +1527,15 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
     if run_id != state["run_id"]:
         # A shared work session already holds the previous runs' messages; skip
         # them and stream only what this run appends.
-        existing = 0
+        cursor: int | None = None
         if session.conversation_id:
             try:
-                existing = len(
-                    session.store.list_messages(
-                        session.tenant_id, session.conversation_id,
-                        limit=STREAM_MESSAGE_WINDOW,
-                    )
+                cursor = session.store.last_message_sequence(
+                    session.tenant_id, session.conversation_id
                 )
             except Exception:  # noqa: BLE001 - the stream must never break the run
-                existing = 0
-        state.update(run_id=run_id, sequence=0, messages=existing)
+                cursor = None
+        state.update(run_id=run_id, sequence=0, message_sequence=cursor, turn=0)
         return
     if not run_id:
         return
@@ -1552,11 +1552,13 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
         return
     try:
         messages = session.store.list_messages(
-            session.tenant_id, conversation_id, limit=STREAM_MESSAGE_WINDOW
+            session.tenant_id, conversation_id,
+            limit=STREAM_MESSAGE_WINDOW,
+            after_sequence=state.get("message_sequence"),
         )
     except Exception:  # noqa: BLE001
         return
-    for message in messages[state["messages"] :]:
+    for message in messages:
         if session._tui.use_tui:
             from .tui.stream import observation, render_message
             if (message.get("metadata") or {}).get("kind") == "react.observation":
@@ -1564,7 +1566,19 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
             else:
                 meta = message.get("metadata") or {}
                 if meta.get("kind") == "react.action" and meta.get("thought"):
-                    session._tui.append_card({}, thought=str(meta["thought"]))
+                    state["turn"] = int(state.get("turn") or 0) + 1
+                    if state["turn"] > 1:
+                        from .tui.presentation import render_rich, tactical_phase, turn_header
+                        session._tui.append_execution_block(render_rich(
+                            turn_header(state["turn"],
+                                        tactical_phase(str(meta.get("tool_id") or ""))),
+                            width=max(20, session._tui.text_width),
+                            no_color=session._tui.no_color,
+                        ))
+                    reasoning = getattr(session._tui, "_pending_reasoning", None)
+                    session._tui._pending_reasoning = None
+                    session._tui.append_card({}, thought=str(meta["thought"]),
+                                             reasoning=reasoning)
                     message = {**message, "metadata": {**meta, "thought": ""}}
                 text = render_message(message, expanded=session._tui.expand_cards,
                                       width=session._tui.text_width)
@@ -1572,7 +1586,7 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
                     session._tui.append_execution_block(text)
         else:
             _render_message(message)
-    state["messages"] = len(messages)
+        state["message_sequence"] = int(message.get("sequence") or state.get("message_sequence") or 0)
 
 
 def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
@@ -1580,10 +1594,14 @@ def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
     payload = event.get("payload") or {}
     session._tui.task_event({**event, 'run_id': event.get('run_id') or session.run_id})
     if session._tui.use_tui:
+        from .tui.strings import WORKING
+
+        if event_type == "react.reasoning":
+            session._tui._pending_reasoning = str(payload.get("reasoning") or "")
         if event_type in {"tool.invoke", "react.tool_started"} or (event_type == "react.action" and payload.get("tool_id")):
-            session._tui.set_status(busy_message=f"Executing {payload.get('tool_id', 'tool')}")
+            session._tui.set_status(busy_message=f"Ejecutando {payload.get('tool_id', 'tool')}")
         elif event_type in {"tool.complete", "tool.failed", "react.turn_telemetry"}:
-            session._tui.set_status(busy_message="Working")
+            session._tui.set_status(busy_message=WORKING)
         from .tui.stream import format_tool_invocation
 
         if event_type == "react.action" and "arguments" in payload:

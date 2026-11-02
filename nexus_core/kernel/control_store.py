@@ -662,14 +662,39 @@ class ControlStore:
         return message
 
     def list_messages(self, tenant_id: str, conversation_id: str,
-                      limit: int = 100) -> List[Dict[str, Any]]:
+                      limit: int = 100,
+                      after_sequence: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Last ``limit`` messages, or those after a durable cursor.
+
+        ``after_sequence=None`` keeps the historical contract (the newest
+        window). A cursor makes the stream unbounded: the CLI advances it
+        instead of counting messages against a window that never moves.
+        """
+        window = max(1, min(limit, 500))
         with self.connect() as conn:
-            rows = conn.execute(
-                """SELECT * FROM (SELECT * FROM kernel_messages WHERE tenant_id=?
-                AND conversation_id=? ORDER BY sequence DESC LIMIT ?) ordered
-                ORDER BY sequence""", (tenant_id, conversation_id, max(1, min(limit, 500))),
-            ).fetchall()
+            if after_sequence is None:
+                rows = conn.execute(
+                    """SELECT * FROM (SELECT * FROM kernel_messages WHERE tenant_id=?
+                    AND conversation_id=? ORDER BY sequence DESC LIMIT ?) ordered
+                    ORDER BY sequence""", (tenant_id, conversation_id, window),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM kernel_messages WHERE tenant_id=?
+                    AND conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?""",
+                    (tenant_id, conversation_id, int(after_sequence), window),
+                ).fetchall()
         return [self._decode_row(row, ("metadata",)) for row in rows]
+
+    def last_message_sequence(self, tenant_id: str, conversation_id: str) -> int:
+        """Highest durable message sequence, or 0 for an empty conversation."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT COALESCE(MAX(sequence), 0) FROM kernel_messages
+                WHERE tenant_id=? AND conversation_id=?""",
+                (tenant_id, conversation_id),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
 
     def delete_conversation(self, tenant_id: str, conversation_id: str,
                             owner_id: str) -> bool:

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import difflib
 import io
+import json
 import re
+import textwrap
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,7 +28,9 @@ THINKING_STYLE = 'dim'
 TOOL_STYLE = '#00e5ff'
 RESULT_OK_STYLE = '#56e696'
 RESULT_ERROR_STYLE = '#ff4054'
-BRANCH = '└─'
+GUARDRAIL_STYLE = '#ffc950'
+TURN_STYLE = 'dim #787e86'
+BRANCH = '└'
 
 #: Typewriter pacing of the transcript: one reveal every 12 ms, at most 96 per
 #: block, so a block never lags more than about a second behind the agent. A
@@ -101,14 +105,20 @@ class FoldedLines:
     hidden: int
 
 
-def fold_lines(value: str, *, expanded: bool = False, limit: int = 5) -> FoldedLines:
+def fold_lines(value: str, *, expanded: bool = False, limit: int = 4) -> FoldedLines:
+    """Head and tail of a card body, with the hidden count.
+
+    The split is explicit (3 head + 1 tail for the product's limit of four),
+    never the old ``(limit+1)//2`` rounding: a card has to read the same on
+    every width.
+    """
     if limit < 1:
         raise ValueError('line limit must be positive')
     lines = clean_text(value).splitlines()
     if expanded or len(lines) <= limit:
         return FoldedLines(tuple(lines), (), 0)
-    head_count = (limit + 1) // 2
-    tail_count = limit // 2
+    head_count = min(3, limit)
+    tail_count = limit - head_count
     return FoldedLines(tuple(lines[:head_count]), tuple(lines[-tail_count:]) if tail_count else (),
                        len(lines) - limit)
 
@@ -173,23 +183,68 @@ def thought_purpose(value: str, *, limit: int = 100) -> str:
     return first[:limit] + ('…' if len(first) > limit else '')
 
 
-def thinking(value: str, *, expanded: bool = False) -> Text:
-    """Muted purpose line; the full reasoning is the card's expanded detail.
+def _thought_lines(value: str, width: int) -> list[str]:
+    """Physical lines of a note, wrapped to the card's usable width."""
+    body = clean_text(str(value or '')).strip()
+    if not body:
+        return []
+    limit = max(20, int(width) - 2)
+    lines: list[str] = []
+    for raw in body.splitlines():
+        if not raw.strip():
+            lines.append('')
+            continue
+        lines.extend(textwrap.wrap(raw, width=limit, break_long_words=False,
+                                   break_on_hyphens=False) or [''])
+    return lines
 
-    Collapsed (the default) is one physical line: the opening sentence of the
-    note, never five lines of it. ``expanded`` is the operator's explicit
-    request, so it appends the whole thought under the same muted style and the
-    existing toggle closes it again.
+
+def thinking(value: str, *, expanded: bool = False, width: int = 100,
+             reasoning: str | None = None) -> Text:
+    """Durable reasoning card: header, preview (5 lines) and a toggle footer.
+
+    Collapsed shows the last five physical lines preceded by an ellipsis, so a
+    long note reads as its conclusion instead of as its introduction. The
+    provider's native reasoning travels as a separate dim block only when the
+    model's own note is too short to be useful (fewer than 50 characters).
     """
-    text = Text('• Thinking...', style=THINKING_STYLE, no_wrap=False, overflow='fold')
-    purpose = thought_purpose(value)
-    if expanded and value.strip():
-        # Expanded is the operator's own request: the whole note, and the
-        # purpose line is not repeated above it.
-        text.append('\n' + clean_text(value).strip(), style=THINKING_STYLE)
-    elif purpose:
-        text.append(' ' + purpose, style=THINKING_STYLE)
+    from .strings import HIDE_REASONING, SHOW_FULL_REASONING, THINKING_CARD
+
+    text = Text(f'  {THINKING_CARD}', style=THINKING_STYLE, no_wrap=False, overflow='fold')
+    lines = _thought_lines(value, width)
+    if lines:
+        if not expanded and len(lines) > 5:
+            text.append('\n  …', style=THINKING_STYLE)
+            lines = lines[-5:]
+        for line in lines:
+            text.append('\n  ' + line, style=THINKING_STYLE)
+    if reasoning and len(clean_text(str(value or '')).strip()) < 50:
+        text.append('\n  ---', style='dim')
+        for line in _thought_lines(reasoning, width)[:10]:
+            text.append('\n  ' + line, style='dim')
+    text.append('\n  ' + (HIDE_REASONING if expanded else SHOW_FULL_REASONING),
+                style='dim cyan')
     return text
+
+
+def live_thought(value: str, *, width: int = 100) -> Text:
+    """Up to three lines of the streamed note, prefixed with ``Razonando``."""
+    from .strings import THINKING_LIVE
+
+    lines = [line for line in _thought_lines(value, width) if line.strip()][-3:]
+    if not lines:
+        return Text(THINKING_LIVE, style=THINKING_STYLE)
+    text = Text(f'{THINKING_LIVE} {lines[0]}', style=THINKING_STYLE)
+    for line in lines[1:]:
+        text.append('\n  ' + line, style=THINKING_STYLE)
+    return text
+
+
+def turn_header(step: int, phase: str, *, width: int = 80) -> Text:
+    """``── paso N · phase ───`` filling the transcript width."""
+    label = f'── paso {int(step)} · {str(phase or "Trabajo")} '
+    room = max(0, int(width) - len(label))
+    return Text(label + '─' * room, style=TURN_STYLE, no_wrap=True, overflow='crop')
 
 
 def diff_block(value: str) -> Syntax:
@@ -210,40 +265,99 @@ def result_diff(result: dict[str, Any]) -> str | None:
     return None
 
 
+def _compact_value(value: Any) -> str:
+    """One JSON value as a single readable line for the collapsed preview."""
+    if isinstance(value, (dict, list)):
+        raw = json.dumps(value, ensure_ascii=False, default=str)
+    else:
+        raw = str(value)
+    return ' '.join(clean_text(raw).split())
+
+
+def _summary_lines(summary: str, *, success: bool, width: int) -> list[str]:
+    mark = '✓' if success else '×'
+    body = ' '.join(clean_text(str(summary or '')).split())
+    if not body:
+        from .strings import FAILED
+        body = 'completado' if success else FAILED
+    return textwrap.wrap(
+        body, width=max(20, int(width)), initial_indent=f'  {mark} ',
+        subsequent_indent='    ', break_long_words=False, break_on_hyphens=False,
+    ) or [f'  {mark}']
+
+
 def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
-                expanded: bool = False, limit: int = 5, diff: bool = False,
-                defer_detail: bool = False) -> Group:
-    folded = fold_lines(value, expanded=expanded, limit=limit)
-    text = clean_text(value)
-    # An unmapped schema is summarized, never dumped: its pretty JSON *is* the
-    # detail, so it appears only once the operator expands the card. The same
-    # toggle opens it, so the transcript keeps a single expansion mechanism.
-    deferred = defer_detail and not expanded and bool(text.strip())
-    # One semantic colour for the whole card: green when the run produced a
-    # usable result, red when it failed. Never mixed, so the verdict is read
-    # before the text.
-    color = RESULT_OK_STYLE if success else RESULT_ERROR_STYLE
+                expanded: bool = False, limit: int = 4, diff: bool = False,
+                defer_detail: bool = False, structured: Any = None,
+                guardrail: bool = False, guidance: str = '', width: int = 100) -> Group:
+    """Tool card: verdict first, then the folded body.
+
+    A guardrail is an orchestrator correction, not a tool failure: it reads in
+    amber, carries the whole ``guidance`` and has no summary line and no
+    clickable footer. A real failure keeps a single red ``×`` in its summary.
+    """
+    from .strings import GUARDRAIL
+
     body: list[RenderableType] = []
-    if not success:
-        body.append(Text(f'× failed · {clean_text(tool_id) or "tool"}',
-                         style=f'bold {RESULT_ERROR_STYLE}'))
-    if not deferred:
-        for index, lines in enumerate((folded.head, folded.tail)):
-            if index and folded.hidden:
-                body.append(Text('   ...', style='dim'))
-            if diff and lines:
-                body.append(diff_block('\n'.join(lines)))
-            else:
-                body.extend(Text(f'   {BRANCH} ' + line, style=color) for line in lines)
-    body.append(Text(f'   {"✓" if success else "×"} {clean_text(summary)}',
-                     style=f'bold {color}'))
-    if deferred:
-        body.append(Text(f'   [ Show more... · {len(text.splitlines())} lines ]',
-                         style='dim cyan'))
-    elif folded.hidden:
-        body.append(Text(f'   [ Show more... · {folded.hidden} lines ]', style='dim cyan'))
-    elif expanded and len(text.splitlines()) > limit:
-        body.append(Text('   [ Show less ]', style='dim cyan'))
+    if guardrail:
+        header = f'  ⚠ {clean_text(tool_id) or "tool"} · {GUARDRAIL}'
+        body.append(Text(header, style=f'bold {GUARDRAIL_STYLE}'))
+        detail = guidance or summary
+        wrapped = textwrap.wrap(
+            ' '.join(clean_text(str(detail or '')).split()), width=max(20, int(width) - 2),
+            initial_indent='  ', subsequent_indent='  ',
+            break_long_words=False, break_on_hyphens=False,
+        ) or ['  ']
+        body.extend(Text(line) for line in wrapped)
+        return Group(*body)
+
+    color = RESULT_OK_STYLE if success else RESULT_ERROR_STYLE
+    body.extend(Text(line, style=f'bold {color}')
+                for line in _summary_lines(summary, success=success, width=width))
+
+    if structured is not None and not expanded:
+        if isinstance(structured, dict):
+            items = list(structured.items())
+            for key, item in items[:4]:
+                body.append(Text(f'  {BRANCH} {key}: {_compact_value(item)}', style=color))
+            hidden = max(0, len(items) - 4)
+            if hidden:
+                body.append(Text(f'  … {hidden} campos más · ctrl+o', style='dim'))
+            elif not items:
+                body.append(Text('  (sin campos)', style='dim'))
+        else:
+            total = len(structured) if isinstance(structured, (list, tuple)) else 1
+            body.append(Text(f'  {total} elementos · ctrl+o', style='dim'))
+        return Group(*body)
+
+    # A diff spends three lines on ``---``/``+++``/``@@``; folding it at the
+    # normal limit hid the removals behind the headers. Keep the headers plus
+    # the same number of data lines.
+    folded = fold_lines(value, expanded=expanded, limit=limit + 3 if diff else limit)
+    lines = clean_text(value)
+
+    def emit(rows: tuple[str, ...]) -> None:
+        if not rows:
+            return
+        if diff:
+            body.append(diff_block('\n'.join(rows)))
+            return
+        for row in rows:
+            wrapped = textwrap.wrap(
+                row, width=max(20, int(width)), initial_indent=f'  {BRANCH} ',
+                subsequent_indent='    ', break_long_words=False,
+                break_on_hyphens=False,
+            ) or [f'  {BRANCH}']
+            body.extend(Text(line, style=color) for line in wrapped)
+
+    emit(folded.head)
+    if folded.hidden:
+        body.append(Text('  …', style='dim'))
+    emit(folded.tail)
+    if folded.hidden:
+        body.append(Text(f'  … {folded.hidden} líneas más · ctrl+o', style='dim'))
+    elif expanded and len(lines.splitlines()) > limit:
+        body.append(Text('  ctrl+o colapsar', style='dim'))
     return Group(*body)
 
 

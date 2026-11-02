@@ -25,16 +25,20 @@ def tool_prefix(tool_id: str) -> str:
     return f"[{PREFIXES.get(str(tool_id or '').lower(), 'Tool')}]"
 
 
-def _line(text: Any, width: int = 100) -> str:
+def _line(text: Any, width: int | None = None) -> str:
     value = " ".join(clean_text(str(text)).splitlines())
-    return value if len(value) <= width else value[:max(0, width - 1)] + "…"
+    if width is None or len(value) <= width:
+        return value
+    return value[:max(0, width - 1)] + "…"
 
 
-def data_lines(output: str, *, width: int = 100) -> tuple[list[str], bool]:
+def data_lines(output: str, *, width: int | None = 100) -> tuple[list[str], bool]:
     """Clean data lines of a tool output, plus whether any line was clipped.
 
     Empty/separator lines and adjacent duplicate progress lines are discarded;
-    every kept line is bounded to ``width``.
+    every kept line is bounded to ``width`` when one is given. ``width=None``
+    keeps every character: the card wraps at the transcript width instead of
+    losing tokens.
     """
     lines: list[str] = []
     clipped = False
@@ -152,12 +156,13 @@ def _invocation_lines(text: str, *, width: int | None, prefix: str) -> list[str]
 
 def format_tool_invocation(tool_id: str, arguments: Any, *,
                            width: int | None = None) -> str:
-    """The call as its own block: phase, tool, then the arguments it received.
+    """One tool header: ``• tool_id  args`` (phase lives in the step header).
 
     Every branch reads ``display_arguments`` first, so a credential cannot reach
     the transcript through a flag, a path, a nested value or free text. With
     ``width`` the argument text is pre-wrapped and its continuations carry a
     ``↳`` marker; without it the block stays a single line (exports, tests).
+    Nothing is clipped: the operator can read every token the tool receives.
     """
     args = arguments if isinstance(arguments, dict) else {}
     from ..render import display_arguments
@@ -165,19 +170,14 @@ def format_tool_invocation(tool_id: str, arguments: Any, *,
     safe = display_arguments(args)
     operation = str(tool_id or "").rsplit(".", 1)[-1].lower()
     file_operations = {
-        "read": "Read", "create": "Create", "write": "Create",
-        "edit": "Edit", "update": "Edit", "write_file": "Create",
-        "edit_file": "Edit", "read_file": "Read",
+        "read", "create", "write", "edit", "update", "write_file",
+        "edit_file", "read_file",
     }
     if operation in file_operations and any(
         marker in str(tool_id).lower() for marker in ("workspace", "file", "filesystem")
     ):
-        label = f"• {file_operations[operation]} "
-        path = clean_text(str(safe.get("path") or safe.get("file_path") or "?"))
-        lines = _invocation_lines(path, width=width, prefix=label)
-        return label + lines[0] + "".join(
-            f"\n{INVOCATION_CONTINUATION}{line}" for line in lines[1:])
-    if tool_id == "nexus.recon.nmap":
+        text = clean_text(str(safe.get("path") or safe.get("file_path") or "?"))
+    elif tool_id == "nexus.recon.nmap":
         # This is the argv constructed by the existing handler, including XML.
         flags = safe.get("flags") or []
         flags = flags if isinstance(flags, list) else [flags]
@@ -185,20 +185,19 @@ def format_tool_invocation(tool_id: str, arguments: Any, *,
     else:
         # Other handlers may transform arguments. Display the durable request
         # honestly rather than inventing a shell command they may not execute.
-        text = invocation_arguments(safe) or "sin argumentos"
-    from .presentation import tactical_phase
-    prefix = f"  {tool_prefix(tool_id)} "
+        text = invocation_arguments(safe)
+
+    from .strings import TOOL_FALLBACK
+    name = clean_text(str(tool_id or TOOL_FALLBACK))
+    if not text:
+        return f"{AQUA}• {name}{RESET}{AQUA_DIM}  (sin argumentos){RESET}"
+    prefix = f"• {name}  "
     lines = _invocation_lines(text, width=width, prefix=prefix)
-    # The tool being invoked is the one aqua element of the line; its output is
-    # off-white and the phase stays muted, so the eye follows the action. The
-    # exact identifier stays as secondary dispatch metadata.
     continuation = "".join(
         f"\n{AQUA_DIM}{INVOCATION_CONTINUATION}{RESET}{OFFWHITE}{line}{RESET}"
         for line in lines[1:]
     )
-    return (f"{AQUA_DIM}· {tactical_phase(tool_id)} · {RESET}{AQUA}[{tool_id}]{RESET}\n"
-            f"{AQUA_DIM}  {RESET}{AQUA}{tool_prefix(tool_id)}{RESET} "
-            f"{OFFWHITE}{lines[0]}{RESET}{continuation}")
+    return (f"{AQUA}• {name}{RESET}{OFFWHITE}  {lines[0]}{RESET}{continuation}")
 
 
 def output_text(result: dict[str, Any]) -> str:
@@ -292,11 +291,13 @@ def _notes(result: dict[str, Any]) -> list[str]:
 
 
 def summarize_tool_result(result: dict[str, Any]) -> str:
+    from .strings import FAILED, NOISE
+
     evidence = result.get("evidence") or {}
     output = result.get("output") or {}
     evidence = evidence if isinstance(evidence, dict) else {}
     if not result.get("success"):
-        error = result.get("error") or (output.get("error") if isinstance(output, dict) else None) or "falló"
+        error = result.get("error") or (output.get("error") if isinstance(output, dict) else None) or FAILED
         parts = [_line(str(error))]
         parts.extend(note for note in _notes(result) if note not in parts)
         method = result.get("verification_method")
@@ -309,7 +310,7 @@ def summarize_tool_result(result: dict[str, Any]) -> str:
         if field in evidence:
             parts.append(f"{evidence[field]} {label}")
     if evidence.get("noise_level"):
-        parts.append(f"noise: {evidence['noise_level']}")
+        parts.append(f"{NOISE}: {evidence['noise_level']}")
     if evidence.get("elapsed_seconds") is not None:
         parts.append(f"{evidence['elapsed_seconds']}s")
     parts.extend(_output_facts(result))
@@ -320,7 +321,7 @@ def summarize_tool_result(result: dict[str, Any]) -> str:
         # fields) instead of claiming a meaning the evidence does not support.
         count = len(structured) if isinstance(structured, (dict, list)) else 1
         parts.append(f"resultado estructurado · {count} campo(s)")
-    return _line(" · ".join(parts) or str(result.get("verification_method") or "completado"))
+    return _line(" · ".join(parts) or str(result.get("verification_method") or "completado"), width=None)
 
 
 def trace_text(result: dict[str, Any]) -> tuple[str, bool]:
@@ -334,15 +335,47 @@ def trace_text(result: dict[str, Any]) -> tuple[str, bool]:
     return diff, True
 
 
+#: Outcomes that are an orchestrator correction, never a tool failure.
+GUARDRAIL_OUTCOMES = frozenset({
+    "plan_status_unchanged", "repeated_action", "scope_denied",
+    "branch_closed_recent",
+})
+
+
+def is_guardrail(result: dict[str, Any]) -> bool:
+    """True when the observation is a pre-execution correction of the loop."""
+    if not isinstance(result, dict):
+        return False
+    return bool(
+        result.get("refused_before_execution")
+        or str(result.get("outcome") or "") in GUARDRAIL_OUTCOMES
+        or str(result.get("failure_kind") or "") == "repeated_action"
+    )
+
+
 def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
-                       max_lines: int = 5, width: int = 100, no_color: bool = False) -> str:
-    """Fold tool output at five lines with a literal, interactive card toggle."""
+                       max_lines: int = 4, width: int = 100, no_color: bool = False) -> str:
+    """Verdict first, then the folded body (or the guardrail's guidance)."""
+    guardrail = is_guardrail(result)
+    structured = structured_output(result)
     value, is_diff = trace_text(result)
+    guidance = ""
+    if guardrail:
+        value = ""
+        guidance = str(result.get("guidance") or result.get("error") or "")
+    elif structured is not None:
+        value = json.dumps(structured, ensure_ascii=False, indent=2, default=str) if expanded else ""
+    elif not is_diff:
+        # Empty lines and separators are not data; the hidden count must name
+        # what the operator would actually reveal.
+        value = "\n".join(data_lines(value, width=None)[0])
     return render_rich(trace_block(
         value,
         success=bool(result.get("success")), tool_id=str(result.get("tool_id") or "tool"),
         summary=summarize_tool_result(result), expanded=expanded, limit=max_lines,
-        diff=is_diff, defer_detail=structured_detail(result)), width=width, no_color=no_color)
+        diff=is_diff, defer_detail=structured is not None, structured=structured,
+        guardrail=guardrail, guidance=guidance, width=width,
+    ), width=width, no_color=no_color)
 
 
 def observation(message: dict[str, Any]) -> dict[str, Any]:

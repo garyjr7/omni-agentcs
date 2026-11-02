@@ -319,6 +319,14 @@ class TuiSession:
         def toggle_panel(event: Any) -> None:
             self.set_panel(not self.panel_enabled)
 
+        @keys.add("c-t", eager=True)
+        def toggle_thoughts(event: Any) -> None:
+            self.toggle_thoughts()
+
+        @keys.add("c-o", eager=True)
+        def toggle_last_card(event: Any) -> None:
+            self.toggle_last_card()
+
         build_layout(self, keys, file_history(history_path) if history_path else None,
                      prompt_style, input, output, full_screen=self.full_screen)
 
@@ -390,8 +398,13 @@ class TuiSession:
             if self._status.busy
             else None
         )
+        try:
+            width = self._session.output.get_size().columns
+        except Exception:  # noqa: BLE001 - cosmetic sizing only
+            width = None
         return [("" if self.no_color else "#ff0055",
-                 header_text(self._engagement_label(), elapsed_seconds=elapsed))]
+                 header_text(self._engagement_label(), elapsed_seconds=elapsed,
+                             width=width))]
 
     def mark_startup_banner(self) -> None:
         """Record the banner's last transcript row for scroll-aware branding."""
@@ -560,17 +573,60 @@ class TuiSession:
             self._thought_text = None
         self.invalidate()
 
-    def _thought_formatted(self) -> StyleAndTextTuples:
-
-        with self._lock:
-            text = self._thought_text or ""
+    def _thought_width(self) -> int:
         try:
             columns = self._session.output.get_size().columns
         except Exception:  # noqa: BLE001 - cosmetic sizing only
             columns = 80
-        from .presentation import render_rich, thinking
-        return self._formatted(render_rich(thinking(text), width=max(1, columns - 2),
-                                           no_color=self.no_color).split("\n")[0])
+        return max(20, int(columns) - 4)
+
+    def thought_height(self) -> int:
+        """Rows of the live reasoning row: 1..3, never more."""
+        with self._lock:
+            text = self._thought_text or ""
+        from .presentation import live_thought
+        lines = live_thought(text, width=self._thought_width()).plain.splitlines()
+        return max(1, min(3, len(lines)))
+
+    def _thought_formatted(self) -> StyleAndTextTuples:
+        with self._lock:
+            text = self._thought_text or ""
+        from .presentation import live_thought, render_rich
+        return self._formatted(
+            render_rich(live_thought(text, width=self._thought_width()),
+                        width=self._thought_width(), no_color=self.no_color)
+        )
+
+    def toggle_thoughts(self) -> bool:
+        """Expand/collapse every reasoning card (ctrl+t); returns the new state."""
+        with self._lock:
+            cards = [card for card in self._cards.values() if card.get("thought") is not None]
+            if not cards:
+                return False
+            enabled = not all(bool(card.get("expanded")) for card in cards)
+            for card in cards:
+                card["expanded"] = enabled
+            plain = self._rebuild_state_locked()
+            cursor = len(plain) if self._auto_scroll else min(
+                self._scrollback.cursor_position, len(plain)
+            )
+        self._dispatch(lambda: self._commit_transcript(plain, cursor))
+        return enabled
+
+    def toggle_last_card(self) -> bool:
+        """Expand/collapse the last foldable card (ctrl+o)."""
+        with self._lock:
+            cards = [card for card in self._cards.values() if self._has_toggle(card)]
+            if not cards:
+                return False
+            card = max(cards, key=lambda item: int(item.get("id") or 0))
+            card["expanded"] = not bool(card.get("expanded"))
+            plain = self._rebuild_state_locked()
+            cursor = len(plain) if self._auto_scroll else min(
+                self._scrollback.cursor_position, len(plain)
+            )
+        self._dispatch(lambda: self._commit_transcript(plain, cursor))
+        return bool(card.get("expanded"))
 
     def set_expand(self, enabled: bool) -> bool:
         """Expand/collapse every tool card; returns the new state.
@@ -1061,11 +1117,13 @@ class TuiSession:
 
     def append_card(self, result: dict[str, Any], *, expanded: bool | None = None,
                     thought: str | None = None, pasted_input: str | None = None,
-                    input_prefix: str | None = None, typed: bool | None = None) -> None:
+                    input_prefix: str | None = None, typed: bool | None = None,
+                    reasoning: str | None = None) -> None:
         """Append a tool-result card that expands/collapses on its own (click)."""
         card: dict[str, Any] = {
             "kind": "card",
             "thought": thought,
+            "reasoning": reasoning,
             "pasted_input": pasted_input,
             "input_prefix": input_prefix,
             "id": self._next_card_id,
@@ -1103,6 +1161,7 @@ class TuiSession:
 
         lead = str(card.get("lead") or "")
         if card.get("pasted_input") is not None:
+            from .strings import HIDE_REASONING, SHOW_PASTED_INPUT
             from rich.text import Text
             from .presentation import clean_text, input_chip, input_quote, render_rich
             value = str(card['pasted_input'])
@@ -1111,22 +1170,20 @@ class TuiSession:
             prefix = clean_text(str(card.get('input_prefix') or self._input_prefix()))
             width = max(1, int(self._session.output.get_size().columns) - 2)
             quote = input_quote(prefix + visible, width=width, no_color=self.no_color)
-            footer = render_rich(Text('[ Show less ]' if expanded else '[ Show pasted input ]', style='dim'),
+            footer = render_rich(Text(HIDE_REASONING if expanded else SHOW_PASTED_INPUT, style='dim'),
                                  width=width, no_color=self.no_color)
-            return lead + quote + '\n' + footer + '\n\n'
+            return lead + quote + '\n  ' + footer + '\n\n'
         if card.get("thought") is not None:
-            from rich.console import Group
-            from rich.text import Text
-
             from .presentation import render_rich, thinking
             expanded = bool(card.get("expanded"))
-            footer = Text("[ Show less ]" if expanded else "[ Show thinking ]", style="dim cyan")
             width = int(self._session.output.get_size().columns) if self.use_tui else 100
-            return lead + render_rich(Group(thinking(str(card["thought"]), expanded=expanded), footer),
-                                      width=max(1, width - 2), no_color=self.no_color) + "\n\n"
+            rendered = thinking(str(card["thought"]), expanded=expanded,
+                                width=max(20, width - 2), reasoning=card.get("reasoning"))
+            return lead + render_rich(rendered, width=max(20, width - 2),
+                                      no_color=self.no_color) + "\n\n"
         width = int(self._session.output.get_size().columns) if self.use_tui else 100
         return lead + render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded")),
-                                         max_lines=5, width=max(1, width - 2),
+                                         max_lines=4, width=max(20, width - 2),
                                          no_color=self.no_color) + "\n\n"
 
     def _segment_text(self, segment: dict[str, Any]) -> str:
@@ -1150,7 +1207,7 @@ class TuiSession:
             # so the toggle has to be reachable even for a two-line body.
             return True
         value, _ = trace_text(result)
-        return len(clean_text(value).splitlines()) > 5
+        return len(clean_text(value).splitlines()) > 4
 
     @staticmethod
     def _footer_line_index(styled: list[list[Any]]) -> int | None:
