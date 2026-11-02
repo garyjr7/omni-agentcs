@@ -149,13 +149,46 @@ def typewriter_steps(text: str, *, max_steps: int = TYPEWRITER_MAX_STEPS,
     return [''.join(tokens[index:index + step]) for index in range(0, len(tokens), step)]
 
 
+#: Characters that end the opening sentence of a ``thought``. The persisted
+#: action carries no separate "what this call is for" field, so the collapsed
+#: row can only quote the first sentence of the model's own note.
+_SENTENCE_END = re.compile(r'(?<=[.!?])\s+|\n+')
+
+
+def thought_purpose(value: str, *, limit: int = 100) -> str:
+    """One short line naming the purpose of the action, from the model's note.
+
+    Limitation, deliberate: the durable ``react.action`` metadata carries the
+    free-form ``thought`` and no structured ``expected_outcome``, so the
+    transcript cannot tell a one-line action note from a paragraph of internal
+    reasoning. What it can do safely is show only the opening sentence of that
+    note, on one line and capped, and keep the rest behind the existing card
+    toggle. Tool, phase and state come from the invocation block itself, never
+    from this text.
+    """
+    text = ' '.join(clean_text(str(value or '')).split())
+    if not text:
+        return ''
+    first = _SENTENCE_END.split(text, maxsplit=1)[0].strip() or text
+    return first[:limit] + ('…' if len(first) > limit else '')
+
+
 def thinking(value: str, *, expanded: bool = False) -> Text:
+    """Muted purpose line; the full reasoning is the card's expanded detail.
+
+    Collapsed (the default) is one physical line: the opening sentence of the
+    note, never five lines of it. ``expanded`` is the operator's explicit
+    request, so it appends the whole thought under the same muted style and the
+    existing toggle closes it again.
+    """
     text = Text('• Thinking...', style=THINKING_STYLE, no_wrap=False, overflow='fold')
+    purpose = thought_purpose(value)
     if expanded and value.strip():
-        text.append('\n' + clean_text(value), style=THINKING_STYLE)
-    elif value.strip():
-        summary = ' '.join(clean_text(value).split())
-        text.append(' ' + summary[:100] + ('…' if len(summary) > 100 else ''))
+        # Expanded is the operator's own request: the whole note, and the
+        # purpose line is not repeated above it.
+        text.append('\n' + clean_text(value).strip(), style=THINKING_STYLE)
+    elif purpose:
+        text.append(' ' + purpose, style=THINKING_STYLE)
     return text
 
 

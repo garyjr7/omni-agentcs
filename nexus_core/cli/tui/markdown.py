@@ -153,9 +153,19 @@ def render_markdown(text: str, *, no_color=False, max_width=None) -> str:
             for segment in BR.sub("\n", line).split("\n"):
                 if match := re.match(r"^(#{1,6})\s+(.+)$", segment):
                     output.append(_style(_inline(match[2], no_color), HEADINGS.get(len(match[1]), "1"), no_color))
-                elif match := re.match(r"^\s*([-*+] |\d+[.)] )(.+)$", segment):
-                    prefix = "  • " if match[1][0] in "-*+" else "  " + match[1]
-                    body = _wrap(_inline(match[2], no_color), width - len(prefix))
+                elif match := re.match(r"^(\s*)([-*+] |\d+[.)] )(.+)$", segment):
+                    # Nesting is structure, not decoration: a sub-list two spaces
+                    # deeper keeps two more spaces, so a checklist inside an
+                    # item is not flattened into a sibling (measured while
+                    # reviewing headings/lists/tables/code). Bounded so a
+                    # pathological indent cannot eat the whole line.
+                    depth = len(match[1].expandtabs(4)) // 2
+                    indent = "  " + " " * (2 * min(depth, 8))
+                    marker = "• " if match[2][0] in "-*+" else match[2]
+                    prefix = indent + marker
+                    if len(prefix) >= max(4, width // 2):
+                        prefix = "  • "
+                    body = _wrap(_inline(match[3], no_color), width - len(prefix))
                     output.append(prefix + body[0])
                     output.extend(" " * len(prefix) + extra for extra in body[1:])
                 else:

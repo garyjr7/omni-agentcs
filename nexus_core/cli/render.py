@@ -259,6 +259,32 @@ SEVERITY_COLORS = {
 }
 
 
+def _summary_rows(text: str, width: int) -> list[str]:
+    """Wrap the summary inside the box: content is never clipped.
+
+    The terminal sentence of a run carries the verified facts, the findings and
+    the open branches in one line; truncating it to the box width hid exactly
+    the part that tells an incomplete run from a finished one. Wrapping keeps
+    every character and leaves the box geometry unchanged.
+    """
+    import textwrap
+
+    limit = max(8, width - 2)
+    rows: list[str] = []
+    for raw in str(text).splitlines() or [""]:
+        plain = _ANSI_RE.sub("", raw)
+        if not plain.strip():
+            rows.append("")
+            continue
+        rows.extend(
+            textwrap.wrap(
+                plain, width=limit, break_long_words=False, break_on_hyphens=False
+            )
+            or [""]
+        )
+    return rows
+
+
 def render_summary(text: str, findings: Iterable[dict[str, Any]] = ()) -> None:
     """Print the final summary of a run inside a coloured box (Markdown-aware)."""
     findings = list(findings or [])
@@ -268,7 +294,7 @@ def render_summary(text: str, findings: Iterable[dict[str, Any]] = ()) -> None:
     write(paint("┌" + "─" * width + "┐", AQUA, BOLD))
     write(_box_line(paint("RESULTADO · OmniAgentCS", AQUA, BOLD), width))
     write(paint(border, AQUA, BOLD))
-    for line in str(text or "(sin resumen)").splitlines() or [""]:
+    for line in _summary_rows(str(text or "(sin resumen)"), width):
         write(_box_line(paint(line, OFFWHITE) if line.strip() else "", width))
     if findings:
         write(paint(border, AQUA, BOLD))
