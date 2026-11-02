@@ -1017,6 +1017,10 @@ class ReActCoordinator:
         #: (plan + board + ledger) and how many identical polls were refused.
         self.plan_status_fingerprint = ""
         self.plan_status_polls = 0
+        #: Set when the model idles on an unchanged plan poll while a background
+        #: task is still running: the loop waits for that task instead of paying
+        #: a model turn to ask again (see ``_wait_for_background_result``).
+        self.idle_background_wait = False
         self.last_turn_tool = None
         #: Wall time of the previous *executed* tool call, used to tell a slow,
         #: fact-free repeat from a fast idempotent one (see
@@ -3621,6 +3625,12 @@ class ReActCoordinator:
             guidance=guidance,
             extra={"plan_status_polls": self.plan_status_polls},
         )
+        # The state cannot change by asking again, but a background task can
+        # change it: yield to it here instead of spending the next turn on the
+        # same checklist. The wait never cancels anything and never closes a
+        # TODO; it only hands the finished result to the next model turn.
+        if self.task_manager.running_count():
+            self.idle_background_wait = True
         self._note_tool_failure(PLAN_STATUS_TOOL, cause="refusal")
         self.telemetry.flag(FrictionFlag.REPEATED_ACTION)
         self.store.append_run_event(
@@ -5657,6 +5667,12 @@ class ReActCoordinator:
             while self.iteration < self.iteration_limit:
                 if self._guard() is Transition.STOP:
                     break
+                # A model that idles on an unchanged plan while a scan runs is
+                # waiting, not thinking: the task is awaited here (one bounded
+                # wait, no extra model turn) and its result is delivered below.
+                if self.idle_background_wait:
+                    self.idle_background_wait = False
+                    await self._wait_for_background_result()
                 # Background results are injected *before* the context is built,
                 # so the model reads them in the same turn that decides the next
                 # step instead of one turn later.
@@ -5818,9 +5834,37 @@ class ReActCoordinator:
             status=record.status,
         )
 
-    def _deliver_background_results(self) -> None:
+    async def _wait_for_background_result(self) -> None:
+        """Wait for a running task instead of spending a turn asking for status.
+
+        Reached only when the model polls an unchanged plan while work is in
+        flight: the answer cannot change by asking again, and the *task* is what
+        will change it. ``TaskManager.wait_for_result`` is the internal yield -
+        no tool call, no journal entry, no model turn - and the finished result
+        is delivered right here so it lands before the next context is built.
+
+        Bounded by the per-call timeout the spawn already carries (a task cannot
+        outlive it) and cooperative: the run's cancel event ends the wait, and
+        the wake-up is awaited, never spun on.
+        """
+        limit = float(self.config.timeout_per_tool_seconds or 0) + 5.0
+        deadline = time.monotonic() + limit
+        while self.task_manager.running_count():
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            finished = await self.task_manager.wait_for_result(
+                timeout=min(remaining, 1.0)
+            )
+            if finished:
+                self._deliver_background_results(finished)
+                return
+
+    def _deliver_background_results(self, records=None) -> None:
         """Feed finished background tasks back to the model, exactly once."""
-        for record in self.task_manager.pending_results():
+        for record in (self.task_manager.pending_results() if records is None else records):
             observation = {
                 **record.observation(),
                 "running_tasks": [
