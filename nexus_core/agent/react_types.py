@@ -202,6 +202,9 @@ TARGET_REACHED_PROMPT = (
 #: oversized default (4096) makes every call fail even when the prompt is small
 #: (B4 / Groq TPM=8000 in the E2E run #2). A ReAct reply is a small JSON object,
 #: so a lean ceiling keeps requests inside the budget.
+#: Con proveedores sin TPM bajo, ``NEXUS_REACT_MAX_TOKENS=4096`` da espacio al
+#: razonamiento profundo; el default se queda en 1536 porque el presupuesto por
+#: minuto reserva el máximo y un valor alto rompe cada llamada en Groq TPM=8000.
 REACT_MAX_TOKENS_ENV = "NEXUS_REACT_MAX_TOKENS"
 REACT_DEFAULT_MAX_TOKENS = 1536
 REACT_MIN_MAX_TOKENS = 256

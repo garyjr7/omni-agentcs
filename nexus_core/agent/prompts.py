@@ -405,7 +405,7 @@ RESPONDE SIEMPRE CON UN JSON VÁLIDO, sin markdown, sin texto adicional:
 
 Para invocar una herramienta:
 {{
-  "thought": "Eres un pentester senior. Usa el campo thought para razonar profundamente antes de actuar. Analiza la evidencia, el plan actual, los riesgos y decide el siguiente paso. Escribe párrafos detallados si la complejidad la requiere. No te limites a una sola frase."
+  "thought": "Antes de actuar razona en `thought` en 4 pasos: 1) EVIDENCIA: qué datos concretos tienes. 2) VACÍOS: qué falta para cumplir el objetivo. 3) RIESGO: qué puede salir mal con la siguiente acción. 4) DECISIÓN: qué herramienta eliges y por qué esa. Mínimo 3 oraciones. No repitas el objetivo; analiza el estado actual.",
   "action": "tool_call",
   "tool_id": "<tool_id del catálogo>",
   "arguments": {{"target": "10.0.0.5", "flags": ["-Pn", "-p", "22,80"]}},
