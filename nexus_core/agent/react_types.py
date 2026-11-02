@@ -89,6 +89,12 @@ STUCK_EVENT_TYPE = "react.stuck_detected"
 #: Env var that overrides the no-progress threshold (default 5 turns).
 STUCK_THRESHOLD_ENV = "NEXUS_STUCK_THRESHOLD"
 DEFAULT_STUCK_THRESHOLD = 5
+#: Emitted when the loop refuses a ``get_plan_status`` whose answer cannot differ
+#: from the previous one: the plan, the board and the surface ledger are the same
+#: the prompt already carries. The payload names the pending TODOs and the next
+#: open branch, so the operator can see the poll was answered with work and not
+#: with a silent no. It closes nothing: pending TODOs stay pending.
+PLAN_STATUS_REPEATED_EVENT_TYPE = "react.plan_status_repeated"
 #: Appended to the system prompt once the loop is stuck (P2, Fase 3 fixes).
 STUCK_PROMPT_LINE = (
     "Detectado estancamiento: {iterations} turnos sin hechos nuevos. "

@@ -67,6 +67,7 @@ from .react_types import (
     INVALID_JSON_EVENT_TYPE,
     INVALID_JSON_CORRECTION,
     RUN_EVIDENCE_MAX_OBSERVATIONS,
+    PLAN_STATUS_REPEATED_EVENT_TYPE,
     STATUS_COMPLETED,
     STATUS_MAX_ITERATIONS,
     STATUS_CLARIFICATION,
@@ -152,7 +153,9 @@ from .react_support import (
     timeout_guidance,
     command_failed_guidance,
     replay_guidance,
+    PLAN_STATUS_TOOL,
     repeated_action_correction,
+    unchanged_plan_status_correction,
     barren_repeat_correction,
     _invocation_signature,
     MEASURED_TOKENS_PER_TURN,
@@ -1010,6 +1013,10 @@ class ReActCoordinator:
         self.argument_rejections = 0
         self.stuck_threshold = stuck_threshold()
         self.same_tool_no_progress = 0
+        #: Fingerprint of the state the last ``get_plan_status`` answer described
+        #: (plan + board + ledger) and how many identical polls were refused.
+        self.plan_status_fingerprint = ""
+        self.plan_status_polls = 0
         self.last_turn_tool = None
         #: Wall time of the previous *executed* tool call, used to tell a slow,
         #: fact-free repeat from a fast idempotent one (see
@@ -3547,6 +3554,88 @@ class ReActCoordinator:
             extra={"branch_closed_recent": True},
         )
 
+    def _plan_status_fingerprint(self) -> str:
+        """Identity of the state a ``get_plan_status`` answer would describe.
+
+        The tool reconciles the plan against the verified board and the surface
+        ledger, so those three are what a new answer could change: the TODOs and
+        their evidence, the newest stamp on the board, and the ledger's counts.
+        Anything else (a different thought, a rephrased argument) is not state.
+        """
+        plan = getattr(self, "engagement_plan", None)
+        facts = self._blackboard_facts()
+        coverage = self._coverage_snapshot()
+        stamps = [
+            str(fact.get("recorded_at") or "")
+            for fact in facts
+            if isinstance(fact, dict)
+        ]
+        parts = {
+            "todos": [
+                (todo.id, todo.status, todo.verified_by)
+                for todo in getattr(plan, "todos", ()) or ()
+            ],
+            "plan_updated_at": str(getattr(plan, "updated_at", "") or ""),
+            "facts": len(facts),
+            "fact_stamp": max(stamps) if stamps else "",
+            "coverage": dict(getattr(coverage, "counts", {}) or {}),
+        }
+        return json.dumps(parts, sort_keys=True, default=str)
+
+    def _refuse_unchanged_plan_status(self) -> Transition | None:
+        """Refuse a ``get_plan_status`` whose answer cannot differ from the last one.
+
+        The plan block travels in every system prompt and the tool reconciles the
+        same board, so polling it while nothing moved buys a repeated checklist
+        for a full turn -repeated until the budget ends, with every TODO still
+        pending. The gate is state-based, never a blanket ban: as soon as a TODO
+        is ticked, a fact lands or the ledger moves, the poll runs exactly as
+        before (``_plan_status_fingerprint``).
+
+        The refusal closes nothing: the pending TODOs stay pending and the
+        correction names the one to work and the next open branch. Insisting is
+        counted like any other failing call, so after three consecutive
+        corrections the tool leaves the catalog while the plan keeps travelling
+        in the prompt -no evidence is hidden by retiring a read-only echo.
+        """
+        if str(getattr(self.action, "tool_id", "") or "") != PLAN_STATUS_TOOL:
+            return None
+        fingerprint = self._plan_status_fingerprint()
+        if fingerprint != getattr(self, "plan_status_fingerprint", ""):
+            self.plan_status_fingerprint = fingerprint
+            self.plan_status_polls = 0
+            return None
+        self.plan_status_polls = int(getattr(self, "plan_status_polls", 0)) + 1
+        plan = getattr(self, "engagement_plan", None)
+        pending = list(getattr(plan, "pending", ()) or ())
+        following = pending[0] if pending else None
+        coverage = self._coverage_snapshot()
+        branch = coverage.first_open() if coverage is not None else None
+        guidance = unchanged_plan_status_correction(
+            todo_id=str(getattr(following, "id", "") or ""),
+            todo_description=str(getattr(following, "description", "") or ""),
+            next_branch=str(getattr(branch, "label", "") or ""),
+        )
+        transition = self._refuse_before_execution(
+            outcome="plan_status_unchanged",
+            guidance=guidance,
+            extra={"plan_status_polls": self.plan_status_polls},
+        )
+        self._note_tool_failure(PLAN_STATUS_TOOL, cause="refusal")
+        self.telemetry.flag(FrictionFlag.REPEATED_ACTION)
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            PLAN_STATUS_REPEATED_EVENT_TYPE,
+            {
+                "iteration": self.iteration,
+                "polls": self.plan_status_polls,
+                "pending": [todo.id for todo in pending][:10],
+                "next_branch": str(getattr(branch, "ref", "") or ""),
+            },
+        )
+        return transition
+
     def _refuse_repeated_unknown_skill(self) -> Transition | None:
         """Refuse a second load of a skill name the catalogue already refused.
 
@@ -4292,6 +4381,11 @@ class ReActCoordinator:
         )
 
     async def _execute_tool(self) -> Transition:
+        # The plan poll is answered before the generic repeat guards: both would
+        # correct it, but only this one can name the pending TODO and the branch.
+        unchanged_plan = self._refuse_unchanged_plan_status()
+        if unchanged_plan is not None:
+            return unchanged_plan
         repeated_tool = self._repeated_failed_action()
         if repeated_tool is not None:
             return self._correct_repeated_action(repeated_tool)
@@ -5501,7 +5595,8 @@ class ReActCoordinator:
             # as "nothing was done". The counts are the planner's own snapshot of
             # ``Blackboard.summary`` (verifier-owned facts), never the model's.
             self.final_summary = termination_summary(
-                reason="iteration budget exhausted without task_complete",
+                reason="límite de iteraciones alcanzado; trabajo incompleto",
+                termination_reason=STATUS_MAX_ITERATIONS,
                 max_iterations=self.config.max_iterations,
                 counts=getattr(self.plan, "counts", {}) or {},
                 findings=len(self.findings),

@@ -254,6 +254,7 @@ def termination_summary(
     closed_branches: int,
     open_labels: Iterable[str] = (),
     report_line: str = "informe PENDIENTE",
+    termination_reason: str = "",
 ) -> str:
     """One truthful terminal sentence: what was proven, not just why it stopped.
 
@@ -270,7 +271,8 @@ def termination_summary(
     )
     labels = "; ".join(str(label) for label in open_labels if str(label))
     return (
-        f"{reason} (iteration budget {max_iterations}); termination_reason={reason}; "
+        f"{reason} (iteration budget {max_iterations}); "
+        f"termination_reason={termination_reason or reason}; "
         f"verified facts: {shown or 'ninguno'}; findings={int(findings)}; "
         f"closed branches={int(closed_branches)}; "
         f"open branches: {labels or 'ninguna identificada'}; {report_line}"
@@ -294,6 +296,44 @@ def repeated_action_correction(tool_id: Any) -> str:
         "anterior falló o no tuvo efecto, así que repetirla no aporta información "
         "nueva. Propón UNA acción NUEVA: otra tool, otros argumentos, o "
         "task_complete si ya no quedan rutas viables."
+    )
+
+
+#: The one read-only tool whose answer is a restatement of the plan block the
+#: prompt already carries. Reading it again while nothing moved is the measured
+#: loop :func:`unchanged_plan_status_correction` answers.
+PLAN_STATUS_TOOL = "nexus.orchestrator.get_plan_status"
+
+
+def unchanged_plan_status_correction(
+    *,
+    todo_id: str = "",
+    todo_description: str = "",
+    next_branch: str = "",
+) -> str:
+    """Model-facing correction for re-reading a plan that has not changed.
+
+    The plan block travels in every system prompt and the tool reconciles it
+    against the same board, so a second identical call can only return what the
+    model already read: a full turn of budget for nothing, repeated until
+    ``max_iterations`` while the TODOs stay untouched. The text never forbids the
+    tool in general -it stays valid as soon as a TODO, a fact or the ledger
+    moves- and it names the work the answer could not have provided.
+    """
+    work = (
+        f"el TODO pendiente '{todo_id}' ({todo_description})"
+        if todo_id
+        else "el siguiente paso del plan (no quedan TODOs pendientes)"
+    )
+    branch = f" o la rama abierta {next_branch}" if next_branch else ""
+    return (
+        "No cambiaron ni el plan, ni la evidencia, ni la cobertura desde la "
+        "última consulta: get_plan_status respondería exactamente lo mismo que "
+        "ya está en tu prompt, así que no repitas la consulta. Trabaja "
+        f"{work}{branch}. Si el plan dejó de reflejar la realidad, ciérralo con "
+        "nexus.orchestrator.update_plan (status y motivo); si la rama está "
+        "agotada, registra un barrier y pasa a la siguiente. Vuelve a consultar "
+        "el estado solo cuando haya cambiado algo."
     )
 
 

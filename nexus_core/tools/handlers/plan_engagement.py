@@ -178,7 +178,9 @@ def get_plan_status_definition(tenant_id: str = "system") -> ToolDefinition:
         description=(
             "Devuelve el plan vigente con su estado real: reconcilia cada TODO "
             "con los hechos verificados del tablero y dice qué queda pendiente. "
-            "Consúltalo antes de cerrar y al empezar cada turno."
+            "Consúltalo antes de cerrar y cuando el plan haya cambiado "
+            "(update_plan, un TODO nuevo); si nada cambió desde la última "
+            "consulta devolvería lo mismo que ya está en el prompt."
         ),
         input_schema={
             "type": "object",
