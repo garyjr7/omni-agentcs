@@ -1,4 +1,63 @@
+from types import SimpleNamespace
+
 from prompt_toolkit.formatted_text import fragment_list_to_text
+
+PLACEHOLDER = "[ Enter a task or / for commands ]"
+
+
+def _first_row(ui):
+    """The empty editor row as the processor sees it (only ``fragments`` is read)."""
+    del ui
+    return SimpleNamespace(fragments=[])
+
+
+def _hint_fragments(ui):
+    transformed = ui._placeholder.apply_transformation(_first_row(ui))
+    return [fragment for fragment in transformed.fragments if fragment[1] == PLACEHOLDER]
+
+
+def test_placeholder_shows_only_in_an_empty_focused_editor(tui_factory):
+    # No completion: typing here runs without a live app loop (no async task).
+    ui = tui_factory(enable_completion=False).session
+    assert ui._placeholder.visible() is True
+    assert _hint_fragments(ui) == [("class:placeholder", PLACEHOLDER)]
+    # It is drawn inside the existing editor row: no extra row, same dock.
+    assert ui._input_height() == 5
+    ui._input.insert_text("nmap")
+    assert ui._placeholder.visible() is False
+    assert _hint_fragments(ui) == []
+
+
+def test_placeholder_hides_for_secret_and_permission_prompts(tui_factory):
+    ui = tui_factory().session
+    ui._secret_mode = True
+    try:
+        assert ui._placeholder.visible() is False
+    finally:
+        ui._secret_mode = False
+    assert ui.set_approval({"tool_id": "nexus.recon.nmap"}) is True
+    assert ui._placeholder.visible() is False
+    ui.clear_approval()
+    assert ui._placeholder.visible() is True
+
+
+def test_placeholder_never_reaches_the_submission_or_the_history(tui_factory):
+    ui = tui_factory()
+    ui.pipe.send_text("enumera el puerto 80\r")
+    assert ui.session.prompt() == "enumera el puerto 80"
+    history = ui.session._input.history.get_strings()
+    assert "enumera el puerto 80" in history
+    assert all(PLACEHOLDER not in entry for entry in history)
+    assert PLACEHOLDER not in ui.session.transcript
+
+
+def test_a_long_paste_still_becomes_a_chip_and_hides_the_placeholder(tui_factory):
+    ui = tui_factory().session
+    ui.paste_text("A" * 600)
+    # The chip is a reference in the document, not literal text (paste path
+    # untouched), so the hint disappears with it.
+    assert ui.input_document.refs
+    assert ui._placeholder.visible() is False
 
 
 def test_layout_locks_bottom_to_editor_and_helper_hints(tui_factory):

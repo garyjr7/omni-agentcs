@@ -82,6 +82,17 @@ def test_scrollback_control_turns_click_into_toggle(tui_factory):
     assert "[ Show less ]" in ui.session._scrollback.text
 
 
+def test_a_structured_result_opens_its_json_only_when_expanded(tui_factory):
+    ui = tui_factory()
+    ui.session.append_card({"success": True, "tool_id": "nexus.example",
+                            "output": {"foo": "bar"}})
+    ui.session.flush()
+    # Collapsed: a neutral summary, no raw JSON in the main flow.
+    assert '"foo"' not in ui.session._scrollback.text
+    assert ui.session.toggle_card_at_line(min(ui.session._toggle_rows)) is True
+    assert '"foo": "bar"' in ui.session._scrollback.text
+
+
 def test_thought_overlay_streams_and_closes(tui_factory):
     ui = tui_factory()
     assert ui.session.thought_active is False

@@ -84,9 +84,28 @@ def busy_marker() -> str:
     return "[+]" * PULSE_CELLS
 
 
+#: The keys hint that closes the work row. The operation label never pushes
+#: it out: the row has exactly one screen line.
+BUSY_TAIL = " · esc interrupt"
+
+
 def busy_text() -> str:
     """The line that replaces the prompt while the agent works."""
-    return f"{busy_marker()} · esc interrupt"
+    return f"{busy_marker()}{BUSY_TAIL}"
+
+
+def busy_label(message: Any, *, room: int) -> str:
+    """The operation the run is in, clipped to the cells the row can spare.
+
+    The session already receives it (``Executing <tool>`` while a tool runs,
+    ``Working`` between turns), so the row names it instead of looking the same
+    in every state. A ``Window`` clips the second line, so a long tool id is
+    truncated here rather than wrapping over ``esc interrupt``.
+    """
+    value = " ".join(str(message or "").split())
+    if not value or room <= 1:
+        return ""
+    return value if len(value) <= room else value[: room - 1].rstrip() + "…"
 
 
 def completion_text(seconds: float, *, now: datetime | None = None) -> str:
@@ -131,11 +150,13 @@ __all__ = [
     "APPROVAL_OPTIONS",
     "APPROVAL_TOKENS",
     "BRAND",
+    "BUSY_TAIL",
     "DEFAULT_ENGAGEMENT",
     "SEPARATOR",
     "approval_command",
     "approval_question",
     "busy_cells",
+    "busy_label",
     "busy_marker",
     "busy_text",
     "completion_text",

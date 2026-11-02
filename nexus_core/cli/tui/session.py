@@ -1141,10 +1141,14 @@ class TuiSession:
     @staticmethod
     def _has_toggle(card: dict[str, Any]) -> bool:
         from .presentation import clean_text
-        from .stream import trace_text
+        from .stream import structured_detail, trace_text
         if card.get("thought") is not None or card.get("pasted_input") is not None:
             return True
         result = card.get("result") or {}
+        if structured_detail(result):
+            # Its pretty JSON is the detail: collapsed it only shows a summary,
+            # so the toggle has to be reachable even for a two-line body.
+            return True
         value, _ = trace_text(result)
         return len(clean_text(value).splitlines()) > 5
 
@@ -1276,6 +1280,11 @@ class TuiSession:
             columns = 80
         return max(1, columns - 2)
 
+    @property
+    def text_width(self) -> int:
+        """Usable transcript width, for renderers that pre-wrap a block."""
+        return self._scrollback_width()
+
     def _scroll_to(self, line: int) -> None:
         """Put logical line ``line`` at the top of the transcript region."""
         document = self._scrollback.document
@@ -1315,9 +1324,12 @@ class TuiSession:
         if not self._status.busy:
             return []
         elapsed = max(0, int(time.monotonic() - self._status.busy_started_at))
+        # The row is drawn inside the console's two-cell inset: sizing it to the
+        # usable width keeps ``esc interrupt`` whole on a 60-column terminal
+        # instead of losing its last cell to the margin.
         text = self._working_indicator.frame(
             self._status.busy_message, now=time.monotonic(), elapsed=elapsed,
-            width=max(1, int(self._session.output.get_size().columns) - 1), no_color=self.no_color)
+            width=self._scrollback_width(), no_color=self.no_color)
         return self._formatted(text)
 
     def set_busy(self, message: str = "") -> None:

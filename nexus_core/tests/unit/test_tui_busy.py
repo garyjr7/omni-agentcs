@@ -57,6 +57,16 @@ def test_busy_shows_custom_message(tui_factory):
     assert fragment_list_to_text(ui.session._render_busy()).endswith(" · esc interrupt")
 
 
+def test_busy_row_names_the_tool_the_run_reports(tui_factory):
+    ui = tui_factory()
+    # ``_render_run_event`` pushes this for every ``tool.invoke``: the row says
+    # which tool runs instead of showing the same frame as a planning turn.
+    ui.session.set_status(busy=True, busy_message="Executing nexus.recon.nmap")
+    text = fragment_list_to_text(ui.session._render_busy())
+    assert text == "[+][+][+][+][+][+][+] · Executing nexus.recon.nmap · esc interrupt"
+    assert ui.session._busy_window.height() == 1
+
+
 def test_busy_clears_after_tool(tui_factory):
     from nexus_core.cli.session import OmniSession
     ui = tui_factory()

@@ -3,6 +3,8 @@ import re
 from pathlib import Path
 from unittest.mock import patch
 
+from rich.cells import cell_len
+
 from nexus_core.cli.tui.stream import format_tool_invocation, render_tool_result, render_message
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -18,6 +20,72 @@ def test_tool_invocation_shows_tactical_phase_then_command():
     # The semantic phase leads; the exact tool id stays as secondary metadata.
     assert lines[0] == "· Enumeration · [nexus.recon.nmap]"
     assert "[Recon-NMAP] nmap -sV -p 80 -oX - lab" in lines[1]
+
+
+def test_a_long_invocation_keeps_every_argument():
+    command = "nmap -sV -p- " + " ".join(["10.0.0.5"] * 25)
+    text = _plain(format_tool_invocation("nexus.session.interact", {"command": command}))
+    # Nothing is clipped: the scrollback wraps the block at the real width.
+    assert command in text and "…" not in text
+
+
+def test_structured_arguments_are_pairs_not_a_json_blob():
+    text = _plain(format_tool_invocation(
+        "nexus.web.upload", {"target": "10.0.0.5", "path": "shell.php"}))
+    line = text.splitlines()[1]
+    assert "target=10.0.0.5" in line and "path=shell.php" in line
+    assert "{" not in line and '"' not in line
+
+
+def test_invocation_arguments_keep_the_secret_redaction():
+    text = _plain(format_tool_invocation(
+        "nexus.cred.bruteforce", {"target": "10.0.0.5", "password": "hunter2"}))
+    assert "hunter2" not in text and "REDACTED" in text
+
+
+def test_nmap_flags_cannot_leak_a_credential():
+    text = _plain(format_tool_invocation(
+        "nexus.recon.nmap",
+        {"target": "10.0.0.5",
+         "flags": ["-sV", "--script-args=user=admin,password=hunter2"]}))
+    # The special Nmap branch reads the redacted arguments like any other.
+    assert "hunter2" not in text and "[REDACTED]" in text
+    assert "password=[REDACTED]" in text
+    # Still the real argv, target included: nothing invented, nothing lost.
+    assert "nmap -sV" in text and "-oX - 10.0.0.5" in text
+
+
+def test_a_file_operation_redacts_a_credential_inside_the_path():
+    text = _plain(format_tool_invocation(
+        "nexus.workspace.read", {"path": "loot/password=hunter2.txt"}))
+    assert text.startswith("• Read loot/") and "hunter2" not in text
+
+
+def test_a_wrapped_invocation_indents_its_continuations():
+    command = "nmap -sV -p- " + " ".join(["10.0.0.5"] * 12)
+    text = _plain(format_tool_invocation(
+        "nexus.session.interact", {"command": command}, width=60))
+    rows = text.splitlines()[1:]
+    assert len(rows) > 1
+    assert rows[0].startswith("  [Session-CMD] ")
+    assert all(row.startswith("  ↳ ") for row in rows[1:])
+    assert all(cell_len(row) <= 60 for row in rows)
+    # Nothing was dropped to make it fit.
+    assert "…" not in text
+    joined = " ".join(rows)
+    assert all(token in joined for token in command.split())
+
+
+def test_a_wrapped_invocation_measures_cells_not_characters():
+    command = "日本語" * 30
+    text = _plain(format_tool_invocation(
+        "nexus.session.interact", {"command": command}, width=40))
+    rows = text.splitlines()[1:]
+    assert all(cell_len(row) <= 40 for row in rows)
+    # Wide characters count as the cells they paint: the whole value survives.
+    rebuilt = rows[0].removeprefix("  [Session-CMD] ") + "".join(
+        row.removeprefix("  ↳ ") for row in rows[1:])
+    assert rebuilt == "command=" + command
 
 
 def test_file_operations_use_read_create_edit_labels():
@@ -50,6 +118,50 @@ def test_collapsed_card_reports_hidden_lines():
     assert "Show more..." in text and "5 lines" in text
     assert "[ Show " in text
     assert "F3" not in text
+
+
+def test_report_result_summarizes_the_path_and_keeps_the_json_in_the_detail():
+    result = {"success": True, "tool_id": "nexus.report.generate",
+              "output": {"directory": "/tmp/eng",
+                         "report_path_md": "/tmp/eng/report.md",
+                         "report_sha256": "a" * 64}}
+    collapsed = render_tool_result(result, no_color=True)
+    assert "informe guardado: /tmp/eng/report.md" in collapsed
+    assert "sha256: aaaaaaaaaaaa…" in collapsed
+    # The JSON is the detail: the collapsed card does not dump it.
+    assert '"report_path_md"' not in collapsed
+    assert '"report_path_md": "/tmp/eng/report.md"' in render_tool_result(
+        result, expanded=True, no_color=True)
+
+
+def test_a_negative_but_verified_result_keeps_its_own_words():
+    result = {"success": True, "tool_id": "nexus.cred.bruteforce",
+              "output": {"verified": True, "message": "ninguna credencial válida",
+                         "attempts": 12}}
+    collapsed = render_tool_result(result, no_color=True)
+    assert "ninguna credencial válida" in collapsed
+    # Not interpreted: a negative verification is still a successful call.
+    assert "✓" in collapsed and "× failed" not in collapsed
+    assert '"attempts"' not in collapsed
+    assert '"attempts": 12' in render_tool_result(result, expanded=True, no_color=True)
+
+
+def test_a_structured_error_keeps_its_text_and_defers_the_json():
+    result = {"success": False, "tool_id": "nexus.web.request",
+              "output": {"error": "connection refused", "host": "10.0.0.5"}}
+    collapsed = render_tool_result(result, no_color=True)
+    assert "× failed · nexus.web.request" in collapsed
+    assert "connection refused" in collapsed
+    assert '"host"' not in collapsed and "Show more..." in collapsed
+    assert '"host": "10.0.0.5"' in render_tool_result(result, expanded=True, no_color=True)
+
+
+def test_unknown_structured_output_stays_neutral_until_expanded():
+    result = {"success": True, "tool_id": "nexus.example", "output": {"foo": "bar"}}
+    collapsed = render_tool_result(result, no_color=True)
+    assert "resultado estructurado · 1 campo(s)" in collapsed
+    assert '"foo"' not in collapsed and "Show more..." in collapsed
+    assert '"foo": "bar"' in render_tool_result(result, expanded=True, no_color=True)
 
 
 def test_expanded_card_shows_every_line():

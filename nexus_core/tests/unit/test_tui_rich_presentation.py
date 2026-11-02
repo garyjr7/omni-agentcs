@@ -116,9 +116,22 @@ def test_indicator_is_a_pure_frame_renderer_with_no_cursor_controls() -> None:
     assert '\r' not in first and '\x1b[2J' not in first
 
 
-def test_indicator_keeps_the_requested_static_activity_label() -> None:
+def test_indicator_names_the_operation_between_the_pulse_and_the_keys() -> None:
     text = clean_text(WorkingIndicator().frame('Ejecutando nmap', now=0.0, elapsed=0, width=100))
-    assert text == '[+][+][+][+][+][+][+] · esc interrupt'
+    # The pulse and the keys hint are literal; the operation sits between them,
+    # so a planning turn and a running tool no longer look identical.
+    assert text == '[+][+][+][+][+][+][+] · Ejecutando nmap · esc interrupt'
+    assert clean_text(WorkingIndicator().frame('', now=0.0, elapsed=0, width=100)) == (
+        '[+][+][+][+][+][+][+] · esc interrupt')
+
+
+def test_indicator_clips_a_long_operation_without_losing_the_keys_hint() -> None:
+    text = clean_text(WorkingIndicator().frame(
+        'Ejecutando ' + 'x' * 200, now=0.0, elapsed=0, width=80))
+    # One screen line: the row never wraps the label over ``esc interrupt``.
+    assert text.startswith('[+][+][+][+][+][+][+] · Ejecutando')
+    assert text.endswith('… · esc interrupt')
+    assert len(text) <= 80
 
 
 def test_header_badge_shows_the_active_engagement_id(tui_factory: Any) -> None:

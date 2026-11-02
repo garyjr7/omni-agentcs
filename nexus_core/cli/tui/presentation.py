@@ -178,8 +178,14 @@ def result_diff(result: dict[str, Any]) -> str | None:
 
 
 def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
-                expanded: bool = False, limit: int = 5, diff: bool = False) -> Group:
+                expanded: bool = False, limit: int = 5, diff: bool = False,
+                defer_detail: bool = False) -> Group:
     folded = fold_lines(value, expanded=expanded, limit=limit)
+    text = clean_text(value)
+    # An unmapped schema is summarized, never dumped: its pretty JSON *is* the
+    # detail, so it appears only once the operator expands the card. The same
+    # toggle opens it, so the transcript keeps a single expansion mechanism.
+    deferred = defer_detail and not expanded and bool(text.strip())
     # One semantic colour for the whole card: green when the run produced a
     # usable result, red when it failed. Never mixed, so the verdict is read
     # before the text.
@@ -188,18 +194,22 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
     if not success:
         body.append(Text(f'× failed · {clean_text(tool_id) or "tool"}',
                          style=f'bold {RESULT_ERROR_STYLE}'))
-    for index, lines in enumerate((folded.head, folded.tail)):
-        if index and folded.hidden:
-            body.append(Text('   ...', style='dim'))
-        if diff and lines:
-            body.append(diff_block('\n'.join(lines)))
-        else:
-            body.extend(Text(f'   {BRANCH} ' + line, style=color) for line in lines)
+    if not deferred:
+        for index, lines in enumerate((folded.head, folded.tail)):
+            if index and folded.hidden:
+                body.append(Text('   ...', style='dim'))
+            if diff and lines:
+                body.append(diff_block('\n'.join(lines)))
+            else:
+                body.extend(Text(f'   {BRANCH} ' + line, style=color) for line in lines)
     body.append(Text(f'   {"✓" if success else "×"} {clean_text(summary)}',
                      style=f'bold {color}'))
-    if folded.hidden:
+    if deferred:
+        body.append(Text(f'   [ Show more... · {len(text.splitlines())} lines ]',
+                         style='dim cyan'))
+    elif folded.hidden:
         body.append(Text(f'   [ Show more... · {folded.hidden} lines ]', style='dim cyan'))
-    elif expanded and len(clean_text(value).splitlines()) > limit:
+    elif expanded and len(text.splitlines()) > limit:
         body.append(Text('   [ Show less ]', style='dim cyan'))
     return Group(*body)
 
@@ -209,19 +219,26 @@ class WorkingIndicator:
 
     The seven cells and their sweep live in :mod:`nexus_core.cli.tui.frame`, so
     the pulse the transcript shows and the one the header timer accompanies are
-    the same widget. ``message`` and ``elapsed`` stay in the signature because
-    the loop samples this every frame; the mock keeps the label static.
+    the same widget. ``message`` names the operation the run is in, which is the
+    only thing that tells "waiting for the model" from "running a tool";
+    ``elapsed`` stays in the signature because the loop samples this every
+    frame, but the header already owns the timer.
     """
 
     def frame(self, message: str, *, now: float, elapsed: int, width: int,
               no_color: bool = False) -> str:
-        from .frame import busy_cells
+        from .frame import BUSY_TAIL, busy_cells, busy_label
 
-        del message, elapsed
+        del elapsed
         text = Text()
+        cells = 0
         for style, cell in busy_cells(now):
             text.append(cell, style=style)
-        text.append(' · esc interrupt', style='dim')
+            cells += len(cell)
+        label = busy_label(message, room=width - cells - len(BUSY_TAIL) - 3)
+        if label:
+            text.append(f' · {label}', style='dim')
+        text.append(BUSY_TAIL, style='dim')
         return render_rich(text, width=width, no_color=no_color).split('\n')[0]
 
 

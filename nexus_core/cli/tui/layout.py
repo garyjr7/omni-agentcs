@@ -20,6 +20,7 @@ from prompt_toolkit.layout.dimension import D
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.layout.menus import MultiColumnCompletionsMenu
+from prompt_toolkit.layout.processors import Processor, Transformation
 from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
@@ -64,6 +65,44 @@ class ScrollbackControl(BufferControl):
         ):
             return None
         return super().mouse_handler(mouse_event)
+
+
+#: Hint drawn inside an empty editor. It is a rendering processor, never text:
+#: it is not in the buffer, the history, the transcript or a submitted turn.
+PLACEHOLDER = "[ Enter a task or / for commands ]"
+
+
+class PlaceholderProcessor(Processor):
+    """Grey hint for an empty, focused editor.
+
+    ``prompt_toolkit`` 3 has no native placeholder for ``BufferControl``, so the
+    hint is appended to the rendered row instead of being typed into the buffer.
+    It disappears on the first character, on a paste chip (the document holds a
+    reference, not literal text), on a secret prompt and while the permission
+    menu is open, and it never changes the editor's height: one empty line stays
+    one line.
+    """
+
+    def __init__(self, ui: Any, text: str = PLACEHOLDER) -> None:
+        self._ui = ui
+        self._text = text
+
+    def visible(self) -> bool:
+        """An empty, focused, non-secret editor with no modal on top."""
+        ui = self._ui
+        if ui._secret_mode or ui.approval_active:
+            return False
+        if ui._input.text or ui.input_document.refs:
+            return False
+        try:
+            return ui._app.layout.current_control.buffer is ui._input
+        except Exception:  # noqa: BLE001 - a frame must never fail to render
+            return False
+
+    def apply_transformation(self, ti: Any) -> Transformation:
+        if not self.visible():
+            return Transformation(ti.fragments)
+        return Transformation([*ti.fragments, ("class:placeholder", self._text)])
 
 
 def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any, output: Any, full_screen: bool = False) -> None:
@@ -261,8 +300,12 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         PasswordProcessor(char="•"), Condition(lambda: ui._secret_mode)
     )
     from .paste import PasteProcessor
+    # Last in the chain: the hint is appended to an already-mapped empty row, so
+    # the paste chip and the secret mask keep their own display mapping.
+    ui._placeholder = PlaceholderProcessor(ui)
     editor = Window(BufferControl(
-        ui._input, lexer=lexer, input_processors=[PasteProcessor(ui), ui._secret_mask]
+        ui._input, lexer=lexer,
+        input_processors=[PasteProcessor(ui), ui._secret_mask, ui._placeholder],
     ), wrap_lines=True, style=PANEL_STYLE,
                     get_line_prefix=lambda line, wrapped: ui._formatted(
                         ui.prompt_text.splitlines()[-1] if line == 0 and wrapped == 0 else "  · "))
@@ -392,7 +435,8 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         key_bindings=keys, input=input, output=output,
         style=Style.from_dict({
             **panel_style(), **approval_style(), "busy": "#ff0055",
-            "scroll": "#ff0055", **(prompt_style or {}),
+            "scroll": "#ff0055", "placeholder": "#6a6f76 italic",
+            **(prompt_style or {}),
         }),
         color_depth=ColorDepth.DEPTH_1_BIT if ui.no_color else ColorDepth.DEPTH_24_BIT,
     )
