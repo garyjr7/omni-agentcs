@@ -20,7 +20,7 @@ def test_busy_shows_pulsing_block_indicator(tui_factory):
     ui = tui_factory()
     ui.session.set_busy()
     text = fragment_list_to_text(ui.session._render_busy())
-    assert "[+][+][+][+][+][+][+] · esc interrupt" in text
+    assert "[+][+][+][+][+][+][+] · esc para interrumpir" in text
     # The pulse is a row of the dock, so it is never a transcript line that a
     # growing chat can scroll away.
     assert ui.session._busy_window in ui.session._rows
@@ -28,7 +28,7 @@ def test_busy_shows_pulsing_block_indicator(tui_factory):
     lexer = ui.session._scrollback_window.content.lexer
     lines = lexer.lex_document(ui.session._scrollback.document)
     assert all(
-        "esc interrupt" not in fragment_list_to_text(lines(number))
+        "esc para interrumpir" not in fragment_list_to_text(lines(number))
         for number in range(ui.session._scrollback.document.line_count)
     )
 
@@ -38,32 +38,32 @@ def test_busy_completion_logs_worked_for_duration(tui_factory):
     ui.session.set_busy()
     ui.session._status.busy_started_at = time.monotonic() - 3
     # The active indicator carries no elapsed time...
-    assert "esc interrupt" in fragment_list_to_text(ui.session._render_busy())
+    assert "esc para interrumpir" in fragment_list_to_text(ui.session._render_busy())
     # ...the duration is recorded once the turn completes.
     ui.session.clear_busy()
     assert ui.session._completion_status is not None
-    assert ui.session._completion_status.startswith("Worked for 3s •")
+    assert ui.session._completion_status.startswith("completado en 3s •")
     assert ui.session._completion_window.height() == 1
     # The completion replaces the pulse above the input; it is status, not
     # transcript history, so the run's log stays clean.
-    assert fragment_list_to_text(ui.session._completion_formatted()).startswith("Worked for 3s •")
-    assert "Worked for" not in ui.session.transcript
-    assert "[+][+][+][+][+][+][+] · esc interrupt" not in ui.session.transcript
+    assert fragment_list_to_text(ui.session._completion_formatted()).startswith("completado en 3s •")
+    assert "completado en" not in ui.session.transcript
+    assert "[+][+][+][+][+][+][+] · esc para interrumpir" not in ui.session.transcript
 
 
 def test_busy_shows_custom_message(tui_factory):
     ui = tui_factory()
     ui.session.set_busy("Ejecutando nmap")
-    assert fragment_list_to_text(ui.session._render_busy()).endswith(" · esc interrupt")
+    assert fragment_list_to_text(ui.session._render_busy()).endswith(" · esc para interrumpir")
 
 
 def test_busy_row_names_the_tool_the_run_reports(tui_factory):
     ui = tui_factory()
     # ``_render_run_event`` pushes this for every ``tool.invoke``: the row says
     # which tool runs instead of showing the same frame as a planning turn.
-    ui.session.set_status(busy=True, busy_message="Executing nexus.recon.nmap")
+    ui.session.set_status(busy=True, busy_message="Ejecutando nexus.recon.nmap")
     text = fragment_list_to_text(ui.session._render_busy())
-    assert text == "[+][+][+][+][+][+][+] · Executing nexus.recon.nmap · esc interrupt"
+    assert text == "[+][+][+][+][+][+][+] · Ejecutando nexus.recon.nmap · esc para interrumpir"
     assert ui.session._busy_window.height() == 1
 
 

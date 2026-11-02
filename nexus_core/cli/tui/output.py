@@ -61,6 +61,11 @@ class TuiOutput:
     def flush(self) -> None:
         self._session.flush()
 
+    def block_break(self) -> str:
+        """The one blank line that separates this block from the previous one."""
+        breaker = getattr(self._session, "_block_break", None)
+        return str(breaker() if callable(breaker) else "")
+
 
 _OUTPUT: ContextVar[OutputRouter | None] = ContextVar("omni_output", default=None)
 
@@ -72,6 +77,13 @@ def route_output(output: Any) -> Iterator[Any]:
         yield
     finally:
         _OUTPUT.reset(token)
+
+
+def block_break() -> str:
+    """Separator for the active router; empty on the plain terminal path."""
+    output = _OUTPUT.get()
+    breaker = getattr(output, "block_break", None)
+    return str(breaker()) if callable(breaker) else ""
 
 
 def write(*values: Any, sep: Any=" ", end: Any="\n", flush: Any=False) -> None:

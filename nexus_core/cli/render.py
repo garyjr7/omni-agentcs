@@ -27,7 +27,7 @@ from .theme import (
     WHITE,
     YELLOW,
 )
-from .tui.output import write
+from .tui.output import block_break, write
 
 #: Noise levels of the offensive tools, mapped to a traffic-light colour.
 NOISE_COLORS = {
@@ -224,9 +224,21 @@ def render_trust_mode(tool_id: str, arguments: dict[str, Any], operator: str) ->
 #: SGR sequences, so box padding counts visible cells, not escape bytes.
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
+#: Historical fixed box width; the live width is terminal-aware.
+BOX_ROW_WIDTH = 70
+
+
+def _cell_width(char: str) -> int:
+    """Terminal cells of one character (stdlib only: no prompt_toolkit here)."""
+    import unicodedata
+
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+
 
 def _box_line(text: str, width: int) -> str:
-    """One box row, truncated and padded by *visible* width (ANSI-aware)."""
+    """One box row, truncated and padded by *visible* cells (ANSI-aware)."""
     limit = max(0, width - 2)
     source = str(text)
     pieces: list[str] = []
@@ -238,15 +250,23 @@ def _box_line(text: str, width: int) -> str:
             pieces.append(match.group())
             index = match.end()
             continue
-        if visible >= limit:
+        cells = _cell_width(source[index])
+        if visible + cells > limit:
             break
         pieces.append(source[index])
-        visible += 1
+        visible += cells
         index += 1
     body = "".join(pieces)
     if "\033[" in body:
         body += RESET
     return "│ " + body + " " * (limit - visible) + " │"
+
+
+def summary_width() -> int:
+    """Box width for this terminal: never below 60, never above 100."""
+    import shutil
+
+    return max(60, min(100, shutil.get_terminal_size((80, 24)).columns - 4))
 
 
 #: Severity → palette, shared by the summary box and findings lists.
@@ -285,17 +305,21 @@ def _summary_rows(text: str, width: int) -> list[str]:
     return rows
 
 
-def render_summary(text: str, findings: Iterable[dict[str, Any]] = ()) -> None:
-    """Print the final summary of a run inside a coloured box (Markdown-aware)."""
+def render_summary(text: str, findings: Iterable[dict[str, Any]] = (),
+                   width: int | None = None) -> None:
+    """Print the final summary of a run inside a responsive coloured box."""
+    import textwrap
+
     findings = list(findings or [])
-    width = 68
-    border = "├" + "─" * width + "┤"
-    write()
-    write(paint("┌" + "─" * width + "┐", AQUA, BOLD))
-    write(_box_line(paint("RESULTADO · OmniAgentCS", AQUA, BOLD), width))
+    total = summary_width() if width is None else max(60, min(100, int(width)))
+    inner = total - 2
+    border = "├" + "─" * inner + "┤"
+    write(block_break() + paint("  ── resultado final " + "─" * max(0, total - 21), DIM))
+    write(paint("┌" + "─" * inner + "┐", AQUA, BOLD))
+    write(_box_line(paint("RESULTADO · OmniAgentCS", AQUA, BOLD), inner))
     write(paint(border, AQUA, BOLD))
-    for line in _summary_rows(str(text or "(sin resumen)"), width):
-        write(_box_line(paint(line, OFFWHITE) if line.strip() else "", width))
+    for line in _summary_rows(str(text or "(sin resumen)"), inner):
+        write(_box_line(paint(line, OFFWHITE) if line.strip() else "", inner))
     if findings:
         write(paint(border, AQUA, BOLD))
         for finding in findings:
@@ -304,8 +328,14 @@ def render_summary(text: str, findings: Iterable[dict[str, Any]] = ()) -> None:
             severity = str(finding.get("severity") or "info")
             title = str(finding.get("title") or finding.get("summary") or "")
             tag = paint(f"[{severity}]", SEVERITY_COLORS.get(severity.lower(), YELLOW), BOLD)
-            write(_box_line(f"{tag} {paint(title, WHITE)}", width))
-    write(paint("└" + "─" * width + "┘", AQUA, BOLD))
+            wrapped = textwrap.wrap(
+                title, width=max(8, inner - 6), break_long_words=False,
+                break_on_hyphens=False,
+            ) or [""]
+            write(_box_line(f"{tag} {paint(wrapped[0], WHITE)}", inner))
+            for row in wrapped[1:]:
+                write(_box_line("       " + paint(row, WHITE), inner))
+    write(paint("└" + "─" * inner + "┘", AQUA, BOLD))
 
 
 def render_answer(text: str, *, no_color: bool = False, markdown: bool = False, max_width=None) -> None:

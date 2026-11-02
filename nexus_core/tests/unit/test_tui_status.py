@@ -30,12 +30,12 @@ def test_status_renders_tokens_and_cost():
 
 
 def test_status_renders_facts_count():
-    assert "3 facts" in render_status_plain(StatusState(facts_count=3))
+    assert "3 datos" in render_status_plain(StatusState(facts_count=3))
 
 
 def test_status_hides_facts_when_zero_or_unknown():
-    assert "facts" not in render_status_plain(StatusState(facts_count=0))
-    assert "facts" not in render_status_plain(StatusState())
+    assert "datos" not in render_status_plain(StatusState(facts_count=0))
+    assert "datos" not in render_status_plain(StatusState())
 
 
 def test_status_renders_elapsed_human_seconds():
@@ -58,13 +58,13 @@ def test_status_truncates_to_width():
     state = StatusState(provider_model="界" * 20)
     text = fragment_list_to_text(render_status_bar(state, width=11))
     assert get_cwidth(text) <= 11
-    assert text == "Status: IDL"
+    assert text == "Estado: INA"
 
 
 def test_status_drops_engagement_first_when_narrow():
     state = StatusState(engagement_name="very-long-engagement-name", provider_model="groq/m")
     text = fragment_list_to_text(render_status_bar(state, width=16))
-    assert "Status: IDLE" in text
+    assert "Estado: INACTIVO" in text
     assert "very-long-engagement-name" not in text
 
 

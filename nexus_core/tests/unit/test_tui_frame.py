@@ -41,12 +41,12 @@ def test_the_pulse_is_seven_cells_that_sweep_without_changing_their_text() -> No
     assert all("".join(cell for _, cell in row) == "[+][+][+][+][+][+][+]" for row in rows)
     assert all(sum(style == frame.PULSE_BRIGHT for style, _ in row) == 1 for row in rows)
     assert len({tuple(row) for row in rows}) == frame.PULSE_CELLS
-    assert frame.busy_text() == "[+][+][+][+][+][+][+] · esc interrupt"
+    assert frame.busy_text() == "[+][+][+][+][+][+][+] · esc para interrumpir"
 
 
 def test_completion_names_the_duration_and_the_hour() -> None:
     stamp = datetime(2026, 10, 31, 16, 35)
-    assert frame.completion_text(192, now=stamp) == "Worked for 3m 12s • 04:35 PM"
+    assert frame.completion_text(192, now=stamp) == "completado en 3m 12s • 04:35 PM"
 
 
 def test_the_permission_question_names_the_exact_command() -> None:
@@ -92,9 +92,9 @@ def test_the_completion_line_replaces_the_same_row_as_the_pulse(tui_factory) -> 
     assert session._busy_window.height() == 0
     assert session._completion_window.height() == 1
     assert fragment_list_to_text(session._completion_formatted()).startswith(
-        "Worked for 3s •"
+        "completado en 3s •"
     )
-    assert "Worked for" not in session.transcript
+    assert "completado en" not in session.transcript
     rows = session._rows
     assert rows.index(session._busy_window) == rows.index(session._completion_window) - 1
     assert rows.index(session._completion_window) == rows.index(session._input_window) - 2

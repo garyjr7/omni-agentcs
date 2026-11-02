@@ -56,9 +56,21 @@ def format_elapsed(seconds: float) -> str:
     return f"{secs}s"
 
 
-def header_text(engagement: str | None, *, elapsed_seconds: float | None = None) -> str:
-    """Fixed header line; the timer exists only while the agent is working."""
+def header_text(engagement: str | None, *, elapsed_seconds: float | None = None,
+                width: int | None = None) -> str:
+    """Fixed header line; the timer exists only while the agent is working.
+
+    ``width`` is only used when the caller knows the terminal size: the name is
+    clipped so the timer never wraps onto a second row. Without it the historical
+    string is returned untouched.
+    """
     name = " ".join(str(engagement or "").split()) or DEFAULT_ENGAGEMENT
+    if width is not None:
+        room = max(8, int(width) - len(BRAND) - len(SEPARATOR) - len("OMNI [  ]") - 1)
+        if elapsed_seconds is not None:
+            room -= len(format_elapsed(elapsed_seconds)) + 3
+        if len(name) > room:
+            name = name[: max(1, room - 1)].rstrip() + "…"
     text = f"{BRAND}{SEPARATOR}OMNI [ {name} ]"
     if elapsed_seconds is not None:
         text += f"   {format_elapsed(elapsed_seconds)}"
@@ -86,7 +98,9 @@ def busy_marker() -> str:
 
 #: The keys hint that closes the work row. The operation label never pushes
 #: it out: the row has exactly one screen line.
-BUSY_TAIL = " · esc interrupt"
+from .strings import ESC_INTERRUPT
+
+BUSY_TAIL = " · " + ESC_INTERRUPT
 
 
 def busy_text() -> str:
@@ -109,9 +123,11 @@ def busy_label(message: Any, *, room: int) -> str:
 
 
 def completion_text(seconds: float, *, now: datetime | None = None) -> str:
-    """``Worked for 3m 12s • 04:35 PM``, shown where the pulse was."""
+    """``completado en 3m 12s • 04:35 PM``, shown where the pulse was."""
+    from .strings import WORKED_FOR
+
     stamp = (now or datetime.now()).strftime("%I:%M %p")
-    return f"Worked for {format_elapsed(seconds)}{SEPARATOR}{stamp}"
+    return f"{WORKED_FOR} {format_elapsed(seconds)}{SEPARATOR}{stamp}"
 
 
 def approval_command(payload: Any, *, width: int = 60) -> str:

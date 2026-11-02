@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 from prompt_toolkit.formatted_text import fragment_list_to_text
 
-PLACEHOLDER = "[ Enter a task or / for commands ]"
+from nexus_core.cli.tui.strings import PLACEHOLDER_TEXT
+
+PLACEHOLDER = PLACEHOLDER_TEXT
 
 
 def _first_row(ui):
@@ -69,6 +71,7 @@ def test_layout_locks_bottom_to_editor_and_helper_hints(tui_factory):
         ui.session._badge_window,
         ui.session._scrollback_window,
         ui.session._chips_window,
+        ui.session._thought_row,
         ui.session._busy_window,
         ui.session._completion_window,
         ui.session._approval_panel,
@@ -99,8 +102,8 @@ def test_completion_summary_replaces_the_pulse_above_the_input(tui_factory):
     ui.clear_busy()
     # It is the run's status line, not a log entry: it sits right above the
     # input panel where the working pulse was.
-    assert "Worked for " in fragment_list_to_text(ui._completion_formatted())
-    assert "Worked for " not in ui.transcript
+    assert "completado en " in fragment_list_to_text(ui._completion_formatted())
+    assert "completado en " not in ui.transcript
     assert ui._completion_window in ui._rows
 
 
@@ -173,8 +176,8 @@ def test_layout_renders_all_regions(tui_factory):
     ui.session.print("output")
     ui.session.flush()
     assert "output" in ui.session._scrollback.text
-    assert "esc interrupt" in fragment_list_to_text(ui.session._render_busy())
-    assert "Scope: 2 targets" in fragment_list_to_text(ui.session._toolbar())
+    assert "esc para interrumpir" in fragment_list_to_text(ui.session._render_busy())
+    assert "Alcance: 2 objetivos" in fragment_list_to_text(ui.session._toolbar())
     assert ui.session._app.layout.current_buffer is ui.session._input
 
 

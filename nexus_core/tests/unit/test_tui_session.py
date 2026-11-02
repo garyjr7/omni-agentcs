@@ -97,7 +97,7 @@ def test_history_respects_xdg_state_home(monkeypatch, tmp_path):
 def test_bottom_toolbar_renders_status(tui_factory):
     ui = tui_factory()
     ui.session.set_status(engagement="lab", scope_targets=2)
-    assert "Scope: 2 targets" in fragment_list_to_text(ui.session._toolbar())
+    assert "Alcance: 2 objetivos" in fragment_list_to_text(ui.session._toolbar())
 
 
 def test_bottom_toolbar_empty_when_disabled(tui_factory):

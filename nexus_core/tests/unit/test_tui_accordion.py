@@ -9,13 +9,13 @@ def test_card_expands_and_collapses_by_click(tui_factory):
     ui = tui_factory()
     ui.session.append_card(_card("l", 10))
     ui.session.flush()
-    assert "Show more..." in ui.session._scrollback.text
+    assert "líneas más · ctrl+o" in ui.session._scrollback.text
     line = min(ui.session._toggle_rows)
     assert ui.session.toggle_card_at_line(line) is True
-    assert "[ Show less ]" in ui.session._scrollback.text
+    assert "ctrl+o colapsar" in ui.session._scrollback.text
     # Expanding moves the footer: use the refreshed click target to collapse.
     assert ui.session.toggle_card_at_line(min(ui.session._toggle_rows)) is True
-    assert "Show more..." in ui.session._scrollback.text
+    assert "líneas más · ctrl+o" in ui.session._scrollback.text
 
 
 def test_two_cards_toggle_independently(tui_factory):
@@ -27,15 +27,15 @@ def test_two_cards_toggle_independently(tui_factory):
     assert len(rows) == 2
     ui.session.toggle_card_at_line(rows[0])
     text = ui.session._scrollback.text
-    assert text.count("[ Show less ]") == 1
-    assert text.count("Show more...") == 1
+    assert text.count("ctrl+o colapsar") == 1
+    assert text.count("líneas más · ctrl+o") == 1
 
 
 def test_small_card_has_no_click_target(tui_factory):
     ui = tui_factory()
     ui.session.append_card({"success": True, "stdout": "solo una línea"})
     ui.session.flush()
-    assert "[ Show " not in ui.session._scrollback.text
+    assert "ctrl+o" not in ui.session._scrollback.text
     assert ui.session._toggle_rows == {}
     assert ui.session.toggle_card_at_line(0) is False
 
@@ -60,7 +60,7 @@ def test_cards_survive_a_rebuild_with_other_text(tui_factory):
     ui.session.toggle_card_at_line(line)
     text = ui.session._scrollback.text
     assert "intro" in text and "outro" in text
-    assert "[ Show less ]" in text
+    assert "ctrl+o colapsar" in text
 
 
 def test_scrollback_control_turns_click_into_toggle(tui_factory):
@@ -79,7 +79,7 @@ def test_scrollback_control_turns_click_into_toggle(tui_factory):
         modifiers=frozenset(),
     )
     assert control.mouse_handler(event) is None
-    assert "[ Show less ]" in ui.session._scrollback.text
+    assert "ctrl+o colapsar" in ui.session._scrollback.text
 
 
 def test_a_structured_result_opens_its_json_only_when_expanded(tui_factory):
@@ -87,7 +87,8 @@ def test_a_structured_result_opens_its_json_only_when_expanded(tui_factory):
     ui.session.append_card({"success": True, "tool_id": "nexus.example",
                             "output": {"foo": "bar"}})
     ui.session.flush()
-    # Collapsed: a neutral summary, no raw JSON in the main flow.
+    # Collapsed: up to four readable fields, no raw JSON in the main flow.
+    assert '└ foo: bar' in ui.session._scrollback.text
     assert '"foo"' not in ui.session._scrollback.text
     assert ui.session.toggle_card_at_line(min(ui.session._toggle_rows)) is True
     assert '"foo": "bar"' in ui.session._scrollback.text

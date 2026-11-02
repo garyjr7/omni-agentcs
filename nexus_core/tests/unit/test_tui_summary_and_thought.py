@@ -51,26 +51,32 @@ LONG_NOTE = (
 
 
 # --------------------------------------------------------------- the purpose
-def test_collapsed_thought_is_one_short_line_of_purpose() -> None:
-    plain = thinking(LONG_NOTE).plain
-    assert "\n" not in plain
-    assert plain == "• Thinking... Enumero el 445 porque el SMB puede estar abierto."
-    assert "Después probaré" not in plain, "el razonamiento interno no se muestra"
+def test_collapsed_thought_reads_as_a_card_with_a_footer() -> None:
+    plain = thinking("Reviso el 445.\nProbaré credenciales por defecto.").plain
+    lines = plain.splitlines()
+    assert lines[0] == "  Razonamiento"
+    assert lines[1].startswith("  Reviso el 445.")
+    assert lines[-1].startswith("  ctrl+t mostrar todo")
+    assert "• Thinking..." not in plain
 
 
-def test_a_long_first_sentence_is_capped_with_an_ellipsis() -> None:
-    plain = thinking("palabra " * 60).plain
-    assert "\n" not in plain
-    assert plain.startswith("• Thinking... palabra palabra")
-    assert plain.endswith("…")
+def test_a_long_note_collapses_to_its_last_five_lines_with_an_ellipsis() -> None:
+    plain = thinking("palabra " * 60, width=40).plain
+    lines = plain.splitlines()
+    assert lines[0] == "  Razonamiento"
+    assert lines[1] == "  …"
+    body = [line for line in lines[2:-1] if line.strip()]
+    assert len(body) == 5
+    assert lines[-1].startswith("  ctrl+t mostrar todo")
 
 
 def test_expanded_thought_keeps_the_whole_note_once() -> None:
-    plain = thinking(LONG_NOTE, expanded=True).plain
-    assert plain.splitlines()[0] == "• Thinking..."
+    plain = thinking(LONG_NOTE, expanded=True, width=100).plain
+    assert plain.splitlines()[0] == "  Razonamiento"
     assert plain.count("Enumero el 445 porque el SMB puede estar abierto.") == 1
     assert "Después probaré" in plain
-    assert "…" not in plain, "expandido no recorta"
+    assert "\n  …" not in plain, "expandido no recorta"
+    assert "ctrl+t colapsar" in plain
 
 
 def test_thought_purpose_is_capped_and_single_line() -> None:
@@ -80,10 +86,12 @@ def test_thought_purpose_is_capped_and_single_line() -> None:
     assert thought_purpose("") == ""
 
 
-def test_the_collapsed_row_stays_one_line_at_a_normal_width() -> None:
+def test_the_collapsed_card_stays_five_lines_at_a_normal_width() -> None:
     rendered = render_thought(LONG_NOTE, width=200)
-    assert rendered.count("\n") == 0
-    assert "• Thinking..." in rendered
+    lines = rendered.splitlines()
+    assert "Razonamiento" in lines[0]
+    assert "ctrl+t mostrar todo" in lines[-1]
+    assert len([line for line in lines[1:-1] if line.strip()]) <= 5
 
 
 # -------------------------------------------------------------- the Markdown
@@ -150,11 +158,12 @@ def test_the_summary_box_keeps_every_field_and_its_geometry(capsys) -> None:
         open_labels=["203.0.113.80:445/tcp microsoft-ds"],
         report_line="informe PENDIENTE",
     )
-    render.render_summary(summary)
+    render.render_summary(summary, width=BOX_ROW_WIDTH)
     out = capsys.readouterr().out
     lines = [line for line in out.splitlines() if line.strip()]
     assert all(len(line) <= BOX_ROW_WIDTH for line in lines)
-    assert lines[0].startswith("┌") and lines[-1].startswith("└")
+    box = [line for line in lines if line.startswith(("┌", "│", "├", "└"))]
+    assert box[0].startswith("┌") and box[-1].startswith("└")
     compact = " ".join(lines)
     assert "findings=0" in compact and "informe PENDIENTE" in compact
     render.set_color_enabled(True)
@@ -207,7 +216,7 @@ async def test_a_finished_run_reads_as_finished_and_an_unfinished_one_does_not(h
         llm_client=ScriptedLLM_loop([_complete()]),
         config=_loop_config(max_iterations=1, gates=False),
     )
-    render.render_summary(done.final_summary, done.findings)
+    render.render_summary(done.final_summary, done.findings, width=BOX_ROW_WIDTH)
     finished = capsys.readouterr().out
     assert done.status == "completed"
     assert "hecho" in finished
@@ -221,7 +230,7 @@ async def test_a_finished_run_reads_as_finished_and_an_unfinished_one_does_not(h
             llm_client=ScriptedLLM_loop([_poll()]),
             config=_loop_config(max_iterations=2, gates=False),
         )
-    render.render_summary(pending.final_summary, pending.findings)
+    render.render_summary(pending.final_summary, pending.findings, width=BOX_ROW_WIDTH)
     unfinished = capsys.readouterr().out
     assert pending.status == "max_iterations"
     assert "límite de iteraciones alcanzado; trabajo incompleto" in unfinished

@@ -23,13 +23,13 @@ from nexus_core.cli.tui.status import StatusState, render_status_bar
 from nexus_core.cli.tui.stream import output_text, render_tool_result
 
 
-def test_exact_five_line_boundary_and_three_head_two_tail() -> None:
-    five = '\n'.join(str(i) for i in range(5))
-    assert fold_lines(five).hidden == 0
-    folded = fold_lines(five + '\n5')
+def test_exact_four_line_boundary_and_three_head_one_tail() -> None:
+    four = '\n'.join(str(i) for i in range(4))
+    assert fold_lines(four).hidden == 0
+    folded = fold_lines(four + '\n4')
     assert folded.head == ('0', '1', '2')
-    assert folded.tail == ('4', '5') and folded.hidden == 1
-    assert fold_lines(five + '\n5', expanded=True).hidden == 0
+    assert folded.tail == ('4',) and folded.hidden == 1
+    assert fold_lines(four + '\n4', expanded=True).hidden == 0
 
 
 def test_trace_keeps_stdout_and_stderr_and_literal_markup() -> None:
@@ -37,7 +37,7 @@ def test_trace_keeps_stdout_and_stderr_and_literal_markup() -> None:
               'stdout': '[bold]literal[/bold]', 'stderr': 'failure detail'}
     text = render_tool_result(result, no_color=True)
     assert output_text(result) == '[stdout]\n[bold]literal[/bold]\n[stderr]\nfailure detail'
-    assert '× failed · nexus.example' in text
+    assert '× falló' in text and 'nexus.example' not in text
     assert '[bold]literal[/bold]' in text and 'failure detail' in text
     assert '\x1b' not in text and '\r' not in text
 
@@ -98,12 +98,13 @@ def test_thought_card_can_be_expanded_and_collapsed(tui_factory: Any) -> None:
     thought = 'first\nsecond\n' + 'detail ' * 50
     ui.append_card({}, thought=thought)
     ui.flush()
-    assert '• Thinking...' in ui._scrollback.text
-    assert '[ Show thinking ]' in ui._scrollback.text
+    assert 'Razonamiento' in ui._scrollback.text
+    assert 'ctrl+t mostrar todo' in ui._scrollback.text
+    assert '…' in ui._scrollback.text
     assert ui.toggle_card_at_line(min(ui._toggle_rows))
-    assert '[ Show less ]' in ui._scrollback.text
+    assert 'ctrl+t colapsar' in ui._scrollback.text
     assert ui.toggle_card_at_line(min(ui._toggle_rows))
-    assert '[ Show thinking ]' in ui._scrollback.text
+    assert 'ctrl+t mostrar todo' in ui._scrollback.text
 
 
 def test_indicator_is_a_pure_frame_renderer_with_no_cursor_controls() -> None:
@@ -111,7 +112,7 @@ def test_indicator_is_a_pure_frame_renderer_with_no_cursor_controls() -> None:
     first = spinner.frame('', now=0.0, elapsed=0, width=100)
     second = spinner.frame('', now=0.4, elapsed=1, width=100)
     # The required literal stays intact and the red block advances between frames.
-    assert '[+][+][+][+][+][+][+] · esc interrupt' in clean_text(first)
+    assert '[+][+][+][+][+][+][+] · esc para interrumpir' in clean_text(first)
     assert first != second
     assert '\r' not in first and '\x1b[2J' not in first
 
@@ -120,9 +121,9 @@ def test_indicator_names_the_operation_between_the_pulse_and_the_keys() -> None:
     text = clean_text(WorkingIndicator().frame('Ejecutando nmap', now=0.0, elapsed=0, width=100))
     # The pulse and the keys hint are literal; the operation sits between them,
     # so a planning turn and a running tool no longer look identical.
-    assert text == '[+][+][+][+][+][+][+] · Ejecutando nmap · esc interrupt'
+    assert text == '[+][+][+][+][+][+][+] · Ejecutando nmap · esc para interrumpir'
     assert clean_text(WorkingIndicator().frame('', now=0.0, elapsed=0, width=100)) == (
-        '[+][+][+][+][+][+][+] · esc interrupt')
+        '[+][+][+][+][+][+][+] · esc para interrumpir')
 
 
 def test_indicator_clips_a_long_operation_without_losing_the_keys_hint() -> None:
@@ -130,7 +131,7 @@ def test_indicator_clips_a_long_operation_without_losing_the_keys_hint() -> None
         'Ejecutando ' + 'x' * 200, now=0.0, elapsed=0, width=80))
     # One screen line: the row never wraps the label over ``esc interrupt``.
     assert text.startswith('[+][+][+][+][+][+][+] · Ejecutando')
-    assert text.endswith('… · esc interrupt')
+    assert text.endswith('… · esc para interrumpir')
     assert len(text) <= 80
 
 
@@ -161,7 +162,7 @@ def test_header_badge_uses_the_id_never_the_name_nor_the_folder(tui_factory: Any
     assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ eng-other ]'
     # The footer and the helper hints never move with the badge.
     assert fragment_list_to_text(ui._workspace_footer()) == footer
-    assert hints == ui._hints_window.content.text == '← for history · ? for help'
+    assert hints == ui._hints_window.content.text == '← historial · ? ayuda'
 
 
 def test_cli_session_badge_follows_the_active_engagement(tui_factory: Any, monkeypatch: Any) -> None:
@@ -213,7 +214,7 @@ def test_input_panel_has_a_red_left_bar_and_no_horizontal_rule(tui_factory: Any)
 def test_helper_hints_render_outside_the_panel(tui_factory: Any) -> None:
     ui = tui_factory().session
     hints = ui._hints_window
-    assert hints.content.text == '← for history · ? for help'
+    assert hints.content.text == '← historial · ? ayuda'
     assert hints.style == '#ffffff'
     # The hint line is a sibling of the panel, painted right underneath it.
     rows = ui._rows
@@ -270,23 +271,23 @@ def test_tactical_phases_replace_raw_tool_ids_in_traces() -> None:
 def test_fixed_hud_has_truthful_budget_and_running_state(tui_factory: Any) -> None:
     state = StatusState(scope_targets=3, provider_model='provider/model', tokens_input=12_345, busy=True)
     text = fragment_list_to_text(render_status_bar(state, width=200))
-    for segment in ('BAJIOWARE · OMNI-AGENTCS', 'Scope: 3 targets', 'Model: provider/model',
-                    'Tokens: 12,345', 'Budget: $—', 'Status: RUNNING'):
+    for segment in ('BAJIOWARE · OMNI-AGENTCS', 'Alcance: 3 objetivos', 'Modelo: provider/model',
+                    'Tokens: 12,345', 'Presupuesto: $—', 'Estado: EN CURSO'):
         assert segment in text
     state.budget_usd = 5
-    assert 'Budget: $5.00' in fragment_list_to_text(render_status_bar(state, width=200))
+    assert 'Presupuesto: $5.00' in fragment_list_to_text(render_status_bar(state, width=200))
     for width in range(80):
         assert get_cwidth(fragment_list_to_text(render_status_bar(state, width=width))) <= width
     ui = tui_factory().session
     ui.set_busy('Working')
-    assert 'RUNNING' in fragment_list_to_text(ui._toolbar())
+    assert 'EN CURSO' in fragment_list_to_text(ui._toolbar())
     ui.clear_busy()
-    assert 'IDLE' in fragment_list_to_text(ui._toolbar())
+    assert 'INACTIVO' in fragment_list_to_text(ui._toolbar())
 
 
 def test_before_after_payload_is_rendered_as_a_real_diff() -> None:
     text = render_tool_result({'success': True, 'output': {
-        'path': 'settings.txt', 'before': 'timeout=5\n', 'after': 'timeout=10\n'}}, no_color=True)
+        'path': 'settings.txt', 'before': 'timeout=5', 'after': 'timeout=10'}}, no_color=True)
     assert '--- a/settings.txt' in text and '+++ b/settings.txt' in text
     assert '-timeout=5' in text and '+timeout=10' in text
 
@@ -325,4 +326,4 @@ def test_wrapped_footer_remains_clickable(tui_factory: Any, monkeypatch: Any) ->
     ui.append_card({'success': True, 'stdout': '\n'.join(str(i) for i in range(10))})
     ui.flush()
     assert ui.toggle_card_at_line(min(ui._toggle_rows))
-    assert '└─ 4' in ui._scrollback.text
+    assert '└ 4' in ui._scrollback.text

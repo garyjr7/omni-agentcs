@@ -864,13 +864,11 @@ def cmd_expand(session: "OmniSession", args: list[str]) -> None:
         enabled = session._tui.set_expand(True)
     else:
         enabled = session._tui.set_expand(not session._tui.expand_cards)
+    from nexus_core.cli.tui.strings import EXPAND_HINT
+
     render.write(
         f"tarjetas de tool: {'expandidas' if enabled else 'plegadas'}"
-        + (
-            " · clic en [ Show more / Show less ] para una sola"
-            if session._tui.use_tui
-            else " (solo TUI)"
-        )
+        + (f" · {EXPAND_HINT}" if session._tui.use_tui else " (solo TUI)")
     )
 
 

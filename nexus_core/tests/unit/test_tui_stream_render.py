@@ -14,12 +14,12 @@ def _plain(text):
     return ANSI.sub("", text)
 
 
-def test_tool_invocation_shows_tactical_phase_then_command():
+def test_tool_invocation_is_a_single_clean_line():
     text = format_tool_invocation("nexus.recon.nmap", {"target": "lab", "flags": ["-sV", "-p", "80"]})
     lines = _plain(text).splitlines()
-    # The semantic phase leads; the exact tool id stays as secondary metadata.
-    assert lines[0] == "· Enumeration · [nexus.recon.nmap]"
-    assert "[Recon-NMAP] nmap -sV -p 80 -oX - lab" in lines[1]
+    # One header: tool id and argv, no phase chip and no bracket prefix.
+    assert len(lines) == 1
+    assert lines[0] == "• nexus.recon.nmap  nmap -sV -p 80 -oX - lab"
 
 
 def test_a_long_invocation_keeps_every_argument():
@@ -32,7 +32,7 @@ def test_a_long_invocation_keeps_every_argument():
 def test_structured_arguments_are_pairs_not_a_json_blob():
     text = _plain(format_tool_invocation(
         "nexus.web.upload", {"target": "10.0.0.5", "path": "shell.php"}))
-    line = text.splitlines()[1]
+    line = text.splitlines()[0]
     assert "target=10.0.0.5" in line and "path=shell.php" in line
     assert "{" not in line and '"' not in line
 
@@ -58,16 +58,16 @@ def test_nmap_flags_cannot_leak_a_credential():
 def test_a_file_operation_redacts_a_credential_inside_the_path():
     text = _plain(format_tool_invocation(
         "nexus.workspace.read", {"path": "loot/password=hunter2.txt"}))
-    assert text.startswith("• Read loot/") and "hunter2" not in text
+    assert text.startswith("• nexus.workspace.read  loot/") and "hunter2" not in text
 
 
 def test_a_wrapped_invocation_indents_its_continuations():
     command = "nmap -sV -p- " + " ".join(["10.0.0.5"] * 12)
     text = _plain(format_tool_invocation(
         "nexus.session.interact", {"command": command}, width=60))
-    rows = text.splitlines()[1:]
+    rows = text.splitlines()
     assert len(rows) > 1
-    assert rows[0].startswith("  [Session-CMD] ")
+    assert rows[0].startswith("• nexus.session.interact  ")
     assert all(row.startswith("  ↳ ") for row in rows[1:])
     assert all(cell_len(row) <= 60 for row in rows)
     # Nothing was dropped to make it fit.
@@ -80,32 +80,33 @@ def test_a_wrapped_invocation_measures_cells_not_characters():
     command = "日本語" * 30
     text = _plain(format_tool_invocation(
         "nexus.session.interact", {"command": command}, width=40))
-    rows = text.splitlines()[1:]
+    rows = text.splitlines()
     assert all(cell_len(row) <= 40 for row in rows)
     # Wide characters count as the cells they paint: the whole value survives.
-    rebuilt = rows[0].removeprefix("  [Session-CMD] ") + "".join(
+    rebuilt = rows[0].removeprefix("• nexus.session.interact  ") + "".join(
         row.removeprefix("  ↳ ") for row in rows[1:])
     assert rebuilt == "command=" + command
 
 
-def test_file_operations_use_read_create_edit_labels():
-    assert format_tool_invocation("nexus.workspace.read", {"path": "a.txt"}) == "• Read a.txt"
-    assert format_tool_invocation("nexus.workspace.create", {"path": "b.txt"}) == "• Create b.txt"
-    assert format_tool_invocation("nexus.file.edit", {"path": "c.txt"}) == "• Edit c.txt"
+def test_file_operations_name_the_tool_and_the_path():
+    assert _plain(format_tool_invocation("nexus.workspace.read", {"path": "a.txt"})) == "• nexus.workspace.read  a.txt"
+    assert _plain(format_tool_invocation("nexus.workspace.create", {"path": "b.txt"})) == "• nexus.workspace.create  b.txt"
+    assert _plain(format_tool_invocation("nexus.file.edit", {"path": "c.txt"})) == "• nexus.file.edit  c.txt"
 
 
-def test_tool_complete_shows_five_lines_max():
-    text = render_tool_result({"success": True, "stdout": "a\nb\nc\nd\ne"})
-    assert len([line for line in text.splitlines() if "└─" in line]) == 5
+def test_tool_complete_folds_at_four_data_lines():
+    text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
+    assert len([line for line in text.splitlines() if "└ " in line]) == 4
 
 
-def test_tool_complete_shows_ellipsis_when_truncated():
-    assert render_tool_result({"stdout": "\n".join(f"l{n}" for n in range(9))}).count("   ...") == 1
+def test_tool_complete_reports_the_hidden_data_lines():
+    text = render_tool_result({"stdout": "\n".join(f"l{n}" for n in range(9))})
+    assert "… 5 líneas más · ctrl+o" in text
 
 
 def test_tool_complete_summary_line():
     text = render_tool_result({"success": True, "evidence": {"ports_open_total": 4, "noise_level": "low", "elapsed_seconds": 4.2}})
-    assert "✓ 4 puertos abiertos · noise: low · 4.2s" in text
+    assert "✓ 4 puertos abiertos · ruido: low · 4.2s" in text
 
 
 def test_tool_failed_shows_error():
@@ -115,8 +116,8 @@ def test_tool_failed_shows_error():
 
 def test_collapsed_card_reports_hidden_lines():
     text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
-    assert "Show more..." in text and "5 lines" in text
-    assert "[ Show " in text
+    assert "6 líneas más" in text and "ctrl+o" in text
+    assert "Show more" not in text and "[ Show " not in text
     assert "F3" not in text
 
 
@@ -141,7 +142,7 @@ def test_a_negative_but_verified_result_keeps_its_own_words():
     collapsed = render_tool_result(result, no_color=True)
     assert "ninguna credencial válida" in collapsed
     # Not interpreted: a negative verification is still a successful call.
-    assert "✓" in collapsed and "× failed" not in collapsed
+    assert "✓" in collapsed and "× falló" not in collapsed
     assert '"attempts"' not in collapsed
     assert '"attempts": 12' in render_tool_result(result, expanded=True, no_color=True)
 
@@ -150,17 +151,18 @@ def test_a_structured_error_keeps_its_text_and_defers_the_json():
     result = {"success": False, "tool_id": "nexus.web.request",
               "output": {"error": "connection refused", "host": "10.0.0.5"}}
     collapsed = render_tool_result(result, no_color=True)
-    assert "× failed · nexus.web.request" in collapsed
-    assert "connection refused" in collapsed
-    assert '"host"' not in collapsed and "Show more..." in collapsed
+    assert "× connection refused" in collapsed
+    assert "× failed" not in collapsed
+    assert "└ host: 10.0.0.5" in collapsed
+    assert '"host"' not in collapsed
     assert '"host": "10.0.0.5"' in render_tool_result(result, expanded=True, no_color=True)
 
 
-def test_unknown_structured_output_stays_neutral_until_expanded():
+def test_unknown_structured_output_previews_its_fields():
     result = {"success": True, "tool_id": "nexus.example", "output": {"foo": "bar"}}
     collapsed = render_tool_result(result, no_color=True)
-    assert "resultado estructurado · 1 campo(s)" in collapsed
-    assert '"foo"' not in collapsed and "Show more..." in collapsed
+    assert "└ foo: bar" in collapsed
+    assert '"foo"' not in collapsed
     assert '"foo": "bar"' in render_tool_result(result, expanded=True, no_color=True)
 
 
@@ -168,7 +170,7 @@ def test_expanded_card_shows_every_line():
     text = render_tool_result(
         {"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))}, expanded=True
     )
-    assert text.count("└─") == 10
+    assert text.count("└ ") == 10
     assert "oculta" not in text
 
 
@@ -203,13 +205,16 @@ def test_scrollback_not_invalidated_per_write(tui_factory):
 def test_thought_is_rendered_before_the_tool_call():
     message = {"metadata": {"kind": "react.action", "action": "tool_call", "thought": "escaneo los web", "tool_id": "nexus.recon.nmap", "arguments": {"target": "lab"}}}
     text = render_message(message)
-    assert _plain(text).splitlines()[0].startswith("• Thinking... escaneo los web")
-    assert "[Recon-NMAP]" in _plain(text)
+    plain = _plain(text)
+    assert "Razonamiento" in plain and "escaneo los web" in plain
+    assert "• nexus.recon.nmap" in plain
+    assert plain.index("Razonamiento") < plain.index("• nexus.recon.nmap")
 
 
 def test_thought_is_rendered_for_task_complete():
     message = {"metadata": {"kind": "react.action", "action": "task_complete", "thought": "ya tengo la evidencia"}}
-    assert _plain(render_message(message)) == "• Thinking... ya tengo la evidencia"
+    plain = _plain(render_message(message))
+    assert "Razonamiento" in plain and "ya tengo la evidencia" in plain
 
 
 def test_missing_thought_produces_no_line():
@@ -233,8 +238,14 @@ def test_daemon_uses_compact_messages_in_tui(tui_factory):
     session._tui, session._output = ui.session, TuiOutput(ui.session)
     session.run_id, session.conversation_id = "r", "c"
     messages = [{"metadata": {"kind": "react.action", "action": "tool_call", "tool_id": "nexus.recon.nmap", "arguments": {"target": "lab"}}}]
-    session.store = SimpleNamespace(list_run_events=lambda *a, **k: [], list_messages=lambda *a, **k: messages)
-    state = {"run_id": "r", "sequence": 0, "messages": 0}
+    session.store = SimpleNamespace(
+        list_run_events=lambda *a, **k: [],
+        list_messages=lambda *a, after_sequence=None, **k: [
+            message for message in messages
+            if after_sequence is None or message.get("sequence", 0) > after_sequence
+        ],
+    )
+    state = {"run_id": "r", "sequence": 0, "message_sequence": None, "turn": 0}
     _drain_stream(session, state)
     _drain_stream(session, state)
-    assert ui.session.transcript.count("[Recon-NMAP]") == 1
+    assert ui.session.transcript.count("nexus.recon.nmap") == 1

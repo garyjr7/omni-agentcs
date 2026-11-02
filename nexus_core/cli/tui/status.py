@@ -118,15 +118,15 @@ def _parts(state: StatusState) -> list[tuple[float, str, str]]:
         progress = f" {state.plan_progress}" if state.plan_progress else ""
         parts.append((PRIORITY["phase"], "ansicyan bold", f"▸ {state.plan_phase}{progress}"))
     parts.append((PRIORITY["brand"], "dim", "BAJIOWARE · OMNI-AGENTCS"))
-    scope = f"{state.scope_targets} targets" if state.scope_targets is not None else "—"
-    parts.append((PRIORITY["scope"], "ansicyan", "Scope: " + scope))
-    parts.append((PRIORITY["provider"], "ansicyan", "Model: " + (state.provider_model or "—")))
+    scope = f"{state.scope_targets} objetivos" if state.scope_targets is not None else "—"
+    parts.append((PRIORITY["scope"], "ansicyan", "Alcance: " + scope))
+    parts.append((PRIORITY["provider"], "ansicyan", "Modelo: " + (state.provider_model or "—")))
     tokens = state.tokens_input + state.tokens_output
     parts.append((PRIORITY["tokens"], "ansigreen", f"Tokens: {tokens:,}"))
     budget = f"${state.budget_usd:.2f}" if state.budget_usd is not None else "$—"
-    parts.append((PRIORITY["budget"], "ansigreen", "Budget: " + budget))
+    parts.append((PRIORITY["budget"], "ansigreen", "Presupuesto: " + budget))
     parts.append((PRIORITY["status"], "ansiyellow" if state.busy else "dim",
-                  "Status: RUNNING" if state.busy else "Status: IDLE"))
+                  "Estado: EN CURSO" if state.busy else "Estado: INACTIVO"))
     if state.context_window and state.context_window > 0 and state.context_tokens is not None:
         percent = max(0, int(100 * state.context_tokens / state.context_window))
         style = 'ansigreen' if percent < 50 else 'ansiyellow' if percent <= 80 else 'ansired'
@@ -156,7 +156,7 @@ def _parts(state: StatusState) -> list[tuple[float, str, str]]:
     )
     parts.append((PRIORITY["time"], "dim", state.elapsed_human))
     if state.facts_count:
-        parts.append((PRIORITY["facts"], "ansiblue", f"{state.facts_count} facts"))
+        parts.append((PRIORITY["facts"], "ansiblue", f"{state.facts_count} datos"))
     parts.append(
         (
             PRIORITY["engagement"],

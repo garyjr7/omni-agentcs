@@ -53,25 +53,21 @@ def test_execution_blocks_are_separated_by_one_blank_line(tui_factory: Any) -> N
 
     ui = tui_factory(enable_completion=False).session
     ui.print("Reviso el servicio 80/tcp.")
-    ui.append_execution_block(
-        "· Enumeration · [nexus.recon.nmap]\n  [Recon-NMAP] nmap -sV -p 80 lab"
-    )
+    ui.append_execution_block("• nexus.recon.nmap  nmap -sV -p 80 lab")
     ui.append_card({"success": True, "tool_id": "nexus.recon.nmap",
                     "stdout": "80/tcp open http"})
-    ui.append_execution_block(
-        "· Web · [nexus.web.curl]\n  [Tool] nexus.web.curl {\"url\": \"http://lab/\"}"
-    )
+    ui.append_execution_block("• nexus.web.curl  http://lab/")
     ui.append_card({}, thought="El puerto responde.")
     ui.print("Confirmado el servicio web.")
     ui.flush()
     transcript = clean_text(ui.transcript)
-    assert "Reviso el servicio 80/tcp.\n\n· Enumeration" in transcript
+    assert "Reviso el servicio 80/tcp.\n\n• nexus.recon.nmap" in transcript
     # The call and its result are distinct blocks, one blank line apart...
-    assert "[Recon-NMAP] nmap -sV -p 80 lab\n\n   └─ 80/tcp open http" in transcript
+    assert "nmap -sV -p 80 lab\n\n  ✓ completado\n  └ 80/tcp open http" in transcript
     # ...while each following block starts after exactly one blank line.
-    assert "✓ completado\n\n· Web · [nexus.web.curl]" in transcript
-    assert "[Tool] nexus.web.curl {\"url\": \"http://lab/\"}\n\n• Thinking..." in transcript
-    assert "[ Show thinking ]\n\nConfirmado el servicio web." in transcript
+    assert "80/tcp open http\n\n• nexus.web.curl" in transcript
+    assert "• nexus.web.curl  http://lab/\n\n  Razonamiento" in transcript
+    assert "ctrl+t mostrar todo\n\nConfirmado el servicio web." in transcript
     assert "\n\n\n" not in transcript
 
 
@@ -82,10 +78,11 @@ def test_toggling_a_card_keeps_the_block_separation(tui_factory: Any) -> None:
     ui.print("intro")
     ui.append_card({}, thought="razonamiento")
     ui.flush()
-    assert "intro\n\n• Thinking..." in clean_text(ui.transcript)
+    assert "intro\n\n  Razonamiento" in clean_text(ui.transcript)
     assert ui.toggle_card_at_line(max(ui._toggle_rows))
-    # The rebuilt transcript reproduces the same paragraph break.
-    assert "intro\n\n• Thinking..." in clean_text(ui.transcript)
+    # The rebuilt transcript reproduces the same paragraph break and footer.
+    assert "intro\n\n  Razonamiento" in clean_text(ui.transcript)
+    assert "ctrl+t colapsar" in clean_text(ui.transcript)
 
 
 def test_turn_history_spaces_user_thought_and_response(tui_factory: Any) -> None:
@@ -99,8 +96,8 @@ def test_turn_history_spaces_user_thought_and_response(tui_factory: Any) -> None
     ui.append_scrollback("Respuesta verificada.\n\n")
     ui.flush()
     transcript = clean_text(ui.transcript)
-    assert "▌ > revisa el resultado\n\n• Thinking..." in transcript
-    assert "[ Show thinking ]\n\nRespuesta verificada." in transcript
+    assert "▌ > revisa el resultado\n\n  Razonamiento" in transcript
+    assert "ctrl+t mostrar todo\n\nRespuesta verificada." in transcript
 
 
 def test_streamed_results_push_history_up_while_the_frame_stays_fixed(tui_factory: Any) -> None:

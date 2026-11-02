@@ -69,20 +69,20 @@ def test_a_huge_output_is_never_paced() -> None:
 def test_the_tool_name_is_aqua_and_thinking_stays_muted() -> None:
     call = format_tool_invocation("nexus.recon.nmap", {"target": "lab"})
     assert AQUA in call
-    assert ANSI.sub("", call).splitlines()[0] == "· Enumeration · [nexus.recon.nmap]"
+    assert ANSI.sub("", call).splitlines()[0] == "• nexus.recon.nmap  nmap -oX - lab"
     thought = render_rich(thinking("enumero el 445", expanded=True))
     assert "\x1b[2m" in thought
 
 
 def test_tool_output_is_indented_under_a_branch_and_coloured_by_verdict() -> None:
     ok = render_tool_result({"success": True, "stdout": "a\nb"}, no_color=False)
-    assert "└─ a" in ANSI.sub("", ok)
+    assert "└ a" in ANSI.sub("", ok)
     assert GREEN in ok and RED not in ok
     failed = render_tool_result(
         {"success": False, "stdout": "boom", "tool_id": "nexus.recon.smb"},
         no_color=False,
     )
-    assert "└─ boom" in ANSI.sub("", failed)
+    assert "└ boom" in ANSI.sub("", failed)
     assert RED in failed and GREEN not in failed
 
 
@@ -133,10 +133,10 @@ def test_a_card_is_revealed_and_then_behaves_like_any_other(tui_factory) -> None
     ui.session.append_card({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
     assert "l0" not in ui.session.transcript  # not dumped into the log yet
     ui.session.flush()
-    assert "└─ l0" in ui.session._scrollback.text
+    assert "└ l0" in ui.session._scrollback.text
     assert ui.session.toggle_card_at_line(min(ui.session._toggle_rows)) is True
     ui.session.flush()  # the rebuild is committed on the UI loop
-    assert "[ Show less ]" in ui.session._scrollback.text
+    assert "ctrl+o colapsar" in ui.session._scrollback.text
 
 
 def test_the_env_switch_writes_whole_blocks(tui_factory, monkeypatch) -> None:

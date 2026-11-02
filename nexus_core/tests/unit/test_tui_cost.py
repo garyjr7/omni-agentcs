@@ -48,7 +48,7 @@ def test_known_provider_cost_is_registered_by_default(tui_factory, monkeypatch):
     )
     text = render_status_plain(ui.session._status)
     assert "~$" in text and ui.session._status.cost_known
-    assert "Budget: $—" in text  # known spend does not imply a configured budget
+    assert "Presupuesto: $—" in text  # known spend does not imply a configured budget
 
 
 def test_configured_cost_estimate_is_preserved(tui_factory, monkeypatch):
