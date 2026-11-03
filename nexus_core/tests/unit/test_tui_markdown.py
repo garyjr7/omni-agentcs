@@ -12,8 +12,9 @@ from nexus_core.cli.tui.output import TuiOutput, route_output
 
 def test_markdown_headers_render_bold():
     text = render_markdown("# Title\n## Section")
-    # H1: bold + underline + cyan. H2: bold + cyan.
-    assert "\x1b[1;4;36mTitle" in text and "\x1b[1;36mSection" in text
+    # Structure only: the palette has one accent and a heading is not it.
+    assert "\x1b[1;4mTitle" in text and "\x1b[1mSection" in text
+    assert "36m" not in text
 
 
 def test_markdown_bold_italic():

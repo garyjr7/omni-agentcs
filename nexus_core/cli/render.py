@@ -315,9 +315,11 @@ def render_summary(text: str, findings: Iterable[dict[str, Any]] = (),
     inner = total - 2
     border = "├" + "─" * inner + "┤"
     write(block_break() + paint("  ── resultado final " + "─" * max(0, total - 21), DIM))
-    write(paint("┌" + "─" * inner + "┐", AQUA, BOLD))
-    write(_box_line(paint("RESULTADO · OmniAgentCS", AQUA, BOLD), inner))
-    write(paint(border, AQUA, BOLD))
+    # The box is the plain-terminal path only; its border stays neutral so the
+    # palette keeps a single accent (the header, the rail and the pulse).
+    write(paint("┌" + "─" * inner + "┐", BOLD))
+    write(_box_line(paint("RESULTADO · OmniAgentCS", BOLD), inner))
+    write(paint(border, BOLD))
     for line in _summary_rows(str(text or "(sin resumen)"), inner):
         write(_box_line(paint(line, OFFWHITE) if line.strip() else "", inner))
     if findings:
@@ -338,7 +340,7 @@ def render_summary(text: str, findings: Iterable[dict[str, Any]] = (),
             write(_box_line(f"{tag} {paint(wrapped[0], WHITE)}", inner))
             for row in wrapped[1:]:
                 write(_box_line("       " + paint(row, WHITE), inner))
-    write(paint("└" + "─" * inner + "┘", AQUA, BOLD))
+    write(paint("└" + "─" * inner + "┘", BOLD))
 
 
 def render_answer(text: str, *, no_color: bool = False, markdown: bool = False, max_width=None) -> None:
@@ -361,8 +363,8 @@ def render_error(text: str) -> None:
 
 
 def render_status(text: str) -> None:
-    """Print a neutral status line."""
-    write(paint(f"• {text}", CYAN))
+    """Print a neutral status line (secondary, never an accent colour)."""
+    write(paint(f"• {text}", DIM))
 
 
 def render_clarification(question: str) -> None:

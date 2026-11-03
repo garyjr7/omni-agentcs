@@ -134,7 +134,7 @@ def fold_lines(value: str, *, expanded: bool = False, limit: int = 4) -> FoldedL
 
 def input_chip(value: str, *, threshold: int = 500) -> Text:
     if len(value) > threshold:
-        return Text(f'[ 📋 Pasted Input · {len(value):,} characters ]', style='dim cyan')
+        return Text(f'[ 📋 Pasted Input · {len(value):,} characters ]', style=SECONDARY_STYLE)
     return Text(clean_text(value))
 
 
@@ -420,13 +420,15 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
         if diff:
             body.append(diff_block('\n'.join(rows)))
             return
+        # Output is content, not a verdict: it reads in the terminal's own
+        # colour, under a dim branch glyph. Only the summary carries a colour.
         for row in rows:
             wrapped = textwrap.wrap(
                 row, width=max(20, int(width)), initial_indent=f'  {BRANCH} ',
                 subsequent_indent='    ', break_long_words=False,
                 break_on_hyphens=False,
             ) or [f'  {BRANCH}']
-            body.extend(Text(line, style=color) for line in wrapped)
+            body.extend(Text(line) for line in wrapped)
 
     emit(folded.head)
     if folded.hidden:

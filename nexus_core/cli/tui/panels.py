@@ -124,7 +124,9 @@ def panel_style() -> dict[str, str]:
     """prompt_toolkit style rules used by :func:`panel_lines`."""
     return {
         "panel": "bg:#0d1117 #d0d4da",
-        "panel-title": "bg:#0d1117 #00e5ff bold",
+        # Structure, not accent: the panel title is bold text on the panel
+        # background, never a colour of its own.
+        "panel-title": "bg:#0d1117 #ffffff bold",
         "panel-current": "bg:#0d1117 #ffc950 bold",
         "panel-done": "bg:#0d1117 #56e696",
         "panel-failed": "bg:#0d1117 #ff4054",

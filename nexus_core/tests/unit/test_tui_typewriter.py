@@ -79,13 +79,15 @@ def test_the_tool_name_is_aqua_and_thinking_stays_muted() -> None:
 def test_tool_output_is_indented_under_a_branch_and_coloured_by_verdict() -> None:
     ok = render_tool_result({"success": True, "stdout": "a\nb"}, no_color=False)
     assert "└ a" in ANSI.sub("", ok)
-    assert GREEN in ok and RED not in ok
+    # The verdict line is green (bold); the output underneath is plain content.
+    assert "38;2;86;230;150m" in ok and "38;2;255;64;84m" not in ok
+    assert ANSI.sub("", ok).splitlines()[1].strip() == "└ a"
     failed = render_tool_result(
         {"success": False, "stdout": "boom", "tool_id": "nexus.recon.smb"},
         no_color=False,
     )
     assert "└ boom" in ANSI.sub("", failed)
-    assert RED in failed and GREEN not in failed
+    assert "38;2;255;64;84m" in failed and "38;2;86;230;150m" not in failed
 
 
 # -- end to end through the live session ---------------------------------------

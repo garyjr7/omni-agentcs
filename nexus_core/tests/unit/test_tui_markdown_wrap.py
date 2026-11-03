@@ -56,9 +56,11 @@ def test_markdown_br_inside_a_table_keeps_the_row_intact():
 
 def test_markdown_headers_use_cyan():
     rendered = render_markdown("# Uno\n## Dos\n### Tres")
-    assert "\x1b[1;4;36mUno" in rendered
-    assert "\x1b[1;36mDos" in rendered
+    # No cyan, no colour at all: bold/underline carry the hierarchy.
+    assert "\x1b[1;4mUno" in rendered
+    assert "\x1b[1mDos" in rendered
     assert "\x1b[1mTres" in rendered
+    assert "36m" not in rendered and "cyan" not in rendered
 
 
 def test_markdown_keeps_blank_lines_between_paragraphs():

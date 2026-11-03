@@ -11,8 +11,10 @@ BR = re.compile(r"<br\s*/?>", re.IGNORECASE)
 DEFAULT_READING_WIDTH = 100
 #: Never render narrower than this even on a tiny terminal.
 MIN_READING_WIDTH = 20
-#: Heading level → SGR codes applied to the heading text.
-HEADINGS = {1: "1;4;36", 2: "1;36"}
+#: Heading level → SGR codes applied to the heading text. Structure only
+#: (bold/underline): the palette keeps a single accent, so a heading is not
+#: painted in a colour of its own.
+HEADINGS = {1: "1;4", 2: "1"}
 
 
 def _style(text, code, no_color):

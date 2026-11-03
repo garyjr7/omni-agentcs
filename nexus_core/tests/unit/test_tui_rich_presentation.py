@@ -244,7 +244,9 @@ def test_panel_footer_names_model_and_directory_without_the_build_word(tui_facto
     ui.set_status(workspace_path=str(tmp_path), provider_model='DeepSeekV4.1-flash')
     footer = fragment_list_to_text(ui._workspace_footer())
     assert footer == f'DeepSeekV4.1-flash · {tmp_path}'
-    assert ui._workspace_footer()[0][0] == '#00d7ff'
+    # Secondary information, not an accent: the footer is dim grey.
+    from nexus_core.cli.tui.presentation import SECONDARY_STYLE
+    assert ui._workspace_footer()[0][0] == SECONDARY_STYLE
     assert 'Build' not in footer
 
 

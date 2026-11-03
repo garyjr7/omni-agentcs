@@ -439,7 +439,12 @@ class TuiSession:
     def _completion_formatted(self) -> StyleAndTextTuples:
         if not self._completion_status:
             return []
-        return [("#ff0055 bold" if not self.no_color else "", self._completion_status)]
+        # A finished run is information, not an accent: dim like the rest of
+        # the chrome. The accent stays on the header, the operator's rail and
+        # the work pulse.
+        from .presentation import SECONDARY_STYLE
+
+        return [("" if self.no_color else SECONDARY_STYLE, self._completion_status)]
 
     def _workspace_footer(self) -> StyleAndTextTuples:
         """``model · ~/cwd`` in the bottom-left corner of the input panel.
@@ -451,7 +456,9 @@ class TuiSession:
         with self._lock:
             from dataclasses import replace
             text = workspace_line(replace(self._status))
-        return [("" if self.no_color else "#00d7ff", text)]
+        from .presentation import SECONDARY_STYLE
+
+        return [("" if self.no_color else SECONDARY_STYLE, text)]
 
     def _toolbar(self) -> StyleAndTextTuples:
         if not self.status_bar_enabled:
