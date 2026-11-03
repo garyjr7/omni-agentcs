@@ -98,13 +98,15 @@ def test_thought_card_can_be_expanded_and_collapsed(tui_factory: Any) -> None:
     thought = 'first\nsecond\n' + 'detail ' * 50
     ui.append_card({}, thought=thought)
     ui.flush()
-    assert 'Razonamiento' in ui._scrollback.text
-    assert 'ctrl+t mostrar todo' in ui._scrollback.text
-    assert '…' in ui._scrollback.text
+    # Collapsed: exactly one row, and the header itself is the click target.
+    assert ui._scrollback.text.strip().endswith('▸ Razonamiento')
+    assert 'ctrl+t' not in ui._scrollback.text
     assert ui.toggle_card_at_line(min(ui._toggle_rows))
+    assert '▾ Razonamiento' in ui._scrollback.text
     assert 'ctrl+t colapsar' in ui._scrollback.text
     assert ui.toggle_card_at_line(min(ui._toggle_rows))
-    assert 'ctrl+t mostrar todo' in ui._scrollback.text
+    assert '▸ Razonamiento' in ui._scrollback.text
+    assert 'first' not in ui._scrollback.text
 
 
 def test_indicator_is_a_pure_frame_renderer_with_no_cursor_controls() -> None:
@@ -135,11 +137,22 @@ def test_indicator_clips_a_long_operation_without_losing_the_keys_hint() -> None
     assert len(text) <= 80
 
 
+def _reveal_header(ui: Any) -> None:
+    """Scroll past the startup masthead: the badge row is always reserved."""
+    ui.mark_startup_banner()
+    ui._scrollback_window.vertical_scroll = (ui._banner_end_line or 0) + 1
+
+
 def test_header_badge_shows_the_active_engagement_id(tui_factory: Any) -> None:
     ui = tui_factory().session
     ui.bind_engagement_source(lambda: 'eng-7f3a91')
+    # The row exists from the first frame but stays empty while the masthead is
+    # on screen, so the brand is never painted twice nor over the banner.
+    assert ui._badge_window.height == 1
+    assert fragment_list_to_text(ui._header_badge()) == ''
+    _reveal_header(ui)
     assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ eng-7f3a91 ]'
-    assert not ui._show_engagement_badge()
+    assert ui._show_engagement_badge()
 
 
 def test_header_badge_uses_the_id_never_the_name_nor_the_folder(tui_factory: Any) -> None:
@@ -150,6 +163,7 @@ def test_header_badge_uses_the_id_never_the_name_nor_the_folder(tui_factory: Any
     footer = fragment_list_to_text(ui._workspace_footer())
     assert 'deepseek-v4' in footer and 'lab' in footer
     hints = ui._hints_window.content.text
+    _reveal_header(ui)
     # A status push names the engagement but never its id, so it cannot fill
     # the badge: without an id the header says there is no engagement.
     assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ workspace ]'
@@ -180,6 +194,7 @@ def test_cli_session_badge_follows_the_active_engagement(tui_factory: Any, monke
         monkeypatch.setattr(module, 'should_use_tui', lambda: True)
         session = OmniSession(store=None, engagement=scope)
     try:
+        _reveal_header(session._tui)
         assert fragment_list_to_text(session._tui._header_badge()) == 'BW • OMNI [ eng-1 ]'
         session.engagement = SimpleNamespace(engagement_id='eng-2', name='renamed')
         assert fragment_list_to_text(session._tui._header_badge()) == 'BW • OMNI [ eng-2 ]'

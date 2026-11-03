@@ -17,9 +17,14 @@ def _plain(text):
 def test_tool_invocation_is_a_single_clean_line():
     text = format_tool_invocation("nexus.recon.nmap", {"target": "lab", "flags": ["-sV", "-p", "80"]})
     lines = _plain(text).splitlines()
-    # One header: tool id and argv, no phase chip and no bracket prefix.
+    # One header. A handler that builds an argv is shown as the command it will
+    # run: no phase chip, no bracket prefix and no duplicated tool id.
     assert len(lines) == 1
-    assert lines[0] == "• nexus.recon.nmap  nmap -sV -p 80 -oX - lab"
+    assert lines[0] == "$ nmap -sV -p 80 -oX - lab"
+    # A structured call keeps its honest key=value request under the tool id.
+    structured = _plain(format_tool_invocation(
+        "nexus.web.upload", {"target": "lab", "path": "shell.php"}))
+    assert structured.startswith("• nexus.web.upload  path=shell.php · target=lab")
 
 
 def test_a_long_invocation_keeps_every_argument():
@@ -101,7 +106,7 @@ def test_tool_complete_folds_at_four_data_lines():
 
 def test_tool_complete_reports_the_hidden_data_lines():
     text = render_tool_result({"stdout": "\n".join(f"l{n}" for n in range(9))})
-    assert "… 5 líneas más · ctrl+o" in text
+    assert "Ver 5 líneas más" in text
 
 
 def test_tool_complete_summary_line():
@@ -116,7 +121,7 @@ def test_tool_failed_shows_error():
 
 def test_collapsed_card_reports_hidden_lines():
     text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
-    assert "6 líneas más" in text and "ctrl+o" in text
+    assert "Ver 6 líneas más" in text
     assert "Show more" not in text and "[ Show " not in text
     assert "F3" not in text
 
@@ -153,7 +158,8 @@ def test_a_structured_error_keeps_its_text_and_defers_the_json():
     collapsed = render_tool_result(result, no_color=True)
     assert "× connection refused" in collapsed
     assert "× failed" not in collapsed
-    assert "└ host: 10.0.0.5" in collapsed
+    # The JSON stays behind one click instead of being dumped field by field.
+    assert "Ver " in collapsed and "líneas más" in collapsed
     assert '"host"' not in collapsed
     assert '"host": "10.0.0.5"' in render_tool_result(result, expanded=True, no_color=True)
 
@@ -161,7 +167,10 @@ def test_a_structured_error_keeps_its_text_and_defers_the_json():
 def test_unknown_structured_output_previews_its_fields():
     result = {"success": True, "tool_id": "nexus.example", "output": {"foo": "bar"}}
     collapsed = render_tool_result(result, no_color=True)
-    assert "└ foo: bar" in collapsed
+    # One verdict line, then the size of the document behind the toggle: the
+    # field tree is exactly what used to dump forty rows for report.generate.
+    assert "└ foo" not in collapsed
+    assert "Ver 3 líneas más" in collapsed
     assert '"foo"' not in collapsed
     assert '"foo": "bar"' in render_tool_result(result, expanded=True, no_color=True)
 
@@ -204,16 +213,20 @@ def test_scrollback_not_invalidated_per_write(tui_factory):
 
 def test_thought_is_rendered_before_the_tool_call():
     message = {"metadata": {"kind": "react.action", "action": "tool_call", "thought": "escaneo los web", "tool_id": "nexus.recon.nmap", "arguments": {"target": "lab"}}}
-    text = render_message(message)
+    text = render_message(message, expanded=True)
     plain = _plain(text)
     assert "Razonamiento" in plain and "escaneo los web" in plain
-    assert "• nexus.recon.nmap" in plain
-    assert plain.index("Razonamiento") < plain.index("• nexus.recon.nmap")
+    assert "$ nmap" in plain
+    assert plain.index("Razonamiento") < plain.index("$ nmap")
+    # Collapsed, the finished turn costs one row: the note is one click away.
+    collapsed = _plain(render_message(message))
+    assert collapsed.splitlines()[0] == "  ▸ Razonamiento"
+    assert "escaneo los web" not in collapsed
 
 
 def test_thought_is_rendered_for_task_complete():
     message = {"metadata": {"kind": "react.action", "action": "task_complete", "thought": "ya tengo la evidencia"}}
-    plain = _plain(render_message(message))
+    plain = _plain(render_message(message, expanded=True))
     assert "Razonamiento" in plain and "ya tengo la evidencia" in plain
 
 
@@ -248,4 +261,4 @@ def test_daemon_uses_compact_messages_in_tui(tui_factory):
     state = {"run_id": "r", "sequence": 0, "message_sequence": None, "turn": 0}
     _drain_stream(session, state)
     _drain_stream(session, state)
-    assert ui.session.transcript.count("nexus.recon.nmap") == 1
+    assert _plain(ui.session.transcript).count("$ nmap") == 1

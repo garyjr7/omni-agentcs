@@ -9,13 +9,13 @@ def test_card_expands_and_collapses_by_click(tui_factory):
     ui = tui_factory()
     ui.session.append_card(_card("l", 10))
     ui.session.flush()
-    assert "líneas más · ctrl+o" in ui.session._scrollback.text
+    assert "Ver 6 líneas más" in ui.session._scrollback.text
     line = min(ui.session._toggle_rows)
     assert ui.session.toggle_card_at_line(line) is True
     assert "ctrl+o colapsar" in ui.session._scrollback.text
     # Expanding moves the footer: use the refreshed click target to collapse.
     assert ui.session.toggle_card_at_line(min(ui.session._toggle_rows)) is True
-    assert "líneas más · ctrl+o" in ui.session._scrollback.text
+    assert "Ver 6 líneas más" in ui.session._scrollback.text
 
 
 def test_two_cards_toggle_independently(tui_factory):
@@ -28,7 +28,7 @@ def test_two_cards_toggle_independently(tui_factory):
     ui.session.toggle_card_at_line(rows[0])
     text = ui.session._scrollback.text
     assert text.count("ctrl+o colapsar") == 1
-    assert text.count("líneas más · ctrl+o") == 1
+    assert text.count("Ver 4 líneas más") == 1
 
 
 def test_small_card_has_no_click_target(tui_factory):
@@ -87,11 +87,25 @@ def test_a_structured_result_opens_its_json_only_when_expanded(tui_factory):
     ui.session.append_card({"success": True, "tool_id": "nexus.example",
                             "output": {"foo": "bar"}})
     ui.session.flush()
-    # Collapsed: up to four readable fields, no raw JSON in the main flow.
-    assert '└ foo: bar' in ui.session._scrollback.text
+    # Collapsed: one verdict plus the size of the document behind the toggle.
+    assert 'Ver 3 líneas más' in ui.session._scrollback.text
     assert '"foo"' not in ui.session._scrollback.text
     assert ui.session.toggle_card_at_line(min(ui.session._toggle_rows)) is True
     assert '"foo": "bar"' in ui.session._scrollback.text
+
+
+def test_thought_overlay_keeps_the_last_five_lines_and_an_ellipsis(tui_factory):
+    ui = tui_factory()
+    ui.session.set_thought("\n".join(f"linea {n}" for n in range(9)))
+    rendered = "".join(part[1] for part in ui.session._thought_formatted())
+    assert rendered.startswith("Razonando …")
+    assert "linea 4" in rendered and "linea 0" not in rendered
+    # Five body lines plus the ellipsis row: the dock never grows further.
+    assert ui.session.thought_height() == 6
+    ui.session.set_thought("una sola línea")
+    assert ui.session.thought_height() == 1
+    ui.session.end_thought()
+    assert ui.session.thought_active is False
 
 
 def test_thought_overlay_streams_and_closes(tui_factory):

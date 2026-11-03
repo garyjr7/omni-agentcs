@@ -74,8 +74,8 @@ def test_execution_blocks_are_separated_by_one_blank_line(tui_factory: Any) -> N
     assert "nmap -sV -p 80 lab\n\n  ✓ completado\n  └ 80/tcp open http" in transcript
     # ...while each following block starts after exactly one blank line.
     assert "80/tcp open http\n\n• nexus.web.curl" in transcript
-    assert "• nexus.web.curl  http://lab/\n\n  Razonamiento" in transcript
-    assert "ctrl+t mostrar todo\n\nConfirmado el servicio web." in transcript
+    assert "• nexus.web.curl  http://lab/\n\n  ▸ Razonamiento" in transcript
+    assert "▸ Razonamiento\n\nConfirmado el servicio web." in transcript
     assert "\n\n\n" not in transcript
 
 
@@ -86,10 +86,10 @@ def test_toggling_a_card_keeps_the_block_separation(tui_factory: Any) -> None:
     ui.print("intro")
     ui.append_card({}, thought="razonamiento")
     ui.flush()
-    assert "intro\n\n  Razonamiento" in clean_text(ui.transcript)
+    assert "intro\n\n  ▸ Razonamiento" in clean_text(ui.transcript)
     assert ui.toggle_card_at_line(max(ui._toggle_rows))
-    # The rebuilt transcript reproduces the same paragraph break and footer.
-    assert "intro\n\n  Razonamiento" in clean_text(ui.transcript)
+    # The rebuilt transcript reproduces the same paragraph break and body.
+    assert "intro\n\n  ▾ Razonamiento" in clean_text(ui.transcript)
     assert "ctrl+t colapsar" in clean_text(ui.transcript)
 
 
@@ -104,8 +104,8 @@ def test_turn_history_spaces_user_thought_and_response(tui_factory: Any) -> None
     ui.append_scrollback("Respuesta verificada.\n\n")
     ui.flush()
     transcript = clean_text(ui.transcript)
-    assert "▌ revisa el resultado\n\n  Razonamiento" in transcript
-    assert "ctrl+t mostrar todo\n\nRespuesta verificada." in transcript
+    assert "▌ revisa el resultado\n\n  ▸ Razonamiento" in transcript
+    assert "▸ Razonamiento\n\nRespuesta verificada." in transcript
 
 
 def test_streamed_results_push_history_up_while_the_frame_stays_fixed(tui_factory: Any) -> None:
@@ -131,7 +131,11 @@ def test_streamed_results_push_history_up_while_the_frame_stays_fixed(tui_factor
     children = ui._session.app.layout.container.content.children
     assert children[0] is ui._badge_window and children[-3] is ui._hints_top_margin
     # Tool output stays in the scrollable transcript, never in the prompt dock.
-    assert fragment_list_to_text(ui._header_badge()) == "BW • OMNI [ workspace ]"
+    # The header row is reserved but silent while the masthead is on screen.
+    from nexus_core.cli.tui.frame import header_text
+    assert ui._badge_window.height == 1
+    assert fragment_list_to_text(ui._header_badge()) == ""
+    assert header_text("workspace") == "BW • OMNI [ workspace ]"
     assert "salida" not in fragment_list_to_text(ui._workspace_footer())
     assert "salida" not in fragment_list_to_text(ui._toolbar())
 

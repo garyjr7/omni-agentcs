@@ -395,9 +395,17 @@ class TuiSession:
         return label or DEFAULT_ENGAGEMENT
 
     def _header_badge(self) -> StyleAndTextTuples:
-        """Fixed top row: brand, engagement and -only while working- a timer."""
-        from .frame import header_text
+        """Fixed top row: brand, engagement and -only while working- a timer.
 
+        The row is always reserved (see ``layout``); it stays empty while the
+        startup masthead is still on screen, so the brand is never painted over
+        the banner.
+        """
+        from .frame import header_text
+        from .presentation import ACCENT_STYLE
+
+        if not self._show_engagement_badge():
+            return []
         elapsed = (
             time.monotonic() - self._status.busy_started_at
             if self._status.busy
@@ -407,7 +415,7 @@ class TuiSession:
             width = self._session.output.get_size().columns
         except Exception:  # noqa: BLE001 - cosmetic sizing only
             width = None
-        return [("" if self.no_color else "#ff0055",
+        return [("" if self.no_color else ACCENT_STYLE,
                  header_text(self._engagement_label(), elapsed_seconds=elapsed,
                              width=width))]
 
@@ -586,12 +594,12 @@ class TuiSession:
         return max(20, int(columns) - 4)
 
     def thought_height(self) -> int:
-        """Rows of the live reasoning row: 1..3, never more."""
+        """Rows of the live reasoning row: one to five, plus the ellipsis row."""
         with self._lock:
             text = self._thought_text or ""
-        from .presentation import live_thought
+        from .presentation import LIVE_THOUGHT_LINES, live_thought
         lines = live_thought(text, width=self._thought_width()).plain.splitlines()
-        return max(1, min(3, len(lines)))
+        return max(1, min(LIVE_THOUGHT_LINES + 1, len(lines)))
 
     def _thought_formatted(self) -> StyleAndTextTuples:
         with self._lock:

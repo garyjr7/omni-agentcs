@@ -65,13 +65,15 @@ def test_a_huge_output_is_never_paced() -> None:
     assert typewriter_steps(value) == [value]
 
 
-# -- the command is the aqua element, the result carries the verdict -----------
+# -- the command is the accent element, the result carries the verdict -------
 def test_the_tool_name_is_aqua_and_thinking_stays_muted() -> None:
     call = format_tool_invocation("nexus.recon.nmap", {"target": "lab"})
-    assert AQUA in call
-    assert ANSI.sub("", call).splitlines()[0] == "• nexus.recon.nmap  nmap -oX - lab"
+    # A real argv reads as a shell command: a green prompt, no cyan tool chip.
+    assert AQUA not in call and GREEN in call
+    assert ANSI.sub("", call).splitlines()[0] == "$ nmap -oX - lab"
     thought = render_rich(thinking("enumero el 445", expanded=True))
-    assert "\x1b[2m" in thought
+    # The note itself is dim and italic; the header is dim only.
+    assert "\x1b[2;3;38;2;120;126;134m  enumero el 445" in thought
 
 
 def test_tool_output_is_indented_under_a_branch_and_coloured_by_verdict() -> None:

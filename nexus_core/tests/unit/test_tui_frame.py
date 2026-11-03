@@ -67,7 +67,10 @@ def test_enter_authorizes_once_not_for_the_whole_engagement() -> None:
 def test_the_header_row_carries_the_live_timer_and_drops_it_when_idle(tui_factory) -> None:
     session = tui_factory().session
     session.bind_engagement_source(lambda: "eng-scanme")
-    assert fragment_list_to_text(session._header_badge()) == "BW • OMNI [ eng-scanme ]"
+    # The row is reserved from the first frame; it stays empty until something
+    # has to be said (a run in progress) or the masthead scrolls off.
+    assert session._badge_window.height == 1
+    assert fragment_list_to_text(session._header_badge()) == ""
     session.set_busy("Ejecutando nmap")
     session._status.busy_started_at -= 3014
     assert fragment_list_to_text(session._header_badge()) == (
@@ -76,7 +79,7 @@ def test_the_header_row_carries_the_live_timer_and_drops_it_when_idle(tui_factor
     # Fixed during a run, even before the startup masthead scrolls away.
     assert session._show_engagement_badge()
     session.clear_busy()
-    assert "50m 14s" not in fragment_list_to_text(session._header_badge())
+    assert fragment_list_to_text(session._header_badge()) == ""
 
 
 def test_the_completion_line_replaces_the_same_row_as_the_pulse(tui_factory) -> None:

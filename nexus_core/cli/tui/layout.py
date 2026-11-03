@@ -326,8 +326,10 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     ui._footer_window = footer
     ui._chips_window = chips
     ui._editor_window = editor
-    badge = Window(FormattedTextControl(ui._header_badge),
-                   height=lambda: int(ui._show_engagement_badge()),
+    # The header owns its row from the first frame. A conditional height made
+    # the banner start on row 0 and then be pushed down when the badge appeared
+    # mid-session, so the header painted over the masthead instead of above it.
+    badge = Window(FormattedTextControl(ui._header_badge), height=1,
                    align=WindowAlign.LEFT, style="#ff0055", left_margins=inset)
     ui._badge_window = badge
     ui._input_window = VSplit(

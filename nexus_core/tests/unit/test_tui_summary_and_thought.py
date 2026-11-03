@@ -53,26 +53,31 @@ LONG_NOTE = (
 # --------------------------------------------------------------- the purpose
 def test_collapsed_thought_reads_as_a_card_with_a_footer() -> None:
     plain = thinking("Reviso el 445.\nProbaré credenciales por defecto.").plain
-    lines = plain.splitlines()
-    assert lines[0] == "  Razonamiento"
-    assert lines[1].startswith("  Reviso el 445.")
-    assert lines[-1].startswith("  ctrl+t mostrar todo")
+    # A finished turn costs exactly one row: the arrow is the toggle, not a
+    # duplicated preview plus footer.
+    assert plain == "  ▸ Razonamiento"
     assert "• Thinking..." not in plain
+    expanded = thinking("Reviso el 445.\nProbaré credenciales por defecto.",
+                        expanded=True).plain.splitlines()
+    assert expanded[0] == "  ▾ Razonamiento"
+    assert expanded[1].startswith("  Reviso el 445.")
+    assert expanded[-1].startswith("  ctrl+t colapsar")
 
 
 def test_a_long_note_collapses_to_its_last_five_lines_with_an_ellipsis() -> None:
-    plain = thinking("palabra " * 60, width=40).plain
-    lines = plain.splitlines()
-    assert lines[0] == "  Razonamiento"
-    assert lines[1] == "  …"
-    body = [line for line in lines[2:-1] if line.strip()]
-    assert len(body) == 5
-    assert lines[-1].startswith("  ctrl+t mostrar todo")
+    # Collapsed there is no body at all; expanded the whole note is there in
+    # order, with no ellipsis row and nothing dropped.
+    assert thinking("palabra " * 60, width=40).plain == "  ▸ Razonamiento"
+    lines = thinking("palabra " * 60, expanded=True, width=40).plain.splitlines()
+    assert lines[0] == "  ▾ Razonamiento"
+    body = [line for line in lines[1:-1] if line.strip()]
+    assert len(body) > 5
+    assert "  …" not in "\n".join(lines)
 
 
 def test_expanded_thought_keeps_the_whole_note_once() -> None:
     plain = thinking(LONG_NOTE, expanded=True, width=100).plain
-    assert plain.splitlines()[0] == "  Razonamiento"
+    assert plain.splitlines()[0] == "  ▾ Razonamiento"
     assert plain.count("Enumero el 445 porque el SMB puede estar abierto.") == 1
     assert "Después probaré" in plain
     assert "\n  …" not in plain, "expandido no recorta"
@@ -87,11 +92,13 @@ def test_thought_purpose_is_capped_and_single_line() -> None:
 
 
 def test_the_collapsed_card_stays_five_lines_at_a_normal_width() -> None:
-    rendered = render_thought(LONG_NOTE, width=200)
-    lines = rendered.splitlines()
+    # One row at any width; expanding never exceeds the width it was given.
+    assert thinking(LONG_NOTE, width=200).plain.splitlines() == ["  ▸ Razonamiento"]
+    lines = thinking(LONG_NOTE, expanded=True, width=200).plain.splitlines()
     assert "Razonamiento" in lines[0]
-    assert "ctrl+t mostrar todo" in lines[-1]
-    assert len([line for line in lines[1:-1] if line.strip()]) <= 5
+    assert "ctrl+t colapsar" in lines[-1]
+    assert max(len(line) for line in lines) <= 200
+    assert render_thought(LONG_NOTE, width=200).strip()
 
 
 # -------------------------------------------------------------- the Markdown

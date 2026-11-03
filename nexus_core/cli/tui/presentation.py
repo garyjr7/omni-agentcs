@@ -33,7 +33,7 @@ WARN_STYLE = '#ffc950'
 #: Hierarchy of the log (Codex style): reasoning is muted italic, the tool is
 #: bold text, a verified result is green and a failure is red. The branch glyph
 #: indents tool output under its invocation so a card reads as a tree.
-THINKING_STYLE = 'dim'
+THINKING_STYLE = SECONDARY_STYLE + ' italic'
 TOOL_STYLE = ''
 RESULT_OK_STYLE = OK_STYLE
 RESULT_ERROR_STYLE = ERROR_STYLE
@@ -270,39 +270,47 @@ def _thought_lines(value: str, width: int) -> list[str]:
     return lines
 
 
+#: Rows of the live reasoning row before it starts dropping the oldest lines.
+LIVE_THOUGHT_LINES = 5
+
+
 def thinking(value: str, *, expanded: bool = False, width: int = 100,
              reasoning: str | None = None) -> Text:
-    """Durable reasoning card: header, preview (5 lines) and a toggle footer.
+    """Durable reasoning card: one collapsed line, or the whole note.
 
-    Collapsed shows the last five physical lines preceded by an ellipsis, so a
-    long note reads as its conclusion instead of as its introduction. The
-    provider's native reasoning travels as a separate dim block only when the
-    model's own note is too short to be useful (fewer than 50 characters).
+    Collapsed it is exactly ``▸ Razonamiento`` -no preview, no footer- so a
+    finished turn costs one row; the arrow is the affordance and the header is
+    the clickable line. Expanded it is ``▾ Razonamiento`` plus the note in dim
+    italic. The provider's native reasoning travels as a separate dim block
+    only when the model's own note is too short to be useful (<50 characters).
     """
-    from .strings import HIDE_REASONING, SHOW_FULL_REASONING, THINKING_CARD
+    from .strings import HIDE_REASONING, THINKING_CARD
 
-    text = Text(f'  {THINKING_CARD}', style=THINKING_STYLE, no_wrap=False, overflow='fold')
-    lines = _thought_lines(value, width)
-    if lines:
-        if not expanded and len(lines) > 5:
-            text.append('\n  …', style=THINKING_STYLE)
-            lines = lines[-5:]
-        for line in lines:
-            text.append('\n  ' + line, style=THINKING_STYLE)
+    text = Text(f'  {"▾" if expanded else "▸"} {THINKING_CARD}',
+                style=SECONDARY_STYLE, no_wrap=False, overflow='fold')
+    if not expanded:
+        return text
+    for line in _thought_lines(value, width):
+        text.append('\n  ' + line, style=THINKING_STYLE)
     if reasoning and len(clean_text(str(value or '')).strip()) < 50:
-        text.append('\n  ---', style='dim')
+        text.append('\n  ---', style=SECONDARY_STYLE)
         for line in _thought_lines(reasoning, width)[:10]:
-            text.append('\n  ' + line, style='dim')
-    text.append('\n  ' + (HIDE_REASONING if expanded else SHOW_FULL_REASONING),
-                style='dim cyan')
+            text.append('\n  ' + line, style=THINKING_STYLE)
+    text.append('\n  ' + HIDE_REASONING, style=SECONDARY_STYLE)
     return text
 
 
 def live_thought(value: str, *, width: int = 100) -> Text:
-    """Up to three lines of the streamed note, prefixed with ``Razonando``."""
+    """Up to ``LIVE_THOUGHT_LINES`` streamed lines under ``Razonando``.
+
+    A longer note keeps its conclusion: an ellipsis row plus the last five
+    lines, so the row reads as current thinking rather than as a backlog.
+    """
     from .strings import THINKING_LIVE
 
-    lines = [line for line in _thought_lines(value, width) if line.strip()][-3:]
+    lines = [line for line in _thought_lines(value, width) if line.strip()]
+    if len(lines) > LIVE_THOUGHT_LINES:
+        lines = ['…', *lines[-LIVE_THOUGHT_LINES:]]
     if not lines:
         return Text(THINKING_LIVE, style=THINKING_STYLE)
     text = Text(f'{THINKING_LIVE} {lines[0]}', style=THINKING_STYLE)
@@ -387,18 +395,17 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
                 for line in _summary_lines(summary, success=success, width=width))
 
     if structured is not None and not expanded:
-        if isinstance(structured, dict):
-            items = list(structured.items())
-            for key, item in items[:4]:
-                body.append(Text(f'  {BRANCH} {key}: {_compact_value(item)}', style=color))
-            hidden = max(0, len(items) - 4)
-            if hidden:
-                body.append(Text(f'  … {hidden} campos más · ctrl+o', style='dim'))
-            elif not items:
-                body.append(Text('  (sin campos)', style='dim'))
+        # A structured payload used to be dumped as a ``└─ field: value`` tree
+        # (report.generate printed about forty rows). The summary line above
+        # already says what it is; one click reveals the whole document.
+        if isinstance(structured, (dict, list, tuple)) and structured:
+            import json as _json
+
+            hidden = len(_json.dumps(structured, ensure_ascii=False, indent=2,
+                                     default=str).splitlines())
+            body.append(Text(f'  Ver {hidden} líneas más', style='dim underline'))
         else:
-            total = len(structured) if isinstance(structured, (list, tuple)) else 1
-            body.append(Text(f'  {total} elementos · ctrl+o', style='dim'))
+            body.append(Text('  (sin campos)', style=SECONDARY_STYLE))
         return Group(*body)
 
     # A diff spends three lines on ``---``/``+++``/``@@``; folding it at the
@@ -423,12 +430,12 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
 
     emit(folded.head)
     if folded.hidden:
-        body.append(Text('  …', style='dim'))
+        body.append(Text('  …', style=SECONDARY_STYLE))
     emit(folded.tail)
     if folded.hidden:
-        body.append(Text(f'  … {folded.hidden} líneas más · ctrl+o', style='dim'))
+        body.append(Text(f'  Ver {folded.hidden} líneas más', style='dim underline'))
     elif expanded and len(lines.splitlines()) > limit:
-        body.append(Text('  ctrl+o colapsar', style='dim'))
+        body.append(Text('  ctrl+o colapsar', style=SECONDARY_STYLE))
     return Group(*body)
 
 

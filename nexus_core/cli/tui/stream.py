@@ -5,7 +5,7 @@ import re
 import shlex
 from typing import Any
 
-from ..theme import AQUA, AQUA_DIM, OFFWHITE, RESET
+from ..theme import BOLD, DIM, GREEN, OFFWHITE, RESET
 from .presentation import clean_text, render_rich, result_diff, thinking, trace_block
 
 PREFIXES = {
@@ -154,9 +154,25 @@ def _invocation_lines(text: str, *, width: int | None, prefix: str) -> list[str]
     return lines or [text]
 
 
+def _command_line(tool_id: str, safe: dict[str, Any]) -> str | None:
+    """The real argv a handler builds, when the invocation *is* a command.
+
+    Only the tools whose handler builds an argv from the durable request are
+    rendered as a shell command; every other call keeps the honest
+    ``key=value`` request, because a command the handler may not execute would
+    be an invented one.
+    """
+    if tool_id == "nexus.recon.nmap":
+        flags = safe.get("flags") or []
+        flags = flags if isinstance(flags, list) else [flags]
+        return shlex.join(["nmap", *map(str, flags), "-oX", "-", str(safe.get("target", ""))])
+    return None
+
+
 def format_tool_invocation(tool_id: str, arguments: Any, *,
                            width: int | None = None) -> str:
-    """One tool header: ``• tool_id  args`` (phase lives in the step header).
+    """One tool header. A shell command reads ``$ nmap …``; a structured call
+    reads ``• tool_id  key=value``. Phase lives in the step header.
 
     Every branch reads ``display_arguments`` first, so a credential cannot reach
     the transcript through a flag, a path, a nested value or free text. With
@@ -173,15 +189,13 @@ def format_tool_invocation(tool_id: str, arguments: Any, *,
         "read", "create", "write", "edit", "update", "write_file",
         "edit_file", "read_file",
     }
-    if operation in file_operations and any(
+    command = _command_line(str(tool_id or ""), safe)
+    if command is not None:
+        text = command
+    elif operation in file_operations and any(
         marker in str(tool_id).lower() for marker in ("workspace", "file", "filesystem")
     ):
         text = clean_text(str(safe.get("path") or safe.get("file_path") or "?"))
-    elif tool_id == "nexus.recon.nmap":
-        # This is the argv constructed by the existing handler, including XML.
-        flags = safe.get("flags") or []
-        flags = flags if isinstance(flags, list) else [flags]
-        text = shlex.join(["nmap", *map(str, flags), "-oX", "-", str(safe.get("target", ""))])
     else:
         # Other handlers may transform arguments. Display the durable request
         # honestly rather than inventing a shell command they may not execute.
@@ -189,15 +203,18 @@ def format_tool_invocation(tool_id: str, arguments: Any, *,
 
     from .strings import TOOL_FALLBACK
     name = clean_text(str(tool_id or TOOL_FALLBACK))
+    if command is not None:
+        head, plain_prefix, body_style = f"{GREEN}$ {RESET}{OFFWHITE}", "$ ", OFFWHITE
+    else:
+        head, plain_prefix, body_style = f"{BOLD}• {name}{RESET}{DIM}  ", f"• {name}  ", DIM
     if not text:
-        return f"{AQUA}• {name}{RESET}{AQUA_DIM}  (sin argumentos){RESET}"
-    prefix = f"• {name}  "
-    lines = _invocation_lines(text, width=width, prefix=prefix)
+        return f"{BOLD}• {name}{RESET}{DIM}  (sin argumentos){RESET}"
+    lines = _invocation_lines(text, width=width, prefix=plain_prefix)
     continuation = "".join(
-        f"\n{AQUA_DIM}{INVOCATION_CONTINUATION}{RESET}{OFFWHITE}{line}{RESET}"
+        f"\n{DIM}{INVOCATION_CONTINUATION}{RESET}{body_style}{line}{RESET}"
         for line in lines[1:]
     )
-    return (f"{AQUA}• {name}{RESET}{OFFWHITE}  {lines[0]}{RESET}{continuation}")
+    return f"{head}{lines[0]}{RESET}{continuation}"
 
 
 def output_text(result: dict[str, Any]) -> str:
