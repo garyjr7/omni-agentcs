@@ -280,3 +280,48 @@ pytestmark = globals().get("pytestmark", [])
 if not isinstance(pytestmark, list):
     pytestmark = [pytestmark]
 pytestmark.append(pytest.mark.usefixtures("lab_scope"))
+
+
+def test_razonamiento_exports_only_this_run(tmp_path, monkeypatch, capsys):
+    """/razonamiento writes the current run's durable thoughts, in order."""
+    from types import SimpleNamespace
+
+    from nexus_core.cli import commands
+
+    messages = [
+        {"run_id": "run-1", "created_at": "2026-11-03T10:00:00Z",
+         "metadata": {"kind": "react.action", "thought": "primero enumero el 445"}},
+        {"run_id": "run-1", "created_at": "2026-11-03T10:01:00Z",
+         "metadata": {"kind": "react.action", "thought": "luego ataco la web"}},
+        {"run_id": "run-2", "created_at": "2026-11-03T10:02:00Z",
+         "metadata": {"kind": "react.action", "thought": "otro run"}},
+        {"run_id": "run-1", "metadata": {"kind": "react.observation"}},
+    ]
+    session = SimpleNamespace(
+        store=SimpleNamespace(list_messages=lambda *a, **k: messages),
+        tenant_id="system", conversation_id="conversation", run_id="run-1",
+        use_tui=False, no_color=True,
+    )
+    monkeypatch.chdir(tmp_path)
+    commands.cmd_razonamiento(session, [])
+    text = (tmp_path / "reports" / "run-1" / "reasoning.md").read_text(encoding="utf-8")
+    assert "primero enumero el 445" in text and "luego ataco la web" in text
+    assert text.index("primero enumero") < text.index("luego ataco")
+    assert "otro run" not in text
+    assert "razonamiento exportado" in capsys.readouterr().out
+
+
+def test_razonamiento_reports_a_run_without_reasoning(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from nexus_core.cli import commands
+
+    session = SimpleNamespace(
+        store=SimpleNamespace(list_messages=lambda *a, **k: []),
+        tenant_id="system", conversation_id="conversation", run_id="run-1",
+        use_tui=False, no_color=True,
+    )
+    monkeypatch.chdir(tmp_path)
+    commands.cmd_razonamiento(session, [])
+    assert "no tiene razonamiento" in capsys.readouterr().out
+    assert not (tmp_path / "reports").exists()

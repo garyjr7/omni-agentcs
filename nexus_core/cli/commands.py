@@ -1377,6 +1377,51 @@ def cmd_status(session: "OmniSession", args: list[str]) -> None:
     )
 
 
+def cmd_razonamiento(session: "OmniSession", args: list[str]) -> None:
+    """/razonamiento: exporta los `thought` del run actual a reports/<run>/reasoning.md.
+
+    The reasoning is already durable in every ``react.action``; this only
+    collects it in order so an operator (or a reviewer) can read how the run
+    decided, next to the reports of the same engagement.
+    """
+    run_id = str(session.run_id or "")
+    conversation = str(session.conversation_id or "")
+    if not run_id or not conversation:
+        render.render_error("no hay un run del que exportar razonamiento")
+        return
+    try:
+        messages = session.store.list_messages(
+            session.tenant_id, conversation, limit=500
+        )
+    except Exception as exc:  # noqa: BLE001 - a broken store must not kill the REPL
+        render.render_error(f"no se pudo leer la conversación: {type(exc).__name__}")
+        return
+    entries: list[tuple[str, str]] = []
+    for message in messages:
+        metadata = message.get("metadata") or {}
+        if metadata.get("kind") != "react.action":
+            continue
+        if str(message.get("run_id") or run_id) != run_id:
+            continue
+        thought = str(metadata.get("thought") or "").strip()
+        if thought:
+            entries.append((str(message.get("created_at") or ""), thought))
+    if not entries:
+        render.render_error("el run actual no tiene razonamiento registrado")
+        return
+    path = Path.cwd() / "reports" / run_id / "reasoning.md"
+    body = [f"# Razonamiento · {run_id}", ""]
+    for stamp, thought in entries:
+        body.extend([f"## {stamp}" if stamp else "## turno", "", thought, ""])
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(body), encoding="utf-8")
+    except OSError as exc:
+        render.render_error(f"no se pudo escribir el razonamiento: {exc}")
+        return
+    render.write(f"razonamiento exportado: {path} ({len(entries)} turnos)")
+
+
 def cmd_exploit(session: "OmniSession", args: list[str]) -> None:
     """/exploit view-live <job_uuid>: vista de estado MSF en otra terminal (solo lectura)."""
     from .live_jobs import show_job
@@ -1684,6 +1729,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/trust": cmd_trust,
     "/subagent": cmd_subagent,
     "/status": cmd_status,
+    "/razonamiento": cmd_razonamiento,
     "/secrets": cmd_secrets,
     "/auth": cmd_auth,
     "/roe": cmd_roe,
@@ -1749,6 +1795,7 @@ __all__ = [
     "cmd_loot",
     "cmd_panel",
     "cmd_plan",
+    "cmd_razonamiento",
     "cmd_review",
     "cmd_playbook",
     "cmd_report",
