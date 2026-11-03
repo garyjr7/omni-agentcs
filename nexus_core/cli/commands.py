@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import getpass
 import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -23,6 +24,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from .session import OmniSession
 
 DEFAULT_HISTORY_LIMIT = 20
+
+#: Internal trace of the CLI. Successful slash commands that only change state
+#: (``/engage_use``, ``/engage_create``) do not echo into the transcript: the
+#: header badge and the status bar already name the engagement.
+log = logging.getLogger("omni.tui")
 
 #: System prompt of ``/ask``: conversational, never executes anything.
 ASK_SYSTEM_PROMPT = (
@@ -142,12 +148,12 @@ def _engage_create(session: "OmniSession", engage: Any, rest: list[str]) -> None
     except ValueError as exc:
         render.render_error(f"no se pudo crear el engagement: {exc}")
         return
-    render.render_status(
-        f"engagement creado: {scope.engagement_id} · {scope.name} · "
-        f"cidrs={list(scope.cidrs)} · dominios={list(scope.domains)}"
-    )
     session.set_engagement(scope)
-    render.render_status(f"engagement activo: {scope.engagement_id} ({scope.name})")
+    log.debug(
+        "[omni.tui] engagement creado: %s · %s · cidrs=%s · dominios=%s",
+        scope.engagement_id, scope.name, list(scope.cidrs), list(scope.domains),
+    )
+    log.debug("[omni.tui] engagement activo: %s (%s)", scope.engagement_id, scope.name)
 
 
 def _engage_use(session: "OmniSession", engage: Any, rest: list[str]) -> None:
@@ -159,7 +165,7 @@ def _engage_use(session: "OmniSession", engage: Any, rest: list[str]) -> None:
         render.render_error(f"engagement no encontrado: {rest[0]}")
         return
     session.set_engagement(scope)
-    render.render_status(f"engagement activo: {scope.engagement_id} ({scope.name})")
+    log.debug("[omni.tui] engagement activo: %s (%s)", scope.engagement_id, scope.name)
 
 
 def cmd_engage_list(session: "OmniSession", args: list[str]) -> None:
@@ -1362,6 +1368,13 @@ def cmd_status(session: "OmniSession", args: list[str]) -> None:
             f"status bar: {'ON' if session._tui.status_bar_enabled else 'OFF'}"
             + ("" if session._tui.use_tui else " (fallback readline)")
         )
+    # Engine bookkeeping lives here, not in the transcript: the run id, the
+    # active engagement and the iteration ceiling are only needed on demand.
+    session._output.write(
+        f"run: {session.run_id or '(ninguno)'} · "
+        f"engagement: {session.engagement_id or '(ninguno)'} · "
+        f"max_iterations: {session.max_iterations}"
+    )
 
 
 def cmd_exploit(session: "OmniSession", args: list[str]) -> None:

@@ -26,9 +26,16 @@ def test_echoed_turn_keeps_the_chevron_and_does_not_reprint_the_chips(tui_factor
     ui._accept(ui._input)
     assert ui._answers.get_nowait() == "Entiendo continua por favor"
     ui.flush()
-    # One clean line per turn: the chevron, never the header chips again.
+    # One block per turn: the rail with a 12-hour stamp, then the task itself.
+    # The contextual chips are never reprinted into the transcript.
     from nexus_core.cli.tui.presentation import clean_text
-    assert clean_text(ui.transcript) == "▌ > Entiendo continua por favor\n\n"
+    transcript = clean_text(ui.transcript)
+    assert transcript == "▌ [08:56 AM]\n▌ Entiendo continua por favor\n\n" or transcript.endswith(
+        "▌ Entiendo continua por favor\n\n"
+    )
+    lines = transcript.splitlines()
+    assert lines[0].startswith("▌ [") and lines[0].endswith(("AM]", "PM]"))
+    assert lines[1] == "▌ Entiendo continua por favor"
     assert "[TRUST MODE]" not in ui.transcript
 
 
@@ -44,7 +51,8 @@ def test_the_masthead_is_separated_from_the_first_turn(tui_factory: Any) -> None
     transcript = clean_text(ui.transcript)
     # The masthead is its own block: the echoed turn begins after one blank
     # line instead of being glued to the last metadata row.
-    assert "[+] [ scanme-lab ] [+]\n\n▌ > revisa el objetivo" in transcript
+    assert "[+] [ scanme-lab ] [+]\n\n▌ [" in transcript
+    assert "\n▌ revisa el objetivo" in transcript
     assert "\n\n\n" not in transcript
 
 
@@ -96,7 +104,7 @@ def test_turn_history_spaces_user_thought_and_response(tui_factory: Any) -> None
     ui.append_scrollback("Respuesta verificada.\n\n")
     ui.flush()
     transcript = clean_text(ui.transcript)
-    assert "▌ > revisa el resultado\n\n  Razonamiento" in transcript
+    assert "▌ revisa el resultado\n\n  Razonamiento" in transcript
     assert "ctrl+t mostrar todo\n\nRespuesta verificada." in transcript
 
 
@@ -112,9 +120,9 @@ def test_streamed_results_push_history_up_while_the_frame_stays_fixed(tui_factor
     # Turns and results keep their order: older turns move up, nothing is
     # re-rendered in place.
     assert (
-        transcript.index("> objetivo 0")
-        < transcript.index("> objetivo 1")
-        < transcript.index("> objetivo 2")
+        transcript.index("▌ objetivo 0")
+        < transcript.index("▌ objetivo 1")
+        < transcript.index("▌ objetivo 2")
     )
     assert transcript.index("salida 0") < transcript.index("salida 1") < transcript.index("salida 2")
     # The live tail stays visible (auto-follow) and the region list is intact.

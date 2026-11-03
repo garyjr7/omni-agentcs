@@ -7,6 +7,7 @@ import json
 import re
 import textwrap
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from rich.console import Console, Group, RenderableType
@@ -20,16 +21,24 @@ _CONTROLS = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-
 PANEL_STYLE = 'bg:#2a2a2a'
 PANEL_BAR_STYLE = 'fg:#ff0055 bg:#2a2a2a'
 
-#: Semantic hierarchy of the log (Codex style): reasoning is muted, the tool
-#: being invoked is aqua, a verified result is green and a failure is red. The
-#: branch glyph indents tool output under its invocation so a card reads as a
-#: tree instead of a wall of text.
+#: The semantic palette. One accent only -the header, the operator's rail and
+#: the work pulse-, everything else is either uncoloured text or a verdict.
+#: Defined here and nowhere else: a renderer names a role, never a hex value.
+ACCENT_STYLE = '#ff0055'
+SECONDARY_STYLE = 'dim #787e86'
+OK_STYLE = '#56e696'
+ERROR_STYLE = '#ff4054'
+WARN_STYLE = '#ffc950'
+
+#: Hierarchy of the log (Codex style): reasoning is muted italic, the tool is
+#: bold text, a verified result is green and a failure is red. The branch glyph
+#: indents tool output under its invocation so a card reads as a tree.
 THINKING_STYLE = 'dim'
-TOOL_STYLE = '#00e5ff'
-RESULT_OK_STYLE = '#56e696'
-RESULT_ERROR_STYLE = '#ff4054'
-GUARDRAIL_STYLE = '#ffc950'
-TURN_STYLE = 'dim #787e86'
+TOOL_STYLE = ''
+RESULT_OK_STYLE = OK_STYLE
+RESULT_ERROR_STYLE = ERROR_STYLE
+GUARDRAIL_STYLE = WARN_STYLE
+TURN_STYLE = SECONDARY_STYLE
 BRANCH = '└'
 
 #: Typewriter pacing of the transcript: one reveal every 12 ms, at most 96 per
@@ -136,6 +145,68 @@ def input_quote(value: str, *, width: int = 100, no_color: bool = False) -> str:
     for line in lines:
         rows.append(Text("▌ ", style="#ff0055 bold") + Text(line))
     return render_rich(Group(*rows), width=width, no_color=no_color)
+
+
+def user_message(value: str, *, width: int = 100, no_color: bool = False,
+                 now: datetime | None = None) -> str:
+    """One operator turn: red rail, 12-hour stamp, then the task itself.
+
+    The REPL used to echo the line twice (the editor's ``>`` and the run's
+    ``❯``). The transcript carries exactly one block per turn: the rail, the
+    time the operator submitted it and the task wrapped to the transcript
+    width, so a long objective cannot overflow the terminal.
+    """
+    when = (now or datetime.now()).strftime("%I:%M %p")
+    rows: list[RenderableType] = [
+        Text("▌ ", style=ACCENT_STYLE) + Text(f"[{when}]", style=SECONDARY_STYLE)
+    ]
+    body = clean_text(str(value or "")).strip() or ""
+    for raw in body.splitlines() or [""]:
+        for row in textwrap.wrap(raw, width=max(8, int(width) - 2),
+                                 break_long_words=False, break_on_hyphens=False) or [""]:
+            rows.append(Text("▌ ", style=ACCENT_STYLE) + Text(row))
+    return render_rich(Group(*rows), width=width, no_color=no_color)
+
+
+def summary_markdown(result: Any) -> str:
+    """Final result as clean Markdown, for the TUI transcript.
+
+    A bordered box fragments on a wide terminal: the border and the wrapped
+    body stop agreeing at 200 columns. The dedicated screen renders the same
+    facts as a Markdown block instead, while ``--no-tui`` keeps the box.
+    Only data the result already carries is listed: the final summary, the
+    findings, the phases still open and the run's status/iteration count.
+    """
+    status = str(getattr(result, "status", "") or "")
+    iterations = getattr(result, "iterations", None)
+    findings = list(getattr(result, "findings", None) or [])
+    plan = getattr(result, "plan", None) or {}
+    phases = plan.get("phases") if isinstance(plan, dict) else None
+    pending = [
+        item for item in (phases or [])
+        if isinstance(item, dict) and str(item.get("status") or "") != "done"
+        and not item.get("optional")
+    ]
+    lines: list[str] = ["## Resultado", ""]
+    summary = str(getattr(result, "final_summary", "") or "").strip()
+    lines.extend((summary or "_(sin resumen)_").splitlines())
+    if findings:
+        lines.extend(["", "### Hallazgos", ""])
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            severity = str(finding.get("severity") or "info")
+            title = str(finding.get("title") or finding.get("summary") or "").strip()
+            if title:
+                lines.append(f"- **[{severity}]** {title}")
+    if pending:
+        lines.extend(["", "### Ramas abiertas", ""])
+        lines.extend(f"- {item.get('label') or item.get('id')}" for item in pending)
+    lines.extend(["", "### Estado", ""])
+    lines.append(f"- estado: {status or '?'}")
+    if iterations is not None:
+        lines.append(f"- iteraciones: {iterations}")
+    return "\n".join(lines)
 
 
 def typewriter_steps(text: str, *, max_steps: int = TYPEWRITER_MAX_STEPS,

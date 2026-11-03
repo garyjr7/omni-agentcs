@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import os
 import sys
 import threading
@@ -25,6 +26,10 @@ if TYPE_CHECKING:
 #: transcript line: Codex-style single chevron, so the transcript reads as
 #: ``> objective`` / result instead of hiding the operator's words.
 PROMPT_PREFIX = "> "
+
+#: Internal trace. Subagent lifecycle is bookkeeping, not conversation: it goes
+#: to the log instead of the transcript.
+log = logging.getLogger("omni.tui")
 
 
 def alt_screen_enabled() -> bool:
@@ -472,7 +477,7 @@ class TuiSession:
                 status = " ".join(clean_text(str(
                     payload.get("status") or ("running" if kind.endswith("started") else "finished")
                 )).splitlines())
-                self.append_scrollback(f"· Subagent {label} · {status}\n\n")
+                log.debug("[omni.tui] subagent %s · %s (%s)", label, status, kind)
             self._dispatch(self._session.app.refresh_wake.set)
         self.invalidate()
 
@@ -738,7 +743,7 @@ class TuiSession:
     def _accept(self, buffer: Buffer) -> bool:
         if self._can_edit:
             text = buffer.text if self._secret_mode else self.input_document.reconstruct()
-            from .presentation import input_quote, input_chip, render_rich
+            from .presentation import input_chip, render_rich
             visible = render_rich(input_chip(text), no_color=self.no_color) if len(text) > 500 else self.input_document.render()
             # A secret is never echoed to the transcript: show a fixed mask so
             # the operator still sees that the input was taken.
@@ -746,13 +751,23 @@ class TuiSession:
                 self.append_card({}, pasted_input=text, input_prefix=self._input_prefix(), expanded=False)
             else:
                 value = "••••••" if self._secret_mode else visible
-                width = int(self._session.output.get_size().columns) if self.use_tui else 100
-                self.append_scrollback(input_quote(
-                    self._input_prefix() + value, width=max(1, width - 2),
-                    no_color=self.no_color,
-                ) + "\n\n")
+                self._echo_turn(value)
             self._answer(text)
         return False
+
+    def _echo_turn(self, value: str) -> None:
+        """Echo one submitted turn exactly once: rail, stamp and the task.
+
+        ``run_objective`` used to echo the same objective again with a second
+        chevron, so every run showed the task twice. The editor is the only
+        writer of this block.
+        """
+        from .presentation import user_message
+
+        width = int(self._session.output.get_size().columns) if self.use_tui else 100
+        self.append_scrollback(user_message(
+            value, width=max(8, width - 2), no_color=self.no_color,
+        ) + "\n\n")
 
     def _input_prefix(self) -> str:
         """The chevron that opens the echoed user turn.

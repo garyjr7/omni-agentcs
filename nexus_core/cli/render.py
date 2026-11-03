@@ -328,8 +328,11 @@ def render_summary(text: str, findings: Iterable[dict[str, Any]] = (),
             severity = str(finding.get("severity") or "info")
             title = str(finding.get("title") or finding.get("summary") or "")
             tag = paint(f"[{severity}]", SEVERITY_COLORS.get(severity.lower(), YELLOW), BOLD)
+            # 9 = "       " continuation indent + the two padding cells the box
+            # row adds. Wrapping wider than that made ``_box_line`` clip the end
+            # of the finding instead of wrapping it.
             wrapped = textwrap.wrap(
-                title, width=max(8, inner - 6), break_long_words=False,
+                title, width=max(8, inner - 9), break_long_words=False,
                 break_on_hyphens=False,
             ) or [""]
             write(_box_line(f"{tag} {paint(wrapped[0], WHITE)}", inner))

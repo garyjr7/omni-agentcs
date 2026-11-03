@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import sys
 import threading
@@ -37,8 +38,13 @@ from .tui.status import load_status_preference
 
 DEFAULT_TENANT = "system"
 DEFAULT_AGENT_ID = "omni"
-DEFAULT_MAX_ITERATIONS = 12
+DEFAULT_MAX_ITERATIONS = 20
 STREAM_INTERVAL_SECONDS = 0.5
+
+#: Internal trace of the CLI. Engine bookkeeping (run id, iteration ceiling,
+#: plan source, subagent lifecycle) belongs to the log, not to the transcript:
+#: ``/status`` renders it on demand.
+log = logging.getLogger("omni.tui")
 STREAM_MESSAGE_WINDOW = 500
 
 #: Tool that sends one command into an open session.
@@ -1160,9 +1166,9 @@ class OmniSession:
         except Exception:  # noqa: BLE001 - planning must never block the run
             return None
         if plan is not None:
-            render.render_status(
-                f"plan del engagement: {len(plan.todos)} TODOs ({plan.source}) → "
-                "loot/ENGAGEMENT_PLAN.md"
+            log.debug(
+                "[omni.tui] plan del engagement: %s TODOs (%s) → loot/ENGAGEMENT_PLAN.md",
+                len(plan.todos), plan.source,
             )
             self._update_status_bar()
         return plan
@@ -1242,22 +1248,17 @@ class OmniSession:
             name="omni-event-stream",
             daemon=True,
         )
-        render.render_status(
-            f"run={run_id} engagement={self.engagement_id or '(ninguno)'} "
-            f"max_iterations={self.max_iterations}"
+        log.debug(
+            "[omni.tui] run=%s engagement=%s max_iterations=%s",
+            run_id, self.engagement_id or "(ninguno)", self.max_iterations,
         )
         streamer.start()
         try:
             from .spinner import Spinner
 
-            if self._tui.use_tui:
-                from .tui.presentation import input_quote, input_chip, render_rich
-                visible_objective = render_rich(input_chip(objective), no_color=self.no_color)
-                width = int(self._tui._session.output.get_size().columns)
-                self._tui.append_scrollback(input_quote(
-                    "❯ " + visible_objective, width=max(1, width - 2),
-                    no_color=self.no_color,
-                ) + "\n\n")
+            # The operator's turn is echoed once, by the editor that read it
+            # (``TuiSession._echo_turn``). A second echo here duplicated every
+            # objective in the transcript.
             with self._busy("Working"), Spinner(
                 f"Ejecutando objetivo: {objective[:80]}",
                 enabled=self._spinner_enabled(),
@@ -1313,9 +1314,12 @@ class OmniSession:
         self.history.append(f"[{result.status}] {result.final_summary}")
         if result.status == "clarification" and result.question:
             self.last_question = result.question
-        render.render_summary(
-            result.final_summary or f"(sin resumen · estado={result.status})", result.findings
-        )
+        if self._tui.use_tui:
+            self._render_final_markdown(result)
+        else:
+            render.render_summary(
+                result.final_summary or f"(sin resumen · estado={result.status})", result.findings
+            )
         if result.question and result.status == "clarification":
             render.render_clarification(result.question)
         render.render_status(
@@ -1323,6 +1327,28 @@ class OmniSession:
             f"conversación={result.conversation_id}"
         )
         return result
+
+    def _render_final_markdown(self, result: Any) -> None:
+        """Final result as a Markdown block on the dedicated screen.
+
+        The bordered ``RESULTADO`` box is a fixed-geometry widget: at 200
+        columns its border and its body stop agreeing and the box fragments.
+        The TUI renders the same facts as Markdown (heading, summary, findings,
+        open branches, status) so the block always fits the width; ``--no-tui``
+        keeps the box unchanged.
+        """
+        from .tui.markdown import render_markdown
+        from .tui.presentation import summary_markdown
+
+        try:
+            width = max(20, int(self._tui._session.output.get_size().columns) - 4)
+        except Exception:  # noqa: BLE001 - cosmetic sizing only
+            width = 80
+        body = render_markdown(summary_markdown(result), no_color=self.no_color,
+                               max_width=width)
+        if not str(result.final_summary or "").strip():
+            body = body.replace("_(sin resumen)_", f"(sin resumen · estado={result.status})")
+        self._tui.append_execution_block(body)
 
     def visible_input(self, prompt: str) -> str:
         """Read a non-secret line mid-command, TUI-safe.
