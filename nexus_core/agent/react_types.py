@@ -325,7 +325,7 @@ class ApprovalDecision:
 class ReActConfig:
     """Tunables of one ReAct run."""
 
-    max_iterations: int = 12
+    max_iterations: int = 20
     #: Ceiling of one tool call. It must be *strictly greater* than the largest
     #: ``timeout_seconds`` a tool contract publishes -``cred.bruteforce`` announces
     #: 1800 since run V13 (HackPark, 2026-10-21) asked for 1200 and was refused-

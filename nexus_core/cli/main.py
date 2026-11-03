@@ -53,9 +53,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=12,
+        default=20,
         metavar="N",
-        help="máximo de iteraciones del bucle ReAct (default: 12)",
+        help="máximo de iteraciones del bucle ReAct (default: 20)",
     )
     # R1: the token ceiling used to be a fixed 250k no matter what
     # ``--max-iterations`` said, so a 50-turn run died at ~21. The budget is now

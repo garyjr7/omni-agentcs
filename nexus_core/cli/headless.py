@@ -347,7 +347,7 @@ def _run_headless(
             },
         )
 
-    raw_iterations: Any = max_iterations or getattr(session, "max_iterations", 12)
+    raw_iterations: Any = max_iterations or getattr(session, "max_iterations", 20)
     iterations = int(raw_iterations)
 
     run_id = str(

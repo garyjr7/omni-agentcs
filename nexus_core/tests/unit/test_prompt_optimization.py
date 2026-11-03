@@ -203,12 +203,18 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # tool), still inside the per-tool bound; only the total moves.
     # ``nexus.c2.sliver_download`` (86th): the governed way to pull a file back
     # from a session, with its three optional arguments.
+    # The catalog now publishes the declared numeric range of a bounded
+    # argument (``timeout_seconds:integer[10..1800]``): +1,248 characters for
+    # 86 tools, measured 19,575 (227,6 per tool). A rejected out-of-range turn
+    # costs more than the clause, so the bound moves -not the discipline-.
     assert len(catalog) == 86
     text = render_tool_catalog(catalog)
-    assert len(text) / len(catalog) < 225
+    assert len(text) / len(catalog) < 230
     # ``sliver_download`` adds its line: measured 19,227 for 86 tools (223,6 per
     # tool), still inside the per-tool bound; only the total moves.
-    assert len(text) < 19_350
+    # Numeric ranges add 1,248 characters across the catalog: measured 19,575;
+    # ceiling 19_700 (the per-tool bound above is what protects the shape).
+    assert len(text) < 19_700
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -314,7 +320,9 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # ``nexus.web.ssti``): measured 34,714; ceiling 34_800.
     # The background order (``spawn_subagent``) plus the ``sliver_download``
     # catalog line: measured 35,187; ceiling 35_300.
-    assert len(_prompt(catalog)) < 35_300
+    # The numeric ranges of bounded arguments move with the catalog: measured
+    # 35,827; ceiling 35_900.
+    assert len(_prompt(catalog)) < 35_900
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -359,7 +367,8 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # Theseus moves with the static prompt: measured 35,341; ceiling 35_450.
     # The background order moves with the static prompt: measured 35,814;
     # ceiling 36_000. The block itself is unchanged.
-    assert len(prompt) < 36_000
+    # The numeric ranges move with it too: measured 36,454; ceiling 36_600.
+    assert len(prompt) < 36_600
     assert len(block) < 1_200
 
 
@@ -560,7 +569,8 @@ def test_a_compact_turn_fits_under_the_6000_token_target(tmp_path, catalog):
     # ceiling 7_760 (250k still buys ~32 compact turns).
     # The background order and the ``sliver_download`` line: measured 7,780;
     # ceiling 7_840 (250k still buys ~32 compact turns).
-    assert tokens < 7_840
+    # Numeric ranges: measured 7,864; ceiling 7_900 (~32 compact turns).
+    assert tokens < 7_900
 
 
 def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog):
@@ -613,7 +623,9 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # 8,419 average; ceiling 8_470, ~29 turns.
     # The background order is paid every turn as well: measured 8,504 average;
     # ceiling 8_560, ~29 turns.
-    assert sum(totals) / len(totals) < 8_560
+    # Numeric ranges are paid every turn too: measured 8,571 average;
+    # ceiling 8_620, ~29 turns.
+    assert sum(totals) / len(totals) < 8_620
     # The refresh turn is the expensive one; it must still fit a 250k budget
     # long enough for the ~40 turns Simple CTF needs: 8 refreshes at 8 113 plus
     # 32 compact turns at 5 361 are 233 456 tokens, inside the budget. The old
@@ -652,7 +664,8 @@ def test_the_average_turn_over_22_iterations_stays_under_6000(tmp_path, catalog)
     # measured 10,848; ceiling 10_910.
     # The background order and the ``sliver_download`` line land here too:
     # measured 10,966; ceiling 11_050.
-    assert max(totals) < 11_050
+    # Numeric ranges on the refresh turn: measured 11,126; ceiling 11_200.
+    assert max(totals) < 11_200
 
 
 def test_the_prompt_names_the_path_field_for_compile_and_upload(catalog):

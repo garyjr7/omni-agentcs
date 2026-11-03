@@ -95,8 +95,9 @@ def test_cmd_engage_lists_created_engagement(session, capsys):
 
 def test_cmd_engage_create_persists_and_switches(session, capsys):
     commands.cmd_engage(session, ["create", "scanme-lab", "203.0.113.0/24"])
-    out = capsys.readouterr().out
-    assert "engagement creado" in out
+    # A successful state change is silent: the header badge and the status bar
+    # already name the engagement.
+    assert capsys.readouterr().out == ""
     assert session.engagement.name == "scanme-lab"
     assert session.engagement.cidrs == ("203.0.113.0/24",)
     assert len(EngagementStore(session.store).list_for_tenant("system")) == 2
@@ -121,8 +122,7 @@ def test_cmd_engage_list_top_level_lists(session, capsys):
 
 def test_cmd_engage_create_top_level_persists_and_switches(session, capsys):
     commands.cmd_engage_create(session, ["scanme-lab", "203.0.113.0/24", "--hours", "48"])
-    out = capsys.readouterr().out
-    assert "engagement creado" in out
+    assert capsys.readouterr().out == ""
     assert session.engagement.name == "scanme-lab"
     assert session.engagement.cidrs == ("203.0.113.0/24",)
 
@@ -138,7 +138,7 @@ def test_cmd_engage_use_top_level_switches(session, capsys):
     )
     commands.cmd_engage_use(session, [created.engagement_id])
     assert session.engagement.engagement_id == created.engagement_id
-    assert "engagement activo" in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
 
 
 def test_cmd_engage_current_shows_active(session, capsys):
@@ -152,7 +152,7 @@ def test_cmd_engage_use_switches_active(session, capsys):
     )
     commands.cmd_engage(session, ["use", created.engagement_id])
     assert session.engagement.engagement_id == created.engagement_id
-    assert "engagement activo" in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
 
 
 def test_cmd_engage_use_unknown_id_errors(session, capsys):

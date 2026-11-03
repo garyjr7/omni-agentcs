@@ -14,6 +14,7 @@ the report is produced with or without a model provider.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -78,8 +79,42 @@ def report_generate_definition(tenant_id: str = "system") -> ToolDefinition:
     )
 
 
+#: Overrides the deliverables root for one shell/session.
+REPORTS_DIR_ENV = "OMNI_REPORTS_DIR"
+
+
+def _real(path: Path) -> Path:
+    """Absolute, symlink-resolved path (stdlib only)."""
+    return Path(os.path.realpath(Path(path).expanduser()))
+
+
+def _writable(directory: Path) -> bool:
+    """Whether ``directory`` can be created and written right now."""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / ".omni-write-probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def default_report_root() -> Path:
-    """``$XDG_DATA_HOME/omni/reports`` (the operator-visible deliverable dir)."""
+    """Deliverables live in the working directory: ``<cwd>/reports``.
+
+    A report is an operator deliverable, so it belongs next to the engagement
+    they are working on, not in a hidden data directory. ``OMNI_REPORTS_DIR``
+    overrides the base; the XDG data dir is only the fallback, and only when
+    the working directory cannot be written (a read-only mount, a container
+    without a writable cwd).
+    """
+    override = os.getenv(REPORTS_DIR_ENV, "").strip()
+    if override:
+        return _real(Path(override))
+    cwd = Path(os.path.realpath(Path.cwd()))
+    if _writable(cwd / "reports"):
+        return cwd / "reports"
     from nexus_core.config.xdg import resolve_xdg_paths
 
     return resolve_xdg_paths().data_dir / "reports"
@@ -92,17 +127,34 @@ def default_artifact_root() -> Path:
     return resolve_xdg_paths().data_dir / "artifacts"
 
 
+def _inside(base: Path, candidate: Path) -> bool:
+    """True when ``candidate`` resolves inside ``base``."""
+    try:
+        candidate.resolve().relative_to(base.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def report_directory(engagement_name: str, root: Path | None = None) -> Path:
-    """Return a fresh, collision-free directory for one report generation."""
-    base = Path(root) if root else default_report_root()
+    """Return a fresh, collision-free directory for one report generation.
+
+    The base is resolved and the result is checked to stay inside it: a slug
+    cannot carry ``..`` or a separator after sanitising, and an existing
+    symlink at the target name is refused instead of followed (writing a report
+    through a link would place the files outside the engagement's directory).
+    """
+    base = _real(Path(root)) if root else default_report_root()
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(engagement_name or "engagement")).strip("-")
     slug = slug or "engagement"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     candidate = base / f"{slug}-{stamp}"
     counter = 1
-    while candidate.exists():
+    while candidate.exists() or candidate.is_symlink():
         candidate = base / f"{slug}-{stamp}-{counter}"
         counter += 1
+    if candidate.is_symlink() or not _inside(base, candidate):
+        raise OSError(f"directorio de reporte fuera de la base: {candidate}")
     return candidate
 
 
@@ -243,9 +295,19 @@ async def report_generate_handler(arguments: dict, context: RunContext) -> ToolR
         # missing file there is an incomplete installation, not a finding.
         return _storage_failure(engagement_id, exc, stage="render")
 
-    directory = Path(requested_dir).expanduser() if requested_dir else report_directory(
-        report.engagement_name
-    )
+    if requested_dir:
+        directory = _real(Path(requested_dir))
+        if directory.is_symlink():
+            return _storage_failure(
+                engagement_id,
+                OSError(f"output_dir es un symlink: {directory}"),
+                stage="write", directory=str(directory),
+            )
+    else:
+        try:
+            directory = report_directory(report.engagement_name)
+        except OSError as exc:
+            return _storage_failure(engagement_id, exc, stage="write")
     files: dict[str, Path] = {}
     artifacts: list[dict[str, Any]] = []
     try:

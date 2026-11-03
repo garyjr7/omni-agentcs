@@ -666,7 +666,7 @@ def _schema_arguments(definition: Any) -> str:
             label = f"{name}∈{{{', '.join(values)}}}"
         else:
             kind = spec.get("type") if isinstance(spec, dict) else None
-            label = f"{name}:{kind or 'any'}"
+            label = f"{name}:{kind or 'any'}{_numeric_bounds(spec)}"
         forbidden = _forbidden_values(definition, name)
         if forbidden:
             label += f" ∉ {{{', '.join(forbidden)}}}"
@@ -694,6 +694,26 @@ def _type_name(spec: Any) -> str:
     return str(kind or "any")
 
 
+def _numeric_bounds(spec: Any) -> str:
+    """The schema's own numeric limits: ``≤1800`` / ``≥30`` / ``[30..1800]``.
+
+    A handler rejects an out-of-range value with a schema error and the model
+    only learns the ceiling if the catalog states it. Publishing the declared
+    ``maximum`` costs one clause per bounded argument and removes a whole class
+    of rejected turns (``timeout_seconds`` above the tool's own budget).
+    """
+    if not isinstance(spec, dict):
+        return ""
+    low, high = spec.get("minimum"), spec.get("maximum")
+    if low is None and high is None:
+        return ""
+    if low is None:
+        return f"≤{high}"
+    if high is None:
+        return f"≥{low}"
+    return f"[{low}..{high}]"
+
+
 def _compact_label(name: str, definition: Any, spec: Any, *, mark: str = "") -> str:
     """One argument as ``name:type``, ``name∈{values}`` or ``name{sub:type,…}``.
 
@@ -719,7 +739,7 @@ def _compact_label(name: str, definition: Any, spec: Any, *, mark: str = "") -> 
     if values:
         label = f"{name}∈{{{', '.join(values)}}}"
     else:
-        label = f"{name}:{_type_name(spec)}"
+        label = f"{name}:{_type_name(spec)}{_numeric_bounds(spec)}"
     forbidden = _forbidden_values(definition, name)
     if forbidden:
         label += f" ∉ {{{', '.join(forbidden)}}}"

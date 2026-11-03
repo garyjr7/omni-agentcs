@@ -32,8 +32,11 @@ def _context(store: object, scope: object = None) -> RunContext:
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    """A seeded store, a registered gateway and an isolated XDG data dir."""
+    """A seeded store, a registered gateway and isolated output roots."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    # Deliverables default to <cwd>/reports; the suite must never write into
+    # the repository, so every test in this module points the base at tmp.
+    monkeypatch.setenv("OMNI_REPORTS_DIR", str(tmp_path / "reports"))
     store, engagement, run_id = support.seed_full_engagement(tmp_path)
     gateway = ToolGateway(PolicyEngine(), AuditWriter(store))
     register_durable_tools(gateway)
@@ -246,12 +249,42 @@ def test_report_llm_cvss_degrades_without_provider(env, monkeypatch):
     assert all(finding["cvss_source"] in {"heuristic", "llm", "tool"} for finding in payload["findings"])
 
 
-def test_report_default_directory_is_under_xdg_data(env, tmp_path):
+def test_report_default_directory_is_under_the_working_directory(env, tmp_path,
+                                                                monkeypatch):
+    """Deliverables live next to the engagement: ``<cwd>/reports/<name>-<ts>``."""
     store, engagement, _run_id, gateway = env
+    monkeypatch.delenv("OMNI_REPORTS_DIR", raising=False)
+    workdir = tmp_path / "engagement-workspace"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
     result = _invoke(gateway, {"engagement_id": engagement.engagement_id}, store)
     directory = Path(result["output"]["directory"])
-    assert directory.parent == tmp_path / "xdg" / "omni" / "reports"
+    assert directory.parent == workdir / "reports"
     assert directory.name.startswith(engagement.name)
+    assert Path(result["output"]["report_path_md"]).is_file()
+
+
+def test_report_root_is_overridden_by_the_environment(env, tmp_path, monkeypatch):
+    store, engagement, _run_id, gateway = env
+    override = tmp_path / "deliverables"
+    monkeypatch.setenv("OMNI_REPORTS_DIR", str(override))
+    result = _invoke(gateway, {"engagement_id": engagement.engagement_id}, store)
+    assert Path(result["output"]["directory"]).parent == override
+
+
+def test_report_directory_refuses_a_symlinked_target(tmp_path):
+    """A pre-created link must not carry the report outside the base."""
+    base = tmp_path / "reports"
+    base.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with patch.object(module, "datetime") as clock:
+        clock.now.return_value = __import__("datetime").datetime(2026, 1, 1, 12, 0, 0)
+        target = base / "lab-20260101-120000"
+        target.symlink_to(outside, target_is_directory=True)
+        directory = module.report_directory("lab", base)
+    assert directory != target
+    assert directory.parent == base and not directory.is_symlink()
 
 
 def test_report_direct_handler_requires_store():

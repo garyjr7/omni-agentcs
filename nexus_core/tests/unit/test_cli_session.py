@@ -100,3 +100,15 @@ def test_prompt_is_minimal_and_engagement_stays_durable(tmp_path):
     named = OmniSession(store=store, tenant_id="system", engagement=scope)
     assert named.prompt == "> "
     assert named.engagement_id == "eng-prompt"
+
+
+def test_the_default_iteration_ceiling_is_twenty():
+    """A deep engagement needs room: the default ceiling is 20 turns."""
+    from nexus_core.agent.react_types import ReActConfig
+    from nexus_core.cli.session import DEFAULT_MAX_ITERATIONS, OmniSession
+
+    assert DEFAULT_MAX_ITERATIONS == 20
+    assert ReActConfig().max_iterations == 20
+    # The explicit override keeps working exactly as before.
+    assert ReActConfig(max_iterations=5).max_iterations == 5
+    assert OmniSession(store=None, use_tui=False, max_iterations=7).max_iterations == 7
