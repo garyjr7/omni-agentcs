@@ -31,6 +31,11 @@ PROMPT_PREFIX = "> "
 #: to the log instead of the transcript.
 log = logging.getLogger("omni.tui")
 
+#: The visual transcript is a bounded view over the durable conversation. These
+#: caps keep a long session's memory flat; the Store remains the full history.
+TRANSCRIPT_MAX_SEGMENTS = 50
+TRANSCRIPT_MAX_LINES = 1000
+
 
 def alt_screen_enabled() -> bool:
     """False when ``NEXUS_NO_ALT_SCREEN`` opts out of the dedicated screen."""
@@ -536,6 +541,20 @@ class TuiSession:
             self._answer_text = ""
         self._answer_text += str(chunk)
         self._answer_cache = None
+        self.invalidate()
+
+    def set_answer(self, text: str) -> None:
+        """Replace the live answer with a cumulative streaming snapshot.
+
+        ReAct extracts the ``summary`` field from a partial JSON object, so the
+        same prefix is re-sent on every chunk; replacing avoids duplicating it.
+        """
+        value = str(text or "")
+        if not value:
+            return
+        with self._lock:
+            self._answer_text = value
+            self._answer_cache = None
         self.invalidate()
 
     def end_answer(self) -> str:
@@ -1097,6 +1116,9 @@ class TuiSession:
                 self._typing_task = asyncio.ensure_future(self._type_pending())
             else:
                 self._typing_task = None
+                # The reveal held the trim so it could never resurrect a
+                # dropped block; now the bounded view can be compacted.
+                self._dispatch(self._compact_transcript)
 
     def _commit_partial(self, base: str, revealed: str) -> None:
         """Draw the block being typed over the committed transcript.
@@ -1277,7 +1299,55 @@ class TuiSession:
         self._scrollback.set_document(Document(plain, cursor), bypass_readonly=True)
         if self._auto_scroll:
             self._scrollback_window.vertical_scroll = max(0, len(self._styled_lines) - 1)
+        else:
+            # Old blocks may have been dropped while the operator was reading:
+            # never leave the viewport pointing past the remaining document.
+            self._scrollback_window.vertical_scroll = min(
+                self._scrollback_window.vertical_scroll,
+                max(0, len(self._styled_lines) - 1),
+            )
         self.invalidate()
+
+    def _trim_transcript_locked(self) -> bool:
+        """Drop the oldest visual blocks when the bounded view is exceeded.
+
+        Durable messages stay in the Store; only the in-memory segments, cards
+        and toggle targets are released. The newest block is always kept, even
+        when a single tool output is larger than the line cap.
+        """
+        if self._typing_active or self._typing_queue or self._write_queue:
+            return False
+        segments = self._segments
+        total = sum(int(segment.get("_line_count") or 0) for segment in segments)
+        if len(segments) <= TRANSCRIPT_MAX_SEGMENTS and total <= TRANSCRIPT_MAX_LINES:
+            return False
+        drop = 0
+        while drop < len(segments) - 1 and (
+            len(segments) - drop > TRANSCRIPT_MAX_SEGMENTS
+            or total > TRANSCRIPT_MAX_LINES
+        ):
+            total -= int(segments[drop].get("_line_count") or 0)
+            drop += 1
+        if not drop:
+            return False
+        dropped, self._segments = segments[:drop], segments[drop:]
+        for segment in dropped:
+            card_id = segment.get("id")
+            if card_id is not None:
+                self._cards.pop(card_id, None)
+        self._lines = [self._segment_text(segment) for segment in self._segments]
+        return True
+
+    def _compact_transcript(self) -> None:
+        """Apply retention after a typewriter reveal has fully drained."""
+        with self._lock:
+            if not self._trim_transcript_locked():
+                return
+            plain = self._rebuild_state_locked()
+            cursor = len(plain) if self._auto_scroll else min(
+                self._scrollback.cursor_position, len(plain)
+            )
+        self._commit_transcript(plain, cursor)
 
     def _rebuild_state_locked(self) -> str:
         """Recompute styled lines, toggle rows and plain text from the segments.
@@ -1301,6 +1371,7 @@ class TuiSession:
             lines = list(split_lines(self._formatted(wrapped)))
             if not lines:
                 continue
+            segment["_line_count"] = len(lines)
             styled[-1].extend(lines[0])
             styled.extend(lines[1:])
             if segment.get("kind") == "card" and self._has_toggle(segment):
@@ -1346,6 +1417,7 @@ class TuiSession:
                 continue
             self._styled_lines[-1].extend(lines[0])
             self._styled_lines.extend(lines[1:])
+            segment["_line_count"] = len(lines)
             if segment.get("kind") == "card" and self._has_toggle(segment):
                 # The footer is the click target for expanding just this card.
                 index = self._footer_line_index(self._styled_lines)
@@ -1353,6 +1425,17 @@ class TuiSession:
                     self._toggle_rows[index] = segment["id"]
             plain_add.append(fragment_list_to_text(fragments))
         if not plain_add:
+            return
+        compacted: tuple[str, int] | None = None
+        with self._lock:
+            if self._trim_transcript_locked():
+                plain = self._rebuild_state_locked()
+                cursor = len(plain) if self._auto_scroll else min(
+                    self._scrollback.cursor_position, len(plain)
+                )
+                compacted = (plain, cursor)
+        if compacted is not None:
+            self._commit_transcript(*compacted)
             return
         plain = self._scrollback.text + "".join(plain_add)
         cursor = len(plain) if self._auto_scroll else self._scrollback.cursor_position

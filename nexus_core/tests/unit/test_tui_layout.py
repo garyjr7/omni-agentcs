@@ -228,6 +228,14 @@ def test_answer_buffer_has_no_agent_label_and_commits(tui_factory):
     assert ui.session.answer_height() == 0
 
 
+def test_set_answer_replaces_a_cumulative_snapshot(tui_factory):
+    ui = tui_factory()
+    ui.session.set_answer("El servicio")
+    ui.session.set_answer("El servicio 80 responde")
+    assert ui.session.answer_active is True
+    assert ui.session.end_answer() == "El servicio 80 responde"
+
+
 def test_pageup_preserves_history_and_pauses_follow(tui_factory):
     import threading
     ui = tui_factory()

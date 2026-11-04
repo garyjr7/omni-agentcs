@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 from nexus_core.agent import react
+from nexus_core.agent.react_support import extract_partial_answer
 
 
 class _StreamingClient:
@@ -42,6 +43,14 @@ def test_extract_partial_thought_unescapes() -> None:
     assert react.extract_partial_thought('{"thought": "di \\"hola\\"') == 'di "hola"'
 
 
+def test_extract_partial_answer_requires_task_complete() -> None:
+    assert extract_partial_answer('{"action": "tool_call", "summary": "no"}') == ""
+    assert extract_partial_answer(
+        '{"action": "task_complete", "summary": "listo'
+    ) == "listo"
+    assert extract_partial_answer('{"thought": "sin resumen"}') == ""
+
+
 def test_complete_turn_streams_thought_until_done():
     thoughts: list[str] = []
     done: list[bool] = []
@@ -60,6 +69,26 @@ def test_complete_turn_streams_thought_until_done():
     assert "task_complete" in response.content
     assert thoughts[0].rstrip() == "escaneo"
     assert thoughts[-1] == "escaneo el puerto 80"
+    assert done == [True]
+    assert client.complete_calls == 0
+
+
+def test_complete_turn_streams_the_final_answer():
+    answers: list[str] = []
+    done: list[bool] = []
+    client = _StreamingClient(
+        [
+            '{"thought": "termino", "action": "task_complete", "summary": "El ',
+            'servicio 80 responde.',
+            '", "findings": []}',
+        ]
+    )
+    config = react.ReActConfig(
+        on_answer=answers.append, on_answer_done=lambda: done.append(True)
+    )
+    asyncio.run(react._complete_turn(client, [], config))
+    assert answers[0] == "El "
+    assert answers[-1] == "El servicio 80 responde."
     assert done == [True]
     assert client.complete_calls == 0
 

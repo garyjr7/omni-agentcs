@@ -375,6 +375,13 @@ class ReActConfig:
     #: Called once when a streamed turn ends (success, error or fallback), so the
     #: live indicator closes before the durable thought is rendered.
     on_thought_done: Callable[[], None] | None = None
+    #: Live final-answer hook: receives the accumulating ``summary`` while the
+    #: model writes a ``task_complete`` action. Empty for tool/clarification
+    #: turns, so the overlay never shows raw JSON or an interim explanation.
+    on_answer: Callable[[str], None] | None = None
+    #: Called once a streamed turn ends, closing the live answer overlay before
+    #: the durable summary is committed to the transcript.
+    on_answer_done: Callable[[], None] | None = None
     #: Durable budget reservation, run *before* the provider call (P2-C2).
     #: Receives the estimated request tokens and returns an opaque handle (or
     #: ``None`` to skip). Raising :class:`BudgetExceeded` aborts the turn cleanly

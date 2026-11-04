@@ -14,26 +14,27 @@ from rich.console import Console, Group, RenderableType
 from rich.syntax import Syntax
 from rich.text import Text
 
+from ..theme import THEME
+
 _CONTROLS = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]')
 
 #: Input panel (OpenCode-Zen style): dark grey textarea background with a solid
 #: red vertical bar as its only border. There is no top/bottom horizontal rule.
-PANEL_STYLE = 'bg:#2a2a2a'
-PANEL_BAR_STYLE = 'fg:#ff0055 bg:#2a2a2a'
+PANEL_STYLE = THEME.panel_style
+PANEL_BAR_STYLE = THEME.panel_bar_style
 
-#: The semantic palette. One accent only -the header, the operator's rail and
-#: the work pulse-, everything else is either uncoloured text or a verdict.
-#: Defined here and nowhere else: a renderer names a role, never a hex value.
-ACCENT_STYLE = '#ff0055'
-SECONDARY_STYLE = 'dim #787e86'
-OK_STYLE = '#56e696'
-ERROR_STYLE = '#ff4054'
-WARN_STYLE = '#ffc950'
+#: Compatibility aliases over the single palette. A renderer names a role,
+#: never a hex value; the values live in :mod:`nexus_core.cli.theme`.
+ACCENT_STYLE = THEME.primary
+SECONDARY_STYLE = THEME.secondary_style
+OK_STYLE = THEME.ok
+ERROR_STYLE = THEME.error
+WARN_STYLE = THEME.warn
 
 #: Hierarchy of the log (Codex style): reasoning is muted italic, the tool is
 #: bold text, a verified result is green and a failure is red. The branch glyph
 #: indents tool output under its invocation so a card reads as a tree.
-THINKING_STYLE = SECONDARY_STYLE + ' italic'
+THINKING_STYLE = THEME.thinking_style
 TOOL_STYLE = ''
 RESULT_OK_STYLE = OK_STYLE
 RESULT_ERROR_STYLE = ERROR_STYLE
@@ -62,11 +63,11 @@ def startup_banner(engagement: str, version: str, *, width: int = 80,
         ("███████", "  ██   ", "  ██   ", "  ██   ", "  ██   ", "███████"),
     )
     rows = tuple("  ".join(letter[line] for letter in glyphs) for line in range(6))
-    logo = Text("\n".join(rows), style="#ff0055 bold")
+    logo = Text("\n".join(rows), style=THEME.primary_bold)
     metadata = Group(
-        Text(f"[+] [ Omni Agent CS v{clean_text(version)} ] [+]", style="bold white"),
-        Text("[+] [ BAJIOWARE • Red Team ] [+]", style="bold #ff0055"),
-        Text(f"[+] [ {clean_text(engagement)} ] [+]", style="bold white"),
+        Text(f"[+] [ Omni Agent CS v{clean_text(version)} ] [+]", style=THEME.title_style),
+        Text("[+] [ BAJIOWARE • Red Team ] [+]", style=THEME.primary_bold),
+        Text(f"[+] [ {clean_text(engagement)} ] [+]", style=THEME.title_style),
     )
     # The official masthead floats freely. Rich styles the contents, but no
     # Panel/Rule/box renderable is used around the art or metadata. It closes
@@ -143,7 +144,7 @@ def input_quote(value: str, *, width: int = 100, no_color: bool = False) -> str:
     lines = clean_text(value).splitlines() or [""]
     rows: list[RenderableType] = []
     for line in lines:
-        rows.append(Text("▌ ", style="#ff0055 bold") + Text(line))
+        rows.append(Text("▌ ", style=THEME.primary_bold) + Text(line))
     return render_rich(Group(*rows), width=width, no_color=no_color)
 
 
@@ -392,7 +393,8 @@ def turn_header(step: int, phase: str, *, width: int = 80) -> Text:
 
 
 def diff_block(value: str) -> Syntax:
-    return Syntax(clean_text(value), 'diff', theme='ansi_dark', background_color='default',
+    return Syntax(clean_text(value), 'diff', theme=THEME.syntax_theme,
+                  background_color=THEME.syntax_background,
                   word_wrap=True, line_numbers=False)
 
 
@@ -475,7 +477,7 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
 
             hidden = len(_json.dumps(structured, ensure_ascii=False, indent=2,
                                      default=str).splitlines())
-            body.append(Text(f'  Ver {hidden} líneas más', style='dim underline'))
+            body.append(Text(f'  Ver {hidden} líneas más', style=THEME.link_style))
         else:
             body.append(Text('  (sin campos)', style=SECONDARY_STYLE))
         return Group(*body)
@@ -507,7 +509,7 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
         body.append(Text('  …', style=SECONDARY_STYLE))
     emit(folded.tail)
     if folded.hidden:
-        body.append(Text(f'  Ver {folded.hidden} líneas más', style='dim underline'))
+        body.append(Text(f'  Ver {folded.hidden} líneas más', style=THEME.link_style))
     elif expanded and len(lines.splitlines()) > limit:
         body.append(Text('  ctrl+o colapsar', style=SECONDARY_STYLE))
     return Group(*body)
@@ -536,8 +538,8 @@ class WorkingIndicator:
             cells += len(cell)
         label = busy_label(message, room=width - cells - len(BUSY_TAIL) - 3)
         if label:
-            text.append(f' · {label}', style='dim')
-        text.append(BUSY_TAIL, style='dim')
+            text.append(f' · {label}', style=THEME.dim_style)
+        text.append(BUSY_TAIL, style=THEME.dim_style)
         return render_rich(text, width=width, no_color=no_color).split('\n')[0]
 
 

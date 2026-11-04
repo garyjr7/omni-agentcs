@@ -1233,9 +1233,13 @@ class OmniSession:
                 self, self.store, self.tenant_id, run_id, trust_mode=self.trust_mode
             ),
             resume_policy=self.effective_resume_policy,
-            # Stream the model's reasoning into the live overlay (TUI only).
+            # Stream the model's reasoning and the final summary into the live
+            # overlays (TUI only). The summary hook stays silent until the
+            # partial JSON names task_complete.
             on_thought=self._tui.set_thought if self._tui.use_tui else None,
             on_thought_done=self._tui.end_thought if self._tui.use_tui else None,
+            on_answer=self._tui.set_answer if self._tui.use_tui else None,
+            on_answer_done=self._tui.end_answer if self._tui.use_tui else None,
             # PLAN-FIRST: an engagement does not begin by attacking. The plan is
             # drafted below, before the first turn; this flag is what makes the
             # loop hold the run to it.
@@ -1559,19 +1563,45 @@ class OmniSession:
 # --------------------------------------------------------------- live stream
 @routed
 def _stream_run_events(session: OmniSession, stop_event: threading.Event) -> None:
-    """Poll the durable run events and messages until the loop finishes.
+    """Push durable updates to the transcript until the loop finishes.
 
     Runs in a background thread while ``run_react_loop`` owns the main thread,
-    so the human approval prompt always reads from a real terminal.
+    so the human approval prompt always reads from a real terminal. A store
+    with ``subscribe`` wakes the batcher; duck-typed test stores without it keep
+    the old slow poll as a compatibility fallback.
     """
     state: dict[str, Any] = {
         "run_id": None, "sequence": 0, "message_sequence": None, "turn": 0,
     }
-    while True:
+    from .tui.events import UpdateBatcher
+
+    batcher = UpdateBatcher(lambda _items: _drain_stream(session, state))
+    unsubscribe = None
+    subscribed = False
+    subscribe = getattr(session.store, "subscribe", None)
+    if callable(subscribe):
+        try:
+            unsubscribe = subscribe(lambda _kind, _meta: batcher.post(None))
+            subscribed = True
+        except Exception:  # noqa: BLE001 - a store without push keeps the fallback
+            unsubscribe = None
+    try:
+        if subscribed:
+            # Establish the message cursor synchronously before the run can
+            # append its first row; a posted drain could race that append.
+            _drain_stream(session, state)
+            batcher.start()
+            stop_event.wait()
+        else:
+            while True:
+                _drain_stream(session, state)
+                if stop_event.wait(session.stream_interval):
+                    break
+    finally:
+        if unsubscribe is not None:
+            unsubscribe()
+        batcher.stop()
         _drain_stream(session, state)
-        if stop_event.wait(session.stream_interval):
-            break
-    _drain_stream(session, state)
 
 
 def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:

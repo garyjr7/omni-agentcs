@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 
 _THOUGHT_RE = re.compile(r'"thought"\s*:\s*"((?:[^"\\]|\\.)*)')
+_SUMMARY_RE = re.compile(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)')
+_TASK_COMPLETE_RE = re.compile(r'"action"\s*:\s*"task_complete"')
 
 import asyncio
 import json
@@ -941,6 +943,27 @@ def extract_partial_thought(raw: str) -> str:
         return fragment.replace('\\"', '"').replace("\\n", "\n")
 
 
+def extract_partial_answer(raw: str) -> str:
+    """Best-effort ``summary`` of a partial ``task_complete`` reply.
+
+    A tool call carries no final answer, and streaming raw JSON into the
+    transcript would show the protocol instead of the result. The field is
+    surfaced only once the partial object already names ``task_complete``;
+    incomplete escapes use the same light fallback as ``extract_partial_thought``.
+    """
+    text = str(raw or "")
+    if _TASK_COMPLETE_RE.search(text) is None:
+        return ""
+    match = _SUMMARY_RE.search(text)
+    if match is None:
+        return ""
+    fragment = match.group(1)
+    try:
+        return str(json.loads(f'"{fragment}"'))
+    except (ValueError, TypeError):
+        return fragment.replace('\\"', '"').replace("\\n", "\n")
+
+
 def _notify(callback: Callable[..., None] | None, *args: Any) -> None:
     """Call a UI hook without ever letting it break the run."""
     if callback is None:
@@ -965,23 +988,30 @@ async def _complete_turn(llm_client: Any, messages: list[Any], config: ReActConf
     if getattr(provider_client, "supports_action_json", False):
         options["response_format"] = {"type": "json_object"}
     can_stream = (
-        config.on_thought is not None
+        (config.on_thought is not None or config.on_answer is not None)
         and bool(getattr(llm_client, "supports_streaming", False))
         and hasattr(llm_client, "stream")
     )
     if not can_stream:
         return await llm_client.complete(messages, **options)
     collected: list[str] = []
-    last = ""
+    last_thought = ""
+    last_answer = ""
     try:
         async for chunk in llm_client.stream(messages, **options):
             collected.append(chunk)
-            thought = extract_partial_thought("".join(collected))
-            if thought and thought != last:
-                last = thought
+            raw = "".join(collected)
+            thought = extract_partial_thought(raw)
+            if thought and thought != last_thought:
+                last_thought = thought
                 _notify(config.on_thought, thought)
+            answer = extract_partial_answer(raw)
+            if answer != last_answer:
+                last_answer = answer
+                _notify(config.on_answer, answer)
     except Exception as exc:  # noqa: BLE001 - retry the whole turn without streaming
         _notify(config.on_thought_done)
+        _notify(config.on_answer_done)
         # A malformed *answer* is not a streaming transport failure: replaying
         # the whole turn would spend a second provider call producing the same
         # garbage. The ReAct loop corrects and retries it instead (Run 3, Simple
@@ -991,6 +1021,7 @@ async def _complete_turn(llm_client: Any, messages: list[Any], config: ReActConf
         return await llm_client.complete(messages, **options)
     finally:
         _notify(config.on_thought_done)
+        _notify(config.on_answer_done)
     response = getattr(llm_client, "last_stream_response", None)
     if response is not None:
         return response

@@ -108,8 +108,11 @@ class PlaceholderProcessor(Processor):
 
 
 def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any, output: Any, full_screen: bool = False) -> None:
+    from ..theme import THEME
     from .lexer import OmniLexer
-    from .presentation import PANEL_BAR_STYLE, PANEL_STYLE
+
+    PANEL_STYLE = THEME.panel_style
+    PANEL_BAR_STYLE = THEME.panel_bar_style
 
     class ConsoleInset(Margin):
         """Two blank cells that keep transcript and footer content off the edge."""
@@ -330,7 +333,7 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     # the banner start on row 0 and then be pushed down when the badge appeared
     # mid-session, so the header painted over the masthead instead of above it.
     badge = Window(FormattedTextControl(ui._header_badge), height=1,
-                   align=WindowAlign.LEFT, style="#ff0055", left_margins=inset)
+                   align=WindowAlign.LEFT, style=THEME.badge_style, left_margins=inset)
     ui._badge_window = badge
     ui._input_window = VSplit(
         [outer_input_gap, bar, input_gap, HSplit([top_padding, editor, input_padding, footer, bottom_padding],
@@ -340,7 +343,7 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     # The helper hints are a static footer line outside the panel, and the
     # operational bar only occupies a row when it has an alert to show.
     hints = Window(FormattedTextControl(f"← {HISTORY_HINT} · ? {HELP_HINT}"), height=1,
-                   style="#ffffff", left_margins=inset)
+                   style=THEME.hints_style, left_margins=inset)
     hints_top_margin = Window(height=1)
     hints_bottom_margin = Window(height=1)
     ui._hints_top_margin = hints_top_margin
@@ -381,7 +384,7 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
 
     ui._approval_window = Window(
         FormattedTextControl(ui._approval_formatted), wrap_lines=True,
-        height=approval_height, style="bg:#1a0d11",
+        height=approval_height, style=THEME.approval_surface_style,
     )
     ui._approval_bar = Window(width=1, char="│", style=PANEL_BAR_STYLE)
     ui._approval_panel = VSplit(
@@ -447,8 +450,7 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         mouse_support=True, refresh_interval=None, min_redraw_interval=0.25,
         key_bindings=keys, input=input, output=output,
         style=Style.from_dict({
-            **panel_style(), **approval_style(), "busy": "#ff0055",
-            "scroll": "#ff0055", "placeholder": "#6a6f76 italic",
+            **panel_style(), **approval_style(), **THEME.prompt_toolkit_styles(),
             **(prompt_style or {}),
         }),
         color_depth=ColorDepth.DEPTH_1_BIT if ui.no_color else ColorDepth.DEPTH_24_BIT,

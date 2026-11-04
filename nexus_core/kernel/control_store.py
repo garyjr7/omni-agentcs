@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import contextmanager
+import threading
+from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional
@@ -324,6 +325,39 @@ class ControlStore:
     def __init__(self, path: str | Path):
         self.path: Path | None = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        #: In-process UI subscribers. The durable row is committed first; a
+        #: callback only wakes the renderer, it never owns the write.
+        self._subscribers: list[Any] = []
+        self._subscribers_lock = threading.RLock()
+
+    def subscribe(self, callback: Any) -> Any:
+        """Call ``callback(kind, meta)`` after a durable message/event append.
+
+        Returns an idempotent unsubscribe function. Subscribers are local to
+        this process: a worker in another process still needs its own tail, but
+        the CLI and its agent share one store object.
+        """
+        with self._subscribers_lock:
+            self._subscribers.append(callback)
+
+        def unsubscribe() -> None:
+            with self._subscribers_lock:
+                try:
+                    self._subscribers.remove(callback)
+                except ValueError:
+                    pass
+
+        return unsubscribe
+
+    def _publish(self, kind: str, **meta: Any) -> None:
+        """Wake in-process renderers without letting one break the write path."""
+        with self._subscribers_lock:
+            callbacks = tuple(self._subscribers)
+        for callback in callbacks:
+            # A renderer wake-up is best-effort: it must never fail the durable
+            # append that just committed.
+            with suppress(Exception):
+                callback(kind, meta)
 
     def connect(self) -> DatabaseConnection:
         conn = sqlite3.connect(str(self.path), timeout=10)
@@ -588,6 +622,7 @@ class ControlStore:
                 (event["event_id"], tenant_id, run_id, event_type,
                  json.dumps(event["payload"]), event["created_at"]),
             )
+        self._publish("run_event", tenant_id=tenant_id, run_id=run_id)
         return event
 
     def list_run_events(self, tenant_id: str, run_id: str,
@@ -659,6 +694,10 @@ class ControlStore:
             )
             conn.execute("UPDATE kernel_conversations SET updated_at=? WHERE id=? AND tenant_id=?",
                          (message["created_at"], conversation_id, tenant_id))
+        self._publish(
+            "message", tenant_id=tenant_id, conversation_id=conversation_id,
+            run_id=run_id,
+        )
         return message
 
     def list_messages(self, tenant_id: str, conversation_id: str,
