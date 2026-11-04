@@ -360,13 +360,20 @@ GUARDRAIL_OUTCOMES = frozenset({
 
 
 def is_guardrail(result: dict[str, Any]) -> bool:
-    """True when the observation is a pre-execution correction of the loop."""
+    """True when the observation is a pre-execution correction of the loop.
+
+    ``failure_kind="input"`` is the coordinator's classification of a
+    ``ValueError`` raised by argument/schema validation, before the handler
+    touched the target (for example ``update_plan`` refusing a declaration that
+    needs evidence). It is guidance for the next turn, not a tool failure; a
+    ``failure_kind="tool"`` stays red because the tool really broke.
+    """
     if not isinstance(result, dict):
         return False
     return bool(
         result.get("refused_before_execution")
         or str(result.get("outcome") or "") in GUARDRAIL_OUTCOMES
-        or str(result.get("failure_kind") or "") == "repeated_action"
+        or str(result.get("failure_kind") or "") in {"repeated_action", "input"}
     )
 
 

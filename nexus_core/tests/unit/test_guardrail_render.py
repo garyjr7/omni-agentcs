@@ -84,6 +84,37 @@ def test_the_guardrail_is_amber_in_truecolor():
     assert "38;2;255;64;84" not in colored
 
 
+def test_update_plan_input_correction_is_amber_not_red():
+    result = {
+        "success": False,
+        "tool_id": "nexus.orchestrator.update_plan",
+        "outcome": "error",
+        "failure_kind": "input",
+        "error": (
+            "todo 'report' closes with evidence, not with a declaration: "
+            "its fact_types are report. Produce the evidence and it will be "
+            "ticked automatically."
+        ),
+    }
+    text = render_tool_result(result, no_color=True, width=100)
+    assert "⚠" in text and "corrección del orquestador" in text
+    assert "closes with evidence" in text
+    assert "×" not in text and "falló" not in text
+
+
+def test_a_real_tool_failure_keeps_the_input_correction_distinct():
+    result = {
+        "success": False,
+        "tool_id": "nexus.orchestrator.update_plan",
+        "outcome": "error",
+        "failure_kind": "tool",
+        "error": "el binario del orquestador no responde",
+    }
+    text = render_tool_result(result, no_color=True, width=100)
+    assert text.startswith("  × nexus.orchestrator.update_plan")
+    assert "corrección del orquestador" not in text
+
+
 def test_a_real_failure_keeps_the_error_colour():
     text = render_tool_result(
         {"success": False, "tool_id": "nexus.recon.nmap", "error": "timeout 120s"},
