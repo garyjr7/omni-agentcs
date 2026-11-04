@@ -388,7 +388,7 @@ def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
         value = "\n".join(data_lines(value, width=None)[0])
     return render_rich(trace_block(
         value,
-        success=bool(result.get("success")), tool_id=str(result.get("tool_id") or "tool"),
+        success=bool(result.get("success")), tool_id=str(result.get("tool_id") or ""),
         summary=summarize_tool_result(result), expanded=expanded, limit=max_lines,
         diff=is_diff, defer_detail=structured is not None, structured=structured,
         guardrail=guardrail, guidance=guidance, width=width,

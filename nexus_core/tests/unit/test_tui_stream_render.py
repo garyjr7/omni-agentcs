@@ -156,7 +156,7 @@ def test_a_structured_error_keeps_its_text_and_defers_the_json():
     result = {"success": False, "tool_id": "nexus.web.request",
               "output": {"error": "connection refused", "host": "10.0.0.5"}}
     collapsed = render_tool_result(result, no_color=True)
-    assert "× connection refused" in collapsed
+    assert "× nexus.web.request · connection refused" in collapsed
     assert "× failed" not in collapsed
     # The JSON stays behind one click instead of being dumped field by field.
     assert "Ver " in collapsed and "líneas más" in collapsed

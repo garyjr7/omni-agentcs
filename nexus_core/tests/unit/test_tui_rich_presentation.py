@@ -37,7 +37,7 @@ def test_trace_keeps_stdout_and_stderr_and_literal_markup() -> None:
               'stdout': '[bold]literal[/bold]', 'stderr': 'failure detail'}
     text = render_tool_result(result, no_color=True)
     assert output_text(result) == '[stdout]\n[bold]literal[/bold]\n[stderr]\nfailure detail'
-    assert '× falló' in text and 'nexus.example' not in text
+    assert '× nexus.example · falló' in text and text.count('nexus.example') == 1
     assert '[bold]literal[/bold]' in text and 'failure detail' in text
     assert '\x1b' not in text and '\r' not in text
 

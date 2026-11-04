@@ -391,8 +391,15 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
         return Group(*body)
 
     color = RESULT_OK_STYLE if success else RESULT_ERROR_STYLE
+    # A failure names the tool that failed: the verdict line alone used to read
+    # ``× timeout 120s``, so the operator could not tell which call it was. It
+    # appears once, before the reason, and never adds a second failure mark.
+    label = clean_text(str(tool_id or ''))
+    summary_text = summary
+    if not success and label and label not in str(summary):
+        summary_text = f'{label} · {summary}'
     body.extend(Text(line, style=f'bold {color}')
-                for line in _summary_lines(summary, success=success, width=width))
+                for line in _summary_lines(summary_text, success=success, width=width))
 
     if structured is not None and not expanded:
         # A structured payload used to be dumped as a ``└─ field: value`` tree
