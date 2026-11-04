@@ -416,6 +416,10 @@ class ReActResult:
     #: Why the completion was refused, when ``status`` is
     #: ``premature_completion``.
     completion_objections: list[str] = field(default_factory=list)
+    #: Report really written by ``nexus.report.generate`` in this run, when it
+    #: exists. The caller renders its directory in the final summary without
+    #: generating anything itself.
+    report_artifact: dict[str, Any] | None = None
     #: Machine-readable reason for a stop that ``status`` alone cannot tell
     #: apart: ``provider_refusal`` means the model/provider declined to go on
     #: (see :data:`TERMINATION_PROVIDER_REFUSAL`). Empty means "the status is

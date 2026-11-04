@@ -5650,6 +5650,9 @@ class ReActCoordinator:
                 else None
             ),
             completion_objections=list(self.completion_objections),
+            report_artifact=(
+                dict(self.report_artifact) if self.report_artifact else None
+            ),
             termination_reason=self.termination_reason,
             budget_tokens=int(self.budget or 0),
             budget_used=(

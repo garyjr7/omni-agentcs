@@ -1344,8 +1344,34 @@ class OmniSession:
             width = max(20, int(self._tui._session.output.get_size().columns) - 4)
         except Exception:  # noqa: BLE001 - cosmetic sizing only
             width = 80
-        body = render_markdown(summary_markdown(result), no_color=self.no_color,
-                               max_width=width)
+        # A completed run shows what its own blackboard already proves: the
+        # services it discovered, then the report path only when a report was
+        # really written. Reading these facts generates nothing.
+        facts: list[dict[str, Any]] = []
+        if str(getattr(result, "status", "") or "") == "completed":
+            store = getattr(self, "store", None)
+            engagement_id = getattr(self, "engagement_id", None)
+            if store is not None and engagement_id:
+                try:
+                    from nexus_core.kernel.blackboard import Blackboard
+
+                    facts = Blackboard(store).list_facts(
+                        self.tenant_id, engagement_id, fact_type="service", limit=200
+                    )
+                except Exception:  # noqa: BLE001 - cosmetic summary only
+                    facts = []
+        artifact = getattr(result, "report_artifact", None)
+        directory = str(artifact.get("directory") or "") if isinstance(artifact, dict) else ""
+        report_path = None
+        if directory:
+            try:
+                report_path = os.path.relpath(directory)
+            except ValueError:  # different drive on Windows
+                report_path = directory
+        body = render_markdown(
+            summary_markdown(result, service_facts=facts, report_path=report_path),
+            no_color=self.no_color, max_width=width,
+        )
         if not str(result.final_summary or "").strip():
             body = body.replace("_(sin resumen)_", f"(sin resumen · estado={result.status})")
         self._tui.append_execution_block(body)

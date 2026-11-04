@@ -168,14 +168,55 @@ def user_message(value: str, *, width: int = 100, no_color: bool = False,
     return render_rich(Group(*rows), width=width, no_color=no_color)
 
 
-def summary_markdown(result: Any) -> str:
+_SERVICE_KEY = re.compile(
+    r'^(?P<host>.+?):(?P<port>\d+)(?:(?::|/)(?P<proto>[A-Za-z0-9]+))?$'
+)
+
+
+def _service_table(facts: Any) -> list[str]:
+    """Markdown table of the verified ``service`` facts, newest data first.
+
+    Facts are the blackboard's own records; the renderer invents no port or
+    service. Both key spellings nmap has used (``host:port/proto`` and
+    ``host:port:proto``) are accepted, and a repeated service is shown once.
+    """
+    rows: dict[tuple[str, int, str], tuple[str, str, str, str]] = {}
+    for fact in facts or ():
+        if not isinstance(fact, dict) or str(fact.get("fact_type") or "") != "service":
+            continue
+        match = _SERVICE_KEY.match(str(fact.get("key") or "").strip())
+        if match is None:
+            continue
+        value = fact.get("value") if isinstance(fact.get("value"), dict) else {}
+        host = match.group("host")
+        port = int(match.group("port"))
+        proto = str(match.group("proto") or value.get("protocol") or "tcp").lower()
+        service = str(value.get("service") or value.get("product") or "?").strip()
+        state = str(value.get("state") or "open").strip()
+        rows[(host, port, proto)] = (host, str(port), service, state)
+    if not rows:
+        return []
+    lines = [
+        "", "### Servicios", "",
+        "| Puerto | Servicio | Estado |",
+        "| --- | --- | --- |",
+    ]
+    for _, port, service, state in sorted(rows.values(), key=lambda row: (row[0], int(row[1]))):
+        lines.append(f"| {port} | {service.replace('|', '/')} | {state.replace('|', '/')} |")
+    return lines
+
+
+def summary_markdown(result: Any, *, service_facts: Any = None,
+                     report_path: str | None = None) -> str:
     """Final result as clean Markdown, for the TUI transcript.
 
     A bordered box fragments on a wide terminal: the border and the wrapped
     body stop agreeing at 200 columns. The dedicated screen renders the same
     facts as a Markdown block instead, while ``--no-tui`` keeps the box.
     Only data the result already carries is listed: the final summary, the
-    findings, the phases still open and the run's status/iteration count.
+    services discovered, the findings, the phases still open and the run's
+    status/iteration count. ``report_path`` is rendered only when a report was
+    really written, and no report is generated here.
     """
     status = str(getattr(result, "status", "") or "")
     iterations = getattr(result, "iterations", None)
@@ -190,6 +231,7 @@ def summary_markdown(result: Any) -> str:
     lines: list[str] = ["## Resultado", ""]
     summary = str(getattr(result, "final_summary", "") or "").strip()
     lines.extend((summary or "_(sin resumen)_").splitlines())
+    lines.extend(_service_table(service_facts))
     if findings:
         lines.extend(["", "### Hallazgos", ""])
         for finding in findings:
@@ -202,6 +244,8 @@ def summary_markdown(result: Any) -> str:
     if pending:
         lines.extend(["", "### Ramas abiertas", ""])
         lines.extend(f"- {item.get('label') or item.get('id')}" for item in pending)
+    if report_path:
+        lines.extend(["", f"*Informe completo en {report_path}*"])
     lines.extend(["", "### Estado", ""])
     lines.append(f"- estado: {status or '?'}")
     if iterations is not None:
