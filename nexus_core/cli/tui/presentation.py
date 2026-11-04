@@ -301,22 +301,43 @@ def thinking(value: str, *, expanded: bool = False, width: int = 100,
 
 
 def live_thought(value: str, *, width: int = 100) -> Text:
-    """Up to ``LIVE_THOUGHT_LINES`` streamed lines under ``Razonando``.
+    """At most ``LIVE_THOUGHT_LINES`` wrapped rows under ``Razonando``.
 
-    A longer note keeps its conclusion: an ellipsis row plus the last five
-    lines, so the row reads as current thinking rather than as a backlog.
+    The provider streams a paragraph, not pre-wrapped lines. Wrapping happens
+    here, before Rich: the label rides the first row and every row fits the
+    width the live row actually owns. A longer note is cut after five rows and
+    the last one ends in ``…``; it never becomes one horizontal line.
     """
     from .strings import THINKING_LIVE
 
-    lines = [line for line in _thought_lines(value, width) if line.strip()]
-    if len(lines) > LIVE_THOUGHT_LINES:
-        lines = ['…', *lines[-LIVE_THOUGHT_LINES:]]
-    if not lines:
+    body = clean_text(str(value or '')).strip()
+    if not body:
         return Text(THINKING_LIVE, style=THINKING_STYLE)
-    text = Text(f'{THINKING_LIVE} {lines[0]}', style=THINKING_STYLE)
-    for line in lines[1:]:
-        text.append('\n  ' + line, style=THINKING_STYLE)
-    return text
+    limit = max(20, int(width))
+    label = f'{THINKING_LIVE} '
+    lines: list[str] = []
+    first = True
+    for raw in body.splitlines():
+        if not raw.strip():
+            lines.append('')
+            continue
+        wrapped = textwrap.wrap(
+            raw,
+            width=limit,
+            initial_indent=label if first else '  ',
+            subsequent_indent='  ',
+            break_long_words=False,
+            break_on_hyphens=False,
+        ) or [label.rstrip() if first else '  ']
+        lines.extend(wrapped)
+        first = False
+    if len(lines) > LIVE_THOUGHT_LINES:
+        lines = lines[:LIVE_THOUGHT_LINES]
+        last = lines[-1].rstrip()
+        if len(last) >= limit:
+            last = last[: max(0, limit - 1)]
+        lines[-1] = last + '…'
+    return Text('\n'.join(lines), style=THINKING_STYLE)
 
 
 def turn_header(step: int, phase: str, *, width: int = 80) -> Text:

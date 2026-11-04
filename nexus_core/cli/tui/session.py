@@ -601,12 +601,12 @@ class TuiSession:
         return max(20, int(columns) - 4)
 
     def thought_height(self) -> int:
-        """Rows of the live reasoning row: one to five, plus the ellipsis row."""
+        """Rows of the live reasoning row: one to five, never more."""
         with self._lock:
             text = self._thought_text or ""
         from .presentation import LIVE_THOUGHT_LINES, live_thought
         lines = live_thought(text, width=self._thought_width()).plain.splitlines()
-        return max(1, min(LIVE_THOUGHT_LINES + 1, len(lines)))
+        return max(1, min(LIVE_THOUGHT_LINES, len(lines)))
 
     def _thought_formatted(self) -> StyleAndTextTuples:
         with self._lock:

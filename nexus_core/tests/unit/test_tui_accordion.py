@@ -94,18 +94,39 @@ def test_a_structured_result_opens_its_json_only_when_expanded(tui_factory):
     assert '"foo": "bar"' in ui.session._scrollback.text
 
 
-def test_thought_overlay_keeps_the_last_five_lines_and_an_ellipsis(tui_factory):
+def test_thought_overlay_keeps_the_first_five_lines_and_an_ellipsis(tui_factory):
     ui = tui_factory()
     ui.session.set_thought("\n".join(f"linea {n}" for n in range(9)))
     rendered = "".join(part[1] for part in ui.session._thought_formatted())
-    assert rendered.startswith("Razonando …")
-    assert "linea 4" in rendered and "linea 0" not in rendered
-    # Five body lines plus the ellipsis row: the dock never grows further.
-    assert ui.session.thought_height() == 6
+    assert rendered.startswith("Razonando linea 0")
+    assert "linea 4" in rendered and "linea 8" not in rendered
+    assert rendered.rstrip().endswith("…")
+    # The cut is five rows total; the dock never grows to a sixth.
+    assert ui.session.thought_height() == 5
     ui.session.set_thought("una sola línea")
     assert ui.session.thought_height() == 1
     ui.session.end_thought()
     assert ui.session.thought_active is False
+
+
+def test_thought_overlay_wraps_a_paragraph_instead_of_one_long_line(tui_factory):
+    ui = tui_factory()
+    ui.session.set_thought(" ".join(["evidencia"] * 80))
+    rendered = "".join(part[1] for part in ui.session._thought_formatted())
+    lines = rendered.splitlines()
+    assert 2 <= len(lines) <= 5
+    assert lines[0].startswith("Razonando ")
+    assert all(len(line) <= 76 for line in lines)
+    assert lines[-1].endswith("…")
+    assert ui.session.thought_height() <= 5
+
+
+def test_thought_overlay_keeps_each_real_newline_as_a_row(tui_factory):
+    ui = tui_factory()
+    ui.session.set_thought("uno\ndos\ntres")
+    rendered = "".join(part[1] for part in ui.session._thought_formatted())
+    assert rendered.splitlines() == ["Razonando uno", "  dos", "  tres"]
+    assert ui.session.thought_height() == 3
 
 
 def test_thought_overlay_streams_and_closes(tui_factory):
