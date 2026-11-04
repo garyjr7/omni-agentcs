@@ -676,3 +676,53 @@ async def test_loop_reaps_pty_sessions_before_session_end(harness, monkeypatch):
     )
     assert result.status == STATUS_COMPLETED
     assert reaped == [context.run_id]
+
+
+class _ReasoningScriptedLLM(ScriptedLLM):
+    """A scripted provider that also returns its native reasoning."""
+
+    async def complete(self, messages, **kwargs):
+        response = await super().complete(messages, **kwargs)
+        response.reasoning = "El 445/tcp responde SMB; lo enumero antes de atacar la web."
+        return response
+
+
+async def test_the_provider_reasoning_is_emitted_as_its_own_event(harness):
+    """R-4c: reasoning travels as ``react.reasoning``, never inside the JSON."""
+    store, context = harness
+    llm = _ReasoningScriptedLLM([task_complete("hecho")])
+
+    await run_react_loop(
+        context=context,
+        objective="objetivo",
+        engagement_id="eng-1",
+        llm_client=llm,
+        config=_loop_config(max_iterations=1),
+    )
+
+    events = [
+        event for event in store.list_run_events("system", context.run_id)
+        if event["event_type"] == "react.reasoning"
+    ]
+    assert len(events) == 1
+    assert events[0]["payload"]["reasoning"].startswith("El 445/tcp responde SMB")
+    assert events[0]["payload"]["iteration"] == 1
+
+
+async def test_native_reasoning_never_enters_the_next_prompt(harness):
+    """D-9: the provider's reasoning is a journal event, not conversation."""
+    _store, context = harness
+    llm = _ReasoningScriptedLLM([tool_call(), task_complete("hecho")])
+    spy = ToolSpy()
+
+    with mock.patch.object(runtime_module, "execute_tool", spy):
+        await run_react_loop(
+            context=context,
+            objective="objetivo",
+            engagement_id="eng-1",
+            llm_client=llm,
+            config=_loop_config(max_iterations=2),
+        )
+
+    second_prompt = _messages_text(llm, 1)
+    assert "El 445/tcp responde SMB" not in second_prompt

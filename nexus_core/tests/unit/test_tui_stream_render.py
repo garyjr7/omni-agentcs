@@ -250,15 +250,117 @@ def test_daemon_uses_compact_messages_in_tui(tui_factory):
     session = OmniSession(store=None, use_tui=False)
     session._tui, session._output = ui.session, TuiOutput(ui.session)
     session.run_id, session.conversation_id = "r", "c"
-    messages = [{"metadata": {"kind": "react.action", "action": "tool_call", "tool_id": "nexus.recon.nmap", "arguments": {"target": "lab"}}}]
-    session.store = SimpleNamespace(
-        list_run_events=lambda *a, **k: [],
-        list_messages=lambda *a, after_sequence=None, **k: [
+    messages = [{"sequence": 7, "metadata": {"kind": "react.action", "action": "tool_call", "tool_id": "nexus.recon.nmap", "arguments": {"target": "lab"}}}]
+    cursors: list[int | None] = []
+
+    def list_messages(*args, after_sequence=None, **kwargs):
+        cursors.append(after_sequence)
+        return [
             message for message in messages
             if after_sequence is None or message.get("sequence", 0) > after_sequence
-        ],
+        ]
+
+    session.store = SimpleNamespace(
+        list_run_events=lambda *a, **k: [],
+        list_messages=list_messages,
     )
     state = {"run_id": "r", "sequence": 0, "message_sequence": None, "turn": 0}
     _drain_stream(session, state)
     _drain_stream(session, state)
     assert _plain(ui.session.transcript).count("$ nmap") == 1
+    # The second poll asks the store only for what follows the last row it saw.
+    assert cursors == [None, 7]
+
+
+class _RecordingTui:
+    """Minimal TUI facade: records the blocks and cards the stream emits."""
+
+    use_tui = True
+    expand_cards = False
+    text_width = 80
+    no_color = True
+
+    def __init__(self):
+        self.blocks = []
+        self.cards = []
+        self._pending_reasoning = None
+
+    def task_event(self, event):
+        pass
+
+    def set_status(self, **kwargs):
+        pass
+
+    def append_execution_block(self, text):
+        self.blocks.append(text)
+
+    def append_card(self, result, **kwargs):
+        self.cards.append((result, kwargs))
+
+
+def _action(sequence, thought, target="lab"):
+    return {
+        "sequence": sequence,
+        "metadata": {
+            "kind": "react.action",
+            "action": "tool_call",
+            "tool_id": "nexus.recon.nmap",
+            "arguments": {"target": target},
+            "thought": thought,
+        },
+    }
+
+
+def test_the_first_turn_has_no_step_header_and_the_second_does():
+    from types import SimpleNamespace
+
+    from nexus_core.cli.session import _drain_stream
+
+    tui = _RecordingTui()
+    session = SimpleNamespace(
+        store=SimpleNamespace(
+            list_run_events=lambda *a, **k: [],
+            list_messages=lambda *a, **k: [_action(1, "primero"), _action(2, "segundo", "lab2")],
+        ),
+        tenant_id="system",
+        conversation_id="c",
+        run_id="r",
+        _tui=tui,
+    )
+    _drain_stream(session, {"run_id": "r", "sequence": 0, "message_sequence": None, "turn": 0})
+
+    joined = "\n".join(_plain(block) for block in tui.blocks)
+    assert "paso 1" not in joined
+    assert "paso 2" in joined
+
+
+def test_the_reasoning_event_reaches_the_reasoning_card():
+    from types import SimpleNamespace
+
+    from nexus_core.cli.session import _drain_stream, _render_run_event
+
+    tui = _RecordingTui()
+    session = SimpleNamespace(
+        store=SimpleNamespace(
+            list_run_events=lambda *a, **k: [],
+            list_messages=lambda *a, **k: [_action(1, "reviso el puerto 445")],
+        ),
+        tenant_id="system",
+        conversation_id="c",
+        run_id="r",
+        _tui=tui,
+    )
+    _render_run_event(
+        session,
+        {"event_type": "react.reasoning", "payload": {"reasoning": "El SMB está abierto."}},
+    )
+    assert tui._pending_reasoning == "El SMB está abierto."
+
+    state = {"run_id": "r", "sequence": 0, "message_sequence": None, "turn": 0}
+    _drain_stream(session, state)
+
+    assert tui._pending_reasoning is None
+    assert tui.cards
+    _result, kwargs = tui.cards[0]
+    assert kwargs["thought"] == "reviso el puerto 445"
+    assert kwargs["reasoning"] == "El SMB está abierto."

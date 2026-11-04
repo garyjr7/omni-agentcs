@@ -264,6 +264,21 @@ def test_report_default_directory_is_under_the_working_directory(env, tmp_path,
     assert Path(result["output"]["report_path_md"]).is_file()
 
 
+def test_report_root_falls_back_to_xdg_when_the_cwd_is_not_writable(
+    env, tmp_path, monkeypatch
+):
+    """A read-only mount must not leave the operator without a report."""
+    monkeypatch.delenv("OMNI_REPORTS_DIR", raising=False)
+    workdir = tmp_path / "read-only-mount"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    # The production probe creates and writes the directory, it does not call
+    # ``os.access``: this is the branch that decides between cwd and XDG.
+    monkeypatch.setattr(module, "_writable", lambda directory: False)
+
+    assert module.default_report_root() == tmp_path / "xdg" / "omni" / "reports"
+
+
 def test_report_root_is_overridden_by_the_environment(env, tmp_path, monkeypatch):
     store, engagement, _run_id, gateway = env
     override = tmp_path / "deliverables"

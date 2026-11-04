@@ -161,6 +161,18 @@ def test_cmd_engage_use_unknown_id_errors(session, capsys):
     assert session.engagement.name == "lab-viejo"
 
 
+def test_cmd_engage_use_top_level_unknown_id_errors(session, capsys):
+    commands.cmd_engage_use(session, ["eng-nope"])
+    assert "engagement no encontrado: eng-nope" in capsys.readouterr().out
+    assert session.engagement.name == "lab-viejo"
+
+
+def test_cmd_engage_use_without_an_id_prints_usage(session, capsys):
+    commands.cmd_engage_use(session, [])
+    assert "uso: /engage_use" in capsys.readouterr().out
+    assert session.engagement.name == "lab-viejo"
+
+
 def test_cmd_engage_bad_action_shows_usage(session, capsys):
     commands.cmd_engage(session, ["bogus"])
     assert "uso: /engage" in capsys.readouterr().out

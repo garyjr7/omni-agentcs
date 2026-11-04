@@ -80,7 +80,9 @@ def test_expanded_thought_keeps_the_whole_note_once() -> None:
     assert plain.splitlines()[0] == "  ▾ Razonamiento"
     assert plain.count("Enumero el 445 porque el SMB puede estar abierto.") == 1
     assert "Después probaré" in plain
-    assert "\n  …" not in plain, "expandido no recorta"
+    # Strong assertion restored: expanded there is no ellipsis anywhere, not
+    # just outside the footer. Nothing of the note was dropped.
+    assert "…" not in plain, "expandido no recorta"
     assert "ctrl+t colapsar" in plain
 
 

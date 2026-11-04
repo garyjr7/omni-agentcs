@@ -14,8 +14,10 @@ from nexus_core.scope import EngagementScope, EngagementStore
 def _no_color():
     original = render.color_enabled()
     render.set_color_enabled(False)
-    yield
-    render.set_color_enabled(original)
+    try:
+        yield
+    finally:
+        render.set_color_enabled(original)
 
 
 @pytest.fixture()
