@@ -758,11 +758,19 @@ class TuiSession:
     def _accept(self, buffer: Buffer) -> bool:
         if self._can_edit:
             text = buffer.text if self._secret_mode else self.input_document.reconstruct()
+            from .. import commands as commands_module
             from .presentation import input_chip, render_rich
             visible = render_rich(input_chip(text), no_color=self.no_color) if len(text) > 500 else self.input_document.render()
+            # A state-changing slash command prints nothing, so neither its
+            # command nor a response belongs in the transcript. The decision is
+            # made before the echo: suppressing it afterwards left the rail in
+            # the transcript forever.
+            silent_command = not self._secret_mode and commands_module.is_silent_command(text)
             # A secret is never echoed to the transcript: show a fixed mask so
             # the operator still sees that the input was taken.
-            if not self._secret_mode and len(text) > 500:
+            if silent_command:
+                pass
+            elif not self._secret_mode and len(text) > 500:
                 self.append_card({}, pasted_input=text, input_prefix=self._input_prefix(), expanded=False)
             else:
                 value = "••••••" if self._secret_mode else visible

@@ -10,6 +10,9 @@ from typing import Any
 
 from prompt_toolkit.formatted_text import fragment_list_to_text
 
+from nexus_core.cli import render
+from nexus_core.cli.tui.output import capture_output
+from nexus_core.cli.tui.presentation import clean_text
 from nexus_core.cli.tui.session import PROMPT_PREFIX, TuiSession
 
 
@@ -37,6 +40,41 @@ def test_echoed_turn_keeps_the_chevron_and_does_not_reprint_the_chips(tui_factor
     assert lines[0].startswith("▌ [") and lines[0].endswith(("AM]", "PM]"))
     assert lines[1] == "▌ Entiendo continua por favor"
     assert "[TRUST MODE]" not in ui.transcript
+
+
+def test_a_silent_slash_command_never_reaches_the_transcript(tui_factory: Any) -> None:
+    ui = tui_factory(enable_completion=False).session
+    ui._input.insert_text("/engage_use eng-missing")
+    ui._accept(ui._input)
+    assert ui._answers.get_nowait() == "/engage_use eng-missing"
+    ui.flush()
+    assert clean_text(ui.transcript) == ""
+
+
+def test_a_silent_slash_command_shows_its_error_without_the_echo(tui_factory: Any) -> None:
+    ui = tui_factory(enable_completion=False).session
+    ui._input.insert_text("/engage_use eng-missing")
+    ui._accept(ui._input)
+    ui._answers.get_nowait()
+    with capture_output(ui):
+        render.render_error("engagement no encontrado: eng-missing")
+    ui.flush()
+    transcript = clean_text(ui.transcript)
+    assert "engagement no encontrado: eng-missing" in transcript
+    assert "/engage_use" not in transcript
+
+
+def test_an_explicit_output_command_keeps_its_echo_and_output(tui_factory: Any) -> None:
+    ui = tui_factory(enable_completion=False).session
+    ui._input.insert_text("/status")
+    ui._accept(ui._input)
+    ui._answers.get_nowait()
+    with capture_output(ui):
+        render.render_status("status bar: ON")
+    ui.flush()
+    transcript = clean_text(ui.transcript)
+    assert "▌ /status" in transcript
+    assert "status bar: ON" in transcript
 
 
 def test_the_masthead_is_separated_from_the_first_turn(tui_factory: Any) -> None:

@@ -114,6 +114,13 @@ def test_top_level_engage_commands_registered():
         assert name in commands.COMMANDS
 
 
+def test_engage_state_changes_are_silent_but_status_is_not():
+    assert commands.is_silent_command("/engage_use eng-1")
+    assert commands.is_silent_command("/engage_create lab 10.0.0.0/24")
+    assert not commands.is_silent_command("/status")
+    assert not commands.is_silent_command("/help")
+
+
 def test_cmd_engage_list_top_level_lists(session, capsys):
     commands.cmd_engage_list(session, [])
     out = capsys.readouterr().out

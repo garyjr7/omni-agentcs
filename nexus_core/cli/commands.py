@@ -1751,6 +1751,18 @@ def parse_command(line: str) -> tuple[str, list[str]]:
     return name, args
 
 
+#: State changes that print nothing on success. The operator's turn is not
+#: echoed for these: the badge/status bar already show the new state, and the
+#: echoed command used to stay in the transcript while the response did not.
+SILENT_COMMANDS = frozenset({"/engage_use", "/engage_create"})
+
+
+def is_silent_command(line: str) -> bool:
+    """True when ``line`` is a slash-command that must not be echoed."""
+    name, _ = parse_command(line)
+    return name in SILENT_COMMANDS
+
+
 @routed
 def run_command(session: "OmniSession", line: str) -> bool:
     """Run a meta command; return ``False`` when it is not a known command."""
@@ -1807,4 +1819,6 @@ __all__ = [
     "command_names",
     "parse_command",
     "run_command",
+    "SILENT_COMMANDS",
+    "is_silent_command",
 ]
