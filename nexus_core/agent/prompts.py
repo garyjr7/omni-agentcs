@@ -159,17 +159,16 @@ SSRF_HTTP_SERVER_RULE_PROMPT = (
 #: a finding, not the engagement- because nothing held the run to the rest of the
 #: objective.
 ENGAGEMENT_PLAN_RULE_PROMPT = (
-    "- PLAN-FIRST (OBLIGATORIO): esto es un ENGAGEMENT contra un objetivo. Tu\n"
-    "  primera acción es nexus.orchestrator.create_plan con la lista completa de\n"
-    "  TODOs (id, description, fact_types = los hechos verificados que lo\n"
-    "  cierran). Sin plan, el motor DENIEGA toda tool que toque el objetivo\n"
-    "  (nmap, web, credenciales, ssh, exploit): solo puedes leer contexto\n"
-    "  (query_facts, workspace.read). Consulta get_plan_status solo si cambió o\n"
-    "  tras un cierre rechazado, y trabaja el SIGUIENTE TODO: no declares\n"
-    "  \"task_complete\" con TODOs\n"
-    "  pendientes: si uno es inalcanzable tras 3 intentos, ciérralo con\n"
+    "- PLAN-FIRST (OBLIGATORIO): es un ENGAGEMENT. Tu primera acción es\n"
+    "  nexus.orchestrator.create_plan con TODOs (id, description, fact_types =\n"
+    "  hechos verificados que lo cierran). Sin plan, el motor DENIEGA toda tool\n"
+    "  que toque el objetivo: solo puedes leer contexto (query_facts,\n"
+    "  workspace.read). Consulta get_plan_status solo si cambió o tras un cierre\n"
+    "  rechazado, y trabaja el SIGUIENTE TODO de esta tarea; los ajenos se\n"
+    "  cierran failed (reason \"fuera del objetivo\") antes de task_complete, no\n"
+    "  se trabajan. Si uno pedido es inalcanzable tras 3 intentos, ciérralo con\n"
     "  update_plan (status=\"failed\" + reason). Los TODOs con fact_types los\n"
-    "  palomea SOLO la evidencia; nunca los declares done a mano.\n"
+    "  palomea SOLO la evidencia; nunca los declares done.\n"
 )
 
 #: The pivot order. Names ``nexus.post.verify_route``, so it is appended only
@@ -368,12 +367,13 @@ REGLAS:
   para extraer usuarios, pistas o listas, y después valida esas credenciales
   contra los servicios encontrados con la herramienta de prueba de
   credenciales.
-- CIERRE DE TAREA: NO declares "task_complete" mientras el plan vigente tenga
-  fases pendientes. Solo puedes cerrar cuando el plan esté en la fase de
-  Reporte (todas las fases anteriores marcadas [x]) y hayas intentado leer los
-  objetivos finales (p. ej. user.txt y root.txt) o expliques por escrito por
-  qué no puedes alcanzarlos. Si hay fases pendientes, el sistema RECHAZARÁ el
-  task_complete y te pedirá continuar: sigue trabajando en vez de repetirlo.
+- CIERRE POR OBJETIVO: cuando hayas cumplido el objetivo del usuario (no el
+  plan completo), llama task_complete con un resumen de lo encontrado y no
+  sigas con TODOs que no fueron pedidos en esta conversación: el plan es un
+  mapa del engagement completo, no la lista de tareas de este run. Si el gate
+  rechaza el cierre por esos TODOs ajenos, ciérralos con update_plan
+  (status="failed", reason="fuera del objetivo de esta sesión") y vuelve a
+  task_complete; no los trabajes.
 - EVIDENCIA DEL RUN ACTUAL: cada finding debe apoyarse en una observación de
   ESTE run (una salida de herramienta que acabas de recibir). No cites datos de
   memoria, de objetivos anteriores ni suposiciones: el sistema compara tu

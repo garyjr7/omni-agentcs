@@ -195,6 +195,29 @@ async def test_loop_executes_single_tool_call_and_completes(harness):
     assert kinds == ["react.system", "react.action", "react.observation", "react.action", "react.final"]
 
 
+async def test_a_successful_scan_prompt_orders_completion_not_more_plan_work(harness):
+    """After nmap succeeds, the next prompt says the requested goal closes."""
+    _, context = harness
+    llm = ScriptedLLM([tool_call(), task_complete("Puertos 22 y 80 revisados")])
+    spy = ToolSpy()
+
+    with mock.patch.object(runtime_module, "execute_tool", spy):
+        result = await run_react_loop(
+            config=_loop_config(),
+            context=context,
+            objective="Escanea 10.0.0.5 en los puertos 22 y 80",
+            engagement_id="eng-1",
+            llm_client=llm,
+        )
+
+    assert result.status == STATUS_COMPLETED and result.iterations == 2
+    assert [payload["tool_id"] for payload in spy.payloads] == ["nexus.recon.nmap"]
+    second_prompt = " ".join(_messages_text(llm, 1).split())
+    assert "CIERRE POR OBJETIVO" in second_prompt
+    assert "no fueron pedidos en esta conversación" in second_prompt
+    assert "el plan es un mapa del engagement completo" in second_prompt
+
+
 async def test_loop_respects_max_iterations(harness):
     _, context = harness
     llm = ScriptedLLM([tool_call()])
