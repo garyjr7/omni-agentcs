@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from prompt_toolkit.formatted_text import fragment_list_to_text
 
+from nexus_core.cli.tui.frame import SPINNER_FRAMES
+
 
 def test_busy_window_height_zero_when_idle(tui_factory):
     assert tui_factory().session._busy_window.height() == 0
@@ -16,11 +18,12 @@ def test_busy_window_height_one_when_busy(tui_factory):
     assert ui.session._busy_window.height() == 1
 
 
-def test_busy_shows_pulsing_block_indicator(tui_factory):
+def test_busy_shows_animated_spinner_and_keycap(tui_factory):
     ui = tui_factory()
     ui.session.set_busy()
     text = fragment_list_to_text(ui.session._render_busy())
-    assert "[+][+][+][+][+][+][+] · esc para interrumpir" in text
+    assert text[0] in SPINNER_FRAMES
+    assert text[1:] == " ejecutando · esc para interrumpir"
     # The pulse is a row of the dock, so it is never a transcript line that a
     # growing chat can scroll away.
     assert ui.session._busy_window in ui.session._rows
@@ -48,7 +51,7 @@ def test_busy_completion_logs_worked_for_duration(tui_factory):
     # transcript history, so the run's log stays clean.
     assert fragment_list_to_text(ui.session._completion_formatted()).startswith("completado en 3s •")
     assert "completado en" not in ui.session.transcript
-    assert "[+][+][+][+][+][+][+] · esc para interrumpir" not in ui.session.transcript
+    assert "esc para interrumpir" not in ui.session.transcript
 
 
 def test_busy_shows_custom_message(tui_factory):
@@ -63,7 +66,8 @@ def test_busy_row_names_the_tool_the_run_reports(tui_factory):
     # which tool runs instead of showing the same frame as a planning turn.
     ui.session.set_status(busy=True, busy_message="Ejecutando nexus.recon.nmap")
     text = fragment_list_to_text(ui.session._render_busy())
-    assert text == "[+][+][+][+][+][+][+] · Ejecutando nexus.recon.nmap · esc para interrumpir"
+    assert text[0] in SPINNER_FRAMES
+    assert text[1:] == " Ejecutando nexus.recon.nmap · esc para interrumpir"
     assert ui.session._busy_window.height() == 1
 
 
@@ -130,7 +134,7 @@ def test_busy_visible_above_input(tui_factory):
     # The chat advances and the pulse keeps its own row, pinned in the dock.
     ui.session.print("tool output\n" * 10)
     ui.session.flush()
-    assert "[+][+][+][+][+][+][+]" not in ui.session.transcript
+    assert "⠋" not in ui.session.transcript
     rows = ui.session._rows
     assert ui.session._busy_window.height() == 1
     assert rows.index(ui.session._busy_window) == rows.index(ui.session._input_window) - 3

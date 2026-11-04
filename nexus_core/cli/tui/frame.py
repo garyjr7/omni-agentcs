@@ -20,17 +20,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from ..theme import THEME
+
 #: ``BW • OMNI [ engagement ]`` - the brand is the frame's top row.
 BRAND = "BW"
 SEPARATOR = " • "
 DEFAULT_ENGAGEMENT = "workspace"
 
-#: Seven cells and one bright sweep. The literal text never changes between
-#: frames (``[+][+][+][+][+][+][+]``); only which cell is bright moves.
-PULSE_CELLS = 7
-PULSE_STEP_SECONDS = 0.18
-PULSE_BRIGHT = "#ff0055 bold"
-PULSE_DIM = "#a3003a"
+#: One braille frame at a time, sampled by the existing refresh loop. A
+#: single moving glyph reads as a modern activity spinner and costs one cell,
+#: leaving the rest of the row for the operation and the keycap hint.
+SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+SPINNER_STEP_SECONDS = 0.09
+SPINNER_BRIGHT = f"{THEME.primary} bold"
 
 #: ``(label, token)`` in reading order. The default selection is the single-use
 #: authorization, never the engagement-wide one: pressing Enter must never
@@ -77,30 +79,34 @@ def header_text(engagement: str | None, *, elapsed_seconds: float | None = None,
     return text
 
 
-def pulse_index(now: float) -> int:
-    """Which of the seven cells is bright at ``now`` (monotonic seconds)."""
-    return int(max(0.0, float(now)) / PULSE_STEP_SECONDS) % PULSE_CELLS
+def spinner_index(now: float) -> int:
+    """Which braille frame is active at ``now`` (monotonic seconds)."""
+    return int(max(0.0, float(now)) / SPINNER_STEP_SECONDS) % len(SPINNER_FRAMES)
 
 
 def busy_cells(now: float) -> list[tuple[str, str]]:
-    """``(style, text)`` per cell: the sweep advances, the text never changes."""
-    active = pulse_index(now)
-    return [
-        (PULSE_BRIGHT if index == active else PULSE_DIM, "[+]")
-        for index in range(PULSE_CELLS)
-    ]
+    """``(style, text)`` for the animated marker.
+
+    The list shape is kept from the old seven-cell pulse so callers only need
+    to concatenate the cells; the marker itself is now one braille glyph.
+    """
+    return [(SPINNER_BRIGHT, SPINNER_FRAMES[spinner_index(now)])]
 
 
 def busy_marker() -> str:
-    """Plain seven-cell marker as it enters the transcript."""
-    return "[+]" * PULSE_CELLS
+    """Plain marker as it enters the transcript."""
+    return SPINNER_FRAMES[0]
 
 
-#: The keys hint that closes the work row. The operation label never pushes
-#: it out: the row has exactly one screen line.
+#: The operation label never pushes the keycap out: the row has exactly one
+#: screen line. ``esc`` is painted as a keycap by ``WorkingIndicator`` and the
+#: rest stays as a dim hint.
 from .strings import ESC_INTERRUPT
 
-BUSY_TAIL = " · " + ESC_INTERRUPT
+BUSY_SEPARATOR = " ·"
+BUSY_KEYCAP = "esc"
+BUSY_ACTION = ESC_INTERRUPT.removeprefix(BUSY_KEYCAP + " ")
+BUSY_TAIL = f"{BUSY_SEPARATOR} {ESC_INTERRUPT}"
 
 
 def busy_text() -> str:
@@ -166,9 +172,14 @@ __all__ = [
     "APPROVAL_OPTIONS",
     "APPROVAL_TOKENS",
     "BRAND",
+    "BUSY_ACTION",
+    "BUSY_KEYCAP",
+    "BUSY_SEPARATOR",
     "BUSY_TAIL",
     "DEFAULT_ENGAGEMENT",
     "SEPARATOR",
+    "SPINNER_FRAMES",
+    "SPINNER_STEP_SECONDS",
     "approval_command",
     "approval_question",
     "busy_cells",
@@ -178,5 +189,5 @@ __all__ = [
     "completion_text",
     "format_elapsed",
     "header_text",
-    "pulse_index",
+    "spinner_index",
 ]

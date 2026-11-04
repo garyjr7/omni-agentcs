@@ -1333,21 +1333,24 @@ class OmniSession:
         return result
 
     def _render_final_markdown(self, result: Any) -> None:
-        """Final result as a Markdown block on the dedicated screen.
+        """Final result as a framed Markdown block on the dedicated screen.
 
-        The bordered ``RESULTADO`` box is a fixed-geometry widget: at 200
-        columns its border and its body stop agreeing and the box fragments.
-        The TUI renders the same facts as Markdown (heading, summary, findings,
-        open branches, status) so the block always fits the width; ``--no-tui``
-        keeps the box unchanged.
+        The TUI renders the facts as Markdown and wraps them in a quiet panel:
+        a muted border and the ``surface_alt`` background separate the result
+        from the execution stream without the fixed-geometry fragmentation of
+        the old ``RESULTADO`` box at wide widths. ``--no-tui`` keeps the box
+        unchanged.
         """
         from .tui.markdown import render_markdown
-        from .tui.presentation import summary_markdown
+        from .tui.presentation import result_panel, summary_markdown
 
         try:
             width = max(20, int(self._tui._session.output.get_size().columns) - 4)
         except Exception:  # noqa: BLE001 - cosmetic sizing only
             width = 80
+        # Two border cells and two cells of horizontal padding belong to the
+        # panel, so the Markdown is wrapped to the space the content really has.
+        content_width = max(20, width - 6)
         # A completed run shows what its own blackboard already proves: the
         # services it discovered, then the report path only when a report was
         # really written. Reading these facts generates nothing.
@@ -1374,11 +1377,13 @@ class OmniSession:
                 report_path = directory
         body = render_markdown(
             summary_markdown(result, service_facts=facts, report_path=report_path),
-            no_color=self.no_color, max_width=width,
+            no_color=self.no_color, max_width=content_width,
         )
         if not str(result.final_summary or "").strip():
             body = body.replace("_(sin resumen)_", f"(sin resumen · estado={result.status})")
-        self._tui.append_execution_block(body)
+        self._tui.append_result_block(
+            result_panel(body, width=width, no_color=self.no_color)
+        )
 
     def visible_input(self, prompt: str) -> str:
         """Read a non-secret line mid-command, TUI-safe.

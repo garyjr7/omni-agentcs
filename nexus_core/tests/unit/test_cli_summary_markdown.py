@@ -57,7 +57,7 @@ def test_summary_markdown_renders_services_below_the_summary():
     assert "*Informe completo en reports/lab-1*" in text
 
 
-def test_tui_renders_the_summary_as_markdown_not_as_a_box(tui_factory: Any):
+def test_tui_renders_the_summary_as_markdown_inside_a_quiet_panel(tui_factory: Any):
     session = tui_factory(enable_completion=False).session
     session._session = SimpleNamespace(output=__import__(
         "prompt_toolkit.output", fromlist=["DummyOutput"]
@@ -85,8 +85,40 @@ def test_tui_renders_the_summary_as_markdown_not_as_a_box(tui_factory: Any):
     assert "Resultado" in transcript
     assert "Acceso root verificado" in transcript
     assert "[critical] SQLi en /login" in transcript
-    assert "┌" not in transcript and "│" not in transcript
+    assert "┌" in transcript and "│" in transcript
+    assert "└" in transcript and "┘" in transcript
     assert max(len(line) for line in transcript.splitlines()) <= 100
+
+
+def test_tui_final_panel_has_air_before_and_after_it(tui_factory: Any):
+    session = tui_factory(enable_completion=False).session
+    session._session = SimpleNamespace(output=__import__(
+        "prompt_toolkit.output", fromlist=["DummyOutput"]
+    ).DummyOutput())
+
+    class _Owner:
+        use_tui = True
+
+        def __init__(self, tui: Any) -> None:
+            self._tui = tui
+            self.no_color = True
+            self.store = None
+            self.tenant_id = "system"
+            self.engagement_id = None
+
+        def _render_final_markdown(self, result: Any) -> None:
+            from nexus_core.cli.session import OmniSession
+
+            OmniSession._render_final_markdown(self, result)  # type: ignore[arg-type]
+
+    owner = _Owner(session)
+    session.append_execution_block("paso anterior")
+    session.flush()
+    owner._render_final_markdown(_result())
+    session.flush()
+    transcript = session.transcript
+    assert "paso anterior\n\n┌" in transcript
+    assert "┘\n\n" in transcript
 
 
 def test_tui_completed_run_reads_services_from_the_blackboard(tui_factory: Any, tmp_path: Any):

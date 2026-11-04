@@ -86,7 +86,19 @@ class Theme:
 
     @property
     def thinking_style(self) -> str:
-        return f"dim {self.thinking} italic"
+        return f"{self.muted} italic"
+
+    @property
+    def keycap_style(self) -> str:
+        return f"{self.muted} on {self.surface}"
+
+    @property
+    def result_panel_style(self) -> str:
+        return f"on {self.surface_alt}"
+
+    @property
+    def result_border_style(self) -> str:
+        return self.muted
 
     @property
     def dim_style(self) -> str:

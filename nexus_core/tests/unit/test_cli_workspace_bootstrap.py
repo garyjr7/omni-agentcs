@@ -37,6 +37,25 @@ def test_bind_workspace_is_stable_local_and_reused(tmp_path):
     assert len(EngagementStore(store).list_for_tenant("system")) == 1
 
 
+def test_bind_workspace_disambiguates_two_folders_with_the_same_name(tmp_path):
+    store = ControlStore(tmp_path / "workspace.db")
+    store.initialize()
+    first_root = tmp_path / "one" / "bountyv1"
+    second_root = tmp_path / "two" / "bountyv1"
+    first_root.mkdir(parents=True)
+    second_root.mkdir(parents=True)
+
+    first = bind_workspace(store, "system", first_root)
+    second = bind_workspace(store, "system", second_root)
+
+    assert first.name == "bountyv1"
+    assert second.name.startswith("bountyv1 [")
+    assert first.engagement_id != second.engagement_id
+    assert workspace_root(second) == second_root.resolve()
+    assert bind_workspace(store, "system", second_root).engagement_id == second.engagement_id
+    assert len(EngagementStore(store).list_for_tenant("system")) == 2
+
+
 def test_startup_without_flags_binds_cwd_and_never_prompts(
     onboarding_env, monkeypatch, tmp_path
 ):

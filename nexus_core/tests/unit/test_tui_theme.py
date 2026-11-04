@@ -22,6 +22,13 @@ def test_theme_exposes_the_semantic_roles() -> None:
     assert theme.THEME.panel_bar_style == "fg:#ff0055 bg:#2a2a2a"
 
 
+def test_reasoning_is_muted_italic_and_the_result_uses_a_surface() -> None:
+    assert theme.THEME.thinking_style == f"{theme.THEME.muted} italic"
+    assert theme.THEME.keycap_style == f"{theme.THEME.muted} on {theme.THEME.surface}"
+    assert theme.THEME.result_panel_style == f"on {theme.THEME.surface_alt}"
+    assert theme.THEME.result_border_style == theme.THEME.muted
+
+
 def test_compatibility_ansi_tokens_are_derived_from_the_theme() -> None:
     assert theme.RED == theme.ansi(theme.THEME.error)
     assert theme.GREEN == theme.ansi(theme.THEME.ok)

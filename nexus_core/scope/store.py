@@ -60,6 +60,15 @@ class EngagementStore:
             ).fetchone()
         return self._row_to_scope(row) if row else None
 
+    def get_by_name(self, tenant_id: str, name: str) -> EngagementScope | None:
+        """Return one engagement by its tenant-unique display name."""
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM kernel_engagements WHERE tenant_id=? AND name=?",
+                (tenant_id, name),
+            ).fetchone()
+        return self._row_to_scope(row) if row else None
+
     def list_for_tenant(self, tenant_id: str) -> list[EngagementScope]:
         """Return every engagement owned by a tenant, oldest first."""
         with self.store.connect() as conn:

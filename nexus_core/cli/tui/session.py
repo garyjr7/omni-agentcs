@@ -1016,6 +1016,19 @@ class TuiSession:
             return
         self.append_scrollback(self._block_break() + body + "\n")
 
+    def append_result_block(self, text: str) -> None:
+        """Append the final result as a panel with air above and below it.
+
+        Execution blocks are followed by whatever comes next, which already
+        contributes their separating blank line. The result is terminal, so it
+        owns the trailing gap itself; otherwise the next command would start
+        glued to the panel's bottom border.
+        """
+        body = str(text or "").rstrip("\n")
+        if not body:
+            return
+        self.append_scrollback(self._block_break() + body + "\n\n")
+
     def append_scrollback(self, text: str, *, typed: bool = False) -> None:
         if not self.use_tui:
             print(text, end="")

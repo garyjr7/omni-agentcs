@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from rich import box
 from rich.console import Console, Group, RenderableType
+from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
@@ -254,6 +256,26 @@ def summary_markdown(result: Any, *, service_facts: Any = None,
     return "\n".join(lines)
 
 
+def result_panel(body: str, *, width: int = 100,
+                 no_color: bool = False) -> str:
+    """Frame the final Markdown in a quiet, full-width surface.
+
+    The body arrives already rendered by :func:`nexus_core.cli.tui.markdown`.
+    ``Text.from_ansi`` turns those styles back into a Rich renderable so the
+    panel background covers the whole block without re-parsing the Markdown.
+    A square, muted border separates the result from the execution stream; the
+    caller wraps the body first so the border and the content never disagree
+    at wide terminal widths.
+    """
+    content = Text.from_ansi(str(body or ''))
+    panel = Panel(
+        content, box=box.SQUARE, border_style=THEME.result_border_style,
+        style=THEME.result_panel_style, padding=(1, 2), expand=True,
+        width=max(20, int(width)),
+    )
+    return render_rich(panel, width=max(20, int(width)), no_color=no_color)
+
+
 def typewriter_steps(text: str, *, max_steps: int = TYPEWRITER_MAX_STEPS,
                      max_chars: int = TYPEWRITER_MAX_CHARS) -> list[str]:
     """Split ``text`` into the word groups a revealer prints one step at a time.
@@ -331,8 +353,8 @@ def thinking(value: str, *, expanded: bool = False, width: int = 100,
     """
     from .strings import HIDE_REASONING, THINKING_CARD
 
-    text = Text(f'  {"▾" if expanded else "▸"} {THINKING_CARD}',
-                style=SECONDARY_STYLE, no_wrap=False, overflow='fold')
+    text = Text(no_wrap=False, overflow='fold')
+    text.append(f'  {"▾" if expanded else "▸"} {THINKING_CARD}', style=SECONDARY_STYLE)
     if not expanded:
         return text
     for line in _thought_lines(value, width):
@@ -516,19 +538,27 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
 
 
 class WorkingIndicator:
-    """Pure pulse frames sampled by the existing terminal refresh loop.
+    """Pure spinner frames sampled by the existing terminal refresh loop.
 
-    The seven cells and their sweep live in :mod:`nexus_core.cli.tui.frame`, so
-    the pulse the transcript shows and the one the header timer accompanies are
-    the same widget. ``message`` names the operation the run is in, which is the
-    only thing that tells "waiting for the model" from "running a tool";
-    ``elapsed`` stays in the signature because the loop samples this every
-    frame, but the header already owns the timer.
+    The braille frame lives in :mod:`nexus_core.cli.tui.frame`, so the marker
+    and the header timer stay in sync. ``message`` names the operation the run
+    is in, the only thing that tells "waiting for the model" from "running a
+    tool"; ``elapsed`` stays in the signature because the loop samples this
+    every frame, but the header already owns the timer. The hint is painted as
+    a small ``esc`` keycap rather than as one more sentence of chrome.
     """
 
     def frame(self, message: str, *, now: float, elapsed: int, width: int,
               no_color: bool = False) -> str:
-        from .frame import BUSY_TAIL, busy_cells, busy_label
+        from .frame import (
+            BUSY_ACTION,
+            BUSY_KEYCAP,
+            BUSY_SEPARATOR,
+            BUSY_TAIL,
+            busy_cells,
+            busy_label,
+        )
+        from .strings import WORKING
 
         del elapsed
         text = Text()
@@ -537,9 +567,12 @@ class WorkingIndicator:
             text.append(cell, style=style)
             cells += len(cell)
         label = busy_label(message, room=width - cells - len(BUSY_TAIL) - 3)
-        if label:
-            text.append(f' · {label}', style=THEME.dim_style)
-        text.append(BUSY_TAIL, style=THEME.dim_style)
+        if not label or label.casefold() in {'working', WORKING}:
+            label = WORKING
+        text.append(f' {label}', style=THEME.muted)
+        text.append(BUSY_SEPARATOR, style=THEME.dim_style)
+        text.append(f' {BUSY_KEYCAP} ', style=THEME.keycap_style)
+        text.append(BUSY_ACTION, style=THEME.dim_style)
         return render_rich(text, width=width, no_color=no_color).split('\n')[0]
 
 

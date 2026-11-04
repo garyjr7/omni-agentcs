@@ -33,15 +33,14 @@ def test_format_elapsed_matches_the_mock_units() -> None:
     assert frame.format_elapsed(3900) == "1h 05m"
 
 
-def test_the_pulse_is_seven_cells_that_sweep_without_changing_their_text() -> None:
+def test_the_spinner_advances_through_one_braille_frame_at_a_time() -> None:
     rows = [
-        frame.busy_cells(index * frame.PULSE_STEP_SECONDS)
-        for index in range(frame.PULSE_CELLS)
+        frame.busy_cells((index + 0.5) * frame.SPINNER_STEP_SECONDS)
+        for index in range(len(frame.SPINNER_FRAMES))
     ]
-    assert all("".join(cell for _, cell in row) == "[+][+][+][+][+][+][+]" for row in rows)
-    assert all(sum(style == frame.PULSE_BRIGHT for style, _ in row) == 1 for row in rows)
-    assert len({tuple(row) for row in rows}) == frame.PULSE_CELLS
-    assert frame.busy_text() == "[+][+][+][+][+][+][+] · esc para interrumpir"
+    assert [cell for row in rows for _, cell in row] == list(frame.SPINNER_FRAMES)
+    assert all(len(row) == 1 and row[0][0] == frame.SPINNER_BRIGHT for row in rows)
+    assert frame.busy_text() == "⠋ · esc para interrumpir"
 
 
 def test_completion_names_the_duration_and_the_hour() -> None:
@@ -89,7 +88,7 @@ def test_the_completion_line_replaces_the_same_row_as_the_pulse(tui_factory) -> 
     # log line in the first place.
     assert session._busy_window.height() == 1
     assert session._completion_window.height() == 0
-    assert "[+][+][+][+][+][+][+]" not in session.transcript
+    assert frame.SPINNER_FRAMES[0] not in session.transcript
     session._status.busy_started_at -= 3
     session.clear_busy()
     assert session._busy_window.height() == 0

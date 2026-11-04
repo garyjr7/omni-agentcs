@@ -72,8 +72,9 @@ def test_the_tool_name_is_aqua_and_thinking_stays_muted() -> None:
     assert AQUA not in call and GREEN in call
     assert ANSI.sub("", call).splitlines()[0] == "$ nmap -oX - lab"
     thought = render_rich(thinking("enumero el 445", expanded=True))
-    # The note itself is dim and italic; the header is dim only.
-    assert "\x1b[2;3;38;2;120;126;134m  enumero el 445" in thought
+    # The note itself is muted italic; the header and footer stay dim only.
+    assert "\x1b[3;38;2;120;126;134m  enumero el 445" in thought
+    assert "\x1b[2;3;38;2;120;126;134m  enumero el 445" not in thought
 
 
 def test_tool_output_is_indented_under_a_branch_and_coloured_by_verdict() -> None:
