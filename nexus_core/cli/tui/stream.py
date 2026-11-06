@@ -171,6 +171,20 @@ def _command_line(tool_id: str, safe: dict[str, Any]) -> str | None:
 
 def format_tool_invocation(tool_id: str, arguments: Any, *,
                            width: int | None = None) -> str:
+    """The default voice of a tool call: one plain conversational line.
+
+    ``> Ejecutando nmap en 10.0.0.1...`` instead of a dashboard header. The
+    detailed argv/``key=value`` request is still available for an expanded card
+    through :func:`detailed_tool_invocation`; the default stream never pays for
+    it. Secrets are masked by the same ``display_arguments`` policy.
+    """
+    from .presentation import tool_call_line
+
+    return tool_call_line(str(tool_id or ""), arguments, width=width)
+
+
+def detailed_tool_invocation(tool_id: str, arguments: Any, *,
+                             width: int | None = None) -> str:
     """One tool header. A shell command reads ``$ nmap …``; a structured call
     reads ``• tool_id  key=value``. Phase lives in the step header.
 
@@ -338,7 +352,34 @@ def summarize_tool_result(result: dict[str, Any]) -> str:
         # fields) instead of claiming a meaning the evidence does not support.
         count = len(structured) if isinstance(structured, (dict, list)) else 1
         parts.append(f"resultado estructurado · {count} campo(s)")
+    if not parts:
+        # A shell result with no evidence field still answered something: its
+        # first data line is the honest one-line summary ("completado" hides
+        # the output the operator asked for).
+        body, _ = trace_text(result)
+        first = next(
+            (row.strip() for row in clean_text(body).splitlines() if row.strip()), ""
+        )
+        if first:
+            parts.append(first[:160])
     return _line(" · ".join(parts) or str(result.get("verification_method") or "completado"), width=None)
+
+
+def hidden_detail_lines(result: dict[str, Any], *, max_lines: int = 4) -> int:
+    """How many lines the collapsed one-liner hides behind the expansion.
+
+    Structured payloads count their pretty JSON (the document *is* the detail);
+    everything else counts data lines past the fold. Zero means there is nothing
+    to expand and the card gets no affordance.
+    """
+    structured = structured_output(result)
+    if structured is not None:
+        return len(
+            json.dumps(structured, ensure_ascii=False, indent=2, default=str).splitlines()
+        )
+    value, _ = trace_text(result)
+    rows = [row for row in clean_text(value).splitlines() if row.strip()]
+    return max(0, len(rows) - max_lines) if len(rows) > max_lines else 0
 
 
 def trace_text(result: dict[str, Any]) -> tuple[str, bool]:
@@ -379,8 +420,28 @@ def is_guardrail(result: dict[str, Any]) -> bool:
 
 def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
                        max_lines: int = 4, width: int = 100, no_color: bool = False) -> str:
-    """Verdict first, then the folded body (or the guardrail's guidance)."""
+    """One plain line by default; the full Rich card only when expanded.
+
+    The default flow is conversational (``✓ nmap: 3 puertos abiertos (…)``).
+    ``expanded=True`` keeps the reviewed card: folded body, diff syntax, hidden
+    line count and clickable footer. A guardrail is a correction, not a result,
+    so it always keeps its own amber guidance block.
+    """
     guardrail = is_guardrail(result)
+    if not expanded and not guardrail:
+        from .presentation import tool_result_line
+
+        line = tool_result_line(
+            result,
+            summary=summarize_tool_result(result),
+            width=width,
+        )
+        hidden = hidden_detail_lines(result, max_lines=max_lines)
+        # The expansion has to be discoverable, or the body is lost: the footer
+        # stays inline so the default result is still one conversational line.
+        if hidden:
+            line = f"{line} · Ver {hidden} líneas más"
+        return line
     structured = structured_output(result)
     value, is_diff = trace_text(result)
     guidance = ""

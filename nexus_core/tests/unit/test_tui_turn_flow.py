@@ -109,7 +109,7 @@ def test_execution_blocks_are_separated_by_one_blank_line(tui_factory: Any) -> N
     transcript = clean_text(ui.transcript)
     assert "Reviso el servicio 80/tcp.\n\n• nexus.recon.nmap" in transcript
     # The call and its result are distinct blocks, one blank line apart...
-    assert "nmap -sV -p 80 lab\n\n  ✓ completado\n  └ 80/tcp open http" in transcript
+    assert "nmap -sV -p 80 lab\n\n✓ nmap: 80/tcp open http" in transcript
     # ...while each following block starts after exactly one blank line.
     assert "80/tcp open http\n\n• nexus.web.curl" in transcript
     assert "• nexus.web.curl  http://lab/\n\n  ▸ Razonamiento" in transcript

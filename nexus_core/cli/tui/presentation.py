@@ -584,3 +584,146 @@ def tactical_phase(tool_id: str) -> str:
     return {'recon': 'Enumeration', 'web': 'Enumeration', 'exploit': 'Exploitation',
             'post': 'Post-exploitation', 'cred': 'Credential assessment',
             'report': 'Reporting'}.get(family, 'Working')
+
+
+#: What the conversational line says the agent is doing, per tool. The default
+#: is the tool's own short name, so an unmapped tool still reads honestly.
+_TOOL_ACTIONS: dict[str, str] = {
+    'nexus.recon.nmap': 'Ejecutando nmap',
+    'nexus.recon.dns': 'Resolviendo DNS',
+    'nexus.recon.httpx': 'Sondeando HTTP',
+    'nexus.shell.exec': 'Ejecutando comando',
+    'nexus.system.execute_and_parse': 'Ejecutando y parseando',
+    'nexus.system.discover_tools': 'Descubriendo tools',
+    'nexus.workspace.read': 'Leyendo',
+    'nexus.workspace.search': 'Buscando',
+    'nexus.skill.load': 'Cargando skill',
+    'nexus.orchestrator.create_plan': 'Creando plan',
+    'nexus.orchestrator.update_plan': 'Actualizando plan',
+    'nexus.cred.bruteforce': 'Probando credenciales',
+    'nexus.post.ssh_exec': 'Ejecutando por SSH',
+    'nexus.web.request': 'Haciendo petición web',
+}
+
+#: Arguments that name *where* the action happens, most specific first.
+_TARGET_KEYS = ('target', 'url', 'target_url', 'host', 'domain', 'path', 'file')
+
+
+#: Short human names where the last id segment would mislead (``shell.exec`` →
+#: ``exec`` reads as an unknown verb; ``shell`` is the channel).
+_TOOL_SHORT_NAMES = {
+    'nexus.shell.exec': 'shell',
+    'nexus.system.execute_and_parse': 'parse',
+    'nexus.system.discover_tools': 'discover',
+    'nexus.workspace.read': 'read',
+    'nexus.orchestrator.create_plan': 'plan',
+}
+
+
+def _short_tool_name(tool_id: str) -> str:
+    """``nexus.recon.nmap`` → ``nmap`` (what a human would call it)."""
+    tool = str(tool_id or 'tool')
+    known = _TOOL_SHORT_NAMES.get(tool)
+    if known:
+        return known
+    return tool.rsplit('.', 1)[-1].replace('_', ' ')
+
+
+def _fit_line(text: str, width: int | None) -> str:
+    """One clean line, cropped at *width* cells with an honest ellipsis."""
+    value = ' '.join(str(text).split())
+    if not width:
+        return value
+    from rich.cells import cell_len, chop_cells
+
+    limit = max(1, int(width))
+    if cell_len(value) <= limit:
+        return value
+    chunks = chop_cells(value, max(1, limit - 1))
+    return (chunks[0] if chunks else '') + '…'
+
+
+def _action_target(safe: dict[str, Any]) -> str:
+    """Where the action goes: a target/host/url, or the command itself."""
+    for key in _TARGET_KEYS:
+        value = safe.get(key)
+        if isinstance(value, str) and value.strip():
+            return ' '.join(clean_text(value).split())[:120]
+    command = safe.get('command')
+    if isinstance(command, str) and command.strip():
+        return ' '.join(clean_text(command).split())[:120]
+    return ''
+
+
+def tool_call_line(tool_id: str, arguments: Any, *, width: int | None = None) -> str:
+    """One plain line: ``> Ejecutando nmap en 10.0.0.1...``
+
+    This is the default voice of a tool call: conversational, one row, no
+    dashboard chrome. ``detailed_tool_invocation`` in ``stream.py`` keeps the
+    full argv/key=value request for the operator who expands a passed card.
+    Secrets are masked by the same ``display_arguments`` policy as everywhere.
+    """
+    from ..render import display_arguments
+
+    safe = display_arguments(arguments if isinstance(arguments, dict) else {})
+    tool = str(tool_id or '')
+    action = _TOOL_ACTIONS.get(tool)
+    if action is None:
+        action = f'Ejecutando {_short_tool_name(tool)}'
+    target = _action_target(safe)
+    return _fit_line(f'> {action}' + (f' en {target}' if target else '') + '...', width)
+
+
+def _open_ports(result: dict[str, Any]) -> list[str]:
+    """Open ports a parsed scan reports (``[]`` for anything else)."""
+    output = result.get('output') if isinstance(result.get('output'), dict) else {}
+    scan = output.get('scan') if isinstance(output, dict) else None
+    ports: list[str] = []
+    if isinstance(scan, dict):
+        for host in scan.get('hosts') or []:
+            if not isinstance(host, dict):
+                continue
+            for port in host.get('ports') or []:
+                if not isinstance(port, dict):
+                    continue
+                if str(port.get('state') or 'open').lower() != 'open':
+                    continue
+                number = port.get('port', port.get('portid'))
+                if number in (None, ''):
+                    continue
+                protocol = str(port.get('protocol') or 'tcp').lower()
+                label = str(number) if protocol == 'tcp' else f'{number}/{protocol}'
+                if label not in ports:
+                    ports.append(label)
+    if not ports:
+        evidence = result.get('evidence') if isinstance(result.get('evidence'), dict) else {}
+        ports = [str(port) for port in evidence.get('open_ports') or [] if str(port)]
+    return ports
+
+
+def tool_result_line(result: dict[str, Any], *, summary: str = '',
+                     width: int | None = None) -> str:
+    """One plain verdict: ``✓ nmap: 3 puertos abiertos (21, 22, 80)``.
+
+    ``summary`` is the existing evidence-based sentence; this only adds the
+    open-port list when a scan produced one, so the operator reads the result
+    without expanding a card. Failures keep their own words.
+    """
+    success = bool(result.get('success'))
+    name = _short_tool_name(str(result.get('tool_id') or 'tool'))
+    body = ' '.join(clean_text(str(summary or '')).split())
+    if not body:
+        body = 'completado' if success else 'falló'
+    ports = _open_ports(result) if success else []
+    if ports:
+        if 'puertos abiertos' in body and '(' not in body:
+            body = body.replace(
+                'puertos abiertos', f"puertos abiertos ({', '.join(ports)})", 1
+            )
+        elif 'puertos abiertos' not in body:
+            body += f" · {len(ports)} puerto(s) abierto(s) ({', '.join(ports)})"
+    mark = '✓' if success else '×'
+    line = f'{mark} {name}: {body}'
+    # Un fallo nunca se recorta: la razón (``sliver_auth_missing``) es lo que el
+    # operador necesita leer. El éxito es una línea corta por contrato.
+    return line if not success else _fit_line(line, width)

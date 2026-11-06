@@ -14,38 +14,37 @@ def _plain(text):
     return ANSI.sub("", text)
 
 
-def test_tool_invocation_is_a_single_clean_line():
+def test_tool_invocation_is_a_single_conversational_line():
     text = format_tool_invocation("nexus.recon.nmap", {"target": "lab", "flags": ["-sV", "-p", "80"]})
     lines = _plain(text).splitlines()
-    # One header. A handler that builds an argv is shown as the command it will
-    # run: no phase chip, no bracket prefix and no duplicated tool id.
+    # Fase 3: una línea de texto plano, no una cabecera de dashboard.
     assert len(lines) == 1
-    assert lines[0] == "$ nmap -sV -p 80 -oX - lab"
-    # A structured call keeps its honest key=value request under the tool id.
+    assert lines[0] == "> Ejecutando nmap en lab..."
     structured = _plain(format_tool_invocation(
         "nexus.web.upload", {"target": "lab", "path": "shell.php"}))
-    assert structured.startswith("• nexus.web.upload  path=shell.php · target=lab")
+    assert structured == "> Ejecutando upload en lab..."
 
 
-def test_a_long_invocation_keeps_every_argument():
+def test_a_long_invocation_stays_one_line_and_keeps_the_target():
     command = "nmap -sV -p- " + " ".join(["10.0.0.5"] * 25)
     text = _plain(format_tool_invocation("nexus.session.interact", {"command": command}))
-    # Nothing is clipped: the scrollback wraps the block at the real width.
-    assert command in text and "…" not in text
+    assert len(text.splitlines()) == 1
+    assert text.startswith("> Ejecutando interact en nmap -sV -p- 10.0.0.5")
 
 
-def test_structured_arguments_are_pairs_not_a_json_blob():
+def test_structured_arguments_never_leak_a_json_blob():
     text = _plain(format_tool_invocation(
         "nexus.web.upload", {"target": "10.0.0.5", "path": "shell.php"}))
     line = text.splitlines()[0]
-    assert "target=10.0.0.5" in line and "path=shell.php" in line
+    assert line == "> Ejecutando upload en 10.0.0.5..."
     assert "{" not in line and '"' not in line
 
 
-def test_invocation_arguments_keep_the_secret_redaction():
+def test_invocation_line_keeps_the_secret_redaction():
     text = _plain(format_tool_invocation(
         "nexus.cred.bruteforce", {"target": "10.0.0.5", "password": "hunter2"}))
-    assert "hunter2" not in text and "REDACTED" in text
+    assert "hunter2" not in text
+    assert text == "> Probando credenciales en 10.0.0.5..."
 
 
 def test_nmap_flags_cannot_leak_a_credential():
@@ -53,75 +52,73 @@ def test_nmap_flags_cannot_leak_a_credential():
         "nexus.recon.nmap",
         {"target": "10.0.0.5",
          "flags": ["-sV", "--script-args=user=admin,password=hunter2"]}))
-    # The special Nmap branch reads the redacted arguments like any other.
-    assert "hunter2" not in text and "[REDACTED]" in text
-    assert "password=[REDACTED]" in text
-    # Still the real argv, target included: nothing invented, nothing lost.
-    assert "nmap -sV" in text and "-oX - 10.0.0.5" in text
+    assert "hunter2" not in text
+    assert text == "> Ejecutando nmap en 10.0.0.5..."
 
 
 def test_a_file_operation_redacts_a_credential_inside_the_path():
     text = _plain(format_tool_invocation(
         "nexus.workspace.read", {"path": "loot/password=hunter2.txt"}))
-    assert text.startswith("• nexus.workspace.read  loot/") and "hunter2" not in text
+    assert text.startswith("> Leyendo") and "hunter2" not in text
 
 
-def test_a_wrapped_invocation_indents_its_continuations():
+def test_a_narrow_width_crops_with_a_cell_accurate_ellipsis():
     command = "nmap -sV -p- " + " ".join(["10.0.0.5"] * 12)
     text = _plain(format_tool_invocation(
         "nexus.session.interact", {"command": command}, width=60))
-    rows = text.splitlines()
-    assert len(rows) > 1
-    assert rows[0].startswith("• nexus.session.interact  ")
-    assert all(row.startswith("  ↳ ") for row in rows[1:])
-    assert all(cell_len(row) <= 60 for row in rows)
-    # Nothing was dropped to make it fit.
-    assert "…" not in text
-    joined = " ".join(rows)
-    assert all(token in joined for token in command.split())
+    assert len(text.splitlines()) == 1
+    assert cell_len(text) <= 60
+    assert text.endswith("…")
 
 
-def test_a_wrapped_invocation_measures_cells_not_characters():
+def test_a_wide_character_line_is_measured_in_cells():
     command = "日本語" * 30
     text = _plain(format_tool_invocation(
         "nexus.session.interact", {"command": command}, width=40))
-    rows = text.splitlines()
-    assert all(cell_len(row) <= 40 for row in rows)
-    # Wide characters count as the cells they paint: the whole value survives.
-    rebuilt = rows[0].removeprefix("• nexus.session.interact  ") + "".join(
-        row.removeprefix("  ↳ ") for row in rows[1:])
-    assert rebuilt == "command=" + command
+    assert len(text.splitlines()) == 1
+    assert cell_len(text) <= 40
 
 
-def test_file_operations_name_the_tool_and_the_path():
-    assert _plain(format_tool_invocation("nexus.workspace.read", {"path": "a.txt"})) == "• nexus.workspace.read  a.txt"
-    assert _plain(format_tool_invocation("nexus.workspace.create", {"path": "b.txt"})) == "• nexus.workspace.create  b.txt"
-    assert _plain(format_tool_invocation("nexus.file.edit", {"path": "c.txt"})) == "• nexus.file.edit  c.txt"
+def test_file_operations_name_the_action_and_the_path():
+    assert _plain(format_tool_invocation("nexus.workspace.read", {"path": "a.txt"})) == "> Leyendo en a.txt..."
+    assert _plain(format_tool_invocation("nexus.workspace.create", {"path": "b.txt"})) == "> Ejecutando create en b.txt..."
+    assert _plain(format_tool_invocation("nexus.file.edit", {"path": "c.txt"})) == "> Ejecutando edit en c.txt..."
 
 
-def test_tool_complete_folds_at_four_data_lines():
-    text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
-    assert len([line for line in text.splitlines() if "└ " in line]) == 4
+def test_tool_complete_is_one_plain_line_by_default():
+    text = render_tool_result({"success": True, "tool_id": "nexus.shell.exec",
+                               "stdout": "\n".join(f"l{n}" for n in range(10))})
+    assert len(text.splitlines()) == 1
+    assert text.startswith("✓ shell: ")
 
 
-def test_tool_complete_reports_the_hidden_data_lines():
-    text = render_tool_result({"stdout": "\n".join(f"l{n}" for n in range(9))})
-    assert "Ver 5 líneas más" in text
+def test_the_full_body_is_available_when_expanded():
+    text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))},
+                              expanded=True)
+    assert len([line for line in text.splitlines() if "└ " in line]) == 10
+    assert "Ver " not in text
 
 
 def test_tool_complete_summary_line():
-    text = render_tool_result({"success": True, "evidence": {"ports_open_total": 4, "noise_level": "low", "elapsed_seconds": 4.2}})
-    assert "✓ 4 puertos abiertos · ruido: low · 4.2s" in text
+    text = render_tool_result({"success": True, "tool_id": "nexus.recon.nmap",
+                               "evidence": {"ports_open_total": 4, "noise_level": "low", "elapsed_seconds": 4.2}})
+    assert text == "✓ nmap: 4 puertos abiertos · ruido: low · 4.2s"
 
 
 def test_tool_failed_shows_error():
-    text = render_tool_result({"success": False, "output": {"error": "timeout 120s"}, "verification_method": "nmap_timeout"})
-    assert "× timeout 120s · verification_method=nmap_timeout" in text
+    text = render_tool_result({"success": False, "tool_id": "nexus.recon.nmap",
+                               "output": {"error": "timeout 120s"},
+                               "verification_method": "nmap_timeout"})
+    assert text == (
+        "× nmap: timeout 120s · verification_method=nmap_timeout · Ver 3 líneas más"
+    )
 
 
-def test_collapsed_card_reports_hidden_lines():
+def test_collapsed_card_is_a_single_plain_line():
     text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
-    assert "Ver 6 líneas más" in text
+    assert len(text.splitlines()) == 1
+    assert "✓ tool: l0" in text and "Ver 6 líneas más" in text
+    assert "└ " not in text
     assert "Show more" not in text and "[ Show " not in text
     assert "F3" not in text
 
@@ -156,22 +153,17 @@ def test_a_structured_error_keeps_its_text_and_defers_the_json():
     result = {"success": False, "tool_id": "nexus.web.request",
               "output": {"error": "connection refused", "host": "10.0.0.5"}}
     collapsed = render_tool_result(result, no_color=True)
-    assert "× nexus.web.request · connection refused" in collapsed
+    assert collapsed == "× request: connection refused · Ver 4 líneas más"
     assert "× failed" not in collapsed
-    # The JSON stays behind one click instead of being dumped field by field.
-    assert "Ver " in collapsed and "líneas más" in collapsed
     assert '"host"' not in collapsed
     assert '"host": "10.0.0.5"' in render_tool_result(result, expanded=True, no_color=True)
 
 
-def test_unknown_structured_output_previews_its_fields():
+def test_unknown_structured_output_is_summarized_in_one_line():
     result = {"success": True, "tool_id": "nexus.example", "output": {"foo": "bar"}}
     collapsed = render_tool_result(result, no_color=True)
-    # One verdict line, then the size of the document behind the toggle: the
-    # field tree is exactly what used to dump forty rows for report.generate.
+    assert collapsed == "✓ example: resultado estructurado · 1 campo(s) · Ver 3 líneas más"
     assert "└ foo" not in collapsed
-    assert "Ver 3 líneas más" in collapsed
-    assert '"foo"' not in collapsed
     assert '"foo": "bar"' in render_tool_result(result, expanded=True, no_color=True)
 
 
@@ -216,8 +208,8 @@ def test_thought_is_rendered_before_the_tool_call():
     text = render_message(message, expanded=True)
     plain = _plain(text)
     assert "Razonamiento" in plain and "escaneo los web" in plain
-    assert "$ nmap" in plain
-    assert plain.index("Razonamiento") < plain.index("$ nmap")
+    assert "> Ejecutando nmap en lab..." in plain
+    assert plain.index("Razonamiento") < plain.index("> Ejecutando nmap")
     # Collapsed, the finished turn costs one row: the note is one click away.
     collapsed = _plain(render_message(message))
     assert collapsed.splitlines()[0] == "  ▸ Razonamiento"
@@ -238,8 +230,9 @@ def test_missing_thought_produces_no_line():
 def test_durable_observation_uses_real_body():
     message = {"metadata": {"kind": "react.observation", "tool_result": {"success": True}},
                "content": json.dumps({"output": "real output", "evidence": {"ports_open_total": 2}})}
-    assert "real output" in render_message(message)
+    # Fase 3: por defecto una línea; el cuerpo completo está a una expansión.
     assert "2 puertos abiertos" in render_message(message)
+    assert "real output" in render_message(message, expanded=True)
 
 
 def test_daemon_uses_compact_messages_in_tui(tui_factory):
@@ -267,7 +260,7 @@ def test_daemon_uses_compact_messages_in_tui(tui_factory):
     state = {"run_id": "r", "sequence": 0, "message_sequence": None, "turn": 0}
     _drain_stream(session, state)
     _drain_stream(session, state)
-    assert _plain(ui.session.transcript).count("$ nmap") == 1
+    assert _plain(ui.session.transcript).count("> Ejecutando nmap") == 1
     # The second poll asks the store only for what follows the last row it saw.
     assert cursors == [None, 7]
 

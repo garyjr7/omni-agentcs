@@ -57,14 +57,14 @@ def test_truncate_filters_separators_and_duplicate_progress():
     assert truncate_output("---\n[+] wait\n[+] wait\nresult") == ("[+] wait\nresult", False)
 
 
-def test_a_long_summary_wraps_at_the_terminal_width_with_hanging_indent():
+def test_a_long_summary_is_cropped_at_the_terminal_width():
     from nexus_core.cli.tui.stream import render_tool_result
 
+    # Fase 3: el flujo por defecto es una línea limpia (no un bloque de tarjeta).
     text = render_tool_result(
         {"success": True, "stdout": "palabra " * 30}, width=80, no_color=True
     )
     lines = text.splitlines()
-    assert all(len(line) <= 80 for line in lines)
-    assert lines[0].startswith("  ✓ ")
-    assert lines[1].startswith("  └ ")
-    assert lines[2].startswith("    ")
+    assert len(lines) == 1
+    assert len(lines[0]) <= 80
+    assert lines[0].endswith("…")

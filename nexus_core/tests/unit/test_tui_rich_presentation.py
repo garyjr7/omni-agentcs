@@ -35,7 +35,7 @@ def test_exact_four_line_boundary_and_three_head_one_tail() -> None:
 def test_trace_keeps_stdout_and_stderr_and_literal_markup() -> None:
     result = {'success': False, 'tool_id': 'nexus.example',
               'stdout': '[bold]literal[/bold]', 'stderr': 'failure detail'}
-    text = render_tool_result(result, no_color=True)
+    text = render_tool_result(result, no_color=True, expanded=True)
     assert output_text(result) == '[stdout]\n[bold]literal[/bold]\n[stderr]\nfailure detail'
     assert '× nexus.example · falló' in text and text.count('nexus.example') == 1
     assert '[bold]literal[/bold]' in text and 'failure detail' in text
@@ -47,7 +47,7 @@ def test_diff_additions_and_removals_are_colored_and_plain_export_is_exact() -> 
     colored = render_rich(diff_block(diff))
     assert '\x1b[' in colored and '-old' in colored and '+new' in colored
     assert render_rich(diff_block(diff), no_color=True) == diff
-    routed = render_tool_result({'success': True, 'output': {'diff': diff}}, no_color=True)
+    routed = render_tool_result({'success': True, 'output': {'diff': diff}}, no_color=True, expanded=True)
     assert '@@ -1 +1 @@' in routed and '"diff"' not in routed
 
 
@@ -305,7 +305,7 @@ def test_fixed_hud_has_truthful_budget_and_running_state(tui_factory: Any) -> No
 
 def test_before_after_payload_is_rendered_as_a_real_diff() -> None:
     text = render_tool_result({'success': True, 'output': {
-        'path': 'settings.txt', 'before': 'timeout=5', 'after': 'timeout=10'}}, no_color=True)
+        'path': 'settings.txt', 'before': 'timeout=5', 'after': 'timeout=10'}}, no_color=True, expanded=True)
     assert '--- a/settings.txt' in text and '+++ b/settings.txt' in text
     assert '-timeout=5' in text and '+timeout=10' in text
 
@@ -333,7 +333,7 @@ def test_ci_disables_automatic_fullscreen(monkeypatch: Any) -> None:
 
 def test_diff_never_hides_stderr_diagnostics() -> None:
     text = render_tool_result({'success': False, 'stderr': 'permission denied',
-                               'output': {'diff': '-old\n+new'}}, no_color=True)
+                               'output': {'diff': '-old\n+new'}}, no_color=True, expanded=True)
     assert 'permission denied' in text and '-old' in text and '+new' in text
 
 
