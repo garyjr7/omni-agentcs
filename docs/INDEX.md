@@ -11,8 +11,8 @@
 
 | Tema | Documento VIGENTE | Ubicación | Notas |
 |---|---|---|---|
-| Producto, instalación y CLI | `README.md` | `/` | Verdad del producto v3.0.0: tools, comandos, gobernanza |
-| Historial de versiones | `CHANGELOG.md` | `/` | v3.0.0 actual (rename a OmniAgentCS) |
+| Producto, instalación y CLI | `README.md` | `/` | Verdad del producto v3.0.0b1: tools, comandos, gobernanza |
+| Historial de versiones | `CHANGELOG.md` | `/` | v3.0.0b1 actual (beta); v3.0.0 sin publicar |
 | Deuda y backlog | `BACKLOG.md` | `/` | Ledger único de deudas V0/V1/V2 (P1-A/B/C) |
 | Instrucciones de proyecto para el agente | `OMNI.md` | `/` | Contexto no confiable, delimitado y auditado |
 | Guía de uso manual de las OMNI tools | `GUIA_MANUAL_1.md` | `docs/guides/` | 68 tools gobernadas paso a paso, sin LLM |

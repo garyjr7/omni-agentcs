@@ -1,6 +1,47 @@
 # OmniAgentCS — Changelog
 
-## v3.0.0 — 2026-10-02 (ACTUAL)
+## v3.0.0b1 — 2026-11-06 (BETA)
+
+Primer tag del repositorio: cierra la semana 1 del plan de release con los gates
+mecánicos en verde (`make syntax lint test`: 4.853 passed, 53 skipped) y el
+árbol sin cambios pendientes.
+
+### Interfaz
+- Cada llamada y cada resultado ocupan **una línea conversacional**
+  (`> Ejecutando nmap en 10.0.0.1...`, `✓ nmap: 3 puertos abiertos (21, 22, 80)`).
+  El argv completo y el cuerpo plegado siguen a una expansión (`ctrl+o`), con el
+  número de líneas ocultas visible.
+
+### Bucle del agente
+- `task_complete` **espera al job en segundo plano** antes de cerrar: el cierre
+  apagaba el proceso y `cancel_all()` mataba el escaneo que el usuario pidió.
+- Una micro-tarea ("solo escanea puertos") cierra sin arrastrar los TODO del plan
+  del engagement; la puerta de evidencia sigue aplicando.
+- La acción inventada `wait` se rechaza explicando cómo llega el resultado, en
+  lugar de la corrección genérica que llevaba al modelo a preguntar al humano.
+- El objetivo inmediato limita el run: el plan global es contexto, no una orden
+  de ejecución (sustituye la filosofía de kill chain obligatoria).
+
+### Tools
+- 88 tools gobernadas (+`nexus.system.execute_and_parse`,
+  +`nexus.system.discover_tools`).
+- Perfil por defecto de cinco tools; el resto se revela por run al cargar una
+  skill o al descubrir un grupo (`NEXUS_TOOL_PROFILE=open` lo desactiva). El
+  catálogo durable sigue siendo la autoridad del gateway y la auditoría.
+- `execute_and_parse` reutiliza el sustrato del shell (sandbox, scope, auditoría,
+  artifact) y parsea el artifact completo con un registro cerrado (`nmap`,
+  `text`).
+- `create_plan`/`update_plan` responden a un `fact_type` inválido con la lista
+  cerrada de los aceptados, en lugar de un fallo que invita a re-adivinar.
+
+### Documentación y gobernanza
+- `README.md` y `SECURITY.md` dejan de declarar estados falsos: la licencia es
+  `Authorized Use Only` y `oci_network` (SEC-03) está implementado con proxy
+  SOCKS5 scope-gobernado ([ADR-004](docs/adr/ADR-004-sandbox-modes.md)).
+
+---
+
+## v3.0.0 — 2026-10-02 (no publicado: el tag llega tras este beta)
 
 Rename del producto a **OmniAgentCS** (BAJIOWARE). El núcleo de gobernanza se
 mantiene: alcance firmado con HMAC, cadena de auditoría encadenada por hash,

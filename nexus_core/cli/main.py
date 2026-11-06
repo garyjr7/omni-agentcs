@@ -13,7 +13,7 @@ from . import render
 from .session import DEFAULT_TENANT, OmniSession, build_llm_client
 
 PROGRAM = "omni"
-PROGRAM_VERSION = "3.0.0"
+PROGRAM_VERSION = "3.0.0b1"
 
 #: Run statuses that do not mean "the agent broke".
 ACCEPTABLE_ONESHOT_STATUSES = frozenset({"completed", "max_iterations", "clarification"})
