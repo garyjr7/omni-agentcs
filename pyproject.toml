@@ -109,3 +109,12 @@ follow_imports = "normal"
 [[tool.mypy.overrides]]
 module = ["rich", "rich.*", "prompt_toolkit", "prompt_toolkit.*"]
 follow_imports = "normal"
+
+[tool.coverage.run]
+# Product code only: measuring the tests themselves inflates the number and
+# hides where the product is actually thin.
+source = ["nexus_core"]
+omit = ["nexus_core/tests/*"]
+
+[tool.coverage.report]
+show_missing = true

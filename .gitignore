@@ -60,6 +60,12 @@ whatweb_run_*.json
 .mypy_cache/
 *.db-journal
 
+# Cobertura (make test-coverage)
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
 # Evidencia cruda de ejecuciones contra objetivos (efimera, nunca commitear)
 cred_run_*/
 ftp_run_*/

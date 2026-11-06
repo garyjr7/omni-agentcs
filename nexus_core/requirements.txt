@@ -15,6 +15,10 @@ keyring>=25.7,<26
 # pivot_*). Without it the run preflight retires all five tools (H5), which is
 # how hijack_v7 started with no way into the target after the credentials.
 paramiko>=3.4,<6
+# paramiko pulls pyasn1 transitively; 0.6.4 carries four advisories fixed in
+# 0.6.5 (CVE-2026-119194 … CVE-2026-119197). Pinned here because the resolver
+# would otherwise keep whatever paramiko allows, not what is safe.
+pyasn1>=0.6.5,<0.7
 # Tool input contract enforcement (nexus_core/kernel/schema_validation.py, V1-10).
 jsonschema>=4.23,<5
 # Declarative playbooks (nexus_core/playbooks/*.yaml). The loader validates them

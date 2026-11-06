@@ -77,7 +77,24 @@ sorpresa es un incidente.
 | SEC-03 | `oci_network` implementado: contenedor en una red `--internal` cuya única salida es el proxy SOCKS5 del scope; sin proxy configurado falla cerrado. | Cerrado ([ADR-004](docs/adr/ADR-004-sandbox-modes.md)) |
 | SEC-05 | Los plugins que añaden tools vía entry points `nexus.tools` declaran su propio `risk`; no hay allowlist ni firma. | Abierto |
 | SEC-07 | `ApprovalService.decide()` no comprueba rol/tenant del aprobador (relevante solo con varios analistas). | Backlog |
-| SEC-10/11 | Sin lockfile reproducible al inicio; `pip-audit` ya corre en CI. | Parcial |
+| SEC-10/11 | Lockfile con hashes y `make audit` **bloqueante** en CI. Queda una excepción aceptada (§4.1). | Parcial (una excepción) |
+
+### 4.1 Excepción de auditoría aceptada
+
+`make audit` (y el job de CI, que ya no es `continue-on-error`) falla ante
+cualquier advisory **salvo** los declarados aquí. Una excepción sin justificación
+ escrita es un gate decorativo; por eso va con nombre, advisory y motivo, y se
+retira en cuanto haya release corregida.
+
+| Paquete | Advisory | Por qué se acepta |
+|---|---|---|
+| `paramiko 3.5.1` | `PYSEC-2026-2858` | No existe versión publicada con el fallo corregido. `paramiko` sostiene `nexus.post.*` (`ssh_exec`, `ssh_upload`, `enum_system`, `pivot_*`), que se ejecutan **contra el objetivo del engagement** con credenciales que aporta el operador, nunca contra un servidor de terceros. El riesgo residual es el de un SSH hablando con un destino ya autorizado. |
+
+Lo que **no** se ignora: `pyasn1 0.6.4` arrastraba
+`CVE-2026-119194`…`CVE-2026-119197`, con fix en 0.6.5, así que se subió el pin
+(`nexus_core/requirements.txt`) en vez de añadirlo a la lista blanca de
+advisories. Ignorar un advisory que tiene parche es la forma más rápida de
+convertir una auditoría en un trámite.
 
 ## 5. Reportar una vulnerabilidad
 

@@ -32,13 +32,13 @@ jobs:
       # requirements change.
       - run: pip install --require-hashes -r requirements-dev.lock
       - run: make syntax lint test
-      - name: Audit dependencies (SEC-11, no bloqueante al inicio)
-        # Staged rollout from the 2026-10-23 audit: it reports without failing
-        # the build while the known advisory below has no fix. It is NOT green:
-        # paramiko 3.5.1 carries PYSEC-2026-2858 with no fixed release yet, and
-        # paramiko backs nexus.post.* (ssh_exec / enum_system).
-        continue-on-error: true
-        run: pip-audit -r requirements-dev.lock --progress-spinner off
+      - name: Audit dependencies (SEC-11, bloqueante)
+        # Blocking as of 3.0.0b1. The one accepted advisory is paramiko's
+        # PYSEC-2026-2858 (no fixed release yet), ignored in the `make audit`
+        # target and justified in SECURITY.md §4.1. pyasn1 is no longer an
+        # exception: it is pinned >=0.6.5, which fixes CVE-2026-119194…119197.
+        # An exception that stops being true has to break this job, not hide.
+        run: make audit
       - name: Typecheck changed Python files (V1-9)
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -47,6 +47,32 @@ jobs:
             BASE="HEAD~1"
           fi
           make typecheck TYPECHECK_BASE="$BASE"
+
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      CI: "true"
+      NEXUS_E2E: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - run: pip install --require-hashes -r requirements-dev.lock
+      - name: Coverage gate (V1-12)
+        # The floor is the measurement documented in the Makefile (86.2 % on
+        # 2026-11-06), not a target: it is a ratchet, so a change that lowers
+        # coverage fails instead of passing silently. Here it runs in one go;
+        # the dev box only needs the chunking because it has 3.8 GB of RAM.
+        run: make test-coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn
 
   postgres:
     runs-on: ubuntu-latest
