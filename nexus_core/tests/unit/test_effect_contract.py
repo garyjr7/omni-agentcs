@@ -94,6 +94,8 @@ EXPECTED_ACTIVE = frozenset({
     "nexus.session.kill",
     "nexus.session.pty",
     "nexus.shell.exec",
+    # Fase 2: ejecuta un comando en el sandbox (el mismo efecto que shell.exec).
+    "nexus.system.execute_and_parse",
     "nexus.system.install_tool",
     "nexus.web.request",
     "nexus.web.upload",
@@ -200,8 +202,10 @@ def test_active_catalog_matches_the_reviewed_expectation():
     # Theseus adds two *active* tools (nexus.web.ssti and nexus.post.pwnkit):
     # 85 - 52 = 33, so the read-only count is unchanged again.
     # nexus.c2.sliver_download pulls a file from an owned session (an active
-    # post-exploitation effect): 86 - 53 = 33.
-    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 33
+    # post-exploitation effect). Fase 2 adds one active tool
+    # (execute_and_parse) and one read-only (discover_tools):
+    # 88 - 54 = 34.
+    assert len(read_only) == catalog["tool_count"] - len(EXPECTED_ACTIVE) == 34
 
 
 def test_the_mislabelled_tools_now_declare_their_real_effect():

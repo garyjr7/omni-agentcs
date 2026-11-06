@@ -407,6 +407,14 @@ def durable_tool_definitions(
         skill_load_definition,
         skill_load_handler,
     )
+    from .handlers.discover_tools import (
+        discover_tools_definition,
+        discover_tools_handler,
+    )
+    from .handlers.execute_and_parse import (
+        execute_and_parse_definition,
+        execute_and_parse_handler,
+    )
     catalog.update({
         "nexus.web.upload": (web_upload_definition(tenant_id), web_upload_handler),
         "nexus.post.shell_exec": (shell_exec_definition(tenant_id), shell_exec_handler),
@@ -421,6 +429,17 @@ def durable_tool_definitions(
         # agent lists the catalogue and loads the recipe it needs when stuck.
         "nexus.skill.list": (skill_list_definition(tenant_id), skill_list_handler),
         "nexus.skill.load": (skill_load_definition(tenant_id), skill_load_handler),
+        # Fase 2: el puente ejecución→dato y el comando de descubrimiento del
+        # perfil de tools (tool hiding). Ambos son el contrato visible por
+        # defecto junto a shell.exec/workspace.read/create_plan.
+        "nexus.system.execute_and_parse": (
+            execute_and_parse_definition(tenant_id),
+            execute_and_parse_handler,
+        ),
+        "nexus.system.discover_tools": (
+            discover_tools_definition(tenant_id),
+            discover_tools_handler,
+        ),
     })
     from .execution_contract import with_execution_contract
 

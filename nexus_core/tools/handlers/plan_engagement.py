@@ -229,6 +229,72 @@ def _reconciled(context: RunContext, plan: EngagementPlan | None) -> EngagementP
     return updated
 
 
+def _invalid_fact_types(
+    todos: Any,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Unknown ``fact_types`` per TODO, plus the closed list the plan accepts.
+
+    ``todo_from_mapping`` already refuses an unknown type, but it raises: the
+    model reads a schema-ish failure and re-guesses the name. The handler answers
+    a first-class observation instead, with the closed list on it, so the next
+    call can be right. The allowed names are the board's own ``FACT_TYPES`` (the
+    ones every reader understands) plus the plan's ``EXTRA_FACT_TYPES``.
+    """
+    from collections.abc import Mapping
+
+    from nexus_core.agent.engagement_plan import EXTRA_FACT_TYPES
+    from nexus_core.kernel.blackboard import FACT_TYPES
+
+    allowed = sorted(set(FACT_TYPES) | set(EXTRA_FACT_TYPES))
+    issues: list[dict[str, Any]] = []
+    for raw in todos or ():
+        if not isinstance(raw, Mapping):
+            continue
+        declared = raw.get("fact_types") or ()
+        if isinstance(declared, str):
+            declared = [part.strip() for part in declared.split(",") if part.strip()]
+        if not isinstance(declared, (list, tuple)):
+            continue
+        unknown = sorted(
+            {
+                str(item or "").strip().lower()
+                for item in declared
+                if str(item or "").strip().lower() not in allowed
+            }
+        )
+        if unknown:
+            issues.append({"todo": str(raw.get("id") or ""), "unknown": unknown})
+    return issues, allowed
+
+
+def _fact_type_refusal(
+    issues: list[dict[str, Any]], allowed: list[str]
+) -> ToolResult:
+    """Deterministic answer for a plan TODO that names an unknown fact type."""
+    names = sorted({name for issue in issues for name in issue["unknown"]})
+    todos = ", ".join(str(issue["todo"] or "?") for issue in issues[:6])
+    summary = (
+        f"fact_type no válido en {todos}: {', '.join(names)}. "
+        f"Tipos permitidos: {', '.join(allowed)}. Corrige el TODO y vuelve a llamar."
+    )
+    return ToolResult(
+        output={
+            "error": summary,
+            "invalid": issues,
+            "allowed_fact_types": allowed,
+            "guidance": (
+                "`fact_types` solo acepta tipos de la lista; no inventes nombres "
+                "nuevos (los asserts del tablero no los entenderían)."
+            ),
+        },
+        verified=False,
+        outcome="error",
+        verification_method="invalid_fact_type",
+        evidence={"invalid": names, "todos": len(issues)},
+        stdout=summary,
+    )
+
+
 def _payload(plan: EngagementPlan | None, context: RunContext) -> dict[str, Any]:
     payload = status_payload(plan)
     payload["path"] = PLAN_RELATIVE_PATH
@@ -241,6 +307,9 @@ async def create_plan_handler(arguments: dict[str, Any], context: RunContext) ->
     from nexus_core.kernel.schema_validation import validate
 
     validate(arguments, create_plan_definition().input_schema)
+    issues, allowed = _invalid_fact_types(arguments.get("todos"))
+    if issues:
+        return _fact_type_refusal(issues, allowed)
     existing = _reconciled(
         context, load_plan_for(context.engagement_id, _root(context))
     )
@@ -286,6 +355,9 @@ async def update_plan_handler(arguments: dict[str, Any], context: RunContext) ->
     from nexus_core.kernel.schema_validation import validate
 
     validate(arguments, update_plan_definition().input_schema)
+    issues, allowed = _invalid_fact_types(arguments.get("add"))
+    if issues:
+        return _fact_type_refusal(issues, allowed)
     plan = _reconciled(
         context, load_plan_for(context.engagement_id, _root(context))
     )

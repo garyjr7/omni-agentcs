@@ -43,7 +43,7 @@ def test_registry_is_healthy_against_the_durable_catalog():
     #   only by SSH): 85.
     # + nexus.c2.sliver_download (a C2 session could run commands but had no
     #   governed way to pull a file back): 86.
-    assert len(catalog) == 86
+    assert len(catalog) == 88
 
 
 def test_read_only_profiles_list_no_active_tool():

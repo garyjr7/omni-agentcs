@@ -190,6 +190,12 @@ async def test_in_subset_tool_is_executed(tmp_path):
 
 async def test_system_prompt_only_offers_the_subagent_subset(tmp_path):
     _, context, _ = _harness(tmp_path)
+    # Tool hiding (Fase 2): el perfil por defecto muestra cinco tools. Esta
+    # prueba es del *subconjunto del subagente*, así que primero se revela el
+    # grupo recon del run (lo mismo que haría ``nexus.system.discover_tools``).
+    from nexus_core.tools.profiles import activate_tools
+
+    activate_tools(context.run_id, ["nexus.recon.nmap"])
     llm = _ScriptedLLM([_task_complete()])
 
     with mock.patch.object(runtime_module, "execute_tool", _ToolSpy({})):

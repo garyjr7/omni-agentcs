@@ -91,6 +91,11 @@ INTERNAL_HANDLERS = frozenset(
         # WP4: the skill loader reads the project's own SKILL.md files in-process;
         # there is no binary, transport or target behind it.
         "skill",
+        # Fase 2: execute_and_parse is the shell substrate plus an in-process
+        # parser (its dependency is the sandbox, already required by
+        # shell_exec); discover_tools only decides what the prompt shows.
+        "execute_and_parse",
+        "discover_tools",
         # PLAN MODE: create/update/status of ``loot/ENGAGEMENT_PLAN.md``. One
         # Markdown file in the engagement workspace, no binary behind it.
         "plan_engagement",

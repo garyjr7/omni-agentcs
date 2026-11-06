@@ -183,6 +183,11 @@ async def test_first_service_fact_keeps_the_tools_that_enumerate_it(tmp_path):
     iteration 4 is past it, so the same tool is then refused by the subset.
     """
     store, context, run_id = _harness(tmp_path)
+    # Tool hiding (Fase 2): este test mide el subconjunto del subagente, no el
+    # perfil de tools; se revelan las dos tools del reconocimiento para el run.
+    from nexus_core.tools.profiles import activate_tools
+
+    activate_tools(run_id, ["nexus.recon.nmap", "nexus.recon.ftp"])
     spy, executed = _spy(store, record_facts=True)
     llm = _ScriptedLLM(
         [
