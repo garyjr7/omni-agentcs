@@ -105,7 +105,14 @@ def test_logs_stay_inside_the_router_on_a_real_pty(tmp_path):
     # frame. Inspect the frame that accepted the input: it is what the operator
     # sees, and it must contain the log line exactly once, with no duplicates.
     frames = text.split("\x1b[J")
-    submitted = [frame for frame in frames if "--> hola" in frame]
+    # The prompt is drawn inside the branded panel: the placeholder hint sits
+    # between the ``--> `` marker and the typed text, so the literal
+    # ``--> hola`` no longer exists in the byte stream. Anchor on a drawn frame
+    # that carries both the prompt marker and the submitted text, and keep the
+    # invariant: that frame must show the router's log line exactly once.
+    submitted = [
+        frame for frame in frames if "-->" in frame and "hola" in frame
+    ]
     assert submitted, text[-2000:]
     final_frame = submitted[-1]
     assert final_frame.count("PROBE-INFO-LINE") == 1

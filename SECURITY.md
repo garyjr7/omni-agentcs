@@ -24,10 +24,11 @@ Por eso:
   tabla de garantías lo declara en código
   ([`kernel/sandbox_modes.py`](nexus_core/kernel/sandbox_modes.py)) y el banner
   lo repite. Trátalo como "aislamiento de escritura y de proceso", no de lectura.
-- **`oci` es el único modo que aísla de verdad** (namespace, sin red por
-  defecto), y por eso `NEXUS_ENV=production` lo exige: con `NEXUS_ENV=production`
-  y `NEXUS_SANDBOX_MODE=local` o `local_strict` el arranque **falla**
-  (`SandboxModeForbidden`).
+- **`oci` y `oci_network` son los únicos modos que aíslan de verdad**
+  (namespace; `oci` sin red y `oci_network` con salida únicamente por el proxy
+  SOCKS5 gobernado por el scope), y por eso `NEXUS_ENV=production` los exige: con
+  `NEXUS_ENV=production` y `NEXUS_SANDBOX_MODE=local` o `local_strict` el arranque
+  **falla** (`SandboxModeForbidden`).
 - **`local_sudo` no es un control de seguridad.** La denylist del shell es
   léxica (dice "guard-rail, not a security boundary" en su propio docstring):
   `python3 -c 'import os; os.system("sudo -n id")'` no casa con el patrón. El
@@ -73,7 +74,7 @@ sorpresa es un incidente.
 |---|---|---|
 | SEC-01 | El scope no cubre el egress del shell universal (`python3`, `ssh`, `openssl s_client`, `/dev/tcp`). Mitigación real: proxy de egress por engagement. | Abierto |
 | SEC-02 | Aislamiento de **lectura** en modo local (`bwrap`/namespace sobre el HOME real). | Abierto |
-| SEC-03 | `oci_network` no implementado: en OCI el agente no alcanza el objetivo. Hoy se elige entre aislar y ver la red. | Abierto (documentado) |
+| SEC-03 | `oci_network` implementado: contenedor en una red `--internal` cuya única salida es el proxy SOCKS5 del scope; sin proxy configurado falla cerrado. | Cerrado ([ADR-004](docs/adr/ADR-004-sandbox-modes.md)) |
 | SEC-05 | Los plugins que añaden tools vía entry points `nexus.tools` declaran su propio `risk`; no hay allowlist ni firma. | Abierto |
 | SEC-07 | `ApprovalService.decide()` no comprueba rol/tenant del aprobador (relevante solo con varios analistas). | Backlog |
 | SEC-10/11 | Sin lockfile reproducible al inicio; `pip-audit` ya corre en CI. | Parcial |

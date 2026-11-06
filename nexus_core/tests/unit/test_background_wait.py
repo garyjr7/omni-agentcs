@@ -14,13 +14,10 @@ import json
 
 import pytest
 
-from nexus_core.agent.react_coordinator import ReActCoordinator
-from nexus_core.agent.react import ReActConfig
 from nexus_core.tests.unit.test_background_subagent import _CLARIFY, _spawn
 from nexus_core.tests.unit.test_parallel_tools import (
     FakeService,
     ScriptedLLM,
-    _catalog,
     _coordinator,
     _loop_context,
     _observations,

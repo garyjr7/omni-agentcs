@@ -205,7 +205,7 @@ PostgreSQL se identifica sin consultar el servidor; el kernel conserva ese backe
 
 ## Herramientas y aprovisionamiento
 
-El catálogo durable contiene **86 herramientas** —la cifra la publica
+El catálogo durable contiene **88 herramientas** —la cifra la publica
 `tool_catalog()` y la comprueba un test—; esta es una selección de las
 principales:
 
@@ -981,7 +981,10 @@ Las decisiones y el balance de tests del cleanup están en
 
 ## Licencia
 
-Por definir. Este repositorio no incluye todavía una licencia de distribución.
+OmniAgentCS se distribuye bajo la licencia **Authorized Use Only** de
+BAJIOWARE: uso exclusivo en pruebas de seguridad autorizadas y redistribución
+solo con permiso escrito. El texto completo, que es la única fuente de verdad,
+está en [`LICENSE`](LICENSE).
 
 ### Persistencia de credenciales y aprobaciones
 
