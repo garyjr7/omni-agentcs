@@ -103,6 +103,23 @@ def test_parse_rejects_invalid_action():
     assert "unknown or missing action" in str(error.value)
 
 
+def test_parse_rejects_the_invented_wait_action_with_the_fix():
+    """A measured run answered ``{"action": "wait", "task_id": "bg-1"}``.
+
+    The loop yields to the background job by itself, so ``wait`` is not (and will
+    not become) an action. The refusal must teach that, otherwise the generic
+    "unknown action" correction leads the model to ask the human instead.
+    """
+    text = json.dumps({"thought": "espero el escaneo", "action": "wait", "task_id": "bg-1"})
+
+    with pytest.raises(ReActParseError) as error:
+        parse_react_response(text)
+
+    message = str(error.value)
+    assert "no existe la acción 'wait'" in message
+    assert "background: true" in message and "task_complete" in message
+
+
 def test_parse_rejects_completely_invalid_text():
     with pytest.raises(ReActParseError) as error:
         parse_react_response(_fixture("llm_response_invalid_json.txt"))

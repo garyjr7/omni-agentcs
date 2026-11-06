@@ -14,22 +14,20 @@ from nexus_core.kernel.credentials import (
     credential_lines,
 )
 
-#: The default authorization philosophy of every engagement. It is *always*
-#: rendered (it is the policy of the loop, not a capability of a subagent):
-#: measured in run V9 (Hijack) the agent found the entry point, hit the first
-#: technical wall (a closed NFS mount, a sandbox without root) and stopped
-#: instead of pivoting, because nothing in the prompt said the whole kill chain
-#: was in scope. The only limits are the signed target scope and the operator's
-#: RoE; both are named here so "no limits" can never be read as "out of scope".
+#: The default policy of every run. It is *always* rendered (it is the policy
+#: of the loop, not a capability of a subagent). It replaces the old "the whole
+#: Cyber Kill Chain is mandatory" philosophy, which made a run asked to *scan
+#: ports* try to finish the engagement instead of reporting the scan. The
+#: immediate objective bounds the run; the global plan is context. The signed
+#: scope and the RoE remain the only things that can restrict or widen it.
 BLACK_BOX_PHILOSOPHY_PROMPT = (
-    "- FILOSOFÍA DE CAJA NEGRA (por defecto): el objetivo te autoriza a TODA la\n"
-    "  Cyber Kill Chain sobre el scope firmado (reconocimiento, weaponización,\n"
-    "  entrega, explotación, persistencia, C2 y exfiltración), sin límites\n"
-    "  artificiales por fase ni por herramienta. Solo el objetivo o el RoE\n"
-    "  pueden restringirte (\"no uses DoS\", \"solo reporta\", \"no pivotees\"):\n"
-    "  si lo dicen, OBEDECE; si no, vía libre dentro del scope. Un muro técnico\n"
-    "  (puerto cerrado, sandbox sin root, binario ausente) no es el final:\n"
-    "  pivota, usa otra tool o instala lo que falte.\n"
+    "- EL OBJETIVO INMEDIATO LIMITA ESTE RUN: si el usuario pide una acción\n"
+    "  concreta (\"solo escanea puertos\", \"comprueba esta URL\"), ejecútala,\n"
+    "  reporta el resultado y DETENTE. El plan global del engagement es\n"
+    "  contexto, no una orden de ejecución: no encadenes fases que nadie pidió.\n"
+    "  Solo el objetivo o el RoE pueden restringir o ampliar el alcance, y el\n"
+    "  scope firmado limita los TARGETS. Dentro de lo pedido, un muro técnico\n"
+    "  no es el final: pivota o usa otra tool.\n"
 )
 
 #: The per-subagent tool subset. Rendered only for a restricted profile; the
@@ -420,8 +418,11 @@ si una falla, las demás siguen: lee `results` y no repitas las que ya terminaro
 Si hay dependencia, usa un `tool_call` normal.
 
 EN SEGUNDO PLANO: para una tool LARGA (escaneo completo, fuerza bruta) usa
-{{"action":"spawn_subagent","tool_id":…,"arguments":{{…}}}}. Mismo gobierno;
-su resultado llega luego como observación `background: true`. No la repitas.
+{{"action":"spawn_subagent","tool_id":…,"arguments":{{…}}}}. Mismo gobierno; su
+resultado llega luego como observación `background: true`: NO la repitas. No
+existe la acción `wait` ni hay que esperar a mano: si no tienes otra acción,
+responde `task_complete`; el bucle espera el job, te entrega su resultado y solo
+entonces decide si el cierre procede.
 
 Los hechos registrados por knowledge.record_fact son hipótesis, aunque se envíe
 verified=true. Solo assertions emitidas por verificadores deterministas permiten

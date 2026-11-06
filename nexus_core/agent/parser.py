@@ -36,6 +36,22 @@ KNOWN_ACTIONS = (
     ACTION_REQUEST_CLARIFICATION,
 )
 
+#: Labels a model invents to mean "pause until the background job ends". They are
+#: not part of the contract and never will be: the loop yields to the job itself
+#: (``task_complete`` waits, the idle turn waits, the result is delivered as an
+#: observation), so a wait action would only add surface without a capability.
+WAIT_ACTIONS = frozenset(
+    {
+        "wait",
+        "wait_for_result",
+        "wait_for_task",
+        "wait_background",
+        "wait_for_background",
+        "poll",
+        "sleep",
+    }
+)
+
 
 class ReActParseError(ValueError):
     """Raised when a model response cannot be understood as a ReAct action."""
@@ -259,7 +275,20 @@ def _normalize(payload: Any, raw_response: str, warnings: list[str]) -> Action:
             raise ReActParseError("tool_calls needs a list of tool calls", raw_response)
         specs = _bounded(specs, warnings)
         payload = {**_batch(specs), "thought": str(payload.get("thought") or "")}
-    if payload.get("action") not in KNOWN_ACTIONS:
+    action_label = payload.get("action")
+    if isinstance(action_label, str) and action_label.strip().lower() in WAIT_ACTIONS:
+        # A measured run (``bg-1``) answered ``{"action": "wait", "task_id": "bg-1"}``:
+        # the generic "unknown action" correction did not teach the rule, so the
+        # next turn asked the human instead of waiting. The refusal carries the
+        # right model of the loop: nobody waits by hand, the result is delivered.
+        raise ReActParseError(
+            "no existe la acción 'wait': el bucle espera el job en segundo plano por "
+            "ti y te entrega su resultado como observación `background: true`. No "
+            "esperes manualmente: continúa con otra acción o responde `task_complete` "
+            "para ceder el turno (el cierre espera al job).",
+            raw_response,
+        )
+    if action_label not in KNOWN_ACTIONS:
         raise ReActParseError("unknown or missing action", raw_response)
     if "raw_response" in payload or "warnings" in payload:
         raise ReActParseError("transport metadata is not an action field", raw_response)

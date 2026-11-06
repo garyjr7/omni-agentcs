@@ -2640,6 +2640,21 @@ class ReActCoordinator:
         return Transition.READY
 
     async def _complete(self) -> Transition:
+        # Fase 1: si el usuario pidió una micro-tarea ("solo escanea puertos"),
+        # el plan global no puede impedir el cierre. La puerta de evidencia
+        # (citas fabricadas) sigue activa.
+        from .react_support import objective_is_micro_task
+
+        # Antes de verificar, cede el turno al job en vuelo: el cierre apagaba el
+        # proceso y `cancel_all()` mataba el escaneo (CancelledError), dejando al
+        # usuario sin el resultado que había pedido. La espera es la misma del
+        # sondeo ocioso, acotada por el timeout de la llamada; si el job sigue
+        # corriendo, la objeción de abajo rechaza el cierre y el próximo turno
+        # vuelve a esperar.
+        if self.task_manager.running_count():
+            await self._wait_for_background_result()
+        background_tasks = self.task_manager.list_tasks()
+
         assessment = await self.completion_verifier.verify(
             findings=self.action.findings,
             observations=self.run_evidence,
@@ -2658,11 +2673,17 @@ class ReActCoordinator:
             # model committed to outranks the phase hint.
             engagement_plan=self.engagement_plan,
             require_plan_first=self.config.require_plan_first,
+            micro_task=objective_is_micro_task(self.objective),
+            background_tasks=background_tasks,
         )
         annotated, self.evidence_stats = (assessment.findings, assessment.evidence_stats)
         self.completion_objections = assessment.objections
         if self.completion_objections:
             self.telemetry.flag(FrictionFlag.PREMATURE_COMPLETION)
+            # El rechazo por trabajo en vuelo no gasta otro turno de modelo: el
+            # bucle espera y entrega el resultado antes de reconstruir el prompt.
+            if self.task_manager.running_count():
+                self.idle_background_wait = True
         if self.completion_objections and self.premature_rejections < MAX_PREMATURE_COMPLETIONS:
             self.premature_rejections += 1
             self.actions.append(
@@ -5979,9 +6000,11 @@ class ReActCoordinator:
             "running_tasks": self.task_manager.list_tasks(),
             "guidance": (
                 f"Tarea '{record.label}' ({record.task_id}) lanzada en background con el "
-                "mismo gobierno que una llamada normal. NO esperes su resultado: "
-                "continúa con trabajo independiente de bajo riesgo. Cuando termine "
-                "llegará como observación con `background: true` y su `task_id`."
+                "mismo gobierno que una llamada normal. NO esperes su resultado ni "
+                "inventes una acción `wait` (no existe): continúa con trabajo "
+                "independiente de bajo riesgo. Cuando termine llegará como observación "
+                "con `background: true` y su `task_id`; si no tienes otra acción, "
+                "`task_complete` cede el turno y el bucle espera el job por ti."
             ),
         }
         self.observation = observation

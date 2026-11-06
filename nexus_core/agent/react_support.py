@@ -624,6 +624,91 @@ def missing_evidence(evidence_stats: Mapping[str, Any] | None) -> list[dict[str,
     return entries
 
 
+#: Marker that lets an operator force (``1``) or forbid (``0``) the micro-task
+#: reading of an objective, for a wording the heuristic does not recognise.
+MICRO_TASK_ENV = "NEXUS_MICRO_TASK"
+
+#: A limiter in the objective is the signal that the user asked for one bounded
+#: action rather than the whole engagement ("solo escanea puertos", "just check
+#: this URL"). Deliberately conservative: an objective without a limiter keeps
+#: the engagement gate, so nothing that *is* a campaign closes early.
+_MICRO_TASK_LIMITER_RE = re.compile(
+    r"\b(sol[oa]mente|s[oó]lo|[uú]nicamente|only|just)\b", re.IGNORECASE
+)
+_MICRO_TASK_TRUE = frozenset({"1", "true", "yes", "on", "si", "s\u00ed"})
+_MICRO_TASK_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+def objective_is_micro_task(objective: Any) -> bool:
+    """Whether *objective* asks for one concrete action, not an engagement.
+
+    The measured bug: a run whose user wrote ``solo escanea puertos`` reached
+    the scan, tried to close and had ``task_complete`` refused because the
+    engagement's plan still had TODOs (root, report, ...). The model then looped
+    trying to close, spending its budget on a task the user had deliberately
+    narrowed. The plan of the engagement is *context* for such a run, not its
+    contract, so the closure gate must not hold it.
+
+    The signal is the limiter (``solo``/``solamente``/``únicamente``/``only``/
+    ``just``) or ``NEXUS_MICRO_TASK``. Evidence checks (fabricated citations)
+    still apply: this only relaxes the *scope* objections, never the honest
+    ones.
+    """
+    raw = os.getenv(MICRO_TASK_ENV, "").strip().lower()
+    if raw in _MICRO_TASK_TRUE:
+        return True
+    if raw in _MICRO_TASK_FALSE:
+        return False
+    return bool(_MICRO_TASK_LIMITER_RE.search(str(objective or "")))
+
+
+def _running_background_tasks(
+    background_tasks: Iterable[Mapping[str, Any]] | None,
+) -> list[Mapping[str, Any]]:
+    """The background tasks still running (status ``running``) in *background_tasks*."""
+    return [
+        task
+        for task in (background_tasks or ())
+        if isinstance(task, Mapping) and str(task.get("status") or "") == "running"
+    ]
+
+
+def running_background_objection(
+    background_tasks: Iterable[Mapping[str, Any]] | None,
+) -> str | None:
+    """Why a ``task_complete`` cannot close while a background job is in flight.
+
+    Measured failure: the agent spawned ``nmap`` as ``bg-1``, had no result in
+    that turn and closed the task to avoid scanning twice. The loop returned, the
+    process exited and ``cancel_all()`` killed the scan, so the user was left
+    without the output they had asked for. The gate must refuse that close and
+    tell the model *how* the result arrives (it is delivered automatically, not
+    polled), because a refusal without a way out is another dead end.
+
+    Independent of :func:`objective_is_micro_task`: a micro-task that is still
+    running is not finished, so closing it would lose exactly the action the
+    user asked for.
+    """
+    running = _running_background_tasks(background_tasks)
+    if not running:
+        return None
+    shown = ", ".join(
+        f"{task.get('task_id') or '?'} "
+        f"'{' '.join(str(task.get('label') or task.get('tool_id') or 'tarea').split())[:60]}'"
+        for task in running[:4]
+    )
+    if len(running) > 4:
+        shown += f" y {len(running) - 4} más"
+    return (
+        f"hay {len(running)} tarea(s) en segundo plano ejecutándose ({shown}) y su "
+        "resultado todavía no está en el tablero. No cierres el run: el bucle espera "
+        "el job y te entrega su resultado como observación `background: true` en "
+        "cuanto termine, así que no lances el mismo trabajo otra vez ni cierres "
+        "mientras siga en `running`. Si no termina (timeout o cancelación), documenta "
+        "el barrier de esa rama con nexus.knowledge.record_fact y replanifica."
+    )
+
+
 def _completion_objections(
     plan: Any,
     *,
@@ -633,6 +718,8 @@ def _completion_objections(
     require_plan_phase: bool = True,
     engagement_plan: Any = None,
     require_plan_first: bool = False,
+    micro_task: bool = False,
+    background_tasks: Iterable[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """Why this ``task_complete`` must not be accepted yet (B8.2.2/B8.2.3).
 
@@ -652,9 +739,23 @@ def _completion_objections(
     WP2 adds ``require_plan_phase``: the default loop passes ``False`` so the
     phase is a hint and never refuses a closure the board supports; the legacy
     path keeps ``True`` for the old regression suite.
+
+    ``micro_task`` (Fase 1) skips the *scope* objections only: when the user
+    asked for one action, the engagement's pending TODOs and the kill-chain
+    phase do not block the close. The evidence gate still runs.
+
+    ``background_tasks`` adds the *work in flight* check: a run with a task in
+    ``running`` cannot close, or the shutdown would kill the very scan the user
+    is waiting for. Like the evidence gate it is independent of ``micro_task``.
     """
     objections: list[str] = []
-    if require_plan_phase and enforce_completion_gates and engagement_id and plan is not None:
+    if (
+        require_plan_phase
+        and enforce_completion_gates
+        and engagement_id
+        and plan is not None
+        and not micro_task
+    ):
         current = getattr(plan, "current", None)
         if current != FINAL_PHASE_ID:
             from .planner import STATUS_PENDING
@@ -678,13 +779,23 @@ def _completion_objections(
     # objective promised (root, the other flag, the report) and none of them can
     # be closed by prose: each one is ticked by a verifier assertion or justified
     # as ``failed`` with a reason.
-    if enforce_completion_gates and require_plan_first and engagement_id and engagement_plan is None:
+    if (
+        enforce_completion_gates
+        and require_plan_first
+        and engagement_id
+        and engagement_plan is None
+        and not micro_task
+    ):
         objections.append(
             "no hay PLAN DEL ENGAGEMENT en loot/ENGAGEMENT_PLAN.md: créalo con "
             "nexus.orchestrator.create_plan antes de cerrar (el plan es el "
             "contrato de lo que este engagement prometió)"
         )
-    elif enforce_completion_gates and engagement_plan is not None:
+    elif (
+        enforce_completion_gates
+        and engagement_plan is not None
+        and not micro_task
+    ):
         open_todos = tuple(engagement_plan.pending)
         if open_todos:
             shown = ", ".join(
@@ -696,6 +807,9 @@ def _completion_objections(
                 f"quedan {len(open_todos)} TODO(s) del plan del engagement sin cerrar: "
                 f"{shown}"
             )
+    in_flight = running_background_objection(background_tasks)
+    if enforce_completion_gates and in_flight:
+        objections.append(in_flight)
     if enforce_completion_gates and evidence_stats and fabricated_evidence(evidence_stats):
         counts = (
             f"{evidence_stats.get('stale')} hallazgo(s) no se sostienen con las "

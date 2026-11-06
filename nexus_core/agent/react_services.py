@@ -324,8 +324,15 @@ class ContextBuilder:
         credential_hint = render_available_credentials(
             available_credentials_for(store, tenant_id, str(engagement_id or ""))
         )
+        # Tool hiding: el modelo solo ve el perfil por defecto (shell.exec,
+        # execute_and_parse, workspace.read, skill.load, create_plan) más lo que
+        # este run haya activado descubriendo un grupo o cargando una skill. El
+        # catálogo durable sigue siendo la autoridad del gateway y la auditoría.
+        from nexus_core.tools.profiles import visible_catalog
+
+        prompt_catalog = visible_catalog(allowed_catalog, run_id=snapshot.run_id)
         system_prompt = render_system_prompt(
-            catalog=allowed_catalog,
+            catalog=prompt_catalog,
             objective=objective,
             engagement_id=engagement_id,
             scope_summary=describe_scope(scope),
@@ -470,6 +477,8 @@ class CompletionVerifier:
         require_plan_phase: bool = True,
         engagement_plan: Any = None,
         require_plan_first: bool = False,
+        micro_task: bool = False,
+        background_tasks: list[dict[str, Any]] | None = None,
     ) -> CompletionAssessment:
         from nexus_core.kernel.blackboard import Blackboard, is_verified_fact
 
@@ -482,6 +491,12 @@ class CompletionVerifier:
             require_plan_phase=require_plan_phase,
             engagement_plan=engagement_plan,
             require_plan_first=require_plan_first,
+            # Fase 1: una micro-tarea ("solo escanea puertos") cierra cuando su
+            # acción está hecha; el plan global del engagement es contexto.
+            micro_task=micro_task,
+            # Tarea 1: un cierre con un job en vuelo mataba el escaneo al salir
+            # del proceso; la objeción lo rechaza y nombra la entrega automática.
+            background_tasks=background_tasks,
         )
         facts = (
             [

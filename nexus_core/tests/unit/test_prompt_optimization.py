@@ -207,14 +207,16 @@ def test_catalog_stays_compact_for_all_tools(catalog):
     # argument (``timeout_seconds:integer[10..1800]``): +1,248 characters for
     # 86 tools, measured 19,575 (227,6 per tool). A rejected out-of-range turn
     # costs more than the clause, so the bound moves -not the discipline-.
-    assert len(catalog) == 86
+    assert len(catalog) == 88
     text = render_tool_catalog(catalog)
     assert len(text) / len(catalog) < 230
     # ``sliver_download`` adds its line: measured 19,227 for 86 tools (223,6 per
     # tool), still inside the per-tool bound; only the total moves.
     # Numeric ranges add 1,248 characters across the catalog: measured 19,575;
     # ceiling 19_700 (the per-tool bound above is what protects the shape).
-    assert len(text) < 19_700
+    # Fase 2 adds the two catalog lines (execute_and_parse, discover_tools):
+    # measured 19,956; ceiling 20_100.
+    assert len(text) < 20_100
 
 
 def test_prompt_stays_within_the_reviewed_budget(catalog):
@@ -322,7 +324,8 @@ def test_prompt_stays_within_the_reviewed_budget(catalog):
     # catalog line: measured 35,187; ceiling 35_300.
     # The numeric ranges of bounded arguments move with the catalog: measured
     # 35,827; ceiling 35_900.
-    assert len(_prompt(catalog)) < 35_900
+    # Fase 2 adds the two catalog lines: measured ~36,127; ceiling 36_400.
+    assert len(_prompt(catalog)) < 36_400
 
 
 def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
@@ -368,7 +371,8 @@ def test_prompt_with_a_plan_stays_under_its_ceiling(catalog):
     # The background order moves with the static prompt: measured 35,814;
     # ceiling 36_000. The block itself is unchanged.
     # The numeric ranges move with it too: measured 36,454; ceiling 36_600.
-    assert len(prompt) < 36_600
+    # Fase 2 moves with the static prompt: measured ~36,770; ceiling 37_000.
+    assert len(prompt) < 37_000
     assert len(block) < 1_200
 
 
@@ -380,22 +384,24 @@ def test_catalog_lists_every_tool_exactly_once(catalog):
         assert text.count(f"- {tool_id}:") == 1
 
 
-def test_prompt_states_the_black_box_default_and_the_roe_precedence(catalog):
-    """V9 (Hijack): the default authorization is the whole kill chain.
+def test_prompt_states_the_immediate_objective_bounds_the_run(catalog):
+    """Fase 1: el objetivo inmediato limita el run; el plan global es contexto.
 
-    The prompt must say (a) that every phase is authorized by default, (b) that
-    only the objective/RoE can restrict a technique, and (c) that the signed
-    scope still bounds the targets -so "no limits" is never read as
-    "out of scope".
+    Reemplaza la filosofía de "Cyber Kill Chain obligatoria", que hacía que un
+    run pedido para *escanear puertos* intentara terminar el engagement. Debe
+    decir (a) que la acción pedida se ejecuta, se reporta y se cierra, (b) que
+    el plan global no es una orden de ejecución, y (c) que el scope firmado
+    sigue limitando los TARGETS.
     """
     from nexus_core.agent.prompts import BLACK_BOX_PHILOSOPHY_PROMPT
 
     prompt = _prompt(catalog)
     assert BLACK_BOX_PHILOSOPHY_PROMPT in prompt
-    for phase in ("reconocimiento", "explotación", "persistencia", "C2", "exfiltración"):
-        assert phase in BLACK_BOX_PHILOSOPHY_PROMPT
+    assert "EL OBJETIVO INMEDIATO LIMITA ESTE RUN" in BLACK_BOX_PHILOSOPHY_PROMPT
+    assert "reporta el resultado y DETENTE" in BLACK_BOX_PHILOSOPHY_PROMPT
+    assert "contexto, no una orden de ejecución" in BLACK_BOX_PHILOSOPHY_PROMPT
     assert "Solo el objetivo o el RoE" in BLACK_BOX_PHILOSOPHY_PROMPT
-    assert "vía libre dentro del scope" in BLACK_BOX_PHILOSOPHY_PROMPT
+    assert "limita los TARGETS" in BLACK_BOX_PHILOSOPHY_PROMPT
     assert "limita los TARGETS, nunca las técnicas" in prompt
 
 
@@ -421,6 +427,22 @@ def test_prompt_forbids_passive_waits_and_names_the_replacements(catalog):
     prompt = _prompt(catalog)
     assert "SIN ESPERAS PASIVAS" in prompt
     assert "nexus.post.listener" in prompt and "nexus.post.job" in prompt
+
+
+def test_the_background_order_forbids_inventing_a_wait_action(catalog):
+    """The prompt said "do not close" but never "do not wait": the model waited.
+
+    A measured trace after ``bg-1`` answered with ``action: "wait"``, got a
+    parse_error and asked the human. The order must name both halves: there is no
+    ``wait`` action, and ``task_complete`` is how the turn is yielded (the loop
+    waits for the job and delivers before deciding anything).
+    """
+    prompt = _prompt(catalog)
+
+    assert "existe la acción `wait`" in prompt
+    assert "NO la repitas" in prompt
+    assert "responde `task_complete`" in prompt
+    assert "el bucle espera el job" in prompt
 
 
 def test_prompt_tells_model_about_shared_session(catalog):
@@ -779,7 +801,8 @@ def test_the_compact_catalog_carries_a_hard_ceiling(catalog):
     compact = render_tool_catalog(catalog, compact=True)
     full = render_tool_catalog(catalog)
     # ``nexus.c2.sliver_download`` adds one line: measured 6,320; ceiling 6_400.
-    assert len(compact) < 6_400
+    # Fase 2 adds two lines: measured 6,488; ceiling 6_600.
+    assert len(compact) < 6_600
     # Same whole-line tolerance as ``test_compact_catalog_is_a_third_of_the_full_one``.
     assert len(compact) < len(full) / 3 + 40
 
