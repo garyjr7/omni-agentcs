@@ -369,12 +369,15 @@ def _require_vhost_base_in_scope(base: str, context: RunContext) -> None:
     from nexus_core.scope import ScopeValidator, ScopeViolation
 
     candidate = base.lower().strip().rstrip(".")
+    scope = context.scope
+    if scope is None:
+        raise ValueError("vhost base domain requires an engagement scope")
     try:
-        ScopeValidator(context.scope, signing_secret=scope_signing_secret()).validate(candidate)
+        ScopeValidator(scope, signing_secret=scope_signing_secret()).validate(candidate)
         return
     except ScopeViolation:
         pass
-    for rule in getattr(context.scope, "domains", ()) or ():
+    for rule in getattr(scope, "domains", ()) or ():
         normalized = str(rule).lower().strip().rstrip(".")
         if normalized.startswith("*."):
             normalized = normalized[2:]

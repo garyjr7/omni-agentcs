@@ -13,6 +13,7 @@ import re
 import shutil
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from nexus_core.kernel.sandbox import sandbox_for_environment
 
@@ -87,7 +88,12 @@ def canonicalize_flags(
     unknown or forbidden flags (fail closed, never guess).
     """
     canonical: list[str] = []
-    raw = list(raw_flags or [])
+    if raw_flags is None:
+        raw: list[Any] = []
+    elif isinstance(raw_flags, (list, tuple)):
+        raw = list(raw_flags)
+    else:
+        raise ValueError("flags must be a list")
     index = 0
     while index < len(raw):
         token = str(raw[index]).strip()

@@ -354,7 +354,8 @@ def _other_services(context: RunContext, host: str, port: int) -> list[dict[str,
         key = str(fact.get("key") or "")
         if not key.startswith(prefix):
             continue
-        value = fact.get("value") if isinstance(fact.get("value"), dict) else {}
+        raw_value = fact.get("value")
+        value = raw_value if isinstance(raw_value, dict) else {}
         try:
             service_port = int(value.get("port") or key.split(":")[1])
         except (IndexError, TypeError, ValueError):
@@ -397,13 +398,6 @@ def _record_loot_facts(
 
     board = Blackboard(store)
     recorded: list[str] = []
-    common = {
-        "tenant_id": str(getattr(context, "tenant_id", "system") or "system"),
-        "engagement_id": engagement_id,
-        "source": "nexus.recon.ftp",
-        "created_by": "nexus.recon.ftp",
-        "verified": False,
-    }
     for item in files or ():
         if not isinstance(item, dict):
             continue
@@ -426,7 +420,11 @@ def _record_loot_facts(
                     "truncated": bool(item.get("preview_truncated")),
                     "via": "ftp-anonymous",
                 },
-                **common,
+                tenant_id=str(getattr(context, "tenant_id", "system") or "system"),
+                engagement_id=engagement_id,
+                source="nexus.recon.ftp",
+                created_by="nexus.recon.ftp",
+                verified=False,
             )
             recorded.append(key)
         except Exception:  # noqa: BLE001 - memory must never break a tool
@@ -445,7 +443,11 @@ def _record_loot_facts(
                     "host": target,
                     "source": str((entry or {}).get("source") or ""),
                 },
-                **common,
+                tenant_id=str(getattr(context, "tenant_id", "system") or "system"),
+                engagement_id=engagement_id,
+                source="nexus.recon.ftp",
+                created_by="nexus.recon.ftp",
+                verified=False,
             )
             recorded.append(key)
         except Exception:  # noqa: BLE001 - same contract as the loot fact

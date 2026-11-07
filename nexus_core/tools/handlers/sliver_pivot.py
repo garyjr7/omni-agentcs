@@ -120,8 +120,8 @@ async def sliver_pivot_handler(arguments: dict, context: RunContext) -> ToolResu
     if denied is not None:
         return denied
     client, failure = build_client()
-    if failure is not None:
-        return failure
+    if client is None:
+        return failure or ToolResult(verification_method="sliver_unavailable")
     try:
         await client.connect()
         if action == "list":

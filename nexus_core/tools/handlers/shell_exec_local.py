@@ -1285,7 +1285,7 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
         # inherited the handler's pipes. A background request is answered at
         # once with the PID instead of waited for (V1-51).
         return await _launch_background(
-            request, context, sandbox, program, cwd_relative, root, started
+            request, context, sandbox, program, cwd_relative, Path(root), started
         )
     script = shell_script(request.command, pipefail=pipefail)
     try:
@@ -1294,7 +1294,7 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
                 if stdin_data is not None:
                     raise ValueError("stdin is not supported with egress isolation")
                 result = await _run_in_egress_bridge(
-                    context, root, request, script, cwd=cwd_absolute
+                    context, Path(root), request, script, cwd=cwd_absolute
                 )
             else:
                 result = await run_in_sandbox(

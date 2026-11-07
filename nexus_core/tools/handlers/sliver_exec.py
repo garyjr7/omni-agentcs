@@ -134,8 +134,8 @@ async def sliver_exec_handler(arguments: dict, context: RunContext) -> ToolResul
     if denied is not None:
         return denied
     client, failure = build_client()
-    if failure is not None:
-        return failure
+    if client is None:
+        return failure or ToolResult(verification_method="sliver_unavailable")
     try:
         await client.connect()
         raw = await client.execute_command(

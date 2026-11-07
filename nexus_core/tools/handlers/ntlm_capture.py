@@ -447,8 +447,11 @@ def _parse_last_json(stdout: str) -> dict[str, Any]:
 
 def _peer_in_scope(context: RunContext, peer: str) -> bool:
     """True when ``peer`` is covered by the signed engagement scope."""
+    scope = context.scope
+    if scope is None:
+        return False
     try:
-        ScopeValidator(context.scope, signing_secret=scope_signing_secret()).validate(peer)
+        ScopeValidator(scope, signing_secret=scope_signing_secret()).validate(peer)
         return True
     except ScopeViolation:
         return False

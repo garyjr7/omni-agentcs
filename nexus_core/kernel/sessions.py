@@ -241,11 +241,14 @@ class SessionRegistry:
             )
 
     def close(self, context: RunContext, session_uuid: str) -> None:
+        scope = context.scope
+        if scope is None:
+            raise PermissionError("session close requires an engagement")
         with self.store.connect() as conn:
             conn.execute(
                 """UPDATE kernel_sessions SET closed_at=? WHERE id=? AND tenant_id=?
                 AND engagement_id=? AND closed_at IS NULL""",
-                (utc_now(), session_uuid, context.tenant_id, context.scope.engagement_id),
+                (utc_now(), session_uuid, context.tenant_id, scope.engagement_id),
             )
 
     def denial(self, context: RunContext, session_uuid: str) -> ToolResult | None:
@@ -253,10 +256,13 @@ class SessionRegistry:
             validate_session_scope(context)
         except PermissionError:
             return ToolResult(verification_method="session_scope_required")
+        scope = context.scope
+        if scope is None:
+            return ToolResult(verification_method="session_scope_required")
         record = self.get(context.tenant_id, session_uuid)
         if not record:
             return ToolResult(verification_method="session_not_registered")
-        if record["engagement_id"] != context.scope.engagement_id:
+        if record["engagement_id"] != scope.engagement_id:
             return ToolResult(verification_method="session_engagement_mismatch")
         if record["closed_at"] is not None:
             return ToolResult(verification_method="session_closed")
@@ -265,7 +271,7 @@ class SessionRegistry:
             # so there is no authorised target to execute against.
             return ToolResult(verification_method="session_not_connected")
         try:
-            ScopeValidator(context.scope, signing_secret=scope_signing_secret()).validate(record["target_host"])
+            ScopeValidator(scope, signing_secret=scope_signing_secret()).validate(record["target_host"])
         except ScopeViolation:
             return ToolResult(verification_method="session_target_out_of_scope")
         return None

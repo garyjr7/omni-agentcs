@@ -110,8 +110,8 @@ async def sliver_generate_handler(arguments: dict, context: RunContext) -> ToolR
     validate(arguments, sliver_generate_definition().input_schema)
     generation = _generation_arguments(arguments)
     client, failure = build_client()
-    if failure is not None:
-        return failure
+    if client is None:
+        return failure or ToolResult(verification_method="sliver_unavailable")
     try:
         await client.connect()
         info, _data = await client.generate_implant(**generation)

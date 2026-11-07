@@ -459,8 +459,11 @@ def _parse_last_json(stdout: str) -> dict[str, Any]:
 
 def _peer_in_scope(context: RunContext, peer: str) -> bool:
     """True when ``peer`` is covered by the signed engagement scope."""
+    scope = context.scope
+    if scope is None:
+        return False
     try:
-        ScopeValidator(context.scope, signing_secret=scope_signing_secret()).validate(peer)
+        ScopeValidator(scope, signing_secret=scope_signing_secret()).validate(peer)
         return True
     except ScopeViolation:
         return False
@@ -578,12 +581,15 @@ async def _keep_open(
     except OSError:
         pass
 
+    scope = context.scope
+    if scope is None:
+        return ToolResult(verification_method="listener_scope_required")
     registry = SessionRegistry(context.store)
     try:
         registry.register(
             session_uuid=session_ref,
             tenant_id=context.tenant_id,
-            engagement_id=context.scope.engagement_id,
+            engagement_id=scope.engagement_id,
             run_id=context.run_id,
             session_type=transport,
             target_host=SESSION_PENDING_TARGET,

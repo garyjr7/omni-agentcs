@@ -6,7 +6,8 @@ el inventario, el CLI y los artefactos de auditoría describan la misma versión
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from nexus_core.kernel.models import RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.tool_gateway import ToolGateway
@@ -191,7 +192,7 @@ def durable_tool_definitions(
         wp_exec_handler,
     )
 
-    catalog = {
+    catalog: dict[str, tuple[ToolDefinition, Handler]] = {
         "nexus.system.check_env": (check_env_definition(tenant_id), check_env_handler),
         "nexus.system.install_tool": (install_tool_definition(tenant_id), install_tool_handler),
         "nexus.system.status": (system_status_definition(tenant_id), system_status_handler),

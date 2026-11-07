@@ -38,8 +38,8 @@ def sliver_server_definition(tenant_id: str = "system") -> ToolDefinition:
 async def sliver_server_handler(arguments: dict, context: RunContext) -> ToolResult:
     validate(arguments, sliver_server_definition().input_schema)
     client, failure = build_client()
-    if failure is not None:
-        return failure
+    if client is None:
+        return failure or ToolResult(verification_method="sliver_unavailable")
     try:
         await client.connect()
         version = await client.version()

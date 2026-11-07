@@ -1391,7 +1391,7 @@ async def _csrf_form_sweep(
             outcome="partial",
             verification_method="cred_bruteforce_csrf_aborted",
             evidence=evidence,
-            stdout=payload.get("error"),
+            stdout=str(payload.get("error") or ""),
         )
 
     timed_out = bool(payload.get("timed_out"))
@@ -1429,7 +1429,7 @@ async def _csrf_form_sweep(
             outcome="timeout",
             verification_method="cred_bruteforce_csrf_timeout",
             evidence=evidence,
-            stdout=payload.get("error"),
+            stdout=str(payload.get("error") or ""),
             timed_out=True,
         )
 

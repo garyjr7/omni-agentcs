@@ -296,6 +296,14 @@ async def nopac_handler(arguments: dict, context: RunContext) -> ToolResult:
             verified=False,
             verification_method="nopac_unavailable",
         )
+    # The negative above proved every binary resolved; narrow the optional
+    # returns once instead of repeating a check before each argv.
+    impacket_addcomputer = _require_binary("addcomputer", impacket_addcomputer)
+    impacket_gettgt = _require_binary("getTGT", impacket_gettgt)
+    impacket_getst = _require_binary("getST", impacket_getst)
+    impacket_secretsdump = _require_binary("secretsdump", impacket_secretsdump)
+    ldapsearch = _require_binary("ldapsearch", ldapsearch)
+    ldapmodify = _require_binary("ldapmodify", ldapmodify)
 
     workspace = _workspace_root()
     run_id = safe_run_id(context, "nopac")
@@ -615,6 +623,13 @@ async def nopac_handler(arguments: dict, context: RunContext) -> ToolResult:
         stdout=dump.stdout,
         stderr=dump.stderr,
     )
+
+
+def _require_binary(name: str, binary: str | None) -> str:
+    """Narrow a resolved binary the caller already proved non-None."""
+    if binary is None:  # pragma: no cover - the caller returned a negative
+        raise ValueError(f"required binary is missing: {name}")
+    return binary
 
 
 def _failed_ldap(stdout: str, stderr: str) -> bool:

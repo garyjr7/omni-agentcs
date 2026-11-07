@@ -51,6 +51,9 @@ def sliver_sessions_definition(tenant_id: str = "system") -> ToolDefinition:
 
 def _register_new(registry: SessionRegistry, context: RunContext, discovered) -> int:
     """Register the sessions of this run that are not known yet."""
+    scope = context.scope
+    if scope is None:
+        return 0
     registered = 0
     for item in discovered:
         if registry.get(context.tenant_id, item.session_id) is not None:
@@ -63,7 +66,7 @@ def _register_new(registry: SessionRegistry, context: RunContext, discovered) ->
             registry.register(
                 session_uuid=item.session_id,
                 tenant_id=context.tenant_id,
-                engagement_id=context.scope.engagement_id,
+                engagement_id=scope.engagement_id,
                 run_id=context.run_id,
                 session_type=f"sliver:{item.kind}",
                 target_host=host,
@@ -87,8 +90,8 @@ async def sliver_sessions_handler(arguments: dict, context: RunContext) -> ToolR
         return ToolResult(verification_method="session_scope_required")
     registry = SessionRegistry(context.store)
     client, failure = build_client()
-    if failure is not None:
-        return failure
+    if client is None:
+        return failure or ToolResult(verification_method="sliver_unavailable")
     try:
         await client.connect()
         raw_sessions = await client.list_sessions() if kind in {"sessions", "both"} else []

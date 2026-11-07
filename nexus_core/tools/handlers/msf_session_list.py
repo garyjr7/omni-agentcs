@@ -111,11 +111,14 @@ async def msf_session_list_handler(arguments: dict, context: RunContext) -> Tool
         validate_session_scope(context)
     except PermissionError:
         return ToolResult(verification_method="session_scope_required")
+    scope = context.scope
+    if scope is None:
+        return ToolResult(verification_method="session_scope_required")
     registry = SessionRegistry(context.store)
 
     # A keep-open listener may have caught its peer since the last turn. Binding
     # it here means the inventory returns the real target instead of ``pending``.
-    durable = registry.list_sessions(context.tenant_id, context.scope.engagement_id)
+    durable = registry.list_sessions(context.tenant_id, scope.engagement_id)
     for row in durable:
         if str(row.get("transport") or "") in LISTENER_TRANSPORTS:
             status = refresh_listener_session(context, registry, row)

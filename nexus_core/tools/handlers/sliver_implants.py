@@ -52,8 +52,8 @@ async def sliver_implants_handler(arguments: dict, context: RunContext) -> ToolR
     if kind not in KINDS:
         raise ValueError("kind must be one of builds, profiles, both")
     client, failure = build_client()
-    if failure is not None:
-        return failure
+    if client is None:
+        return failure or ToolResult(verification_method="sliver_unavailable")
     try:
         await client.connect()
         builds = await client.list_implant_builds() if kind in {"builds", "both"} else {}

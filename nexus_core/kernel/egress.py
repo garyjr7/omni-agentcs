@@ -277,7 +277,7 @@ class Socks5EgressProxy:
         host, port = self.address
         return f"socks5://{host}:{port}"
 
-    async def start(self) -> Socks5EgressProxy:
+    async def start(self) -> Self:
         """Bind the listener (idempotent)."""
         if self._server is None:
             self._server = await asyncio.start_server(

@@ -53,7 +53,7 @@ def installed_entry_points() -> list[Any]:
     try:
         return list(entry_points(group=ENTRY_POINT_GROUP))
     except TypeError:  # pragma: no cover - importlib pre-3.10 API
-        return list(entry_points().get(ENTRY_POINT_GROUP, []))
+        return list(entry_points().select(group=ENTRY_POINT_GROUP))
 
 
 def entry_digest(entry: Any) -> str | None:
@@ -67,7 +67,7 @@ def entry_digest(entry: Any) -> str | None:
     """
     dist = getattr(entry, "dist", None)
     files = list(getattr(dist, "files", None) or []) if dist is not None else []
-    if files:
+    if dist is not None and files:
         digest = hashlib.sha256()
         try:
             for member in sorted(files, key=str):

@@ -68,8 +68,8 @@ async def sliver_loot_handler(arguments: dict, context: RunContext) -> ToolResul
         raise ValueError("get/record require loot_id or name")
 
     client, failure = build_client()
-    if failure is not None:
-        return failure
+    if client is None:
+        return failure or ToolResult(verification_method="sliver_unavailable")
     try:
         await client.connect()
         if action == "get":

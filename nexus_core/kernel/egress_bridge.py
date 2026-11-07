@@ -117,7 +117,7 @@ class EgressBridge:
         """SOCKS URL the sandbox sees (always the in-namespace listener)."""
         return f"socks5h://127.0.0.1:{self.sandbox_proxy_port}"
 
-    async def start(self) -> EgressBridge:
+    async def start(self) -> Self:
         """Create the private directory and the host-side socat."""
         if self._process is not None:
             return self
