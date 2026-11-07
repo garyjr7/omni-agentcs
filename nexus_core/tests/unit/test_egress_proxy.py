@@ -98,9 +98,9 @@ async def _connect_request(
         bytes([5, cmd, 0, egress.ATYP_DOMAIN, len(encoded)]) + encoded + struct.pack("!H", port)
     )
     await writer.drain()
-    # Reply is ``ver, status, atyp`` followed by the bound address and port.
-    version, status, atyp = await reader.readexactly(3)
-    assert version == 5
+    # RFC 1928: ``ver, status, reserved, atyp`` + bound address and port.
+    version, status, reserved, atyp = await reader.readexactly(4)
+    assert version == 5 and reserved == 0
     size = {egress.ATYP_IPV4: 4, egress.ATYP_IPV6: 16}.get(atyp, 0)
     await reader.readexactly(size + 2)
     return status, atyp

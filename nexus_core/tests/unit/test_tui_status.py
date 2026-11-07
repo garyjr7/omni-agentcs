@@ -24,9 +24,11 @@ def test_status_renders_provider_model():
     assert "groq/model" in render_status_plain(StatusState(provider_model="groq/model"))
 
 
-def test_status_renders_tokens_and_cost():
+def test_status_renders_tokens_and_cost_once():
     text = render_status_plain(StatusState(tokens_input=2000, tokens_output=300, cost_usd=0.02))
-    assert "2.3k tok" in text and "$0.0200" in text
+    assert "Tokens: 2,300" in text
+    assert text.count("2,300") == 1 and "run " not in text
+    assert "coste ~$0.0200" in text
 
 
 def test_status_renders_facts_count():
@@ -112,7 +114,7 @@ def test_status_plain_version_no_ansi():
 
 
 def test_unknown_cost_is_not_reported_as_zero():
-    assert "$—" in render_status_plain(StatusState(cost_known=False))
+    assert "coste $—" in render_status_plain(StatusState(cost_known=False))
 
 
 def test_status_zero_width():

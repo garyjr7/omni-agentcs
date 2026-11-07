@@ -30,7 +30,7 @@ import logging
 import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, Self
 
 logger = logging.getLogger(__name__)
 
@@ -184,14 +184,20 @@ def _parse_destination(atyp: int, chunk: bytes) -> tuple[str, int]:
 
 
 def _reply(status: int, address: str = "0.0.0.0", port: int = 0) -> bytes:
-    """Build a SOCKS5 reply with an ATYP matching ``address``."""
+    """Build a SOCKS5 reply with an ATYP matching ``address``.
+
+    RFC 1928 §6 fixes the layout as ``VER, REP, RSV, ATYP, BND.ADDR, BND.PORT``.
+    The reserved byte is part of the wire format: without it a strict client
+    (proxychains-ng) reads ``ATYP`` as ``RSV``, rejects the reply and reports
+    ``ECONNREFUSED`` even though the tunnel was established.
+    """
     try:
         parsed = ipaddress.ip_address(address)
     except ValueError:
         parsed = ipaddress.IPv4Address("0.0.0.0")
     atyp = ATYP_IPV6 if parsed.version == 6 else ATYP_IPV4
     return (
-        struct.pack("!BBB", SOCKS_VERSION, status, atyp)
+        struct.pack("!BBBB", SOCKS_VERSION, status, 0x00, atyp)
         + parsed.packed
         + struct.pack("!H", port)
     )
@@ -212,7 +218,7 @@ async def _pump(
             counter[0] += len(chunk)
             writer.write(chunk)
             await writer.drain()
-    except (asyncio.TimeoutError, ConnectionError, OSError):
+    except (TimeoutError, ConnectionError, OSError):
         pass
     finally:
         try:
@@ -271,7 +277,7 @@ class Socks5EgressProxy:
         host, port = self.address
         return f"socks5://{host}:{port}"
 
-    async def start(self) -> "Socks5EgressProxy":
+    async def start(self) -> Socks5EgressProxy:
         """Bind the listener (idempotent)."""
         if self._server is None:
             self._server = await asyncio.start_server(
@@ -297,16 +303,16 @@ class Socks5EgressProxy:
             # Since 3.12 this waits for open connections, so the timeout is the
             # difference between a clean shutdown and a hung run.
             await asyncio.wait_for(self._server.wait_closed(), timeout=5)
-        except (asyncio.TimeoutError, AttributeError, RuntimeError):
+        except (TimeoutError, AttributeError, RuntimeError):
             pass
         finally:
             self._clients.clear()
             self._server = None
 
-    async def __aenter__(self) -> "Socks5EgressProxy":
+    async def __aenter__(self) -> Self:
         return await self.start()
 
-    async def __aexit__(self, *exc_info: Any) -> None:
+    async def __aexit__(self, *exc_info: object) -> None:
         await self.close()
 
     def _announce(self, event: str, payload: Mapping[str, Any]) -> None:
@@ -314,7 +320,7 @@ class Socks5EgressProxy:
             return
         try:
             self.audit(event, dict(payload))
-        except Exception:  # noqa: BLE001 - auditing must not kill the relay
+        except Exception:
             logger.exception("egress audit hook failed for %s", event)
 
     async def _handle_client(
@@ -412,7 +418,7 @@ class Socks5EgressProxy:
                     asyncio.open_connection(decision.connect_ip, decision.port),
                     timeout=self.connect_timeout,
                 )
-            except (asyncio.TimeoutError, OSError):
+            except (TimeoutError, OSError):
                 attempt = None
         if attempt is None:
             self.stats.failed += 1

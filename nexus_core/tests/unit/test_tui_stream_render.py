@@ -14,6 +14,41 @@ def _plain(text):
     return ANSI.sub("", text)
 
 
+def _port(number, service, product="", version=""):
+    return {"port": str(number), "protocol": "tcp", "state": "open",
+            "service": service, "product": product, "version": version}
+
+
+def _scan(ports):
+    return {"success": True, "tool_id": "nexus.recon.nmap",
+            "evidence": {"ports_open_total": len(ports), "hosts_up": 1},
+            "output": {"scan": {"hosts": [{"ip": "10.0.0.5", "state": "up",
+                                           "ports": ports}]}}}
+
+
+def test_expanded_scan_shows_a_real_port_table():
+    ports = [_port(22, "ssh", "OpenSSH", "9.6"), _port(443, "https", "nginx", "1.24.0")]
+    text = _plain(render_tool_result(_scan(ports), expanded=True, width=100, no_color=True))
+    assert "Puerto" in text and "Servicio" in text and "Versión" in text
+    assert "22" in text and "OpenSSH 9.6" in text
+    assert "nginx 1.24.0" in text
+
+
+def test_expanded_table_is_bounded_and_counts_the_rest():
+    ports = [_port(1000 + index, f"svc{index}") for index in range(15)]
+    text = _plain(render_tool_result(_scan(ports), expanded=True, width=80, no_color=True))
+    assert all(cell_len(line) <= 80 for line in text.splitlines())
+    assert "y 3 puerto(s) más" in text
+    assert "svc0" in text and "svc12" not in text
+
+
+def test_collapsed_scan_stays_one_line_without_the_table():
+    ports = [_port(1000 + index, f"svc{index}") for index in range(15)]
+    text = _plain(render_tool_result(_scan(ports), width=100, no_color=True))
+    assert len(text.splitlines()) == 1
+    assert "Servicio" not in text
+
+
 def test_tool_invocation_is_a_single_conversational_line():
     text = format_tool_invocation("nexus.recon.nmap", {"target": "lab", "flags": ["-sV", "-p", "80"]})
     lines = _plain(text).splitlines()
@@ -121,6 +156,31 @@ def test_collapsed_card_is_a_single_plain_line():
     assert "└ " not in text
     assert "Show more" not in text and "[ Show " not in text
     assert "F3" not in text
+
+
+def test_collapsed_line_reserves_the_footer_and_never_exceeds_the_width():
+    """D1: the footer must not push the verdict past the transcript width."""
+    from rich.cells import cell_len
+
+    ports = [
+        {"port": port, "protocol": "tcp", "state": "open", "service": service}
+        for port, service in (
+            (21, "ftp"), (22, "ssh"), (25, "smtp"), (80, "http"), (110, "pop3"),
+            (143, "imap"), (443, "https"), (993, "imaps"), (995, "pop3s"),
+            (3306, "mysql"), (5432, "postgresql"), (6379, "redis"),
+            (8080, "http-proxy"), (8443, "https-alt"), (9200, "elasticsearch"),
+        )
+    ]
+    result = {
+        "success": True, "tool_id": "nexus.recon.nmap",
+        "evidence": {"ports_open_total": 15, "hosts_up": 1, "elapsed_seconds": 12.4},
+        "output": {"scan": {"hosts": [{"state": "up", "ip": "45.33.32.156", "ports": ports}],
+                            "hosts_up": 1, "elapsed_seconds": 12.4}},
+    }
+    line = render_tool_result(result, width=100, no_color=True)
+    assert cell_len(line) <= 100
+    assert line.count("(") == line.count(")")
+    assert line.endswith("· Ver 13 líneas más")
 
 
 def test_report_result_summarizes_the_path_and_keeps_the_json_in_the_detail():

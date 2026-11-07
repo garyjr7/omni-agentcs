@@ -57,26 +57,22 @@ _WORD = re.compile(r'\s*\S+\s*')
 
 def startup_banner(engagement: str, version: str, *, width: int = 80,
                    no_color: bool = False) -> str:
-    """Render the first-frame OMNI masthead and three operator metadata rows."""
-    glyphs = (
-        (" █████ ", "██   ██", "██   ██", "██   ██", "██   ██", " █████ "),
-        ("███   ███", "████ ████", "██ ███ ██", "██  █  ██", "██     ██", "██     ██"),
-        ("███    ██", "████   ██", "██ ██  ██", "██  ██ ██", "██   ████", "██    ███"),
-        ("███████", "  ██   ", "  ██   ", "  ██   ", "  ██   ", "███████"),
-    )
-    rows = tuple("  ".join(letter[line] for letter in glyphs) for line in range(6))
-    logo = Text("\n".join(rows), style=THEME.primary_bold)
-    metadata = Group(
-        Text(f"[+] [ Omni Agent CS v{clean_text(version)} ] [+]", style=THEME.title_style),
-        Text("[+] [ BAJIOWARE • Red Team ] [+]", style=THEME.primary_bold),
-        Text(f"[+] [ {clean_text(engagement)} ] [+]", style=THEME.title_style),
-    )
-    # The official masthead floats freely. Rich styles the contents, but no
-    # Panel/Rule/box renderable is used around the art or metadata. It closes
-    # with a blank line: the masthead is its own block, so the first echoed
-    # turn cannot be glued to its last metadata row.
-    return render_rich(Group(logo, Text(""), metadata),
-                       width=max(40, width), no_color=no_color) + "\n\n"
+    """One branded row for the first frame: the masthead costs a line, not a screen.
+
+    The block-letter art was removed from the TUI: on an 80x24 terminal it spent
+    ten rows before the first prompt and pushed the transcript off the screen.
+    The full ASCII banner is still available on demand (``omni --about``); the
+    startup row names the mark, the version, the team and the engagement.
+    """
+    name = clean_text(str(engagement or 'workspace'))[:24]
+    line = Text()
+    line.append('██', style=THEME.primary_bold)
+    line.append(f' Omni Agent CS v{clean_text(version)}', style=THEME.title_style)
+    line.append(' · BAJIOWARE • Red Team · ', style=THEME.muted)
+    line.append(f'[+] [ {name} ] [+]', style=THEME.offwhite)
+    # One row plus the blank line that keeps the masthead its own block: the
+    # first echoed turn is never glued to the brand.
+    return render_rich(line, width=max(40, width), no_color=no_color) + '\n\n'
 
 
 def clean_text(value: str) -> str:
@@ -674,11 +670,22 @@ def tool_call_line(tool_id: str, arguments: Any, *, width: int | None = None) ->
     return _fit_line(f'> {action}' + (f' en {target}' if target else '') + '...', width)
 
 
-def _open_ports(result: dict[str, Any]) -> list[str]:
-    """Open ports a parsed scan reports (``[]`` for anything else)."""
+#: Rows of the expanded port table before it summarises the remainder.
+PORT_TABLE_LIMIT = 12
+
+
+def scan_ports(result: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """``(puerto, servicio, versión)`` of every open port a parsed scan reports.
+
+    The scan is the parser's own structure (``output.scan.hosts[].ports[]``),
+    so the table never invents a port, a service or a version. ``-sV`` data is
+    what an operator cannot read from the folded body: the product and version
+    strings live next to the port, not in the summary.
+    """
     output = result.get('output') if isinstance(result.get('output'), dict) else {}
     scan = output.get('scan') if isinstance(output, dict) else None
-    ports: list[str] = []
+    rows: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
     if isinstance(scan, dict):
         for host in scan.get('hosts') or []:
             if not isinstance(host, dict):
@@ -693,8 +700,53 @@ def _open_ports(result: dict[str, Any]) -> list[str]:
                     continue
                 protocol = str(port.get('protocol') or 'tcp').lower()
                 label = str(number) if protocol == 'tcp' else f'{number}/{protocol}'
-                if label not in ports:
-                    ports.append(label)
+                service = ' '.join(clean_text(str(port.get('service') or '')).split()) or '?'
+                version = ' '.join(
+                    part for part in (
+                        ' '.join(clean_text(str(port.get(key) or '')).split())
+                        for key in ('product', 'version', 'extra_info')
+                    ) if part
+                )
+                row = (label, service, version)
+                if row not in seen:
+                    seen.add(row)
+                    rows.append(row)
+    return rows
+
+
+def render_port_table(result: dict[str, Any], *, width: int = 100,
+                      no_color: bool = False, limit: int = PORT_TABLE_LIMIT) -> str:
+    """Expanded scan as a real table, bounded to ``limit`` rows and the width.
+
+    A one-line result cannot carry fifteen ports: the collapsed card keeps the
+    count and the table appears when the operator expands it. Every cell is
+    cropped by cells, so a long ``nginx/1.24.0`` never pushes the table past the
+    transcript. ``Estado`` is deliberately absent: every row here is ``open``,
+    and the version column is the information the folded body hides.
+    """
+    rows = scan_ports(result)
+    if len(rows) < 2:
+        return ''
+    from rich.table import Table
+
+    table = Table(box=None, show_header=True, header_style=f'bold {THEME.primary}',
+                  padding=(0, 1), pad_edge=False)
+    table.add_column('Puerto', style=THEME.offwhite, no_wrap=True)
+    table.add_column('Servicio', style=THEME.muted, no_wrap=True)
+    table.add_column('Versión', style=THEME.dim_style, no_wrap=True)
+    version_budget = max(12, int(width) - 36)
+    for port, service, version in rows[:max(1, int(limit))]:
+        table.add_row(port, _fit_line(service, 22), _fit_line(version or '—', version_budget))
+    rendered = render_rich(table, width=width, no_color=no_color)
+    hidden = len(rows) - max(1, int(limit))
+    if hidden > 0:
+        rendered += f'\n  … y {hidden} puerto(s) más'
+    return rendered
+
+
+def _open_ports(result: dict[str, Any]) -> list[str]:
+    """Open ports a parsed scan reports (``[]`` for anything else)."""
+    ports = [port for port, _, _ in scan_ports(result)]
     if not ports:
         evidence = result.get('evidence') if isinstance(result.get('evidence'), dict) else {}
         ports = [str(port) for port in evidence.get('open_ports') or [] if str(port)]
@@ -715,6 +767,7 @@ def tool_result_line(result: dict[str, Any], *, summary: str = '',
     if not body:
         body = 'completado' if success else 'falló'
     ports = _open_ports(result) if success else []
+    plain_body = body
     if ports:
         if 'puertos abiertos' in body and '(' not in body:
             body = body.replace(
@@ -724,6 +777,14 @@ def tool_result_line(result: dict[str, Any], *, summary: str = '',
             body += f" · {len(ports)} puerto(s) abierto(s) ({', '.join(ports)})"
     mark = '✓' if success else '×'
     line = f'{mark} {name}: {body}'
+    if success and ports and width:
+        from rich.cells import cell_len
+
+        if cell_len(line) > int(width):
+            # Crop the list mid-number and ``8443`` reads as a truncated scan,
+            # which is worse than not showing it: keep the count and leave the
+            # per-port detail to the expansion.
+            line = f'{mark} {name}: {plain_body}'
     # Un fallo nunca se recorta: la razón (``sliver_auth_missing``) es lo que el
     # operador necesita leer. El éxito es una línea corta por contrato.
     return line if not success else _fit_line(line, width)

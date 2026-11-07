@@ -26,7 +26,7 @@ def test_unknown_provider_cost_remains_placeholder(tui_factory, monkeypatch):
         durable=False,
     )
     text = render_status_plain(ui.session._status)
-    assert "6.1k tok" in text and "$—" in text
+    assert "Tokens: 6,100" in text and "coste $—" in text
 
 
 def test_known_provider_cost_is_registered_by_default(tui_factory, monkeypatch):

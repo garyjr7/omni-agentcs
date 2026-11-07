@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..theme import THEME
+
 #: Fact types surfaced in the panel, in reading order.
 PANEL_FACT_ORDER = (
     "service",
@@ -123,14 +125,14 @@ def panel_lines(plan: dict[str, Any] | None, *, width: int = 44) -> list[tuple[s
 def panel_style() -> dict[str, str]:
     """prompt_toolkit style rules used by :func:`panel_lines`."""
     return {
-        "panel": "bg:#0d1117 #d0d4da",
+        "panel": f"bg:{THEME.overlay} {THEME.overlay_text}",
         # Structure, not accent: the panel title is bold text on the panel
         # background, never a colour of its own.
-        "panel-title": "bg:#0d1117 #ffffff bold",
-        "panel-current": "bg:#0d1117 #ffc950 bold",
-        "panel-done": "bg:#0d1117 #56e696",
-        "panel-failed": "bg:#0d1117 #ff4054",
-        "panel-pending": "bg:#0d1117 #6a6f76",
+        "panel-title": f"bg:{THEME.overlay} {THEME.text} bold",
+        "panel-current": f"bg:{THEME.overlay} {THEME.warn} bold",
+        "panel-done": f"bg:{THEME.overlay} {THEME.ok}",
+        "panel-failed": f"bg:{THEME.overlay} {THEME.error}",
+        "panel-pending": f"bg:{THEME.overlay} {THEME.subtle}",
     }
 
 
@@ -238,17 +240,17 @@ def _fit_menu(rows: list[tuple[str, str]], max_rows: int | None) -> list[tuple[s
 def approval_style() -> dict[str, str]:
     """prompt_toolkit style rules used by :func:`approval_lines`."""
     return {
-        "approval": "bg:#1a0d11 #e0e4ea",
-        "approval-title": "bg:#1a0d11 #ffc950 bold",
-        "approval-risk": "bg:#1a0d11 #ff4054 bold",
-        "approval-options": "bg:#1a0d11 #e0e4ea",
-        "approval-question": "bg:#1a0d11 #ffffff bold",
+        "approval": f"bg:{THEME.surface_alt} {THEME.approval_text}",
+        "approval-title": f"bg:{THEME.surface_alt} {THEME.warn} bold",
+        "approval-risk": f"bg:{THEME.surface_alt} {THEME.error} bold",
+        "approval-options": f"bg:{THEME.surface_alt} {THEME.approval_text}",
+        "approval-question": f"bg:{THEME.surface_alt} {THEME.text} bold",
         # The selected option is a solid red row, the only filled block in the
         # menu: the operator reads the choice before the arguments.
-        "approval-selected": "bg:#ff0055 #ffffff bold",
+        "approval-selected": f"bg:{THEME.primary} {THEME.text} bold",
         # Step two of the decision: the selected option is not submitted yet.
-        "approval-submit": "bg:#1a0d11 #ffc950 bold",
-        "approval-hint": "bg:#1a0d11 #9aa0a6",
+        "approval-submit": f"bg:{THEME.surface_alt} {THEME.warn} bold",
+        "approval-hint": f"bg:{THEME.surface_alt} {THEME.approval_hint}",
     }
 
 

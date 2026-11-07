@@ -72,12 +72,25 @@ sorpresa es un incidente.
 
 | ID | Qué falta | Estado |
 |---|---|---|
-| SEC-01 | El scope no cubre el egress del shell universal (`python3`, `ssh`, `openssl s_client`, `/dev/tcp`). Mitigación real: proxy de egress por engagement. | Abierto |
+| SEC-01 | El scope no cubre el egress del shell universal (`python3`, `ssh`, `openssl s_client`, `/dev/tcp`). Mitigación real: proxy de egress por engagement. | Parcial: modo `egress` opt-in (`NEXUS_SHELL_ISOLATION=egress`), ver nota |
 | SEC-02 | Aislamiento de **lectura** en modo local (`bwrap`/namespace sobre el HOME real). | Abierto |
 | SEC-03 | `oci_network` implementado: contenedor en una red `--internal` cuya única salida es el proxy SOCKS5 del scope; sin proxy configurado falla cerrado. | Cerrado ([ADR-004](docs/adr/ADR-004-sandbox-modes.md)) |
 | SEC-05 | Los plugins que añaden tools vía entry points `nexus.tools` declaran su propio `risk`; no hay allowlist ni firma. | Abierto |
 | SEC-07 | `ApprovalService.decide()` no comprueba rol/tenant del aprobador (relevante solo con varios analistas). | Backlog |
 | SEC-10/11 | Lockfile con hashes y `make audit` **bloqueante** en CI. Queda una excepción aceptada (§4.1). | Parcial (una excepción) |
+
+**SEC-01, modo `egress` (opt-in).** `nexus_core/kernel/egress_bridge.py` ejecuta
+el shell dentro de un netns de `bwrap` (`--unshare-net`) cuyo único egreso es el
+`Socks5EgressProxy` del engagement, alcanzado por un socket UNIX y dos `socat`;
+el workspace se monta en lectura-escritura y `/run`/`/tmp` como tmpfs. Se activa
+con `NEXUS_SHELL_ISOLATION=egress`; sin la variable, el comportamiento no cambia.
+El comando completo se ejecuta bajo `proxychains4`, de modo que el `LD_PRELOAD`
+se hereda a los hijos y un `bash -c "nmap …"` anidado tampoco puede saltarse el
+proxy. Así, `nmap`/`sqlmap` **solo funcionan en TCP connect** (`nmap -sT`): SYN
+(`-sS`), UDP y detección de OS necesitan red directa y no están soportados en
+este modo. El comando en segundo plano se rechaza porque
+el netns muere con la llamada. Si falta `bwrap`, `socat` o `proxychains4`, el
+handler falla cerrado.
 
 ### 4.1 Excepción de auditoría aceptada
 

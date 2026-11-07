@@ -63,6 +63,8 @@ def test_startup_masthead_is_unframed_and_shows_metadata() -> None:
     assert 'Omni Agent CS v3.0.0' in banner
     assert 'BAJIOWARE • Red Team' in banner and '[+] [ rootme ] [+]' in banner
     assert all(border not in banner for border in ('╭', '╮', '╰', '╯', '│'))
+    # One row: the masthead never spends ten lines before the first prompt.
+    assert len(banner.strip().splitlines()) == 1 and '██' in banner
 
 
 def test_chips_preserve_every_input_character() -> None:
@@ -249,6 +251,17 @@ def test_panel_footer_names_model_and_directory_without_the_build_word(tui_facto
     from nexus_core.cli.tui.presentation import SECONDARY_STYLE
     assert ui._workspace_footer()[0][0] == SECONDARY_STYLE
     assert 'Build' not in footer
+
+
+def test_panel_footer_shows_the_run_metrics_before_the_folder(tui_factory: Any,
+                                                              tmp_path: Any) -> None:
+    """D3: tokens, cost and context stay visible while the bar is alerts-only."""
+    ui = tui_factory().session
+    ui.set_status(workspace_path=str(tmp_path), provider_model='deepseek-v4',
+                  tokens=49_500, cost=0.91, cost_known=True, context_tokens=62_000,
+                  context_window=100_000)
+    footer = fragment_list_to_text(ui._workspace_footer())
+    assert footer == f'deepseek-v4 · 49.5k tok · ~$0.91 · ctx 62% · {tmp_path}'
 
 
 def test_workspace_line_shortens_home_and_never_says_build(monkeypatch: Any, tmp_path: Any) -> None:

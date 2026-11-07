@@ -4,12 +4,12 @@ import inspect
 import re
 
 from nexus_core.cli import theme
-from nexus_core.cli.tui import layout, presentation
+from nexus_core.cli.tui import layout, panels, presentation, status
 
 
 def test_renderers_delegate_colours_to_the_theme() -> None:
     hex_literal = re.compile(r"#[0-9a-fA-F]{6}")
-    for module in (presentation, layout):
+    for module in (presentation, layout, panels, status):
         source = inspect.getsource(module)
         assert not hex_literal.search(source), module.__name__
 

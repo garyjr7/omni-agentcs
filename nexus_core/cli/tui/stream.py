@@ -429,19 +429,22 @@ def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
     """
     guardrail = is_guardrail(result)
     if not expanded and not guardrail:
+        from rich.cells import cell_len
+
         from .presentation import tool_result_line
 
-        line = tool_result_line(
-            result,
-            summary=summarize_tool_result(result),
-            width=width,
-        )
         hidden = hidden_detail_lines(result, max_lines=max_lines)
         # The expansion has to be discoverable, or the body is lost: the footer
         # stays inline so the default result is still one conversational line.
-        if hidden:
-            line = f"{line} · Ver {hidden} líneas más"
-        return line
+        footer = f" · Ver {hidden} líneas más" if hidden else ""
+        line = tool_result_line(
+            result,
+            summary=summarize_tool_result(result),
+            # Reserve the footer's cells before fitting, or the verdict overflows
+            # the width and the transcript wraps it into two rows (D1).
+            width=max(1, int(width) - cell_len(footer)) if footer else width,
+        )
+        return f"{line}{footer}"
     structured = structured_output(result)
     value, is_diff = trace_text(result)
     guidance = ""
@@ -454,13 +457,24 @@ def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
         # Empty lines and separators are not data; the hidden count must name
         # what the operator would actually reveal.
         value = "\n".join(data_lines(value, width=None)[0])
-    return render_rich(trace_block(
+    table = ""
+    if (expanded and not guardrail and structured is None and not is_diff
+            and not result.get("stdout") and not result.get("stderr")):
+        from .presentation import render_port_table
+
+        table = render_port_table(result, width=width, no_color=no_color)
+        if table:
+            # The table *is* the body: the mapped ``Puerto …`` lines would say
+            # the same thing twice, one per line and without the versions.
+            value = ""
+    rendered = render_rich(trace_block(
         value,
         success=bool(result.get("success")), tool_id=str(result.get("tool_id") or ""),
         summary=summarize_tool_result(result), expanded=expanded, limit=max_lines,
         diff=is_diff, defer_detail=structured is not None, structured=structured,
         guardrail=guardrail, guidance=guidance, width=width,
     ), width=width, no_color=no_color)
+    return f"{rendered}\n\n{table}" if table else rendered
 
 
 def observation(message: dict[str, Any]) -> dict[str, Any]:

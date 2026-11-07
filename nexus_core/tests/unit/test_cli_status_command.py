@@ -18,7 +18,7 @@ def session(monkeypatch, tmp_path):
 def test_cmd_status_show_prints_plain(session, capsys):
     cmd_status(session, ["show"])
     text = capsys.readouterr().out
-    assert "fake/model" in text and "tok" in text and "\x1b" not in text
+    assert "fake/model" in text and "Tokens:" in text and "\x1b" not in text
 
 
 def test_cmd_status_off_persists(session):

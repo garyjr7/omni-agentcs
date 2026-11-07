@@ -58,6 +58,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from nexus_core.kernel.artifacts import configured_artifact_store
 from nexus_core.kernel.audit import AuditWriter
+from nexus_core.kernel.egress import proxy_for_scope
+from nexus_core.kernel.egress_bridge import (
+    ISOLATION_ENV,
+    ISOLATION_MODE,
+    EgressBridge,
+)
 from nexus_core.kernel.fact_verification import sshpass_channels
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 from nexus_core.kernel.redaction import (
@@ -66,11 +72,13 @@ from nexus_core.kernel.redaction import (
     sanitize_text,
     secrets_for_redaction,
 )
-from nexus_core.kernel.sandbox import OCISandbox, sandbox_for_environment
+from nexus_core.kernel.sandbox import OCISandbox, SandboxResult, sandbox_for_environment
 from nexus_core.kernel.scope_loader import scope_signing_secret
 from nexus_core.kernel.sessions import validate_session_scope
 from nexus_core.scope import ScopeValidator, ScopeViolation
+from nexus_core.tools.execution_contract import record_capture
 from nexus_core.tools.passive_wait import PASSIVE_WAIT_GUIDANCE, passive_wait_reason
+
 from ._exec import run_in_sandbox
 from .report_generate import default_artifact_root
 from .workspace import workspace_root
@@ -916,6 +924,65 @@ def _audit(
     )
 
 
+def egress_isolation_requested(env: dict[str, str] | None = None) -> bool:
+    """Whether ``NEXUS_SHELL_ISOLATION=egress`` asked for the isolated shell.
+
+    Opt-in on purpose: wrapping every command changes DNS, proxying and raw
+    socket behaviour, so the default local/OCI paths stay untouched until an
+    operator enables it.
+    """
+    source = os.environ if env is None else env
+    return str(source.get(ISOLATION_ENV, "")).strip().lower() == ISOLATION_MODE
+
+
+async def _run_in_egress_bridge(
+    context: RunContext,
+    root: Path,
+    request: ShellExecRequest,
+    script: str,
+    *,
+    cwd: str,
+) -> SandboxResult:
+    """Run *script* in the bwrap netns whose only exit is the scope proxy.
+
+    A proxy is created per call on an ephemeral port, so two shells never share
+    a listener and the authorizer is always this run's scope. The bridge only
+    carries bytes; ``proxy_for_scope`` keeps the scope decision. The workspace
+    is bound read-write because the rest of the root bind is read-only.
+
+    The whole command runs under ``proxychains4``, not only a per-binary list:
+    the preload is inherited by children, so ``bash -c "nmap …"`` and any other
+    nested invocation cannot dodge the proxy.
+    """
+    proxy = proxy_for_scope(
+        context.scope,
+        signing_secret=scope_signing_secret(),
+        bind_host="127.0.0.1",
+        bind_port=0,
+    )
+    await proxy.start()
+    try:
+        bridge = EgressBridge(proxy_port=proxy.address[1])
+        async with bridge:
+            stdout, stderr, exit_code = await bridge.run(
+                script,
+                cwd=cwd,
+                timeout=float(request.timeout_seconds),
+                proxychains=True,
+                workspace=root,
+            )
+    finally:
+        await proxy.close()
+    result = SandboxResult(
+        exit_code=exit_code if exit_code is not None else -1,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=exit_code is None,
+    )
+    record_capture(result)
+    return result
+
+
 async def _launch_background(
     request: ShellExecRequest,
     context: RunContext,
@@ -1085,7 +1152,7 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
     request = ShellExecRequest.model_validate(arguments)
     validate_session_scope(context)
     root = workspace_root()
-    _, cwd_relative = resolve_cwd(root, request.cwd)
+    cwd_absolute, cwd_relative = resolve_cwd(root, request.cwd)
     started = time.monotonic()
 
     # V9 (Hijack): ``sleep 170`` spent a turn and its budget without changing
@@ -1195,22 +1262,49 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
     if consumer and not pipefail:
         pipeline_evidence["pipeline"]["note"] = PIPELINE_STATUS_NOTE
     if is_background_command(request.command):
+        if egress_isolation_requested():
+            # A detached job outlives the bwrap namespace that isolates it, so
+            # accepting it would silently run the command with host networking.
+            return ToolResult(
+                output={
+                    "error": "background execution is not available with egress isolation",
+                    "command": request.command,
+                    "guidance": (
+                        "El modo egress ejecuta el comando dentro de un netns que "
+                        "muere con la llamada: un job en segundo plano perdería el "
+                        "aislamiento. Ejecútalo en primer plano con un "
+                        "timeout_seconds mayor, o desactiva NEXUS_SHELL_ISOLATION."
+                    ),
+                },
+                verified=False,
+                outcome="unavailable",
+                verification_method="shell_background_unavailable_isolation",
+                evidence={"background": False, "cwd": cwd_relative},
+            )
         # ``nohup ... &`` used to block until the timeout: the detached child
         # inherited the handler's pipes. A background request is answered at
         # once with the PID instead of waited for (V1-51).
         return await _launch_background(
             request, context, sandbox, program, cwd_relative, root, started
         )
+    script = shell_script(request.command, pipefail=pipefail)
     try:
         async with _run_lock(context.run_id):
-            result = await run_in_sandbox(
-                sandbox,
-                [program, "-lc", shell_script(request.command, pipefail=pipefail)],
-                timeout_seconds=request.timeout_seconds,
-                image_env="NEXUS_SHELL_IMAGE",
-                default_image="python:3.12-alpine",
-                input_data=stdin_data,
-            )
+            if egress_isolation_requested() and not isinstance(sandbox, OCISandbox):
+                if stdin_data is not None:
+                    raise ValueError("stdin is not supported with egress isolation")
+                result = await _run_in_egress_bridge(
+                    context, root, request, script, cwd=cwd_absolute
+                )
+            else:
+                result = await run_in_sandbox(
+                    sandbox,
+                    [program, "-lc", script],
+                    timeout_seconds=request.timeout_seconds,
+                    image_env="NEXUS_SHELL_IMAGE",
+                    default_image="python:3.12-alpine",
+                    input_data=stdin_data,
+                )
     except (FileNotFoundError, PermissionError) as exc:
         duration_ms = int((time.monotonic() - started) * 1000)
         # A ``PermissionError`` is the sandbox refusing the invocation (program
@@ -1439,22 +1533,21 @@ async def shell_exec_handler(arguments: dict[str, Any], context: RunContext) -> 
 
 __all__ = [
     "APT_INSTALL_DENIED_GUIDANCE",
-    "MOUNT_REQUIRES_ROOT_GUIDANCE",
-    "mount_requires_root",
     "BACKGROUND_LOG_DIRNAME",
     "DESTRUCTIVE_REASON",
-    "DeniedCommand",
     "LOCAL_PRIVILEGE_REASON",
-    "SHELL_SCOPE_DENIED_GUIDANCE",
-    "SHELL_ALLOWED_PROGRAMS",
+    "MOUNT_REQUIRES_ROOT_GUIDANCE",
     "PIPEFAIL_CONSUMERS",
     "PIPELINE_STATUS_NOTE",
-    "STDERR_TAIL_LINES",
+    "SHELL_ALLOWED_PROGRAMS",
     "SHELL_MAX_OUTPUT_BYTES",
     "SHELL_MAX_STDIN_BYTES",
     "SHELL_MAX_TIMEOUT_SECONDS",
     "SHELL_MIN_TIMEOUT_SECONDS",
+    "SHELL_SCOPE_DENIED_GUIDANCE",
     "SHELL_SUMMARY_LINES",
+    "STDERR_TAIL_LINES",
+    "DeniedCommand",
     "ShellExecRequest",
     "apt_install_permission_denied",
     "background_body",
@@ -1464,6 +1557,7 @@ __all__ = [
     "fetch_targets",
     "has_background_operator",
     "is_background_command",
+    "mount_requires_root",
     "needs_pipefail",
     "out_of_scope_fetch_target",
     "passive_wait_reason",

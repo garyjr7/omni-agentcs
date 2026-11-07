@@ -74,6 +74,29 @@ def test_definition_is_high_risk_execution():
     }
 
 
+def test_egress_isolation_is_opt_in_and_routes_the_foreground_shell(context, monkeypatch):
+    from nexus_core.kernel.sandbox import SandboxResult
+    from nexus_core.tools.handlers import shell_exec_local as module
+
+    calls = {}
+
+    async def fake_bridge(context_, root, request, script, *, cwd):
+        calls.update(command=request.command, cwd=cwd, script=script)
+        return SandboxResult(exit_code=0, stdout="hola\n", stderr="")
+
+    monkeypatch.setattr(module, "_run_in_egress_bridge", fake_bridge)
+    monkeypatch.setenv(module.ISOLATION_ENV, module.ISOLATION_MODE)
+    result = _run(context, {"command": "echo hola"})
+    assert result.exit_code == 0 and "hola" in result.output["summary"]
+    assert calls["command"] == "echo hola"
+    assert calls["cwd"].endswith("workspace")
+
+    calls.clear()
+    monkeypatch.delenv(module.ISOLATION_ENV)
+    legacy = _run(context, {"command": "echo hola"})
+    assert legacy.exit_code == 0 and calls == {}
+
+
 def test_shell_exec_runs_echo_hola(context):
     result = _run(context, {"command": "echo hola"})
     assert result.verified is True

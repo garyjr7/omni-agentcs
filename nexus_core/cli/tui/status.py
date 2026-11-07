@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..theme import THEME
+
 if TYPE_CHECKING:
     from prompt_toolkit.formatted_text import FormattedText
 
@@ -105,31 +107,32 @@ def _parts(state: StatusState) -> list[tuple[float, str, str]]:
     """
     parts: list[tuple[float, str, str]] = []
     if state.trust_mode:
-        parts.append((PRIORITY["alert"], "ansired bold", "TRUST"))
+        parts.append((PRIORITY["alert"], f"fg:{THEME.error} bold", "TRUST"))
     if state.session_uuid:
         parts.append(
             (
                 PRIORITY["alert"],
-                "ansimagenta",
+                f"fg:{THEME.magenta}",
                 f"session {state.session_uuid}/{state.session_type or 'session'}",
             )
         )
     if state.plan_phase:
         progress = f" {state.plan_progress}" if state.plan_progress else ""
-        parts.append((PRIORITY["phase"], "ansicyan bold", f"▸ {state.plan_phase}{progress}"))
+        parts.append((PRIORITY["phase"], f"fg:{THEME.aqua} bold", f"▸ {state.plan_phase}{progress}"))
     parts.append((PRIORITY["brand"], "dim", "BAJIOWARE · OMNI-AGENTCS"))
     scope = f"{state.scope_targets} objetivos" if state.scope_targets is not None else "—"
-    parts.append((PRIORITY["scope"], "ansicyan", "Alcance: " + scope))
-    parts.append((PRIORITY["provider"], "ansicyan", "Modelo: " + (state.provider_model or "—")))
+    parts.append((PRIORITY["scope"], f"fg:{THEME.aqua}", "Alcance: " + scope))
+    parts.append((PRIORITY["provider"], f"fg:{THEME.aqua}", "Modelo: " + (state.provider_model or "—")))
     tokens = state.tokens_input + state.tokens_output
-    parts.append((PRIORITY["tokens"], "ansigreen", f"Tokens: {tokens:,}"))
+    parts.append((PRIORITY["tokens"], f"fg:{THEME.ok}", f"Tokens: {tokens:,}"))
     budget = f"${state.budget_usd:.2f}" if state.budget_usd is not None else "$—"
-    parts.append((PRIORITY["budget"], "ansigreen", "Presupuesto: " + budget))
-    parts.append((PRIORITY["status"], "ansiyellow" if state.busy else "dim",
+    parts.append((PRIORITY["budget"], f"fg:{THEME.ok}", "Presupuesto: " + budget))
+    parts.append((PRIORITY["status"], f"fg:{THEME.warn}" if state.busy else "dim",
                   "Estado: EN CURSO" if state.busy else "Estado: INACTIVO"))
     if state.context_window and state.context_window > 0 and state.context_tokens is not None:
         percent = max(0, int(100 * state.context_tokens / state.context_window))
-        style = 'ansigreen' if percent < 50 else 'ansiyellow' if percent <= 80 else 'ansired'
+        style = (f'fg:{THEME.ok}' if percent < 50
+                 else f'fg:{THEME.warn}' if percent <= 80 else f'fg:{THEME.error}')
         approx = '~' if state.context_source == 'estimate' else ''
         label = f'ctx {approx}{percent}% usado'
         if percent >= 80:
@@ -139,35 +142,29 @@ def _parts(state: StatusState) -> list[tuple[float, str, str]]:
     parts.append((PRIORITY['ctx'], style, label))
     if state.rate_remaining is not None:
         parts.append((PRIORITY['rate'], 'dim', f'tasa {state.rate_remaining} restantes'))
-    tokens = state.tokens_input + state.tokens_output
-    parts.append(
-        (
-            PRIORITY["tokens"],
-            "ansigreen",
-            f"run {tokens / 1000:.1f}k tok" if tokens >= 1000 else f"run {tokens} tok",
-        )
-    )
+    # Tokens already have their own segment above: printing them again as
+    # ``run N tok`` duplicated the number in ``/status show`` (D2).
     parts.append(
         (
             PRIORITY["cost"],
-            "ansigreen",
-            f"~${state.cost_usd:.4f}" if state.cost_known else "$—",
+            f"fg:{THEME.ok}",
+            f"coste ~${state.cost_usd:.4f}" if state.cost_known else "coste $—",
         )
     )
     parts.append((PRIORITY["time"], "dim", state.elapsed_human))
     if state.facts_count:
-        parts.append((PRIORITY["facts"], "ansiblue", f"{state.facts_count} datos"))
+        parts.append((PRIORITY["facts"], f"fg:{THEME.blue}", f"{state.facts_count} datos"))
     parts.append(
         (
             PRIORITY["engagement"],
-            "ansiyellow",
+            f"fg:{THEME.warn}",
             state.engagement_name or "(sin engagement)",
         )
     )
     if state.busy:
         elapsed = max(0, int(time.monotonic() - state.busy_started_at))
         frame = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[elapsed % 10]
-        parts.append((8, "ansiyellow", f"{frame} {state.busy_message} [{elapsed}s]"))
+        parts.append((8, f"fg:{THEME.warn}", f"{frame} {state.busy_message} [{elapsed}s]"))
     if state.fields is not None:
         allowed = {PRIORITY[name] for name in state.fields if name in PRIORITY} | set(PROTECTED_PRIORITIES) | {8, PRIORITY["status"]}
         parts = [part for part in parts if part[0] in allowed]
@@ -183,25 +180,41 @@ def render_status_plain(state: StatusState) -> str:
     return _join(_parts(state))
 
 
-def workspace_line(state: StatusState) -> str:
-    """``model · ~/cwd`` for the bottom-left corner of the input panel.
+def _workspace_metrics(state: StatusState) -> list[str]:
+    """Tokens, cost and context: what the alerts-only bar cannot show."""
+    metrics: list[str] = []
+    tokens = state.tokens_input + state.tokens_output
+    if tokens >= 1000:
+        metrics.append(f"{tokens / 1000:.1f}k tok")
+    elif tokens:
+        metrics.append(f"{tokens} tok")
+    if state.cost_known and state.cost_usd:
+        metrics.append(f"~${state.cost_usd:.2f}")
+    if state.context_window and state.context_tokens is not None:
+        percent = max(0, int(100 * state.context_tokens / state.context_window))
+        metrics.append(f"ctx {percent}%")
+    return metrics
 
-    The agent's model and the working directory are the prompt's own context,
-    so they live in the textarea container instead of the operational bar. The
-    word ``Build`` was retired with the old fixed workspace line: this footer is
-    the single place that names the agent.
+
+def workspace_line(state: StatusState) -> str:
+    """``model · metrics · ~/cwd`` for the input panel footer.
+
+    The model, the run's numbers and the working directory are the prompt's own
+    context, so they live in the textarea container instead of the operational
+    bar. Metrics come before the path on purpose: a long directory clips at the
+    right edge, never the tokens or the cost (D3). The word ``Build`` was
+    retired with the old fixed workspace line.
     """
-    model = state.provider_model or "unconfigured"
-    if not state.workspace_path:
-        return model
     from .presentation import clean_text
 
-    root = Path(state.workspace_path)
-    try:
-        display = '~/' + str(root.relative_to(Path.home()))
-    except ValueError:
-        display = str(root)
-    return clean_text(f'{model} · {display}').replace('\n', ' ')
+    bits = [state.provider_model or "unconfigured", *_workspace_metrics(state)]
+    if state.workspace_path:
+        root = Path(state.workspace_path)
+        try:
+            bits.append('~/' + str(root.relative_to(Path.home())))
+        except ValueError:
+            bits.append(str(root))
+    return clean_text(' · '.join(bits)).replace('\n', ' ')
 
 
 def render_status_bar(state: StatusState, *, width: int) -> FormattedText:
@@ -219,7 +232,7 @@ def render_status_bar(state: StatusState, *, width: int) -> FormattedText:
         items = [part for part in _parts(state) if part[0] == PRIORITY["alert"]]
     else:
         core = {PRIORITY[key] for key in ("brand", "scope", "provider", "tokens", "budget", "status", "alert", "ctx")}
-        items = [part for part in _parts(state) if part[0] in core and not part[2].startswith("run ")]
+        items = [part for part in _parts(state) if part[0] in core]
     # Drop the lowest-priority segments until the line fits or only protected
     # segments remain. alert (trust/session) and phase are drop-protected: they
     # are cell-truncated below rather than removed.

@@ -10,7 +10,8 @@ def test_unknown_context_is_not_zero():
 
 
 def test_context_thresholds_and_accessible_labels():
-    for used, color in [(49,'ansigreen'),(50,'ansiyellow'),(80,'ansiyellow'),(81,'ansired')]:
+    from nexus_core.cli.theme import THEME
+    for used, color in [(49,f'fg:{THEME.ok}'),(50,f'fg:{THEME.warn}'),(80,f'fg:{THEME.warn}'),(81,f'fg:{THEME.error}')]:
         state=StatusState(context_tokens=used,context_window=100)
         fragments=render_status_bar(state,width=500)
         assert any(color in style and f'ctx {used}%' in text for style,text in fragments)
@@ -52,4 +53,4 @@ def test_context_fields_preference_preserves_status_toggle(tmp_path,monkeypatch)
     save_status_preference(False)
     assert load_status_fields()==('ctx','tokens')
     text=render_status_plain(StatusState(fields=('ctx','tokens')))
-    assert 'ctx' in text and 'run' in text and '(sin modelo)' not in text
+    assert 'ctx' in text and 'Tokens:' in text and '(sin modelo)' not in text

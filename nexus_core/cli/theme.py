@@ -47,6 +47,12 @@ class Theme:
     error: str = "#ff4054"
     #: Warnings and pre-execution corrections.
     warn: str = "#ffc950"
+    #: Side-panel overlay surface (engagement plan) and its body text.
+    overlay: str = "#0d1117"
+    overlay_text: str = "#d0d4da"
+    #: Approval menu body text and hints on ``surface_alt``.
+    approval_text: str = "#e0e4ea"
+    approval_hint: str = "#9aa0a6"
     #: Syntax highlighting follows a named Rich theme, not a literal colour.
     syntax_theme: str = "ansi_dark"
     syntax_background: str = "default"
