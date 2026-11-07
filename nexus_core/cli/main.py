@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Any, Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 
 from nexus_core.kernel.store_factory import get_control_store
 from nexus_core.scope import EngagementStore
@@ -496,6 +497,13 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
 
         return int(run_hooks_command(list(args.command[1:]), args.tenant))
 
+    # ``omni tools ...`` governs third-party tool plugins (SEC-05). It only
+    # writes the private trust file; discovery is what enforces the decision.
+    if subcommand == "tools":
+        from .tools_cli import run_tools_command
+
+        return int(run_tools_command(list(args.command[1:]), args.tenant))
+
     # ``omni resume ...`` decides what to do with invocations left ``unknown``.
     if subcommand == "resume":
         from .resume_cli import run_resume_command
@@ -544,6 +552,7 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
     requested = args.continue_engagement or args.engagement
     if not requested and not objective and not subcommand and not args.roe and not args.resume:
         from pathlib import Path
+
         from .workspace import bind_workspace
         engagement, exit_code = bind_workspace(store, args.tenant, Path.cwd()), 0
     else:

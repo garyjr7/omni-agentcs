@@ -75,9 +75,18 @@ sorpresa es un incidente.
 | SEC-01 | El scope no cubre el egress del shell universal (`python3`, `ssh`, `openssl s_client`, `/dev/tcp`). Mitigación real: proxy de egress por engagement. | Parcial: modo `egress` opt-in (`NEXUS_SHELL_ISOLATION=egress`), ver nota |
 | SEC-02 | Aislamiento de **lectura** en modo local (`bwrap`/namespace sobre el HOME real). | Abierto |
 | SEC-03 | `oci_network` implementado: contenedor en una red `--internal` cuya única salida es el proxy SOCKS5 del scope; sin proxy configurado falla cerrado. | Cerrado ([ADR-004](docs/adr/ADR-004-sandbox-modes.md)) |
-| SEC-05 | Los plugins que añaden tools vía entry points `nexus.tools` declaran su propio `risk`; no hay allowlist ni firma. | Abierto |
+| SEC-05 | Los plugins que añaden tools vía entry points `nexus.tools` declaran su propio `risk`; no hay allowlist ni firma. | Cerrado: hash de la distribución en `tools-trust.json`, fallo cerrado |
 | SEC-07 | `ApprovalService.decide()` no comprueba rol/tenant del aprobador (relevante solo con varios analistas). | Backlog |
 | SEC-10/11 | Lockfile con hashes y `make audit` **bloqueante** en CI. Queda una excepción aceptada (§4.1). | Parcial (una excepción) |
+
+**SEC-05.** Un entry point de `nexus.tools` no se importa hasta que un operador
+humano lo aprueba con `omni tools trust <name>`. La aprobación vive en
+`~/.config/omni/tools-trust.json` (0600) y fija el SHA-256 de **todos los ficheros
+de la distribución**, así que cualquier cambio —no solo en el módulo del entry
+point— revoca la confianza. `registration.py` comprueba el hash antes de
+`entry.load()` y registra el plugin como no confiable si falta o no coincide. El
+pin cubre la distribución, no sus dependencias: un plugin aprobado que importe
+una dependencia comprometida sigue siendo riesgo de cadena de suministro.
 
 **SEC-01, modo `egress` (opt-in).** `nexus_core/kernel/egress_bridge.py` ejecuta
 el shell dentro de un netns de `bwrap` (`--unshare-net`) cuyo único egreso es el

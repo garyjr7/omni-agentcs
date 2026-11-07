@@ -23,19 +23,19 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from importlib.metadata import entry_points
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from nexus_core.kernel.models import RunContext, ToolDefinition, ToolResult
+
+from .trust import ENTRY_POINT_GROUP, installed_entry_points, is_trusted
 
 Handler = Callable[[dict[str, Any], RunContext], Awaitable[ToolResult]]
 DefinitionFactory = Callable[[str], ToolDefinition]
 
 #: Package scanned for builtin tools that self-register.
 HANDLER_PACKAGE = "nexus_core.tools.handlers"
-#: Entry-point group third-party distributions publish tools under.
-ENTRY_POINT_GROUP = "nexus.tools"
 
 
 @dataclass(frozen=True)
@@ -165,13 +165,20 @@ def _load_entry_points() -> tuple[int, list[tuple[str, str]]]:
     loaded = 0
     errors: list[tuple[str, str]] = []
     try:
-        try:
-            selected = list(entry_points(group=ENTRY_POINT_GROUP))
-        except TypeError:  # pragma: no cover - pre-3.10 importlib API
-            selected = list(entry_points().get(ENTRY_POINT_GROUP, []))
+        selected = installed_entry_points()
     except Exception:  # noqa: BLE001 - metadata is best-effort
         return 0, []
     for entry in selected:
+        name = str(getattr(entry, "name", "?"))
+        if not is_trusted(entry):
+            # SEC-05: an entry point is code the operator has not necessarily
+            # reviewed. It is not imported until `omni tools trust <name>` pins
+            # the distribution's hash; any changed file revokes that approval.
+            errors.append((
+                f"{ENTRY_POINT_GROUP}:{name}",
+                f"plugin is not trusted: run `omni tools trust {name}`",
+            ))
+            continue
         try:
             entry.load()
             loaded += 1
