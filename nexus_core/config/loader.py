@@ -85,8 +85,15 @@ def apply_environment(config, paths):
     for provider, key in config.llm.api_keys.items():
         if key and not os.getenv(provider.upper() + "_API_KEY"):
             os.environ[provider.upper() + "_API_KEY"] = key
-    if config.scope.signing_secret:
-        os.environ.setdefault("NEXUS_SCOPE_SIGNING_SECRET", config.scope.signing_secret)
+    # ``setdefault`` alone is not enough: a ``NEXUS_SCOPE_SIGNING_SECRET=`` line
+    # in ``.env`` is an *empty* value, so it shadowed the configured secret and
+    # every governed scope failed to authenticate at runtime even though it had
+    # been signed with this very value. Same rule as the provider keys above:
+    # only a non-empty explicit value wins.
+    if config.scope.signing_secret and not os.getenv(
+        "NEXUS_SCOPE_SIGNING_SECRET", ""
+    ).strip():
+        os.environ["NEXUS_SCOPE_SIGNING_SECRET"] = config.scope.signing_secret
     if config.llm.default_provider == "ollama":
         os.environ.setdefault("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
     # Tanda C (Fix 4.1): the chain travels through the environment like every

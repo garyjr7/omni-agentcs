@@ -33,9 +33,25 @@ def load_engagement_scope(
 
 
 def scope_signing_secret() -> str | None:
-    """Lee NEXUS_SCOPE_SIGNING_SECRET del entorno, o None."""
+    """El secreto con el que se firmó el scope, o ``None``.
+
+    ``NEXUS_SCOPE_SIGNING_SECRET`` gana cuando está definido y no vacío. Si no,
+    se lee ``config.toml``: es la fuente con la que ``create_engagement`` firma,
+    y un proceso que no ejecutó ``apply_environment`` (worker, test, script)
+    verificaría contra un secreto distinto del que firmó. Un ``.env`` con
+    ``NEXUS_SCOPE_SIGNING_SECRET=`` vacío es "ausente", no un secreto.
+    """
     value = os.getenv("NEXUS_SCOPE_SIGNING_SECRET", "").strip()
-    return value or None
+    if value:
+        return value
+    try:
+        from nexus_core.config.loader import load_config
+        from nexus_core.config.xdg import resolve_xdg_paths
+
+        configured = load_config(resolve_xdg_paths()).scope.signing_secret
+    except Exception:  # noqa: BLE001 - sin config legible no hay secreto
+        return None
+    return str(configured or "").strip() or None
 
 
 def validate_scope_authentication(scope, store, tenant_id, trace_id=None, actor_id="runtime"):

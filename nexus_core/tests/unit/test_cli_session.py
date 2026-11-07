@@ -104,6 +104,35 @@ def test_prompt_is_minimal_and_engagement_stays_durable(tmp_path):
     assert named.engagement_id == "eng-prompt"
 
 
+def test_run_objective_renders_scope_error_instead_of_a_traceback(
+    session, monkeypatch, capsys
+):
+    """A governed scope that fails to authenticate must not kill the REPL."""
+    import nexus_core.cli.session as session_module
+    from nexus_core.scope import ScopeSignatureInvalid
+
+    async def no_plan(*_args, **_kwargs):
+        return None
+
+    async def reject(**_kwargs):
+        raise ScopeSignatureInvalid(
+            "eng-test",
+            "governed scope requires a signature and signing secret",
+            "eng-test",
+        )
+
+    monkeypatch.setattr(session, "_draft_engagement_plan", no_plan)
+    monkeypatch.setattr(session_module, "run_react_loop", reject)
+
+    assert session.run_objective("recon scanme.nmap.org") is None
+
+    captured = capsys.readouterr()
+    assert "Error de gobernanza" in captured.out
+    assert "NEXUS_SCOPE_SIGNING_SECRET" in captured.out
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_the_default_iteration_ceiling_is_twenty():
     """A deep engagement needs room: the default ceiling is 20 turns."""
     from nexus_core.agent.react_types import ReActConfig

@@ -25,7 +25,7 @@ from nexus_core.agent.react import ReActConfig, _operator_approval_gate, run_rea
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.kernel.models import Identity, RunContext
 from nexus_core.kernel.runtime import ExecutionContext, select_llm_client
-from nexus_core.scope import ScopeViolation
+from nexus_core.scope import ScopeSignatureInvalid, ScopeViolation
 
 from . import commands as commands_module
 from . import render
@@ -1173,6 +1173,52 @@ class OmniSession:
             self._update_status_bar()
         return plan
 
+    def _render_scope_failure(self, exc: BaseException) -> None:
+        """Show a governance rejection as a panel instead of a traceback.
+
+        The scope is authenticated inside ``run_react_loop``, after the run has
+        already been created. Letting :class:`ScopeViolation` escape turned an
+        expected, fail-closed refusal into 40 lines of Python on the operator's
+        screen (and killed the REPL). The refusal is rendered, the run ends and
+        the prompt stays available.
+        """
+        detail = str(getattr(exc, "reason", "") or exc)
+        if isinstance(exc, ScopeSignatureInvalid):
+            title = "Error de gobernanza: el scope no tiene una firma válida"
+            hints = [
+                (
+                    "El engagement existe, pero el runtime no tiene el secreto con"
+                    " el que se firmó."
+                ),
+                (
+                    "Exporta NEXUS_SCOPE_SIGNING_SECRET con ese secreto, o define"
+                    " scope.signing_secret en config.toml (omni --setup)."
+                ),
+                (
+                    "Para pruebas locales sin firma: NEXUS_SCOPE_MODE=lab omni"
+                    " (nunca con NEXUS_ENV=production)."
+                ),
+            ]
+        else:
+            title = "Error de gobernanza: el run fue rechazado"
+            hints = [
+                "Revisa el engagement activo y su ventana de validez con /scope.",
+                "Crea uno nuevo con: omni --new-engagement <nombre> --scope <dominios>.",
+            ]
+        if self._tui.use_tui:
+            from .tui.presentation import error_panel
+
+            self._tui.append_scrollback(
+                error_panel(
+                    title, [detail, "", *hints],
+                    width=self._tui.text_width, no_color=self.no_color,
+                ) + "\n\n"
+            )
+        else:
+            render.render_error(f"{title}: {detail}")
+            for hint in hints:
+                render.write(f"  {hint}")
+
     @routed
     def run_objective(self, objective: str) -> Any:
         """Run one objective through the durable ReAct loop, streaming events."""
@@ -1302,6 +1348,14 @@ class OmniSession:
                 result = asyncio.run(
                     self._with_cancel(_plan_then_run(), run_id, cancel_event=cancel_event)
                 )
+        except ScopeViolation as exc:
+            self._render_scope_failure(exc)
+            return None
+        except PermissionError as exc:
+            # ``load_engagement_scope`` reports a missing/foreign engagement as
+            # ``PermissionError``; it is still a refusal, not a crash.
+            self._render_scope_failure(exc)
+            return None
         except KeyboardInterrupt:
             self.store.append_run_event(
                 self.tenant_id, run_id, "react.cancel_requested", {"source": "cli-sigint"}

@@ -93,6 +93,33 @@ def test_env_precedence_and_config_provider(onboarding_env, monkeypatch):
     assert os.environ["NEXUS_DB_PATH"] == "/tmp/explicit.db"
 
 
+def test_empty_env_does_not_shadow_the_configured_scope_secret(
+    onboarding_env, monkeypatch
+):
+    """A ``NEXUS_SCOPE_SIGNING_SECRET=`` line in ``.env`` used to hide the TOML."""
+    import os
+
+    monkeypatch.setenv("NEXUS_SCOPE_SIGNING_SECRET", "")
+    config = OmniConfig()
+    config.scope.signing_secret = "from-config"
+
+    apply_environment(config, onboarding_env.paths)
+
+    assert os.environ["NEXUS_SCOPE_SIGNING_SECRET"] == "from-config"
+
+
+def test_explicit_scope_secret_still_wins(onboarding_env, monkeypatch):
+    import os
+
+    monkeypatch.setenv("NEXUS_SCOPE_SIGNING_SECRET", "from-env")
+    config = OmniConfig()
+    config.scope.signing_secret = "from-config"
+
+    apply_environment(config, onboarding_env.paths)
+
+    assert os.environ["NEXUS_SCOPE_SIGNING_SECRET"] == "from-env"
+
+
 def test_unwritable_recovery_does_not_crash(onboarding_env):
     paths = onboarding_env.paths
     paths.ensure_dirs()

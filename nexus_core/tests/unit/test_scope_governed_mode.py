@@ -42,6 +42,26 @@ def test_development_keeps_lab_mode(monkeypatch):
     assert events == ['scope.unsigned_accepted']
 
 
+def test_signing_secret_falls_back_to_the_configured_value(monkeypatch):
+    """A worker that skipped ``apply_environment`` still authenticates."""
+    from types import SimpleNamespace
+
+    from nexus_core.config import loader
+    from nexus_core.kernel.scope_loader import scope_signing_secret
+
+    monkeypatch.delenv("NEXUS_SCOPE_SIGNING_SECRET", raising=False)
+    monkeypatch.setattr(
+        loader, "load_config",
+        lambda *a, **k: SimpleNamespace(
+            scope=SimpleNamespace(signing_secret="from-config")
+        ),
+    )
+    assert scope_signing_secret() == "from-config"
+
+    monkeypatch.setenv("NEXUS_SCOPE_SIGNING_SECRET", "from-env")
+    assert scope_signing_secret() == "from-env"
+
+
 def test_worker_bootstrap_loads_secrets_from_keyring(monkeypatch, tmp_path):
     from nexus_core.config import bootstrap, secrets
     monkeypatch.delenv('NEXUS_SCOPE_SIGNING_SECRET', raising=False)

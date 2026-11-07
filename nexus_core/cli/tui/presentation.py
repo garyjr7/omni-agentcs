@@ -6,6 +6,7 @@ import io
 import json
 import re
 import textwrap
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -266,6 +267,28 @@ def result_panel(body: str, *, width: int = 100,
     content = Text.from_ansi(str(body or ''))
     panel = Panel(
         content, box=box.SQUARE, border_style=THEME.result_border_style,
+        style=THEME.result_panel_style, padding=(1, 2), expand=True,
+        width=max(20, int(width)),
+    )
+    return render_rich(panel, width=max(20, int(width)), no_color=no_color)
+
+
+def error_panel(title: str, lines: Sequence[str], *, width: int = 100,
+                no_color: bool = False) -> str:
+    """Frame a governance refusal as a red, actionable panel.
+
+    A rejected scope is an expected operator error, not a crash: it gets the
+    same quiet surface as a result, in red, with the remedy spelled out. The
+    REPL keeps running afterwards, so the traceback never reaches the screen.
+    """
+    body = Text()
+    body.append(f"{clean_text(title)}\n", style=f"bold {THEME.error}")
+    for index, line in enumerate(lines):
+        if index:
+            body.append("\n")
+        body.append(clean_text(line), style=THEME.overlay_text)
+    panel = Panel(
+        body, box=box.SQUARE, border_style=THEME.error,
         style=THEME.result_panel_style, padding=(1, 2), expand=True,
         width=max(20, int(width)),
     )
