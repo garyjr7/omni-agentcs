@@ -47,6 +47,11 @@ jobs:
             BASE="HEAD~1"
           fi
           make typecheck TYPECHECK_BASE="$BASE"
+      - name: Typecheck security core (V1-9, estricto y bloqueante)
+        # No diff base: kernel, tools and scope are checked in full on every
+        # push/PR. It reports 0 errors in 181 files (2026-11-10); if it goes
+        # red, the release does not ship.
+        run: make typecheck-strict
 
   coverage:
     runs-on: ubuntu-latest

@@ -4,6 +4,16 @@ Fecha de medición: **2026-11-10**. Commit auditado: `0497991` (`main`, árbol l
 Alcance: auditoría interna de release + benchmark contra PentAGI con fuentes públicas.
 No se hizo push, tag ni cambio de versión durante esta auditoría.
 
+## Actualización rc3 (2026-11-10, posterior a esta auditoría)
+
+- Versión bumped a `3.0.0rc3` en `pyproject.toml` y `nexus_core/cli/main.py`.
+- `make typecheck-strict` cableado como gate bloqueante en `ci.yml` (0 errores
+  en 181 ficheros). El checklist de release se reescribió para rc3.
+- Siguen pendientes y **sin ejecutar**: decisión de licencia, push y tag. Por
+  tanto, los bloqueadores 1 y 3 de este informe siguen abiertos hasta que el
+  operador autorice el release; el bloqueador 2 queda resuelto en configuración,
+  pero no verificado en un run remoto.
+
 ## 0. Veredicto ejecutivo
 
 **¿Listo para publicarse como v3.0.0? NO.** Está listo para un **RC privado / alpha

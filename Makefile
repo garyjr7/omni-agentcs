@@ -54,13 +54,10 @@ typecheck:
 	$(PYTHON) -m mypy $$files
 
 # Full typing measurement for the security-critical core: no diff base, so every
-# file in these packages is checked on every run. It is NOT a CI gate yet: on
-# 2026-11-06 it reports 84 errors in 21 files (179 checked, 4.4 s) that the
-# incremental gate never saw, because those files have not changed since it
-# existed. 56 are [union-attr] on the Sliver/Metasploit clients being `X | None`
-# and 6 are argv [list-item] in nopac (a `str | None` in argv is a real
-# TypeError waiting for a missing flag). Wiring a gate that is red is
-# decoration, so the ci.yml job lands in the change that takes the count to 0.
+# file in these packages is checked on every run. Blocking in CI since
+# 3.0.0rc3: on 2026-11-10 it reports 0 errors in 181 files. The 84 errors the
+# incremental gate never saw (Sliver/Metasploit `X | None`, nopac argv) were
+# fixed before wiring this gate; a red gate would have been decoration.
 TYPECHECK_STRICT_PATHS ?= nexus_core/kernel nexus_core/tools nexus_core/scope
 typecheck-strict:
 	$(PYTHON) -m mypy $(TYPECHECK_STRICT_PATHS)
