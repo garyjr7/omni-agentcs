@@ -705,6 +705,35 @@ def _action_target(safe: dict[str, Any]) -> str:
     return ''
 
 
+#: Programs that only prepare the operator's workspace: writing an ``.rc``,
+#: editing ``memory.json`` with ``jq``, creating a directory. They are evidence
+#: of how the run worked, not of what it did to the target, so the transcript
+#: names them as one generic step instead of printing the whole command.
+_PLUMBING_PROGRAM_RE = re.compile(
+    r'^\s*(?:cd|cat|printf|echo|jq|mv|cp|mkdir|chmod|tee|touch|rm|grep|sed|'
+    r'awk|head|tail|wc|export)\b',
+    re.IGNORECASE,
+)
+_PLUMBING_SPLIT = re.compile(r'&&|;|\|')
+
+
+def is_plumbing_command(command: Any) -> bool:
+    """Whether a shell command is bookkeeping rather than a target action.
+
+    Only a chain whose **every** segment is plumbing is hidden: one ``nmap``
+    after the ``jq`` keeps the real command visible. The command is not lost:
+    the durable tool result still carries it and the audit trail records it.
+    """
+    text = ' '.join(clean_text(str(command or '')).split())
+    if not text:
+        return False
+    # A heredoc body is data for the file being written, not a second command:
+    # judge only the ``cat > file <<'EOF'`` header, not its payload.
+    header = re.split(r"<<-?\s*['\"]?\w+", text, maxsplit=1)[0]
+    segments = [part.strip() for part in _PLUMBING_SPLIT.split(header) if part.strip()]
+    return bool(segments) and all(_PLUMBING_PROGRAM_RE.match(part) for part in segments)
+
+
 def tool_call_line(tool_id: str, arguments: Any, *, width: int | None = None) -> str:
     """One plain line: ``> Ejecutando nmap en 10.0.0.1...``
 
@@ -721,6 +750,8 @@ def tool_call_line(tool_id: str, arguments: Any, *, width: int | None = None) ->
     if action is None:
         action = f'Ejecutando {_short_tool_name(tool)}'
     target = _action_target(safe)
+    if tool == 'nexus.shell.exec' and is_plumbing_command(safe.get('command')):
+        target = 'preparando el entorno'
     return _fit_line(f'> {action}' + (f' en {target}' if target else '') + '...', width)
 
 

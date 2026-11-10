@@ -82,6 +82,29 @@ def test_invocation_line_keeps_the_secret_redaction():
     assert text == "> Probando credenciales en 10.0.0.5..."
 
 
+def test_internal_plumbing_is_named_as_one_step():
+    command = (
+        "cd ~/Desktop/salas/eng && jq '.engagement.lhost = \"10.0.0.5\"' "
+        "memory.json > memory.new && mv memory.new memory.json && echo 'ok'"
+    )
+    text = _plain(format_tool_invocation("nexus.shell.exec", {"command": command}))
+    assert text == "> Ejecutando comando en preparando el entorno..."
+    assert "jq" not in text and "memory.json" not in text
+
+
+def test_plumbing_heredoc_hides_the_rc_payload():
+    command = "cd ~/eng && cat > exploit.rc <<'EOF'\nuse exploit/windows/smb/ms17_010\nset RHOSTS 10.0.0.5\nEOF"
+    text = _plain(format_tool_invocation("nexus.shell.exec", {"command": command}))
+    assert text == "> Ejecutando comando en preparando el entorno..."
+    assert "exploit.rc" not in text
+
+
+def test_a_real_command_after_plumbing_stays_visible():
+    command = "jq '.a=1' memory.json && nmap -sV -p 445 10.0.0.5"
+    text = _plain(format_tool_invocation("nexus.shell.exec", {"command": command}))
+    assert "nmap -sV -p 445 10.0.0.5" in text
+
+
 def test_nmap_flags_cannot_leak_a_credential():
     text = _plain(format_tool_invocation(
         "nexus.recon.nmap",
