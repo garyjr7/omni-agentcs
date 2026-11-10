@@ -650,16 +650,21 @@ def objective_is_micro_task(objective: Any) -> bool:
     contract, so the closure gate must not hold it.
 
     The signal is the limiter (``solo``/``solamente``/``únicamente``/``only``/
-    ``just``) or ``NEXUS_MICRO_TASK``. Evidence checks (fabricated citations)
-    still apply: this only relaxes the *scope* objections, never the honest
-    ones.
+    ``just``), a bounded order (one operation plus explicit ports/URL, see
+    :func:`~nexus_core.agent.engagement_plan.is_bounded_order`) or
+    ``NEXUS_MICRO_TASK``. Evidence checks (fabricated citations) still apply:
+    this only relaxes the *scope* objections, never the honest ones.
     """
+    from .engagement_plan import is_bounded_order
+
     raw = os.getenv(MICRO_TASK_ENV, "").strip().lower()
     if raw in _MICRO_TASK_TRUE:
         return True
     if raw in _MICRO_TASK_FALSE:
         return False
-    return bool(_MICRO_TASK_LIMITER_RE.search(str(objective or "")))
+    return bool(_MICRO_TASK_LIMITER_RE.search(str(objective or ""))) or is_bounded_order(
+        objective
+    )
 
 
 def _running_background_tasks(

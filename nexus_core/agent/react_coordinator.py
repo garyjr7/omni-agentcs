@@ -1984,11 +1984,19 @@ class ReActCoordinator:
         self.engagement_plan_text = prompt_block(plan)
 
     def _plan_required_missing(self) -> bool:
-        """Whether this turn must refuse an attack tool until there is a plan."""
+        """Whether this turn must refuse an attack tool until there is a plan.
+
+        A bounded order ("escanea los puertos 80 y 443") is not an engagement:
+        demanding a plan for it is what made the measured run scan the whole
+        host and then deadlock on the report TODO.
+        """
+        from .react_support import objective_is_micro_task
+
         return bool(
             self.config.require_plan_first
             and self.engagement_id
             and self.engagement_plan is None
+            and not objective_is_micro_task(self.objective)
         )
 
     def _flag_todos_pending(self) -> bool:

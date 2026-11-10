@@ -21,6 +21,21 @@ def test_a_limiter_marks_the_objective_as_a_micro_task() -> None:
     assert not objective_is_micro_task("compromete el DC y captura ambas flags")
 
 
+def test_a_bounded_scan_order_is_a_micro_task_without_a_limiter() -> None:
+    # Measured failure: this exact objective got a 5-TODO engagement plan.
+    assert objective_is_micro_task(
+        "Escanea los puertos 80 y 443 de scanme.nmap.org usando nmap."
+    )
+    assert objective_is_micro_task("escanea estos 2 puertos")
+    assert objective_is_micro_task("escanea estos 2 puertos de 10.0.0.5")
+    assert objective_is_micro_task("consulta https://lab.local/login")
+    # Campaigns keep the engagement reading even when they name a parameter.
+    assert not objective_is_micro_task("haz un pentest completo de 10.0.0.5")
+    assert not objective_is_micro_task(
+        "escanea los puertos 80 y 443 y luego captura las flags"
+    )
+
+
 def test_pending_todos_do_not_block_a_micro_task() -> None:
     common = dict(
         plan=_plan(),

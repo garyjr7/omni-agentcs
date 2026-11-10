@@ -47,6 +47,19 @@ def test_prompt_includes_blackboard_facts(catalog):
     assert "[service] 10.0.0.5:21/tcp" in prompt
 
 
+def test_a_bounded_order_replaces_the_plan_first_order(catalog):
+    # Measured failure (2026-11-10): the plan-first order made a two-port scan
+    # pay for an engagement plan whose report TODO could not be closed.
+    prompt = render_system_prompt(
+        catalog=catalog,
+        objective="Escanea los puertos 80 y 443 de scanme.nmap.org usando nmap.",
+        engagement_id="eng-1",
+        scope_summary="engagement=eng-1",
+    )
+    assert "ORDEN DIRECTA" in prompt
+    assert "PLAN-FIRST (OBLIGATORIO)" not in prompt
+
+
 def test_prompt_requires_full_tcp_recon(catalog):
     prompt = _prompt(catalog)
     assert "METODOLOGÍA DE RECONOCIMIENTO" in prompt

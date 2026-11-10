@@ -14,6 +14,8 @@ from nexus_core.kernel.credentials import (
     credential_lines,
 )
 
+from .engagement_plan import is_bounded_order
+
 #: The default policy of every run. It is *always* rendered (it is the policy
 #: of the loop, not a capability of a subagent). It replaces the old "the whole
 #: Cyber Kill Chain is mandatory" philosophy, which made a run asked to *scan
@@ -167,6 +169,22 @@ ENGAGEMENT_PLAN_RULE_PROMPT = (
     "  se trabajan. Si uno pedido es inalcanzable tras 3 intentos, ciérralo con\n"
     "  update_plan (status=\"failed\" + reason). Los TODOs con fact_types los\n"
     "  palomea SOLO la evidencia; nunca los declares done.\n"
+)
+
+#: A direct order: one concrete, bounded action. Measured origin (2026-11-10,
+#: ``run_5b1c20c60df74a48b6359c0500498fdb``): "escanea los puertos 80 y 443" was
+#: planned as an engagement, the report TODO stayed open and the run burned
+#: ~100k tokens re-scanning before falling back to ``shell.exec``. This replaces
+#: the PLAN-FIRST order only for that shape; an engagement still gets its plan.
+DIRECT_ORDER_RULE_PROMPT = (
+    "- ORDEN DIRECTA (NO es un engagement): el usuario pidió UNA acción\n"
+    "  concreta y acotada. NO llames a nexus.orchestrator.create_plan ni\n"
+    "  trabajes los TODOs de loot/ENGAGEMENT_PLAN.md: es contexto de otro run.\n"
+    "  Ejecuta ESA acción con la tool nativa y sus parámetros exactos (target,\n"
+    "  puertos, URL): pasa los puertos pedidos en `flags` (p. ej. `-p 80,443`),\n"
+    "  no escanees los 1000 por defecto si el usuario nombró puertos. Enseña el\n"
+    "  resultado y cierra con task_complete. No amplíes el alcance: ni puertos\n"
+    "  que nadie pidió, ni fases siguientes.\n"
 )
 
 #: The pivot order. Names ``nexus.post.verify_route``, so it is appended only
@@ -910,7 +928,11 @@ def render_system_prompt(
     )
     passive_wait_rule = PASSIVE_WAIT_RULE_PROMPT
     plan_rule = (
-        ENGAGEMENT_PLAN_RULE_PROMPT
+        (
+            DIRECT_ORDER_RULE_PROMPT
+            if is_bounded_order(objective)
+            else ENGAGEMENT_PLAN_RULE_PROMPT
+        )
         if "nexus.orchestrator.create_plan" in catalog
         else ""
     )

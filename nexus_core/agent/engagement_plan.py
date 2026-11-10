@@ -1045,6 +1045,69 @@ _TARGET_RE = re.compile(
 )
 
 
+#: A limiter plus explicit narrow parameters is the strongest signal that the
+#: user asked for one bounded action ("solo escanea puertos", "only scan the top
+#: 100 ports").
+_BOUNDED_LIMITER_RE = re.compile(
+    r"\b(sol[oa]mente|s[oó]lo|[uú]nicamente|only|just)\b", re.IGNORECASE
+)
+
+#: Explicit narrow parameters: a port list ("puertos 80 y 443", "2 puertos"),
+#: a single URL, or ``-p``. A bare target is not enough: "escanea 10.10.10.5 y
+#: enumera los servicios" is a small engagement, not one bounded action.
+_BOUNDED_PARAM_RE = re.compile(
+    r"\b(?:puertos?|ports?)\b[^.;\n]{0,30}\d"
+    r"|\b\d{1,5}\b[^.;\n]{0,12}\b(?:puertos?|ports?)\b"
+    r"|(?<![\w-])-p\s*[\d,]"
+    r"|https?://\S+",
+    re.IGNORECASE,
+)
+
+#: One concrete operation, not a campaign. Deliberately short: a verb that does
+#: not appear here falls back to the engagement reading (a plan), never the
+#: other way around.
+_SINGLE_OPERATION_RE = re.compile(
+    r"\b(?:escanea|escanear|escaneo|scan|consulta|consultar|petici[oó]n|"
+    r"request|verifica|verificar|comprueba|check|resuelve|resolver|descarga|"
+    r"download)\b",
+    re.IGNORECASE,
+)
+
+#: Campaign words: they keep the objective in engagement territory even when it
+#: names a port list ("escanea los puertos y luego captura las flags").
+_CAMPAIGN_RE = re.compile(
+    r"\b(?:compromete|comprometer|explot\w*|escala\w*|privesc|root|"
+    r"flags?|banderas?|salas?|rooms?|complet[oa]s?|aut[oó]nom\w*|"
+    r"engagement|pentest|auditor[ií]a|todas?|cadena)\b",
+    re.IGNORECASE,
+)
+
+
+def is_bounded_order(objective: Any) -> bool:
+    """Whether ``objective`` is one concrete action, not an engagement.
+
+    Measured bug (2026-11-10, ``run_5b1c20c60df74a48b6359c0500498fdb``): the
+    objective "Escanea los puertos 80 y 443 de scanme.nmap.org usando nmap" was
+    planned as a full engagement before the first action (planner call + 5
+    TODOs). The scan succeeded, the ``report-results`` TODO stayed open and
+    ``task_complete`` was refused until the run burned ~100k tokens, scanned
+    the whole host twice and fell back to ``shell.exec``.
+
+    A campaign word always wins, so a room that happens to name ports still gets
+    its plan. Without a campaign word, the signal is a single-operation verb
+    plus an explicit narrow parameter (port list, URL, ``-p``). Questions are
+    handled later by :func:`is_engagement_objective`, not here.
+    """
+    text = " ".join(str(objective or "").lower().split())
+    if not text:
+        return False
+    if _CAMPAIGN_RE.search(text):
+        return False
+    if _BOUNDED_LIMITER_RE.search(text):
+        return True
+    return bool(_SINGLE_OPERATION_RE.search(text) and _BOUNDED_PARAM_RE.search(text))
+
+
 def is_engagement_objective(objective: str) -> bool:
     """Whether ``objective`` asks for work against a target (so it needs a plan).
 
@@ -1055,6 +1118,8 @@ def is_engagement_objective(objective: str) -> bool:
     """
     text = " ".join(str(objective or "").lower().split())
     if not text:
+        return False
+    if is_bounded_order(text):
         return False
     asks = any(marker in text for marker in _QUESTION_MARKERS)
     acts = any(marker in text for marker in _ACTION_MARKERS)
@@ -1129,6 +1194,7 @@ __all__ = [
     "TODO_PENDING",
     "TODO_STATUSES",
     "Todo",
+    "is_bounded_order",
     "is_engagement_objective",
     "load_plan",
     "load_plan_for",
