@@ -250,3 +250,20 @@ def test_record_fact_without_engagement_fails_closed(board):
 def test_definitions_need_no_scope():
     assert record_fact_definition().scope_required is False
     assert query_facts_definition().scope_required is False
+
+
+def test_record_fact_accepts_a_plain_string_and_wraps_it(board):
+    """A model that writes prose loses no turn: the string becomes ``detail``."""
+    from nexus_core.kernel.schema_validation import validate
+
+    arguments = {
+        "fact_type": "service",
+        "key": "ssh-22",
+        "value": "SSH abierto en 22",
+    }
+    validate(arguments, record_fact_definition().input_schema)
+    _, store = board
+    result = asyncio.run(record_fact_handler(arguments, _context(store)))
+    assert result.verified is True
+    facts = asyncio.run(query_facts_handler({}, _context(store))).output["facts"]
+    assert facts[0]["value"] == {"detail": "SSH abierto en 22"}

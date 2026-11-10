@@ -54,6 +54,7 @@ from .react_types import (
     SUBAGENT_SOFT_LIMIT_EVENT_TYPE,
     OBJECTIVE_COMPLETE_EVENT_TYPE,
     MAX_CONSECUTIVE_TOOL_FAILURES,
+    MAX_REPEATED_FAILURE_STREAK,
     MAX_FREE_ARGUMENT_REJECTIONS,
     MAX_TOOL_FAILURES_BEFORE_UNAVAILABLE,
     RESURRECTING_FACT_TYPES,
@@ -953,6 +954,11 @@ class ReActCoordinator:
         self.findings = []
         self.question = None
         self.consecutive_failures = 0
+        #: Same tool + same error in a row: the route is broken *as invoked*,
+        #: so the run stops instead of burning turns on it.
+        self.repeated_failure_tool: str | None = None
+        self.repeated_failure_detail = ""
+        self.repeated_failure_streak = 0
         self.scope_denial_target = None
         self.scope_denial_streak = 0
         self.governance_denial_streak = 0
@@ -4816,6 +4822,22 @@ class ReActCoordinator:
             consecutive_failures=self.consecutive_failures,
             error=self.observation.get("error"),
         )
+        repeated_failure = self._repeated_failure_summary()
+        if repeated_failure:
+            self.status = STATUS_FAILED
+            self.final_summary = repeated_failure
+            self.store.append_run_event(
+                self.tenant_id,
+                self.run_id,
+                "react.repeated_failure",
+                {
+                    "iteration": self.iteration,
+                    "tool_id": self.repeated_failure_tool,
+                    "error": self.repeated_failure_detail,
+                    "streak": self.repeated_failure_streak,
+                },
+            )
+            return Transition.STOP
         if not _keep_going_after_failures(
             self.subagent,
             self.unavailable_tools,
@@ -4829,6 +4851,91 @@ class ReActCoordinator:
             self.consecutive_failures = 0
         self.last_tool_elapsed_ms = _elapsed_ms(tool_started)
         return Transition.STOP if scope_aborted else Transition.READY
+
+    def _repeated_failure_summary(self) -> str | None:
+        """Stop after the same tool fails repeatedly with the same error.
+
+        Third-party guardrail requested on 2026-11-07 after a 19-minute run:
+        ``nexus.recon.nmap`` returned ``nmap xml is empty`` on every call (the
+        OCI sandbox has no ``CAP_NET_RAW`` for ``-sS``), the model tried the
+        shell as a workaround, and the run burned 14 iterations and ~103k
+        tokens. Retiring the tool after three failures did not stop it because
+        ``omni`` still had the rest of the catalog, which is by design; the
+        missing signal is "this exact error already happened the last turns".
+        The tests pin that two identical failures must never close a run (they
+        can still be transient) and that three retire the tool; this brake is
+        the next step.
+
+        Only execution turns count (a batch is ambiguous about which failure
+        is "last"), and a determinate answer such as ``command_failed`` resets
+        the streak: a wrong password is not a broken tool. Policy refusals
+        (``scope_denied``, ``vector_locked``, …) are excluded on purpose: they
+        are not a broken tool but a governance decision, and they already have
+        their own brake. The threshold is 4 rather than 2 because the reviewed
+        contract pins that two failures are transient and that three retire the
+        tool / arm the vector lock, which is what the fourth call would hit; the
+        case this covers is a model varying arguments (different profiles,
+        ports or paths) so the vector lock never matches while the error never
+        changes.
+        """
+        if isinstance(self.action, ToolCallBatch):
+            return None
+        observation = self.observation or {}
+        outcome = str(observation.get("outcome") or "")
+        # A success (or a determinate answer) breaks the streak before any other
+        # filter: it may not carry an invocation_id either.
+        if observation.get("success") or outcome in (
+            DETERMINATE_NON_FAILURE_OUTCOMES | {"command_failed"}
+        ):
+            self.repeated_failure_tool = None
+            self.repeated_failure_detail = ""
+            self.repeated_failure_streak = 0
+            return None
+        if outcome in {
+            "scope_denied",
+            "vector_locked",
+            "tool_unavailable",
+            "subagent_tool_denied",
+            "unknown_tool",
+            "plan_required",
+            "reviewer_denied",
+        }:
+            return None
+        # Only a real invocation can fail: a refusal has no invocation_id.
+        if not observation.get("invocation_id"):
+            return None
+        tool_id = str(getattr(self.action, "tool_id", "") or "")
+        payload = observation.get("output")
+        detail = ""
+        if isinstance(payload, dict):
+            detail = str(payload.get("error") or payload.get("reason") or "")
+        detail = detail or str(
+            observation.get("error")
+            or observation.get("verification_method")
+            or outcome
+        )
+        detail = " ".join(detail.split())[:300]
+        if (
+            tool_id
+            and tool_id == self.repeated_failure_tool
+            and detail == self.repeated_failure_detail
+        ):
+            self.repeated_failure_streak += 1
+        else:
+            self.repeated_failure_tool = tool_id
+            self.repeated_failure_detail = detail
+            self.repeated_failure_streak = 1
+        # The reviewed contract handles two (transient) and three (retire the
+        # tool / lock the vector). This brake catches the fourth identical
+        # error, which the vector lock misses when the arguments vary.
+        if self.repeated_failure_streak < MAX_REPEATED_FAILURE_STREAK:
+            return None
+        return (
+            f"herramienta '{tool_id}' falló {self.repeated_failure_streak} veces "
+            f"seguidas con el mismo error ({detail or 'sin detalle'}); abortando "
+            "para no gastar tokens. Prueba otros argumentos, otra tool del "
+            "catálogo o registra un barrier y pivota."
+        )
 
     def _note_tool_failure(self, tool_id: str, *, cause: str = "failure") -> int:
         """Count one *consecutive* tool failure and retire it once exhausted (B3).

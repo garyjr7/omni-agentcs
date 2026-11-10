@@ -32,7 +32,11 @@ def record_fact_definition(tenant_id: str = "system") -> ToolDefinition:
             "properties": {
                 "fact_type": {"type": "string", "enum": list(FACT_TYPES)},
                 "key": {"type": "string", "minLength": 1, "maxLength": 512},
-                "value": {"type": "object"},
+                # A model that sends prose as ``value`` used to be rejected by
+                # the schema before the handler could normalize it, costing a
+                # whole iteration (rerun of 2026-11-07: ``is not of type
+                # 'object'``). The handler wraps a string as ``{"detail": ...}``.
+                "value": {"type": ["object", "string"]},
                 "source": {"type": "string", "maxLength": 128},
                 "verified": {"type": "boolean"},
             },
@@ -98,7 +102,15 @@ async def record_fact_handler(arguments: dict, context: RunContext) -> ToolResul
     key = str(arguments.get("key") or "").strip()
     raw_value = arguments.get("value")
     # Bind once: calling ``get`` twice in a conditional defeats static narrowing.
-    value: dict[str, Any] = raw_value if isinstance(raw_value, dict) else {}
+    # A bare string is still a fact: wrap it instead of dropping it (the schema
+    # accepts it since 2026-11-07) so a model that writes prose does not lose
+    # the turn to ``is not of type 'object'``.
+    if isinstance(raw_value, str):
+        value: dict[str, Any] = {"detail": raw_value.strip()} if raw_value.strip() else {}
+    elif isinstance(raw_value, dict):
+        value = raw_value
+    else:
+        value = {}
     if fact_type == "barrier":
         # R6: a barrier closes a branch only if the run actually tried the
         # vector. The model writes this fact *after* a failure, so by default it

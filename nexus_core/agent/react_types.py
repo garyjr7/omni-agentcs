@@ -7,6 +7,13 @@ from nexus_core.kernel.domain_dto import ApprovalDecisionDTO
 
 DEFAULT_AGENT_ID = "omni"
 MAX_CONSECUTIVE_TOOL_FAILURES = 3
+#: Identical ``(tool, error)`` failures in a row before the run stops. Three is
+#: already handled by tool retirement and the vector lock (and the tests pin
+#: that two are transient), so the uncovered case is the fourth: a model that
+#: varies the arguments (profile, ports, path) keeps the vector lock from
+#: matching while the underlying error never changes (nmap without CAP_NET_RAW,
+#: measured 2026-11-07: 14 iterations, ~103k tokens, zero new facts).
+MAX_REPEATED_FAILURE_STREAK = 4
 #: R7: argument rejections that do not count towards the pivot. A malformed call
 #: (a query string in ``form_url``, a missing ``^PASS^``, a forbidden nmap flag)
 #: is the model's mistake, not a verdict from the target, and must not close the

@@ -14,6 +14,7 @@ from nexus_core.kernel.models import Identity, RunContext
 from nexus_core.kernel.sandbox import SandboxResult
 from nexus_core.tools.handlers import nmap as nmap_module
 from nexus_core.tools.handlers.nmap import (
+    degrade_unprivileged_flags,
     nmap_definition,
     nmap_handler,
     validate_and_canonicalize_flags,
@@ -492,3 +493,67 @@ def test_a_timed_out_fallback_keeps_the_primary_scan():
     assert result.evidence["fallback"]["timed_out"] is True
     assert result.evidence["fallback"]["error"] == "fallback scan failed"
     assert result.verified is True
+
+
+# ------------------------------------- privilegios: el sandbox OCI no tiene root
+PRIVILEGE_STDERR = (
+    "You requested a scan type which requires root privileges.\nQUITTING!\n"
+)
+
+
+def test_unprivileged_flags_replace_syn_scan_and_drop_os_detection():
+    flags, warnings = degrade_unprivileged_flags(
+        ["-sS", "-O", "-Pn", "-p-"], unprivileged=True
+    )
+    assert flags == ["-sT", "-Pn", "-p-"]
+    assert any("CAP_NET_RAW" in warning for warning in warnings)
+
+
+def test_privileged_flags_are_left_untouched():
+    flags, warnings = degrade_unprivileged_flags(["-sS"], unprivileged=False)
+    assert flags == ["-sS"] and warnings == set()
+
+
+def test_oci_sandbox_never_asks_nmap_for_a_syn_scan():
+    xml_text = _scan_xml(["22"])
+    with (
+        mock.patch.object(nmap_module, "OCISandbox", FakeSandbox),
+        _fake_sandbox(SandboxResult(0, xml_text, "")) as sandbox,
+    ):
+        result = _run({"target": "10.64.128.102", "flags": ["-sS", "-O"]})
+    argv = sandbox.calls[0][0]
+    assert "-sS" not in argv and "-sT" in argv and "-O" not in argv
+    assert result.verified is True
+    assert any("-sT" in warning for warning in result.evidence["warnings"])
+
+
+def test_oci_sandbox_refuses_udp_instead_of_returning_empty_xml():
+    with (
+        mock.patch.object(nmap_module, "OCISandbox", FakeSandbox),
+        _fake_sandbox(SandboxResult(0, "", "")) as sandbox,
+    ):
+        result = _run({"target": "10.64.128.102", "flags": ["-sU"]})
+    assert result.verified is False
+    assert result.verification_method == "nmap_privileges_required"
+    assert "CAP_NET_RAW" in result.output["error"]
+    assert sandbox.calls == []
+
+
+def test_a_syn_scan_without_privileges_is_retried_as_a_connect_scan():
+    # The local nmap may lack the setuid helper too: the empty stdout must not be
+    # reported as "the host has no ports".
+    with _sequence_sandbox(
+        SandboxResult(1, "", PRIVILEGE_STDERR), SandboxResult(0, _scan_xml(["22"]), "")
+    ) as sandbox:
+        result = _run({"target": "10.64.128.102", "flags": ["-sS", "-Pn"]})
+    assert result.verified is True
+    assert "-sS" not in sandbox.calls[1][0] and "-sT" in sandbox.calls[1][0]
+    assert any("-sT" in warning for warning in result.evidence["warnings"])
+
+
+def test_xml_parse_failure_reports_the_stderr_that_explains_it():
+    with _fake_sandbox(SandboxResult(1, "", PRIVILEGE_STDERR)):
+        result = _run({"target": "10.64.128.102"})
+    assert result.verification_method == "nmap_xml_parse_failed"
+    assert "requires root privileges" in result.output["error"]
+    assert "requires root privileges" in result.output["stderr"]

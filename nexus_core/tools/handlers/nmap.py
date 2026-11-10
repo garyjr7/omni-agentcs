@@ -8,7 +8,7 @@ from typing import Any
 
 from nexus_core.kernel.errors import ToolInputError
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
-from nexus_core.kernel.sandbox import SandboxResult, sandbox_for_environment
+from nexus_core.kernel.sandbox import OCISandbox, SandboxResult, sandbox_for_environment
 from nexus_core.tools.parsers.nmap import parse_nmap_xml
 
 # Cada entrada: flag -> (nivel_ruido, requiere_valor)
@@ -115,6 +115,13 @@ NMAP_FALLBACK_TIMEOUT_SECONDS = 180
 #: ``output.scan`` + ``raw_xml_sha256`` carry the whole finding, so the raw text
 #: is kept only as a short forensic prefix (H1 of the RUN7 report).
 NMAP_STDOUT_MAX_BYTES = 500
+
+#: stderr fragment nmap prints when it cannot open a raw socket. The OCI sandbox
+#: runs as UID 65532 with every capability dropped, so ``-sS`` exits 1 *before*
+#: writing any XML (measured 2026-11-07: 0 bytes on stdout, "You requested a scan
+#: type which requires root privileges. QUITTING!"). That empty stdout is what
+#: the loop reported as ``nmap xml is empty``, with no hint about the cause.
+NMAP_PRIVILEGE_ERROR_MARKERS = ("requires root privileges", "root privileges", "operation not permitted")
 
 # Perfiles de reconocimiento: nombre -> (flags base, timeout recomendado).
 # El perfil se expande server-side, así que el modelo nunca inventa flags: pide
@@ -317,6 +324,49 @@ def merge_scans(primary: Any, fallback: Any) -> tuple[Any, list[dict[str, Any]]]
     return merged, recovered
 
 
+def degrade_unprivileged_flags(
+    flags: list[str], *, unprivileged: bool
+) -> tuple[list[str], set[str]]:
+    """Replace the scan types an unprivileged sandbox cannot run.
+
+    ``-sS`` needs ``CAP_NET_RAW`` and ``-O`` needs root; the OCI sandbox drops
+    every capability and runs as an unprivileged user, so both make nmap quit
+    before emitting XML. ``-sT`` gives the same open/closed answer with a full
+    TCP connection, and dropping ``-O`` costs only the OS guess (which the
+    engine never used as evidence). ``-sU`` has no unprivileged equivalent and
+    is refused by the caller instead of being silently dropped.
+    """
+    if not unprivileged:
+        return list(flags), set()
+    degraded: list[str] = []
+    warnings: set[str] = set()
+    for flag in flags:
+        if flag == "-sS":
+            degraded.append("-sT")
+            warnings.add(
+                "SYN scan (-sS) requires CAP_NET_RAW: used TCP connect (-sT) instead"
+            )
+        elif flag == "-O":
+            warnings.add("OS detection (-O) requires root: dropped in this sandbox")
+        else:
+            degraded.append(flag)
+    return degraded, warnings
+
+
+def is_privilege_failure(result: SandboxResult) -> bool:
+    """Whether nmap refused to start because it had no raw-socket privileges."""
+    if str(result.stdout or "").strip():
+        return False
+    stderr = str(result.stderr or "").lower()
+    return any(marker in stderr for marker in NMAP_PRIVILEGE_ERROR_MARKERS)
+
+
+def stderr_tail(result: SandboxResult, lines: int = 3) -> str:
+    """Last ``lines`` non-empty stderr lines, for the model-facing error."""
+    text = [line.strip() for line in str(result.stderr or "").splitlines() if line.strip()]
+    return "\n".join(text[-lines:])[-1000:]
+
+
 def truncate_stdout(
     stdout: str, limit: int = NMAP_STDOUT_MAX_BYTES
 ) -> tuple[str, bool]:
@@ -465,10 +515,42 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
             NMAP_MAX_TIMEOUT_SECONDS - NMAP_FALLBACK_TIMEOUT_SECONDS - 15,
         )
 
-    argv = ["nmap", *flags, "-oX", "-", target]
     workspace_root = os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd())
     sandbox = sandbox_for_environment(workspace_root, allowed_programs=NMAP_ALLOWED_PROGRAMS)
+    unprivileged = isinstance(sandbox, OCISandbox)
+    if unprivileged and "-sU" in flags:
+        # A UDP scan needs a raw socket; no flag makes it work with every
+        # capability dropped. Say so instead of returning an empty XML that
+        # reads as "the host has no ports".
+        return ToolResult(
+            output={
+                "error": (
+                    "UDP scan (-sU) requires CAP_NET_RAW, which the OCI sandbox "
+                    "drops; no scan was executed"
+                ),
+                "target": target,
+                "guidance": (
+                    "Pide un escaneo TCP (-sT) o ejecuta el UDP desde un entorno "
+                    "con privilegios; no repitas la misma llamada."
+                ),
+            },
+            verified=False,
+            verification_method="nmap_privileges_required",
+            evidence={"noise_level": noise_level, "required_capability": "CAP_NET_RAW"},
+        )
+    flags, privilege_warnings = degrade_unprivileged_flags(flags, unprivileged=unprivileged)
+    warnings |= privilege_warnings
+
+    argv = ["nmap", *flags, "-oX", "-", target]
     result = await _run_nmap(sandbox, argv, timeout_seconds)
+    if "-sS" in flags and is_privilege_failure(result):
+        # Local nmap may lack the setuid helper too. The failing SYN scan wrote
+        # no XML at all, so retry it as a connect scan instead of reporting an
+        # empty document (the measured 2026-11-07 cascade).
+        flags = ["-sT" if flag == "-sS" else flag for flag in flags]
+        argv = ["nmap", *flags, "-oX", "-", target]
+        result = await _run_nmap(sandbox, argv, timeout_seconds)
+        warnings.add("SYN scan failed without raw sockets: retried with TCP connect (-sT)")
 
     if result.timed_out and "-p-" in flags:
         # A full sweep that runs out of wall clock is the same failure mode as
@@ -476,11 +558,19 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
         # P5 (2026-10-22): ``-p- -T4`` hit its 600 s cap on a contended VPN, the
         # run got zero facts and every later phase starved. Retrying top-1000 at
         # an explicit rate costs ~15 s and saves the reconnaissance.
-        fallback_argv = ["nmap", *NMAP_FALLBACK_FLAGS, "-oX", "-", target]
+        fallback_flags = [
+            "-sT" if unprivileged and flag == "-sS" else flag
+            for flag in NMAP_FALLBACK_FLAGS
+        ]
+        fallback_argv = ["nmap", *fallback_flags, "-oX", "-", target]
         fallback_result = await _run_nmap(
             sandbox, fallback_argv, NMAP_FALLBACK_TIMEOUT_SECONDS
         )
-        if not fallback_result.timed_out and fallback_result.exit_code in {0, 1}:
+        if (
+            not fallback_result.timed_out
+            and fallback_result.exit_code in {0, 1}
+            and str(fallback_result.stdout or "").strip()
+        ):
             result = fallback_result
             # The scan that produced the facts is the top-1000 one: dropping
             # ``-p-`` also stops ``needs_port_fallback`` from repeating it.
@@ -506,11 +596,15 @@ async def nmap_handler(arguments: dict, context: RunContext) -> ToolResult:
     try:
         scan = parse_nmap_xml(result.stdout)
     except ValueError as exc:
+        tail = stderr_tail(result)
+        detail = str(exc)
+        if tail:
+            detail = f"{detail}: {tail.replace(chr(10), ' | ')}"[:800]
         return ToolResult(
-            output={"error": str(exc), "target": target},
+            output={"error": detail, "target": target, "stderr": tail},
             verified=False,
             verification_method="nmap_xml_parse_failed",
-            evidence={"noise_level": noise_level},
+            evidence={"noise_level": noise_level, "exit_code": result.exit_code},
             exit_code=result.exit_code,
             accepted_exit_codes=(0, 1),
             stdout=result.stdout,

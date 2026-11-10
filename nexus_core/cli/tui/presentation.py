@@ -206,6 +206,32 @@ def _service_table(facts: Any) -> list[str]:
     return lines
 
 
+def _cancelled_operator_line(result: Any, findings: int) -> str:
+    """The sentence a cancelled run deserves, with the cost it already paid.
+
+    ``(sin resumen · estado=cancelled)`` told the operator nothing about the 19
+    minutes and 103k tokens the run had consumed. The figures come from the
+    result's own turn telemetry; when a resumed run carries none, the sentence
+    still says who cancelled and what survived.
+    """
+    turns = [item for item in (getattr(result, "turns", None) or []) if isinstance(item, dict)]
+    millis = sum(int(item.get("turn_ms") or 0) for item in turns)
+    tokens = sum(int(item.get("total_tokens") or 0) for item in turns)
+    cost: list[str] = []
+    if millis:
+        seconds = max(0, millis // 1000)
+        minutes, rest = divmod(seconds, 60)
+        cost.append(f"{minutes}m {rest}s" if minutes else f"{rest}s")
+    if tokens:
+        cost.append(f"{tokens:,}".replace(",", " ") + " tokens")
+    detail = f" ({', '.join(cost)})" if cost else ""
+    noun = "hallazgo parcial" if findings == 1 else "hallazgos parciales"
+    return (
+        f"🛑 Tarea cancelada por el operador{detail}. "
+        f"Se conservan {findings} {noun}."
+    )
+
+
 def summary_markdown(result: Any, *, service_facts: Any = None,
                      report_path: str | None = None) -> str:
     """Final result as clean Markdown, for the TUI transcript.
@@ -228,9 +254,14 @@ def summary_markdown(result: Any, *, service_facts: Any = None,
         if isinstance(item, dict) and str(item.get("status") or "") != "done"
         and not item.get("optional")
     ]
-    lines: list[str] = ["## Resultado", ""]
-    summary = str(getattr(result, "final_summary", "") or "").strip()
-    lines.extend((summary or "_(sin resumen)_").splitlines())
+    if status == "cancelled":
+        lines: list[str] = [
+            "## Tarea cancelada", "", _cancelled_operator_line(result, len(findings)),
+        ]
+    else:
+        lines = ["## Resultado", ""]
+        summary = str(getattr(result, "final_summary", "") or "").strip()
+        lines.extend((summary or "_(sin resumen)_").splitlines())
     lines.extend(_service_table(service_facts))
     if findings:
         lines.extend(["", "### Hallazgos", ""])
