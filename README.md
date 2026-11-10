@@ -28,7 +28,7 @@ disaster. OMNI puts a **ToolGateway** in front of every action:
 
 ## ✨ Features
 
-- **88 built-in tools:** Nmap, Subfinder and httpx for recon; Metasploit,
+- **88 herramientas** (built-in tools): Nmap, Subfinder and httpx for recon; Metasploit,
   SQLmap, Nuclei and ffuf for exploitation; Impacket, NetExec, BloodHound and
   Sliver for Active Directory, post-exploitation and C2; hashcat, Hydra and
   session management; plus a durable knowledge blackboard and report
