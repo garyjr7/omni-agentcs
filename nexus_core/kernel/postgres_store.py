@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Sequence
 
@@ -58,6 +59,12 @@ class PostgresControlStore(ControlStore):
     def __init__(self, database_url: str):
         self.database_url = database_url
         self.path = None
+        # ControlStore.__init__ is SQLite-specific (it creates the parent
+        # directory), so this subclass cannot call it. The in-process
+        # subscriber state still has to exist: append_message/_publish use it
+        # for PostgreSQL too.
+        self._subscribers: list[Any] = []
+        self._subscribers_lock = threading.RLock()
 
     def connect(self) -> _PostgresConnection:
         try:
