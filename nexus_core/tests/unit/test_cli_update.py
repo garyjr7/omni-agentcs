@@ -192,7 +192,11 @@ def test_update_runs_the_steps_and_preserves_the_operator_config(tmp_path):
     )
 
     assert code == 0
-    assert calls and calls[0][0] == "pipx" or calls[0][0].endswith("python")
+    assert calls
+    # CI runs the suite with the system interpreter (``python3``), a pipx venv
+    # with the pipx launcher; neither name is part of the contract.
+    executable = Path(calls[0][0]).name
+    assert executable == "pipx" or executable.startswith("python")
     assert (config / "secrets.json").read_bytes() == secrets
     assert config_fingerprint(config) == before
     assert sorted(path.name for path in config.iterdir()) == ["config.toml", "secrets.json"]
