@@ -9,10 +9,13 @@ No se hizo push, tag ni cambio de versión durante esta auditoría.
 - Versión bumped a `3.0.0rc3` en `pyproject.toml` y `nexus_core/cli/main.py`.
 - `make typecheck-strict` cableado como gate bloqueante en `ci.yml` (0 errores
   en 181 ficheros). El checklist de release se reescribió para rc3.
-- Siguen pendientes y **sin ejecutar**: decisión de licencia, push y tag. Por
-  tanto, los bloqueadores 1 y 3 de este informe siguen abiertos hasta que el
-  operador autorice el release; el bloqueador 2 queda resuelto en configuración,
-  pero no verificado en un run remoto.
+- Licencia **Apache-2.0** adoptada (LICENSE oficial verificado contra
+  apache.org, `license` en `pyproject.toml`, `NOTICE` y `DISCLAIMER.md`).
+- Push de `main` (`0f1268f..4d28437`) y tag `v3.0.0-rc3` ejecutados con
+  autorización del operador; el tag apunta a `4d28437`. Reinstalación pipx
+  verificada: `omni 3.0.0rc3`.
+- El bloqueador 2 queda resuelto en configuración, pero el run remoto de CI no
+  se pudo verificar desde esta máquina. Cobertura y benchmark siguen pendientes.
 
 ## 0. Veredicto ejecutivo
 

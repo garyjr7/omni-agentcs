@@ -1,6 +1,6 @@
 # Checklist de release — `v3.0.0-rc3`
 
-Estado medido a **2026-11-10** sobre `main`. Versión en código: `3.0.0rc3`
+Estado medido a **2026-11-10** sobre `main` en `4d28437`. Versión en código: `3.0.0rc3`
 (`pyproject.toml:7`, `nexus_core/cli/main.py:17`).
 
 Este documento no crea ni mueve tags y no autoriza un push: enumera lo medido,
@@ -54,26 +54,29 @@ lo que queda abierto y lo que requiere decisión del operador.
 - **Anti-inyección activa:** `wrap_untrusted_output`, `neutralize_delimiters` y
   `scan_untrusted_text` (`nexus_core/agent/injection.py:91-105`).
 
+## Publicación ejecutada
+
+- **`main`**: `0f1268f..4d28437` (`git push origin main`).
+- **Tag `v3.0.0-rc3`**: anotado y publicado; `refs/tags/v3.0.0-rc3^{}` =
+  `4d28437`. El tag contiene `version = "3.0.0rc3"` y `license =
+  "Apache-2.0"`.
+- **Reinstalación**: `pipx install --force /home/operator/omni-agentcs` →
+  `omniagentcs 3.0.0rc3` (Python 3.14.8); `omni --version` → `omni 3.0.0rc3`.
+- **CI remoto**: no verificado desde esta máquina (sin `gh` ni token); el run
+  queda pendiente de revisión en GitHub Actions.
+
 ## Pendiente antes de publicar
 
-1. **Push de `main`** — autorizado por el operador el 2026-11-10; se ejecuta
-   junto con este commit. El `main` remoto estaba en `0f1268f`.
-2. **Tag `v3.0.0-rc3`** — autorizado; se crea nuevo sobre el commit publicado.
-   No se reescribe el tag remoto `v3.0.0-rc2`.
-3. **Verificación del CI remoto** — el workflow está actualizado, pero el run
-   solo existe tras el push y no se puede leer desde esta máquina (sin `gh` ni
-   token). No se afirma “CI verde” sin ese run.
-4. **Cobertura** — no re-medida en este RC. Suelo actual: 86 %
+1. **Verificación del CI remoto** — el workflow está actualizado, pero el run
+   no se puede leer desde esta máquina. No se afirma “CI verde” sin ese run.
+2. **Cobertura** — no re-medida en este RC. Suelo actual: 86 %
    (`Makefile:24-27`); última medida documentada: 86,2 % el 2026-11-06.
-5. **Instalación limpia** — `install.sh --dry-run` solo planifica. Falta
-   ejecutar `pipx install --force /home/operator/omni-agentcs` y confirmar
-   `omni --version` = `3.0.0rc3` en un entorno limpio.
-6. **Release en PyPI** — no preparada. La vía documentada es `install.sh` desde
+3. **Release en PyPI** — no preparada. La vía documentada es `install.sh` desde
    el repo.
-7. **Benchmark externo vs PentAGI** — no ejecutado; ver
+4. **Benchmark externo vs PentAGI** — no ejecutado; ver
    `RELEASE_AUDIT_OMNI.md` §2 y §4.
-8. **Documentación en inglés** — portada en inglés; `SECURITY.md`, este
+5. **Documentación en inglés** — portada en inglés; `SECURITY.md`, este
    checklist y `docs/README-detailed.md` siguen en español.
-9. **Documentos obsoletos** — `docs/MASTER_ROADMAP.md:1106` declara SEC-00
-    abierto con commits que ya no existen en este clon; conviene archivarlo o
-    actualizarlo en un commit aparte.
+6. **Documentos obsoletos** — `docs/MASTER_ROADMAP.md:1106` declara SEC-00
+   abierto con commits que ya no existen en este clon; conviene archivarlo o
+   actualizarlo en un commit aparte.
