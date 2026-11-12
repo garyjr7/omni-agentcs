@@ -1,6 +1,6 @@
 # ÍNDICE DOCUMENTAL — OmniAgentCS
 
-> Última revisión: 2026-10-21 · Roadmap base: 1a96924 · W1.2 + PTY P0: 49691be · P1 (`session_ref`): 07e3cdc · P1.5 (webshell): 2d5b318 · V10 (HackPark: PoC + CSRF): 88f1210 · V11 (HackPark: PoC en el objetivo): HEAD · Código auditado: 430dcfb
+> Última revisión: 2026-11-12 · RC3: b1f2815 · Reorganización pre-pública: documentación movida a `docs/audits/`, `docs/plans/`, `docs/design/` y `docs/security/`.
 > Regla: solo UN documento por tema es VIGENTE. El resto es histórico o archivado.
 > La reorganización que introduce este índice es el commit `docs: reorganize documentation into INDEX + archive, clean root`, aplicado sobre la línea base `363bba9`.
 > Ubicaciones: `/` = raíz del repo · `docs/missions/` = misiones y resultados abiertos · `docs/archive/` = material superado, solo consulta.
@@ -11,10 +11,11 @@
 
 | Tema | Documento VIGENTE | Ubicación | Notas |
 |---|---|---|---|
-| Producto, instalación y CLI | `README.md` | `/` | Verdad del producto v3.0.0b1: tools, comandos, gobernanza |
+| Producto, instalación y CLI | `README.md` | `/` | Verdad del producto v3.0.0-rc3: tools, comandos, gobernanza |
+| Checklist de lanzamiento público | `LAUNCH_CHECKLIST.md` | `docs/` | OpSec de GitHub, SSH, historial y protección de `main` |
 | Historial de versiones | `CHANGELOG.md` | `/` | v3.0.0b1 actual (beta); v3.0.0 sin publicar |
-| Deuda y backlog | `BACKLOG.md` | `/` | Ledger único de deudas V0/V1/V2 (P1-A/B/C) |
-| Instrucciones de proyecto para el agente | `OMNI.md` | `/` | Contexto no confiable, delimitado y auditado |
+| Deuda y backlog | `BACKLOG.md` | `docs/` | Ledger único de deudas V0/V1/V2 (P1-A/B/C) |
+| Instrucciones de proyecto para el agente | `OMNI.md` | `docs/guides/` | Ejemplo de contexto no confiable, delimitado y auditado |
 | Guía de uso manual de las OMNI tools | `GUIA_MANUAL_1.md` | `docs/guides/` | 68 tools gobernadas paso a paso, sin LLM |
 | Guía del agente autónomo y comandos `/` | `GUIA_AGENTE_1.md` | `docs/guides/` | ReAct, subagentes, playbooks y los 41 comandos `/` |
 | Auditoría UX/CLI | `AUDIT_POTENCIA_CLI.md` | `docs/archive/audits/` | 8.3/10, sustituye a `AUD_OMNI_BW` |
@@ -26,7 +27,7 @@
 | Comparación manual/agente | `MANUAL_VS_AGENT.md` | `docs/missions/` | n=1, no concluyente |
 | Fase 2 (cerrada) | `FASE2_ORQUESTACION_AVANZADA.md` | `docs/missions/` | Cerrada con límites declarados; deuda viva en `MASTER_ROADMAP.md` §3.4 |
 | Auditoría MCP y PTY | `AUDITORIA_ARQUITECTONICA_MCP_PTY_2026-10-21.md` | `docs/missions/` | Veredicto y orden P0–P4; base de `MASTER_ROADMAP.md` §4 |
-| Roadmap técnico post-auditoría | `roadmap_12/10.md` | `roadmap_12/` | **WIP no versionado — no forma parte del ledger oficial** |
+| Roadmap técnico post-auditoría | `10.md` | `docs/plans/roadmap_12/` | **WIP histórico versionado — no forma parte del ledger oficial** |
 | Cleanup de código legado | `CLEANUP_RESULT_V3.md` | `docs/missions/` | Resultado final; decisiones por archivo en `CLEANUP_DECISIONS.md` |
 | Decisiones de arquitectura | `ADR-004-sandbox-modes.md`, `ADR-005-surface-coverage-ledger.md`, `ADR-006-blackbox-default-authorization.md` | `docs/adr/` | Aceptadas; modos de sandbox, ledger de cobertura (veredicto por servicio) y autorización Caja Negra por defecto (RoE como única restricción de técnica) |
 | Último run E2E autónomo | `TEST_E2E_BOUNTY_HACKER_RUN6.md` | `docs/missions/` | Bounty Hacker; fuente de `MANUAL_VS_AGENT.md` |
@@ -41,7 +42,7 @@
 | Diagnóstico run P1 (DeadDrop) | `deaddrop_p1_2026-10-22.md` | `docs/missions/diag/` | Primer ciclo: recon, tres muros y sus fixes |
 | Evidencia por fase | `docs/missions/evidence/phase0|phase1|phase2|phase2-close/` | `docs/missions/evidence/` | Capturas de validación por fase |
 
-> `roadmap_12/` (auditoría `10.md`, informes Fase 2–5, `Auditoria_playbook_telemetria.md`, `UI_terminal_14_10.md` y su evidencia) es **WIP no versionado — no forma parte del ledger oficial**: se conserva sin commitear y no se cita como fuente de verdad.
+> `docs/plans/roadmap_12/` (auditoría `10.md`, informes Fase 2–5, `Auditoria_playbook_telemetria.md`, `UI_terminal_14_10.md` y su evidencia) es **WIP histórico ya versionado — no forma parte del ledger oficial**: se conserva por trazabilidad y no se cita como fuente de verdad.
 
 ---
 
@@ -85,8 +86,8 @@ Informes de misión cerradas cuyos hallazgos ya están en el código o en un doc
 
 ### Backlog histórico
 
-- `docs/missions/BACKLOG.md` — ideas aparcadas; el ledger vigente es `BACKLOG.md` en la raíz
-- `roadmap_12/Backlog_post_auditoria.md` — detalle técnico del backlog post-auditoría; el ledger vigente es `BACKLOG.md`
+- `docs/missions/BACKLOG.md` — ideas aparcadas; el ledger vigente es `docs/BACKLOG.md`
+- `docs/plans/roadmap_12/Backlog_post_auditoria.md` — detalle técnico del backlog post-auditoría; el ledger vigente es `docs/BACKLOG.md`
 
 ---
 
@@ -124,5 +125,5 @@ Material superado o ruido operativo. Se conserva solo por trazabilidad; **no es 
 
 - `CAPABILITIES2_FIX_RESULT.md` — subsumido por `CAPABILITIES2_RESULT.md`
 - `CLEANUP_AUDIT.md`, `CLEANUP_RECON_V2.md`, `CLEANUP_RESULT.md`, `CLEANUP_RESULT_V2.md` — iteraciones bloqueadas del cleanup; el cierre es `CLEANUP_RESULT_V3.md`
-- `CODEBASE_MAP.md` — mapa técnico de NEXUS 2.0 (`/home/operator/NEXUS`, 2026-06-09); no describe este repositorio
+- `CODEBASE_MAP.md` — mapa técnico de NEXUS 2.0 (`/home/<operador>/NEXUS`, 2026-06-09); no describe este repositorio
 - `OMNIAGENT_CONTEXT.md` — volcado estático del árbol antiguo (469 KB); obsoleto y engañoso

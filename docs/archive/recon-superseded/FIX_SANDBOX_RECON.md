@@ -37,7 +37,7 @@ Corriendo los binarios ProjectDiscovery a través de `LocalSandbox`:
 
 | Situación | Efecto observado |
 | --- | --- |
-| `HOME` ausente en el env del hijo | los binarios resuelven el home vía `/etc/passwd` → `/home/operator` |
+| `HOME` ausente en el env del hijo | los binarios resuelven el home vía `/etc/passwd` → `/home/<operador>` |
 | cwd del sandbox | `workspace_root` (el repo si `NEXUS_WORKSPACE_ROOT` no se fija) |
 | `httpx` | deja `./httpx/config.yaml` en el workspace; funciona |
 | `subfinder` | deja `./subfinder/config.yaml` y `./subfinder/provider-config.yaml`; funciona |
@@ -50,8 +50,8 @@ Es decir: el workspace se ensucia con configuración y nuclei no arranca nunca.
 ## 3. Templates de nuclei en este host
 
 ```
-/opt/nuclei-templates -> /home/operator/nuclei-templates   (symlink)
-/home/operator/nuclei-templates                            (85 MB, 13742 *.yaml)
+/opt/nuclei-templates -> /home/<operador>/nuclei-templates   (symlink)
+/home/<operador>/nuclei-templates                            (85 MB, 13742 *.yaml)
 ```
 
 Que el default sea `/opt/nuclei-templates` (el symlink) tiene una trampa
@@ -60,7 +60,7 @@ Que el default sea `/opt/nuclei-templates` (el symlink) tiene una trampa
 | Comando | Resultado |
 | --- | --- |
 | `nuclei -t /opt/nuclei-templates -tags tech -severity info -u …` | `[FTL] Could not run nuclei: no templates provided for scan` (0.26 s) |
-| `nuclei -t /home/operator/nuclei-templates -tags tech -severity info -u …` | carga 13.7k templates y escanea (>30 s) |
+| `nuclei -t /home/<operador>/nuclei-templates -tags tech -severity info -u …` | carga 13.7k templates y escanea (>30 s) |
 | `nuclei -t /opt/nuclei-templates/http/technologies/tech-detect.yaml -tags tech -severity info -u http://scanme.nmap.org` | OK, 1.3 s, exit 0 |
 
 **nuclei no sigue un directorio symlinkeado** (sí sigue un fichero dentro de él).

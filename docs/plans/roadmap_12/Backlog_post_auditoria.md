@@ -114,12 +114,12 @@ El tipado estricto cubre los ocho módulos de producción de este backlog; el ga
 
 | Verificación | Resultado | Evidencia |
 | --- | --- | --- |
-| Suite general, SQLite + PostgreSQL temporal, `NEXUS_E2E=0` | **2.990 pasan, 35 omitidas**, una advertencia de deprecación de `google.genai` | [suite.log](evidencia_backlog/suite.log) |
-| Archivo de pruebas nuevas, revisión final | **21 pasan** | [pruebas_nuevas.log](evidencia_backlog/pruebas_nuevas.log) |
-| Contratos activos/read-only, catálogo, prompt y leases | **119 pasan** | [contratos.log](evidencia_backlog/contratos.log) |
-| `mypy --strict` sobre ocho módulos de producción del backlog | Sin errores | [mypy_strict.log](evidencia_backlog/mypy_strict.log) |
-| Gate incremental `make typecheck`, incluyendo cambios previos | **109 archivos**, sin errores | [mypy_incremental.log](evidencia_backlog/mypy_incremental.log) |
-| Ruff, compilación Python y sintaxis de scripts | Correctos | [estatico.log](evidencia_backlog/estatico.log) |
+| Suite general, SQLite + PostgreSQL temporal, `NEXUS_E2E=0` | **2.990 pasan, 35 omitidas**, una advertencia de deprecación de `google.genai` | `suite.log` |
+| Archivo de pruebas nuevas, revisión final | **21 pasan** | `pruebas_nuevas.log` |
+| Contratos activos/read-only, catálogo, prompt y leases | **119 pasan** | `contratos.log` |
+| `mypy --strict` sobre ocho módulos de producción del backlog | Sin errores | `mypy_strict.log` |
+| Gate incremental `make typecheck`, incluyendo cambios previos | **109 archivos**, sin errores | `mypy_incremental.log` |
+| Ruff, compilación Python y sintaxis de scripts | Correctos | `estatico.log` |
 
 La prueba específica que rechaza `save_path="."` se añadió después de iniciar la última suite general; está incluida en las 21 pruebas focalizadas finales. No se presenta como parte de las 2.990 de esa ejecución. PostgreSQL temporal se detuvo al terminar.
 

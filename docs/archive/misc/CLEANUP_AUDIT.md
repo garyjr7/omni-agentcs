@@ -31,14 +31,14 @@ Búsqueda solicitada sobre nexus_core/, omni.py y nexus_worker.py: sin coinciden
 
 ```text
 Base de datos:
-  path: "/home/operator/NEXUS/data/nexus_pro.db"
+  path: "/home/<operador>/NEXUS/data/nexus_pro.db"
   exists: true
   size_bytes: 630784
   backend: "sqlite"
   diagnostic: "local read-only"
 ```
 
-El destino predeterminado `/home/operator/.local/share/omni/control.db` no existe.
+El destino predeterminado `/home/<operador>/.local/share/omni/control.db` no existe.
 La DB de data/ NO se puede borrar. Antes de retirarla deberá hacerse una copia
 consistente SQLite, ajustar la configuración efectiva que hoy apunta a data/,
 y comprobar los mismos engagements consultando realmente el destino XDG.

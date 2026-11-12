@@ -74,4 +74,4 @@ visible = render_rich(input_chip(original_input), no_color=True)
 
 Las pruebas utilizan fixtures, pipes y una pseudo-terminal local. No ejecutan herramientas ofensivas ni contactan objetivos. El informe describe esta entrega de UI; no certifica el cierre de la auditoría previa del kernel.
 
-Evidencias: [regresión](evidencia_ui_terminal/regresion.log), [mypy](evidencia_ui_terminal/mypy.log), [PTY](evidencia_ui_terminal/pty.log). Vista ilustrativa: [UI_terminal_preview.txt](UI_terminal_preview.txt).
+Evidencias: `regresión`, `mypy`, `PTY`. Vista ilustrativa: [UI_terminal_preview.txt](UI_terminal_preview.txt).

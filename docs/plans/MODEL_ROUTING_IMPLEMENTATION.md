@@ -91,14 +91,14 @@ Reglas:
 ## 3. Flujo de ejemplo
 
 ```
-operador: omni --headless --objective "comprometer 10.10.10.5 y capturar user.txt"
+operador: omni --headless --objective "comprometer 10.0.0.1 y capturar user.txt"
         │
         ├─ PLAN MODE      perfil planner  → openai/o3
         │                 escribe loot/ENGAGEMENT_PLAN.md (5–12 TODOs)
         │                 journal: model.route {task: planner, provider: openai, model: o3}
         │
         ├─ turno 1        perfil executor → deepseek/deepseek-flash
-        │                 acción: nexus.recon.nmap -sV 10.10.10.5 → 22/tcp, 80/tcp
+        │                 acción: nexus.recon.nmap -sV 10.0.0.1 → 22/tcp, 80/tcp
         │                 journal: model.route {task: executor, provider: deepseek, model: deepseek-flash,
         │                                        source: config, reason: "[model_routing.executor] fija …"}
         │

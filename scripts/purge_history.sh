@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # purge_history.sh — CONTINGENCIA INERTE para SEC-00.
 #
-# Estado: NO se ha ejecutado y NO se debe ejecutar mientras SEC00_VERIFICATION.md
+# Estado: NO se ha ejecutado y NO se debe ejecutar mientras docs/audits/SEC00_VERIFICATION.md
 # diga LIMPIO. El escaneo del 2026-10-28 (223 commits, 2903 blobs) no encontró
 # ninguna credencial de proveedor, y los commits b127c29 / a8c2046 que cita la
 # auditoría no existen en este repositorio. Usa este script solo si:

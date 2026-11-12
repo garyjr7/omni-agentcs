@@ -45,6 +45,29 @@ data/logs/
 Thumbs.db
 .sandbox_home/
 
+# Credenciales locales, material criptográfico y bases de datos (nunca commitear)
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+*.ovpn
+secrets.json
+/config.toml
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+.ssh/
+.aws/
+.gnupg/
+
+# Datos de runtime del workspace (no confundir con nexus_core/report/data o provisioner/data)
+/data/
+.nexus-nfs/
+
 # Credenciales y artefactos de ejecución contra objetivos (nunca commitear)
 *.ccache
 *.ntds.txt

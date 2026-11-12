@@ -157,10 +157,10 @@ printf 'OPENAI_API_KEY=stored\n' > /tmp/upd-e2e/config/omni/secrets.json
 printf 'schema_version = 1\n'   > /tmp/upd-e2e/config/omni/config.toml
 chmod 600 /tmp/upd-e2e/config/omni/secrets.json
 
-cd /home/operator/omni-agentcs
+cd /home/<operador>/omni-agentcs
 OMNI_UPDATE_URL=file:///tmp/upd-e2e/release.json .venv/bin/python - <<'PY'
 import hashlib, pathlib, sys
-sys.path.insert(0, "/home/operator/omni-agentcs")
+sys.path.insert(0, "/home/<operador>/omni-agentcs")
 from nexus_core.cli.update import run_update_command
 work, config = pathlib.Path("/tmp/upd-e2e/work"), pathlib.Path("/tmp/upd-e2e/config/omni")
 before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in config.iterdir()}

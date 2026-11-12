@@ -1,5 +1,11 @@
 # OmniAgentCS — Changelog
 
+## v3.0.0-rc3 — 2026-11-12
+
+Release candidate publicado desde `b1f2815`. Licencia Apache-2.0, gate de
+tipado estricto bloqueante, corrección de `PostgresControlStore` y suite de CI
+determinista. El tag `v3.0.0-rc3` apunta a ese commit.
+
 ## v3.0.0b1 — 2026-11-06 (BETA)
 
 Primer tag del repositorio: cierra la semana 1 del plan de release con los gates
@@ -35,9 +41,10 @@ mecánicos en verde (`make syntax lint test`: 4.853 passed, 53 skipped) y el
   cerrada de los aceptados, en lugar de un fallo que invita a re-adivinar.
 
 ### Documentación y gobernanza
-- `README.md` y `SECURITY.md` dejan de declarar estados falsos: la licencia es
-  `Authorized Use Only` y `oci_network` (SEC-03) está implementado con proxy
-  SOCKS5 scope-gobernado ([ADR-004](docs/adr/ADR-004-sandbox-modes.md)).
+- `README.md` y `SECURITY.md` dejan de declarar estados falsos: en ese beta la
+  licencia era `Authorized Use Only` (desde rc3 es Apache-2.0) y `oci_network`
+  (SEC-03) está implementado con proxy SOCKS5 scope-gobernado
+  ([ADR-004](docs/adr/ADR-004-sandbox-modes.md)).
 
 ---
 

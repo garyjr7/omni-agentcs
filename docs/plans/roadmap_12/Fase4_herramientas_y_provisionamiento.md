@@ -120,7 +120,7 @@ La integración simulada cubre **Nmap, Ffuf y Nuclei → handler → parser → 
 
 La suite completa se recopiló antes de añadir el caso adicional del resolver; ese caso y su módulo se verificaron en la batería final de 38 pruebas. La única advertencia fue una deprecación de `google.genai` bajo Python 3.14. Las 35 omisiones no equivalen a pruebas aprobadas.
 
-Logs completos: [pytest](evidencia_fase4/pytest_completo.log), [contratos finales](evidencia_fase4/pytest_contratos_final.log), [regresiones](evidencia_fase4/pytest_regresiones.log), [lint/mypy/sintaxis](evidencia_fase4/lint_mypy_syntax.log), [mypy estricto](evidencia_fase4/mypy_strict.log).
+Logs completos: `pytest`, `contratos finales`, `regresiones`, `lint/mypy/sintaxis`, `mypy estricto`.
 
 ## 6. Límites y siguientes verificaciones operativas
 

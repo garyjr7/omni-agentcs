@@ -1,6 +1,6 @@
 # NEXUS Codebase Technical Map
 
-**Repository analyzed:** `/home/operator/NEXUS`  
+**Repository analyzed:** `/home/<operador>/NEXUS`
 **Analysis date:** 2026-06-09  
 **Declared product version:** NEXUS PRO `2.0.0`  
 **Repository state:** clean Git worktree at analysis time
@@ -18,7 +18,7 @@ NEXUS is a monorepo for an AI operations platform. It combines:
 
 The repository is not a uniformly finished production system. The strongest implemented paths are SQLite-backed CRUD, JWT authentication, basic LLM provider abstraction, agent task execution, HITL state handling, pentest scanning/report generation, and several dashboard integrations. Other advertised surfaces are mock UI, simulated pipelines, stale legacy adapters, or disconnected implementations.
 
-The largest operational problem is hard-coded deployment coupling. Many active modules reference `/home/operator/NEXUS-PRO` or `/home/operator/BW-AI`, while this checkout is `/home/operator/NEXUS`. Those paths also conflict with the Docker filesystem (`/nexus`). Several features therefore fail or write outside the intended data volume unless paths happen to exist.
+The largest operational problem is hard-coded deployment coupling. Many active modules reference `/home/<operador>/NEXUS-PRO` or `/home/<operador>/BW-AI`, while this checkout is `/home/<operador>/NEXUS`. Those paths also conflict with the Docker filesystem (`/nexus`). Several features therefore fail or write outside the intended data volume unless paths happen to exist.
 
 ## 2. Project Structure
 
@@ -192,7 +192,7 @@ The tree below includes all authored runtime areas and all repository artifacts.
 │   │   ├── testagent.py               Syntax/lint/security/Docker-test adapter.
 │   │   ├── docagent.py                Technical-document memory adapter.
 │   │   ├── composite.py               Filesystem/project/patch/health composite tools.
-│   │   ├── project_manager.py         Legacy `/home/operator/BW-AI` project DB adapter.
+│   │   ├── project_manager.py         Legacy `/home/<operador>/BW-AI` project DB adapter.
 │   │   └── nexus.py                   Broken legacy NexusService status/goal adapter.
 │   ├── scheduler/
 │   │   ├── __init__.py                Package marker.
@@ -572,7 +572,7 @@ Static/mock/degraded pages: Audit, Vault, RBAC, parts of Guardian, Terminal, and
 
 ### Main SQLite Database
 
-Intended location is `NEXUS_DB_PATH`, but `nexus_api/db/database.py` ignores it and hard-codes `/home/operator/NEXUS-PRO/data/nexus_pro.db`.
+Intended location is `NEXUS_DB_PATH`, but `nexus_api/db/database.py` ignores it and hard-codes `/home/<operador>/NEXUS-PRO/data/nexus_pro.db`.
 
 | Table | Main fields | Purpose |
 |---|---|---|
@@ -603,7 +603,7 @@ Security issue: `api_keys.key_value` stores provider secrets in plaintext despit
 
 ### Generated-Agent Databases
 
-Mostly located under hard-coded `/home/operator/BW-AI`:
+Mostly located under hard-coded `/home/<operador>/BW-AI`:
 
 | Table | Module |
 |---|---|
@@ -997,7 +997,7 @@ Key disconnected dependencies:
 
 ### Broken or Disconnected
 
-1. **Path mismatch:** active code expects `/home/operator/NEXUS-PRO` or `/home/operator/BW-AI`; actual checkout is `/home/operator/NEXUS`; Docker uses `/nexus`.
+1. **Path mismatch:** active code expects `/home/<operador>/NEXUS-PRO` or `/home/<operador>/BW-AI`; actual checkout is `/home/<operador>/NEXUS`; Docker uses `/nexus`.
 2. **Main CRUD DB ignores `NEXUS_DB_PATH`:** agents/tasks/tools/teams/models can use a different DB than auth/factory/memory.
 3. **Teams frontend URL is wrong:** `/teams-v2/teams-v2` versus `/teams-v2`.
 4. **Factory LLM construction is invalid:** `NexusLLM(primary='openai', fallback='gemini')` passes strings where clients are required, then calls nonexistent `chat_async`; exceptions are caught and stored as “LLM unavailable.”
@@ -1005,7 +1005,7 @@ Key disconnected dependencies:
 6. **Factory internal HTTP hard-codes localhost:8000 and old paths.**
 7. **`/junior/dispatch` does not run its background task:** it creates a standalone `BackgroundTasks` object that FastAPI never executes.
 8. **Legacy `/status` and `/goal` are broken:** `nexus_svc` is undefined.
-9. **Legacy project-manager points to `/home/operator/BW-AI/nexus_api/database.db`.**
+9. **Legacy project-manager points to `/home/<operador>/BW-AI/nexus_api/database.db`.**
 10. **Active app connects an unused alternate auth DB.**
 11. **Auth register is unauthenticated:** arbitrary users can self-register with a requested role, including potentially `admin`.
 12. **Most control endpoints lack auth/RBAC:** agent creation, task shell execution, keys, guardian, kill switch, plans, and tools are publicly callable if API is reachable.
@@ -1058,7 +1058,7 @@ NEXUS is best characterized as a feature-rich alpha/prototype with several genui
 
 The shortest path to a coherent system is:
 
-1. Centralize all paths/configuration and remove `/home/operator/NEXUS-PRO` and `/home/operator/BW-AI`.
+1. Centralize all paths/configuration and remove `/home/<operador>/NEXUS-PRO` and `/home/<operador>/BW-AI`.
 2. Use one SQLite database interface and one user schema.
 3. Run one API worker until in-memory state moves to shared persistence.
 4. Put auth/RBAC on all mutating and sensitive routes.

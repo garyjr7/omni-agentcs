@@ -82,7 +82,7 @@ local y un modelo disponible. Sin clave del proveedor seleccionado se usa Fake.
 Se respetan `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` y
 `XDG_CACHE_HOME` cuando son rutas absolutas. Precedencia: entorno, `.env`
 del checkout, configuración TOML, defaults. `.env` es opcional; consulta
-[.env.example](.env.example). `NEXUS_DB_PATH` y `DATABASE_URL` explícitos
+[.env.example](../.env.example). `NEXUS_DB_PATH` y `DATABASE_URL` explícitos
 prevalecen sobre la DB global. El worker usa la misma configuración.
 
 Config se escribe atómicamente con permisos `600` en directorios `700`.
@@ -290,7 +290,7 @@ Usa `MSF_RPC_URL`, `MSF_RPC_USER`, `MSF_RPC_PASSWORD` y
 `MSF_RPC_TRANSPORT=msgpack`; la contraseña del cliente debe coincidir con la
 del daemon. `msf_search` no requiere scope; `msf_auxiliary` sí lo requiere.
 Los resultados y diagnóstico históricos están en
-[docs/missions/MSF_DAEMON_RESULT.md](docs/missions/MSF_DAEMON_RESULT.md).
+[docs/missions/MSF_DAEMON_RESULT.md](missions/MSF_DAEMON_RESULT.md).
 
 ### Explotación y sesiones
 
@@ -941,7 +941,11 @@ nexus_core/llm/             proveedores LLM y Fake
 nexus_core/utils/           logging y utilidades compartidas
 nexus_core/tests/           pruebas del proyecto actual
 scripts/                   administración y diagnósticos manuales
-docs/missions/             reportes e historia de desarrollo
+docs/audits/               auditorías técnicas y verificaciones de seguridad
+docs/plans/                planes, roadmaps y estrategia de implementación
+docs/design/               diseño de producto y UX
+docs/security/             deuda y notas de seguridad
+/docs/missions/            reportes e historia de desarrollo
 ```
 
 Se conserva el nombre interno `nexus_core`, el schema del control store y las
@@ -976,15 +980,16 @@ coste/tiempo y detenciones correctas). El 90 % es una meta para las condiciones
 declaradas del benchmark, nunca una garantía para cualquier sala.
 
 Las decisiones y el balance de tests del cleanup están en
-[CLEANUP_DECISIONS.md](docs/missions/CLEANUP_DECISIONS.md) y
-[el informe final](docs/missions/CLEANUP_RESULT_V3.md).
+[CLEANUP_DECISIONS.md](missions/CLEANUP_DECISIONS.md) y
+[el informe final](missions/CLEANUP_RESULT_V3.md).
 
 ## Licencia
 
-OmniAgentCS se distribuye bajo la licencia **Authorized Use Only** de
-BAJIOWARE: uso exclusivo en pruebas de seguridad autorizadas y redistribución
-solo con permiso escrito. El texto completo, que es la única fuente de verdad,
-está en [`LICENSE`](LICENSE).
+OmniAgentCS se distribuye bajo la **Apache License 2.0**. Puedes usarlo,
+modificarlo y redistribuirlo, incluido el uso comercial, siempre que conserves
+los avisos de copyright y licencia y cumplas la cláusula de patentes. El texto
+completo en [`LICENSE`](../LICENSE) es la única fuente de verdad; los avisos de
+atribución están en [`NOTICE`](../NOTICE).
 
 ### Persistencia de credenciales y aprobaciones
 
@@ -1014,8 +1019,8 @@ el constructor **falla** (`LabScopeForbidden`) en vez de aceptar scopes sin
 firma. No omite targets, exclusiones, vencimiento ni firmas incorrectas.
 
 `NEXUS_SANDBOX_MODE` selecciona el mismo ejecutor que anuncian banner y doctor.
-Un modo desconocido falla; `oci_network` falla explícitamente porque no tiene
-una política de egress implementada. `local_strict` confina el cwd y configura
+Un modo desconocido falla; `oci_network` solo arranca con el proxy SOCKS5
+gobernado por el scope y falla cerrado si no hay proxy configurado. `local_strict` confina el cwd y configura
 HOME/argv, pero **no aísla el sistema de archivos, procesos ni red del host**
 (lectura incluida: `cat /home/<operador>/.ssh/id_rsa` funciona dentro del
 sandbox), y por eso `NEXUS_ENV=production` con `local` o `local_strict` **falla**
@@ -1073,7 +1078,7 @@ con efecto exclusivamente `read`. Un resultado MCP sin verificación semántica
 independiente se identifica como `mcp_unverified`, aunque su JSON Schema sea válido.
 
 La justificación, incompatibilidades y evidencia de cierre están en
-[la misión Fase 0](docs/missions/FASE0_HONESTIDAD_Y_SEGURIDAD.md).
+[la misión Fase 0](missions/FASE0_HONESTIDAD_Y_SEGURIDAD.md).
 
 
 ### Fase 1: entrada, modo de permisos y progreso
@@ -1127,4 +1132,4 @@ Las otras llamadas continúan. Los perfiles secuenciales de ReAct también se
 visualizan, pero su cancelación sigue siendo la del run. El panel no implementa
 `AgentSupervisor` ni contextos aislados nuevos.
 
-Evidencia y límites: [misión de Fase 1](docs/missions/FASE1_UX_ELITE.md).
+Evidencia y límites: [misión de Fase 1](missions/FASE1_UX_ELITE.md).

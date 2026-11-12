@@ -4,8 +4,8 @@ OMNI es una CLI de pentesting asistido que se instala **en la máquina del
 operador** y ejecuta herramientas reales (nmap, ffuf, impacket, Metasploit RPC,
 `nexus.shell.exec`). No es un servidor multi-tenant ni un servicio alojado. Esta
 página describe qué garantiza el producto hoy, qué **no** garantiza, y cómo
-reportar un problema. Se escribió desde la auditoría del 2026-10-23
-([`docs/missions/AUDITORIA_OMNI_2026-10-23.md`](docs/missions/AUDITORIA_OMNI_2026-10-23.md)).
+reportar un problema. Se escribió a partir de la auditoría técnica integral
+([`docs/audits/AUDIT_OMNI.md`](docs/audits/AUDIT_OMNI.md)).
 
 ## 1. El modelo de privilegios, sin adornos
 

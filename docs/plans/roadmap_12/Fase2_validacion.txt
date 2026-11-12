@@ -13,7 +13,7 @@ nexus_core/tests/unit/test_xdg.py::test_invalid_xdg_ignored[relative] PASSED [10
 
 =============================== warnings summary ===============================
 .venv/lib/python3.14/site-packages/google/genai/types.py:42
-  /home/operator/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+  /home/<operador>/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
     VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
@@ -64,7 +64,7 @@ nexus_core/tests/integration/test_journal_pg.py::test_artifact_concurrent_public
 
 =============================== warnings summary ===============================
 .venv/lib/python3.14/site-packages/google/genai/types.py:42
-  /home/operator/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+  /home/<operador>/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
     VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
@@ -107,7 +107,7 @@ nexus_core/tests/unit/test_observations.py::test_select_subagent_honours_the_env
 
 =============================== warnings summary ===============================
 .venv/lib/python3.14/site-packages/google/genai/types.py:42
-  /home/operator/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
+  /home/<operador>/omni-agentcs/.venv/lib/python3.14/site-packages/google/genai/types.py:42: DeprecationWarning: '_UnionGenericAlias' is deprecated and slated for removal in Python 3.17
     VersionedUnionType = Union[builtin_types.UnionType, _UnionGenericAlias]
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

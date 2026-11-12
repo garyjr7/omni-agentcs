@@ -22,8 +22,8 @@ Nuevo `ToolCallBatch` (`action: "tool_calls"`) con `calls: [ToolCallSpec]`:
   "thought": "recon en paralelo sobre el mismo host",
   "action": "tool_calls",
   "calls": [
-    {"tool_id": "nexus.recon.nmap", "arguments": {"target": "10.10.10.5", "flags": ["-sV"]}, "expected_outcome": "puertos"},
-    {"tool_id": "nexus.web.gobuster", "arguments": {"url": "http://10.10.10.5"}, "expected_outcome": "directorios"}
+    {"tool_id": "nexus.recon.nmap", "arguments": {"target": "10.0.0.1", "flags": ["-sV"]}, "expected_outcome": "puertos"},
+    {"tool_id": "nexus.web.gobuster", "arguments": {"url": "http://10.0.0.1"}, "expected_outcome": "directorios"}
   ]
 }
 ```
@@ -148,11 +148,11 @@ El modelo recibe un único mensaje JSON en el turno siguiente:
   "concurrency": 3,
   "duration_ms": 4121,
   "results": [
-    {"tool_id": "nexus.recon.nmap", "arguments": {"target": "10.10.10.5"},
+    {"tool_id": "nexus.recon.nmap", "arguments": {"target": "10.0.0.1"},
      "success": true, "outcome": "success", "duration_ms": 3900,
      "invocation_id": "…", "evidence": {…}, "assertions": [ … ],
      "output": {"ports": [{"port": 22, "service": "ssh"}, {"port": 80, "service": "http"}]}},
-    {"tool_id": "nexus.web.gobuster", "arguments": {"url": "http://10.10.10.5"},
+    {"tool_id": "nexus.web.gobuster", "arguments": {"url": "http://10.0.0.1"},
      "success": false, "outcome": "negative", "duration_ms": 1200,
      "error": "403 en todas las rutas", "guidance": "…"}
   ],
@@ -188,7 +188,7 @@ Por qué así y no una observación por tool:
 
 ```bash
 # 1. El mismo objetivo que antes costaba dos turnos, en uno:
-omni --objective "Sobre 10.10.10.5: enumera puertos con nmap y en paralelo busca
+omni --objective "Sobre 10.0.0.1: enumera puertos con nmap y en paralelo busca
   directorios web con gobuster. Usa 'tool_calls' para lanzar ambas en el mismo turno." \
   --stream-json
 

@@ -79,7 +79,7 @@ OMNI requires Python 3.12+ on Linux or macOS.
 
 ```bash
 # Clone the repository
-git clone git@github.com:garyjr7/omni-agentcs.git
+git clone https://github.com/garyjr7/omni-agentcs.git
 cd omni-agentcs
 
 # Install in an isolated environment (pipx if available, otherwise a venv)
@@ -120,7 +120,10 @@ shows the install plan; it only executes with `--yes`.
 
 The full operational reference — configuration, XDG paths, every tool, the
 planner, the report contract, the TUI, the security boundaries and the test
-suite — is in [docs/README-detailed.md](docs/README-detailed.md).
+suite — is in [docs/README-detailed.md](docs/README-detailed.md). The
+documentation index, audits, plans and current debt live in
+[docs/INDEX.md](docs/INDEX.md) and [docs/BACKLOG.md](docs/BACKLOG.md). Security
+reports are covered by [SECURITY.md](SECURITY.md).
 
 ## License
 

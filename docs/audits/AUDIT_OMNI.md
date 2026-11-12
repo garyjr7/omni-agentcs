@@ -2,7 +2,7 @@
 
 _Generada el 2026-11-06 por auditoría automatizada con criterios senior._
 
-- Objeto auditado: workspace `/home/operator/omni-agentcs` (paquete `omniagentcs` v3.0.0), HEAD `61ae348`.
+- Objeto auditado: workspace `/home/<operador>/omni-agentcs` (paquete `omniagentcs` v3.0.0), HEAD `61ae348`.
 - Alcance de la evidencia: código en disco (691 ficheros `.py`), tests ejecutados en este entorno, CLI ejecutada, documentación del repo. No se ha ejecutado ningún ataque contra objetivos ni se ha tocado `~/.config/omni`.
 - Entorno de medición: Linux Kali 2026.3, 4 vCPU, 3,8 GB RAM, Python 3.14.8 (el `pyproject.toml` declara `>=3.12`).
 

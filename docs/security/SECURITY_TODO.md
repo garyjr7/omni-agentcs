@@ -18,7 +18,7 @@ coincide.
 Ejemplo con valores **ficticios**:
 
 ```text
-entrada:  nmap --script-args=user=admin --password=FAKE-EXAMPLE -sV 10.0.0.5
+entrada:  nmap --script-args=user=admin --password=FAKE-EXAMPLE -sV 10.0.0.1
 hoy:      --password=FAKE-EXAMPLE
 esperado: --password=[REDACTED]
 ```

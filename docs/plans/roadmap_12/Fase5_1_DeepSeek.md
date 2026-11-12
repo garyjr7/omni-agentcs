@@ -87,4 +87,4 @@ Se reintentan con backoff exponencial, jitter y consideración de `Retry-After` 
 
 La prueba adicional de rol system se añadió después de recopilar la suite completa y se validó con la batería final de 61 pruebas. La advertencia existente corresponde a `google.genai` bajo Python 3.14. Las omisiones no se cuentan como aprobaciones. PostgreSQL temporal quedó detenido.
 
-Evidencia: [suite completa](evidencia_fase5/pytest_completo.log), [proveedores](evidencia_fase5/pytest_proveedores.log), [lint/mypy/sintaxis](evidencia_fase5/lint_mypy_syntax.log), [mypy estricto](evidencia_fase5/mypy_strict.log). Las pruebas no certifican una clave real ni disponibilidad comercial del modelo para una cuenta determinada.
+Evidencia: `suite completa`, `proveedores`, `lint/mypy/sintaxis`, `mypy estricto`. Las pruebas no certifican una clave real ni disponibilidad comercial del modelo para una cuenta determinada.

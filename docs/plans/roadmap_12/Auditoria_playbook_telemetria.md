@@ -163,9 +163,9 @@ El archivo actual tiene cuatro fases, pero sus IDs son `stealth_recon`, `staging
 
 ## Evidencia y alcance de la validación
 
-- [143 pruebas focalizadas aprobadas](evidencia_auditoria_playbook/pruebas.log), con una advertencia de deprecación de `google.genai`.
-- [Resultado de mypy estricto](evidencia_auditoria_playbook/mypy_strict.log): dos errores.
-- [Ruff F/E9](evidencia_auditoria_playbook/ruff.log): sin errores.
+- `143 pruebas focalizadas aprobadas`, con una advertencia de deprecación de `google.genai`.
+- `Resultado de mypy estricto`: dos errores.
+- `Ruff F/E9`: sin errores.
 - [Reproducciones mínimas](evidencia_auditoria_playbook/reproducir.py) y [resultados JSON](evidencia_auditoria_playbook/resultados.json).
 
 Comandos reproducibles desde la raíz del repositorio:

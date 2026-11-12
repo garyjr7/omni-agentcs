@@ -58,7 +58,7 @@ Los siguientes bloques corresponden a los métodos modificados principales; los 
 
 ### 1. Transacciones y adaptador PostgreSQL
 
-[Archivo completo](../nexus_core/kernel/control_store.py).
+[Archivo completo](../../../nexus_core/kernel/control_store.py).
 
 `ControlStore.locked_transaction`:
 
@@ -119,7 +119,7 @@ def _locked_task(
 
 ### 1.1 Bloqueo PostgreSQL y comprobación de vigencia
 
-[Archivo completo](../nexus_core/kernel/postgres_store.py).
+[Archivo completo](../../../nexus_core/kernel/postgres_store.py).
 
 `PostgresControlStore._lock_transaction`:
 
@@ -156,7 +156,7 @@ def task_row_lock_sql(self) -> str:
 
 ### 2. Presupuesto
 
-[Archivo completo](../nexus_core/kernel/budget_ledger.py).
+[Archivo completo](../../../nexus_core/kernel/budget_ledger.py).
 
 `BudgetLedger.reserve`:
 
@@ -244,7 +244,7 @@ def release(self, reservation_id: str) -> None:
 
 ### 3. Cadena de auditoría
 
-[Archivo completo](../nexus_core/kernel/audit.py).
+[Archivo completo](../../../nexus_core/kernel/audit.py).
 
 `AuditWriter.append`:
 
@@ -299,7 +299,7 @@ def append(
 
 ### 4. Generación, renovación, finalización y reintentos
 
-[Archivo completo](../nexus_core/kernel/control_store.py).
+[Archivo completo](../../../nexus_core/kernel/control_store.py).
 
 `ControlStore.claim_task`:
 
@@ -458,7 +458,7 @@ def fail_or_retry_task(
 
 ### 5. Reconciliación y compensación
 
-[Archivo completo](../nexus_core/kernel/workflows.py).
+[Archivo completo](../../../nexus_core/kernel/workflows.py).
 
 `DurableWorkflowEngine.reconcile`:
 
@@ -589,7 +589,7 @@ def reconcile(self, run_id: str, tenant_id: str) -> Dict[str, Any]:
 
 ### 6. Heartbeat y manejo de pérdida de lease
 
-[Archivo completo](../nexus_worker.py).
+[Archivo completo](../../../nexus_worker.py).
 
 `_execute_with_heartbeat`:
 
