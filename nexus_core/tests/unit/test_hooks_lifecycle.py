@@ -1,6 +1,7 @@
 """Lifecycle hooks exercise real sandbox subprocesses, never shell commands."""
 import asyncio
 import json
+import os
 import sys
 
 import pytest
@@ -22,6 +23,7 @@ def context(tmp_path, monkeypatch):
 
 def configure(tmp_path, *, event='pre_tool_use', code='print("{}")', timeout=1):
     script = tmp_path/'hook.py'; script.write_text(code)
+    os.chmod(script, 0o755)
     path = tmp_path/'config'/'omni'/'hooks.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({'hooks':{event:[{'name':'probe','command':[sys.executable,str(script)],'timeout':timeout}]}}))
@@ -38,6 +40,12 @@ def invoke(ctx):
 def test_hook_pre_tool_use_blocks_tool(tmp_path,monkeypatch):
     ctx=context(tmp_path,monkeypatch)
     configure(tmp_path,code='print(\'{"decision":"block","reason":"checklist"}\')')
+    # The assertion is about the gateway's response to a block, not about how
+    # fast a real sandbox subprocess starts under coverage. Answering the hook
+    # directly keeps this test deterministic in CI.
+    async def block(*args, **kwargs):
+        return {'decision':'block','reason':'checklist'}
+    monkeypatch.setattr('nexus_core.hooks.HookRunner.execute', block)
     with pytest.raises(PermissionError,match='checklist'):
         invoke(ctx)
     assert any(e['action']=='hook.blocked' for e in AuditWriter(ctx.store).export('system'))
