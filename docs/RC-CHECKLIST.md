@@ -32,7 +32,8 @@ lo que queda abierto y lo que requiere decisión del operador.
 - **Lint sin cambios deliberados**: CI ejecuta el mismo `make lint` que local
   (`F,E9`). Ampliarlo a `I` produciría 277 avisos y a `I,UP,B` 840, casi todos
   preexistentes; arreglarlos es un refactor aparte, no un cambio de release. No
-  se finge un gate ampliado que aún no está verde.
+  se finge un gate ampliado que aún no está verde. **Deuda anotada para v3.1**:
+  ampliar el lint a `I,UP,B` y corregir los 840 avisos preexistentes.
 - **Licencia Apache-2.0**: `LICENSE` reemplazado por el texto oficial,
   `license = "Apache-2.0"` y `license-files` en `pyproject.toml`, `NOTICE` y
   `DISCLAIMER.md` añadidos, y sección `## Disclaimer` en el README.
