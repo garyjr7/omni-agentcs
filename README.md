@@ -124,9 +124,19 @@ suite — is in [docs/README-detailed.md](docs/README-detailed.md).
 
 ## License
 
-Distributed under the **Authorized Use Only** license of BAJIOWARE: use only
-for authorized security testing, redistribution only with written permission.
-The full text in [LICENSE](LICENSE) is the only source of truth.
+Released under the **Apache License 2.0**. You may use, modify and distribute
+it, including commercially, provided you keep the copyright and license notices
+and comply with the patent clause. The full text in [LICENSE](LICENSE) is the
+only source of truth; attribution notices live in [NOTICE](NOTICE).
+
+## Disclaimer
+
+OMNI is designed for authorized security testing and educational purposes only.
+The author (BajioWare) assumes no liability for any misuse or damage caused by
+this tool. Users are solely responsible for complying with all applicable laws
+and obtaining proper authorization before conducting any security assessments.
+
+See [DISCLAIMER.md](DISCLAIMER.md) for the canonical text.
 
 ---
 

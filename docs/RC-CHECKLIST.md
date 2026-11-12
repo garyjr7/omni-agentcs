@@ -33,9 +33,9 @@ lo que queda abierto y lo que requiere decisión del operador.
   (`F,E9`). Ampliarlo a `I` produciría 277 avisos y a `I,UP,B` 840, casi todos
   preexistentes; arreglarlos es un refactor aparte, no un cambio de release. No
   se finge un gate ampliado que aún no está verde.
-- **Licencia sin cambios**: `LICENSE` sigue siendo “Authorized Use Only” y
-  `pyproject.toml` no declara campo `license`. La decisión entre mantenerla o
-  pasar a Apache-2.0 está pendiente del operador; este RC no la asume.
+- **Licencia Apache-2.0**: `LICENSE` reemplazado por el texto oficial,
+  `license = "Apache-2.0"` y `license-files` en `pyproject.toml`, `NOTICE` y
+  `DISCLAIMER.md` añadidos, y sección `## Disclaimer` en el README.
 
 ## Seguridad
 
@@ -56,29 +56,24 @@ lo que queda abierto y lo que requiere decisión del operador.
 
 ## Pendiente antes de publicar
 
-1. **Decisión de licencia** — mantener “Authorized Use Only” o adoptar
-   Apache-2.0. Si se adopta: reemplazar `LICENSE`, añadir `license =
-   "Apache-2.0"` en `pyproject.toml`, crear `NOTICE` y `DISCLAIMER.md`. No se
-   hizo en este RC.
-2. **Push de `main`** — no realizado; requiere autorización explícita. El
-   `main` remoto sigue en `0f1268f` y este RC añade commits por encima.
-3. **Tag `v3.0.0-rc3`** — no creado; requiere autorización explícita. No se
-   reescribe el tag remoto `v3.0.0-rc2`, que ya está publicado: rc3 se crea
-   nuevo sobre el commit que resulte del push.
-4. **Verificación del CI remoto** — el workflow está actualizado, pero no hay
-   evidencia del run hasta que se haga push. No se puede afirmar “CI verde”
-   antes de eso.
-5. **Cobertura** — no re-medida en este RC. Suelo actual: 86 %
+1. **Push de `main`** — autorizado por el operador el 2026-11-10; se ejecuta
+   junto con este commit. El `main` remoto estaba en `0f1268f`.
+2. **Tag `v3.0.0-rc3`** — autorizado; se crea nuevo sobre el commit publicado.
+   No se reescribe el tag remoto `v3.0.0-rc2`.
+3. **Verificación del CI remoto** — el workflow está actualizado, pero el run
+   solo existe tras el push y no se puede leer desde esta máquina (sin `gh` ni
+   token). No se afirma “CI verde” sin ese run.
+4. **Cobertura** — no re-medida en este RC. Suelo actual: 86 %
    (`Makefile:24-27`); última medida documentada: 86,2 % el 2026-11-06.
-6. **Instalación limpia** — `install.sh --dry-run` solo planifica. Falta
+5. **Instalación limpia** — `install.sh --dry-run` solo planifica. Falta
    ejecutar `pipx install --force /home/operator/omni-agentcs` y confirmar
    `omni --version` = `3.0.0rc3` en un entorno limpio.
-7. **Release en PyPI** — no preparada. La vía documentada es `install.sh` desde
+6. **Release en PyPI** — no preparada. La vía documentada es `install.sh` desde
    el repo.
-8. **Benchmark externo vs PentAGI** — no ejecutado; ver
+7. **Benchmark externo vs PentAGI** — no ejecutado; ver
    `RELEASE_AUDIT_OMNI.md` §2 y §4.
-9. **Documentación en inglés** — portada en inglés; `SECURITY.md`, este
+8. **Documentación en inglés** — portada en inglés; `SECURITY.md`, este
    checklist y `docs/README-detailed.md` siguen en español.
-10. **Documentos obsoletos** — `docs/MASTER_ROADMAP.md:1106` declara SEC-00
+9. **Documentos obsoletos** — `docs/MASTER_ROADMAP.md:1106` declara SEC-00
     abierto con commits que ya no existen en este clon; conviene archivarlo o
     actualizarlo en un commit aparte.
