@@ -87,6 +87,14 @@ def _netexec_sandbox():
 
 
 @pytest.fixture()
+def netexec_binary(monkeypatch):
+    """The credential tests never spawn it, and CI has no netexec installed."""
+    monkeypatch.setattr(
+        netexec_module, "resolve_ad_binary", lambda *candidates: "/usr/bin/netexec"
+    )
+
+
+@pytest.fixture()
 def context(tmp_path, monkeypatch):
     monkeypatch.setenv("NEXUS_SCOPE_SIGNING_SECRET", SECRET)
     monkeypatch.setenv("NEXUS_VAULT_ROOT", str(tmp_path / "vault"))
@@ -267,7 +275,7 @@ def test_netexec_resolves_the_single_board_credential(context):
     assert result.evidence["credential"] == f"credential_ref resuelto por el motor: {ref}"
 
 
-def test_netexec_without_a_credential_lists_what_the_board_has(context):
+def test_netexec_without_a_credential_lists_what_the_board_has(context, netexec_binary):
     with pytest.raises(ValueError) as excinfo:
         asyncio.run(
             netexec_handler(
@@ -277,7 +285,7 @@ def test_netexec_without_a_credential_lists_what_the_board_has(context):
     assert "no smb credential for svc@10.10.10.5" in str(excinfo.value)
 
 
-def test_netexec_with_two_credentials_asks_which_one(context):
+def test_netexec_with_two_credentials_asks_which_one(context, netexec_binary):
     first = _record(context, f"cred:smb:svc@{TARGET}", service="smb",
                     handle=_handle("first-secret"))
     second = _record(context, f"cred:winrm:svc@{TARGET}", service="winrm",
