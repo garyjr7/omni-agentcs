@@ -20,6 +20,10 @@ class Tty(io.StringIO):
 @pytest.fixture
 def terminal(monkeypatch):
     monkeypatch.delenv("NEXUS_NO_TUI", raising=False)
+    # GitHub sets CI=true and should_use_tui() short-circuits on it before it
+    # looks at the streams. The CI gate has its own test in
+    # test_tui_rich_presentation.py; here the TTY path is what is under test.
+    monkeypatch.delenv("CI", raising=False)
     # Pytest replaces global stdout between fixture setup and the test call.
     # Isolate the module's stream references instead of fighting capture.
     streams = SimpleNamespace(stdin=Tty(), stdout=Tty())

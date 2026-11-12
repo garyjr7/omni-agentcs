@@ -27,6 +27,13 @@ jobs:
             requirements-dev.txt
             requirements-prod.in
             nexus_core/requirements.txt
+      - name: Install system dependencies
+        # The egress tests build the real bwrap/socat/proxychains argv; the
+        # ubuntu-latest image ships none of them. nmap stays out on purpose:
+        # its network test skips when the binary is absent.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat proxychains4
       # SEC-10: the lock fixes every version and hash, so two builds of the same
       # commit install the same bytes. Regenerate it with `make lock` when the
       # requirements change.
@@ -65,6 +72,12 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-dev.lock
+      - name: Install system dependencies
+        # Same binaries as the cli job: coverage runs the same suite and must
+        # not fail (or silently skip) for a missing runner package.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat proxychains4
       - run: pip install --require-hashes -r requirements-dev.lock
       - name: Coverage gate (V1-12)
         # The floor is the measurement documented in the Makefile (86.2 % on

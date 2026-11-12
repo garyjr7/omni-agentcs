@@ -141,6 +141,9 @@ def test_describe_tool_call_variants():
 
 def test_spinner_enabled_respects_env_opt_out(monkeypatch):
     session = _session()
+    # _spinner_enabled also disables itself when CI is set; this test is about
+    # the explicit opt-out, so the CI gate must not decide the result.
+    monkeypatch.delenv("CI", raising=False)
     with mock.patch("nexus_core.cli.spinner.spinner_enabled", return_value=True):
         monkeypatch.delenv("NEXUS_NO_SPINNER", raising=False)
         assert session._spinner_enabled() is True
