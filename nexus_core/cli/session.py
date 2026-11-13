@@ -968,7 +968,10 @@ class OmniSession:
             if self._tui.use_tui:
                 from .tui.stream import format_tool_invocation
                 self._tui.append_execution_block(
-                    format_tool_invocation(tool_id, arguments, width=self._tui.text_width)
+                    format_tool_invocation(
+                        tool_id, arguments, width=self._tui.text_width,
+                        no_color=self._tui.no_color,
+                    )
                 )
             with self._busy(self._describe_tool_call(tool_id, arguments)), Spinner(
                 self._describe_tool_call(tool_id, dict(arguments or {})),
@@ -1756,8 +1759,10 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
                     session._tui.append_card({}, thought=str(meta["thought"]),
                                              reasoning=reasoning)
                     message = {**message, "metadata": {**meta, "thought": ""}}
-                text = render_message(message, expanded=session._tui.expand_cards,
-                                      width=session._tui.text_width)
+                text = render_message(
+                    message, expanded=session._tui.expand_cards,
+                    width=session._tui.text_width, no_color=session._tui.no_color,
+                )
                 if text:
                     session._tui.append_execution_block(text)
         else:
@@ -1782,8 +1787,10 @@ def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
 
         if event_type == "react.action" and "arguments" in payload:
             session._tui.append_execution_block(
-                format_tool_invocation(payload.get("tool_id", "?"), payload["arguments"],
-                                       width=session._tui.text_width)
+                format_tool_invocation(
+                    payload.get("tool_id", "?"), payload["arguments"],
+                    width=session._tui.text_width, no_color=session._tui.no_color,
+                )
             )
         elif event_type in {"tool.complete", "tool.failed"}:
             result = payload.get("tool_result") or payload

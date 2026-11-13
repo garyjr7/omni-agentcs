@@ -107,8 +107,10 @@ def render_tool_result(tool_id: str, result: dict[str, Any]) -> None:
         write(paint(f"✗ {tool_id} — {reason}", RED))
         return
 
-    evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
-    output = result.get("output") if isinstance(result.get("output"), dict) else {}
+    raw_evidence = result.get("evidence")
+    evidence: dict[Any, Any] = raw_evidence if isinstance(raw_evidence, dict) else {}
+    raw_output = result.get("output")
+    output: dict[Any, Any] = raw_output if isinstance(raw_output, dict) else {}
     summary: list[str] = []
     hosts_up = evidence.get("hosts_up")
     host_count = evidence.get("host_count")
@@ -344,14 +346,26 @@ def render_summary(text: str, findings: Iterable[dict[str, Any]] = (),
 
 
 def render_answer(text: str, *, no_color: bool = False, markdown: bool = False, max_width=None) -> None:
-    """Print a conversational ``/ask`` answer, preserving its paragraphs."""
-    write()
-    write(paint("OmniAgent", AQUA, BOLD) + paint(" ·", DIM))
+    """Print a conversational ``/ask`` answer, preserving its paragraphs.
+
+    In the TUI, Markdown answers are committed as a framed block instead of a
+    naked paragraph with a two-cell indent: the result reads like every other
+    card in the transcript. The plain fallback keeps the historical label.
+    """
     body = str(text or "(sin respuesta)")
     if markdown:
         from .tui.markdown import render_markdown
+        from .tui.presentation import answer_panel
 
         body = render_markdown(body, no_color=no_color or not color_enabled(), max_width=max_width)
+        width = max(20, (int(max_width) if max_width else 74) + 6)
+        gap = block_break()
+        if gap:
+            write(gap, end="")
+        write(answer_panel(body, width=width, no_color=no_color or not color_enabled()))
+        return
+    write()
+    write(paint("OmniAgent", AQUA, BOLD) + paint(" ·", DIM))
     for line in body.splitlines():
         write("  " + line if line.strip() else "")
     write()
@@ -431,7 +445,7 @@ def _session_rows(sessions: dict[str, Any]) -> list[tuple[str, ...]]:
         key = str(item[0])
         return (int(key), "") if key.isdigit() else (0, key)
 
-    rows = []
+    rows: list[tuple[str, ...]] = []
     for sid, record in sorted((sessions or {}).items(), key=sort_key):
         if not isinstance(record, dict):
             continue

@@ -107,8 +107,8 @@ def test_tui_renders_the_summary_as_markdown_inside_a_quiet_panel(tui_factory: A
     assert "Resultado" in transcript
     assert "Acceso root verificado" in transcript
     assert "[critical] SQLi en /login" in transcript
-    assert "┌" in transcript and "│" in transcript
-    assert "└" in transcript and "┘" in transcript
+    assert "╭" in transcript and "│" in transcript
+    assert "╰" in transcript and "╯" in transcript
     assert max(len(line) for line in transcript.splitlines()) <= 100
 
 
@@ -139,8 +139,8 @@ def test_tui_final_panel_has_air_before_and_after_it(tui_factory: Any):
     owner._render_final_markdown(_result())
     session.flush()
     transcript = session.transcript
-    assert "paso anterior\n\n┌" in transcript
-    assert "┘\n\n" in transcript
+    assert "paso anterior\n\n╭" in transcript
+    assert "╯\n\n" in transcript
 
 
 def test_tui_completed_run_reads_services_from_the_blackboard(tui_factory: Any, tmp_path: Any):

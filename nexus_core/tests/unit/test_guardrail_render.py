@@ -111,8 +111,9 @@ def test_a_real_tool_failure_keeps_the_input_correction_distinct():
         "error": "el binario del orquestador no responde",
     }
     text = render_tool_result(result, no_color=True, width=100)
-    assert text.startswith("× update plan: el binario del orquestador no responde")
+    assert "× update plan: el binario del orquestador no responde" in text
     assert "corrección del orquestador" not in text
+    assert "Fallo" in text
 
 
 def test_a_real_failure_keeps_the_error_colour():
@@ -130,16 +131,17 @@ def test_a_real_tool_failure_names_the_tool_once():
         {"success": False, "tool_id": "nexus.recon.nmap", "error": "timeout 120s"},
         no_color=True,
     )
-    assert text.startswith("× nmap: timeout 120s")
+    assert "× nmap: timeout 120s" in text
     assert text.count("nmap") == 1
     assert text.count("×") == 1
+    assert "Fallo" in text
 
 
 def test_a_failure_without_a_specific_error_still_names_the_tool():
     text = render_tool_result(
         {"success": False, "tool_id": "nexus.web.request"}, no_color=True
     )
-    assert text.startswith("× request: ")
+    assert "× request: " in text
     assert "falló" in text
     assert text.count("×") == 1
 
@@ -150,6 +152,7 @@ def test_a_real_tool_failure_stays_red_with_a_single_mark():
          "error": "timeout 120s"},
         no_color=True,
     )
-    assert text.startswith("× nmap: timeout 120s")
+    assert "× nmap: timeout 120s" in text
     assert text.count("×") == 1
     assert "corrección" not in text
+    assert "Fallo" in text

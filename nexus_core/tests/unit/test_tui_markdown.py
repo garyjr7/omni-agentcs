@@ -77,6 +77,7 @@ def test_markdown_pipe_output_uses_router(tui_factory):
     ui.session.flush()
     assert "Title" in ui.session.transcript and "• item" in ui.session.transcript
     assert "# Title" not in ui.session.transcript
+    assert "╭─ OMNI · respuesta" in ui.session.transcript
 
 
 def test_fallback_answer_keeps_original_markdown(capsys):

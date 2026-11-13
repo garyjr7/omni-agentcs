@@ -1323,7 +1323,8 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
     max_width = None
     if session._tui.use_tui:
         columns = session._tui._session.output.get_size().columns
-        max_width = max(20, min(DEFAULT_READING_WIDTH, columns - 4))
+        # The framed answer spends six cells on border and horizontal padding.
+        max_width = max(20, min(DEFAULT_READING_WIDTH, columns - 8))
     render.render_answer(
         answer, no_color=session.no_color, markdown=session._tui.use_tui,
         max_width=max_width,

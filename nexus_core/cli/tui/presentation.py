@@ -91,6 +91,32 @@ def render_rich(value: RenderableType, *, width: int = 100, no_color: bool = Fal
     return stream.getvalue().rstrip('\n')
 
 
+def _block_width(width: int) -> int:
+    """Content width inside a framed block: border plus two-cell padding."""
+    return max(12, int(width) - 6)
+
+
+def _framed(body: RenderableType, *, title: str | None, width: int,
+            border_style: str, title_style: str = '',
+            no_color: bool = False) -> str:
+    """One full-width transcript block with a quiet border and breathing room.
+
+    Every block uses the same geometry so the transcript reads as a stack of
+    cards instead of a wall of text. ``width`` is the outer width, including
+    the border and the two-cell horizontal padding; the caller wraps its body
+    to :func:`_block_width` so the border and the content never disagree.
+    """
+    content = body if isinstance(body, Text) else Text.from_ansi(str(body))
+    panel = Panel(
+        content, box=box.ROUNDED,
+        title=Text(title, style=title_style) if title else None,
+        title_align='left', border_style=border_style,
+        style=THEME.result_panel_style, padding=(1, 2), expand=True,
+        width=max(20, int(width)),
+    )
+    return render_rich(panel, width=max(20, int(width)), no_color=no_color)
+
+
 def wrap_terminal_text(value: str, *, width: int, no_color: bool = False) -> str:
     """Wrap ANSI/plain scrollback on whitespace before prompt_toolkit sees it."""
     stream = io.StringIO()
@@ -149,23 +175,20 @@ def input_quote(value: str, *, width: int = 100, no_color: bool = False) -> str:
 
 def user_message(value: str, *, width: int = 100, no_color: bool = False,
                  now: datetime | None = None) -> str:
-    """One operator turn: red rail, 12-hour stamp, then the task itself.
+    """One operator turn as its own full-width block.
 
-    The REPL used to echo the line twice (the editor's ``>`` and the run's
-    ``❯``). The transcript carries exactly one block per turn: the rail, the
-    time the operator submitted it and the task wrapped to the transcript
-    width, so a long objective cannot overflow the terminal.
+    The transcript carries exactly one block per turn: a framed surface, the
+    time the operator submitted it in the title and the task itself inside the
+    padding. A long objective wraps inside the block instead of touching the
+    terminal edge.
     """
     when = (now or datetime.now()).strftime("%I:%M %p")
-    rows: list[RenderableType] = [
-        Text("▌ ", style=ACCENT_STYLE) + Text(f"[{when}]", style=SECONDARY_STYLE)
-    ]
-    body = clean_text(str(value or "")).strip() or ""
-    for raw in body.splitlines() or [""]:
-        for row in textwrap.wrap(raw, width=max(8, int(width) - 2),
-                                 break_long_words=False, break_on_hyphens=False) or [""]:
-            rows.append(Text("▌ ", style=ACCENT_STYLE) + Text(row))
-    return render_rich(Group(*rows), width=width, no_color=no_color)
+    body = Text(clean_text(str(value or "")).strip(), style=THEME.offwhite)
+    return _framed(
+        body, title=f'Operador · {when}', width=width,
+        border_style=THEME.primary, title_style=THEME.primary_bold,
+        no_color=no_color,
+    )
 
 
 _SERVICE_KEY = re.compile(
@@ -187,7 +210,8 @@ def _service_table(facts: Any) -> list[str]:
         match = _SERVICE_KEY.match(str(fact.get("key") or "").strip())
         if match is None:
             continue
-        value = fact.get("value") if isinstance(fact.get("value"), dict) else {}
+        raw_value = fact.get("value")
+        value: dict[Any, Any] = raw_value if isinstance(raw_value, dict) else {}
         host = match.group("host")
         port = int(match.group("port"))
         proto = str(match.group("proto") or value.get("protocol") or "tcp").lower()
@@ -201,8 +225,12 @@ def _service_table(facts: Any) -> list[str]:
         "| Puerto | Servicio | Estado |",
         "| --- | --- | --- |",
     ]
-    for _, port, service, state in sorted(rows.values(), key=lambda row: (row[0], int(row[1]))):
-        lines.append(f"| {port} | {service.replace('|', '/')} | {state.replace('|', '/')} |")
+    for _, port_label, service, state in sorted(
+        rows.values(), key=lambda row: (row[0], int(row[1]))
+    ):
+        lines.append(
+            f"| {port_label} | {service.replace('|', '/')} | {state.replace('|', '/')} |"
+        )
     return lines
 
 
@@ -291,17 +319,33 @@ def result_panel(body: str, *, width: int = 100,
     The body arrives already rendered by :func:`nexus_core.cli.tui.markdown`.
     ``Text.from_ansi`` turns those styles back into a Rich renderable so the
     panel background covers the whole block without re-parsing the Markdown.
-    A square, muted border separates the result from the execution stream; the
-    caller wraps the body first so the border and the content never disagree
-    at wide terminal widths.
+    The title names the block; the muted border separates it from the stream.
     """
-    content = Text.from_ansi(str(body or ''))
-    panel = Panel(
-        content, box=box.SQUARE, border_style=THEME.result_border_style,
-        style=THEME.result_panel_style, padding=(1, 2), expand=True,
-        width=max(20, int(width)),
+    return _framed(
+        Text.from_ansi(str(body or '')), title='Resultado final', width=width,
+        border_style=THEME.result_border_style, title_style=THEME.title_style,
+        no_color=no_color,
     )
-    return render_rich(panel, width=max(20, int(width)), no_color=no_color)
+
+
+def answer_panel(body: str, *, width: int = 80,
+                 no_color: bool = False) -> str:
+    """Conversational answer as a framed Markdown block, not a naked paragraph."""
+    return _framed(
+        Text.from_ansi(str(body or '')), title='OMNI · respuesta', width=width,
+        border_style=THEME.result_border_style, title_style=THEME.primary_bold,
+        no_color=no_color,
+    )
+
+
+def execution_block(body: str, *, width: int = 100, no_color: bool = False,
+                    title: str = 'Ejecución') -> str:
+    """One tool invocation as a framed block, with the command inside it."""
+    return _framed(
+        Text.from_ansi(str(body or '')), title=title, width=width,
+        border_style=THEME.muted, title_style=THEME.secondary_style,
+        no_color=no_color,
+    )
 
 
 def error_panel(title: str, lines: Sequence[str], *, width: int = 100,
@@ -415,6 +459,19 @@ def thinking(value: str, *, expanded: bool = False, width: int = 100,
             text.append('\n  ' + line, style=THINKING_STYLE)
     text.append('\n  ' + HIDE_REASONING, style=SECONDARY_STYLE)
     return text
+
+
+def thinking_block(value: str, *, expanded: bool = False, width: int = 100,
+                   reasoning: str | None = None, no_color: bool = False) -> str:
+    """Reasoning as a framed block with the same geometry as every other card."""
+    content = thinking(
+        value, expanded=expanded, width=_block_width(width), reasoning=reasoning,
+    )
+    return _framed(
+        content, title='Pensamiento', width=width,
+        border_style=THEME.muted, title_style=THEME.secondary_style,
+        no_color=no_color,
+    )
 
 
 def live_thought(value: str, *, width: int = 100) -> Text:
@@ -734,6 +791,21 @@ def is_plumbing_command(command: Any) -> bool:
     return bool(segments) and all(_PLUMBING_PROGRAM_RE.match(part) for part in segments)
 
 
+def tool_result_block(body: str, *, success: bool, width: int = 100,
+                      no_color: bool = False, guardrail: bool = False) -> str:
+    """A tool result as a framed block: verdict inside, border names the state."""
+    if guardrail:
+        title, border, title_style = 'Corrección', THEME.warn, f'bold {THEME.warn}'
+    elif success:
+        title, border, title_style = 'Resultado', THEME.result_border_style, THEME.ok
+    else:
+        title, border, title_style = 'Fallo', THEME.result_border_style, THEME.error
+    return _framed(
+        Text.from_ansi(str(body or '')), title=title, width=width,
+        border_style=border, title_style=title_style, no_color=no_color,
+    )
+
+
 def tool_call_line(tool_id: str, arguments: Any, *, width: int | None = None) -> str:
     """One plain line: ``> Ejecutando nmap en 10.0.0.1...``
 
@@ -833,7 +905,8 @@ def _open_ports(result: dict[str, Any]) -> list[str]:
     """Open ports a parsed scan reports (``[]`` for anything else)."""
     ports = [port for port, _, _ in scan_ports(result)]
     if not ports:
-        evidence = result.get('evidence') if isinstance(result.get('evidence'), dict) else {}
+        raw_evidence = result.get('evidence')
+        evidence: dict[Any, Any] = raw_evidence if isinstance(raw_evidence, dict) else {}
         ports = [str(port) for port in evidence.get('open_ports') or [] if str(port)]
     return ports
 

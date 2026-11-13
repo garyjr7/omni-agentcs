@@ -129,6 +129,8 @@ class TuiSession:
         self._next_card_id = 1
         #: Live ReAct "thinking" text shown while the model streams a turn.
         self._thought_text: str | None = None
+        #: Provider's native reasoning, attached to the next thought card.
+        self._pending_reasoning: str | None = None
         from .presentation import WorkingIndicator
         self._working_indicator = WorkingIndicator()
         self._auto_scroll = True
@@ -1247,13 +1249,15 @@ class TuiSession:
                                  width=width, no_color=self.no_color)
             return lead + quote + '\n  ' + footer + '\n\n'
         if card.get("thought") is not None:
-            from .presentation import render_rich, thinking
+            from .presentation import thinking_block
             expanded = bool(card.get("expanded"))
             width = int(self._session.output.get_size().columns) if self.use_tui else 100
-            rendered = thinking(str(card["thought"]), expanded=expanded,
-                                width=max(20, width - 2), reasoning=card.get("reasoning"))
-            return lead + render_rich(rendered, width=max(20, width - 2),
-                                      no_color=self.no_color) + "\n\n"
+            rendered = thinking_block(
+                str(card["thought"]), expanded=expanded,
+                width=max(20, width - 2), reasoning=card.get("reasoning"),
+                no_color=self.no_color,
+            )
+            return lead + rendered + "\n\n"
         width = int(self._session.output.get_size().columns) if self.use_tui else 100
         return lead + render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded")),
                                          max_lines=4, width=max(20, width - 2),
@@ -1284,10 +1288,18 @@ class TuiSession:
 
     @staticmethod
     def _footer_line_index(styled: list[list[Any]]) -> int | None:
-        """Last physical footer line, including footers wrapped on narrow screens."""
+        """Last physical content line, including footers wrapped on narrow screens.
+
+        Framed blocks put the bottom border after the actual footer. Walking
+        back from the bottom, a border-only row is not an affordance: the click
+        target is the last row that still carries text (``Ver X líneas más``,
+        ``▸ Razonamiento``, ``ctrl+t colapsar``).
+        """
         from prompt_toolkit.formatted_text import fragment_list_to_text
+        frame = set("╭╮╰╯─│┌┐└┘ ")
         for index in range(len(styled) - 1, -1, -1):
-            if fragment_list_to_text(styled[index]).strip():
+            text = fragment_list_to_text(styled[index]).strip()
+            if text and any(char not in frame for char in text):
                 return index
         return None
 

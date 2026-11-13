@@ -6,7 +6,7 @@ import shlex
 from typing import Any
 
 from ..theme import BOLD, DIM, GREEN, OFFWHITE, RESET
-from .presentation import clean_text, render_rich, result_diff, thinking, trace_block
+from .presentation import clean_text, render_rich, result_diff, trace_block
 
 PREFIXES = {
     "nexus.recon.nmap": "Recon-NMAP", "nexus.recon.dns": "Recon-DNS",
@@ -67,8 +67,9 @@ def truncate_output(output: str, max_lines: int = 3, *, width: int = 100) -> tup
     return "\n".join([lines[0], "...", *tail]), True
 
 
-def render_thought(text: str, *, width: int = 180, expanded: bool = False) -> str:
-    """Muted, single-line reasoning summary, expandable without changing history.
+def render_thought(text: str, *, width: int = 180, expanded: bool = False,
+                   no_color: bool = False) -> str:
+    """Muted reasoning summary as its own framed block.
 
     The thought is durable (``react.action`` metadata) and is emitted *before*
     the tool it justifies, so the human sees the intent before the action.
@@ -76,7 +77,9 @@ def render_thought(text: str, *, width: int = 180, expanded: bool = False) -> st
     text = str(text or "").strip()
     if not text:
         return ""
-    return render_rich(thinking(text, expanded=expanded), width=width)
+    from .presentation import thinking_block
+
+    return thinking_block(text, expanded=expanded, width=width, no_color=no_color)
 
 
 #: Keys that make a path worth naming in a summary, most specific first.
@@ -170,17 +173,22 @@ def _command_line(tool_id: str, safe: dict[str, Any]) -> str | None:
 
 
 def format_tool_invocation(tool_id: str, arguments: Any, *,
-                           width: int | None = None) -> str:
-    """The default voice of a tool call: one plain conversational line.
+                           width: int | None = None,
+                           no_color: bool = False) -> str:
+    """One tool invocation, framed when a transcript width is available.
 
-    ``> Ejecutando nmap en 10.0.0.1...`` instead of a dashboard header. The
-    detailed argv/``key=value`` request is still available for an expanded card
-    through :func:`detailed_tool_invocation`; the default stream never pays for
-    it. Secrets are masked by the same ``display_arguments`` policy.
+    The sentence stays conversational (``> Ejecutando nmap en 10.0.0.1...``);
+    the frame around it is what makes the call a block instead of a loose line.
+    A renderer without a width keeps the plain one-line export. Secrets are
+    masked by the same ``display_arguments`` policy.
     """
-    from .presentation import tool_call_line
+    from .presentation import execution_block, tool_call_line
 
-    return tool_call_line(str(tool_id or ""), arguments, width=width)
+    content_width = max(20, int(width) - 6) if width is not None else None
+    line = tool_call_line(str(tool_id or ""), arguments, width=content_width)
+    if width is None:
+        return line
+    return execution_block(line, width=width, no_color=no_color)
 
 
 def detailed_tool_invocation(tool_id: str, arguments: Any, *,
@@ -282,7 +290,8 @@ def _output_facts(result: dict[str, Any]) -> list[str]:
     """
     if not result.get("success"):
         return []
-    output = result.get("output") if isinstance(result.get("output"), dict) else {}
+    raw_output = result.get("output")
+    output: dict[Any, Any] = raw_output if isinstance(raw_output, dict) else {}
     facts: list[str] = []
     path = next((str(output[key]) for key in _PATH_KEYS if output.get(key)), "")
     if path:
@@ -307,7 +316,8 @@ def _notes(result: dict[str, Any]) -> list[str]:
     with a message saying nothing was found) keeps its words and its success
     colour, and never becomes a failure.
     """
-    output = result.get("output") if isinstance(result.get("output"), dict) else {}
+    raw_output = result.get("output")
+    output: dict[Any, Any] = raw_output if isinstance(raw_output, dict) else {}
     notes: list[str] = []
     for key in _NOTE_KEYS:
         value = output.get(key)
@@ -420,14 +430,19 @@ def is_guardrail(result: dict[str, Any]) -> bool:
 
 def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
                        max_lines: int = 4, width: int = 100, no_color: bool = False) -> str:
-    """One plain line by default; the full Rich card only when expanded.
+    """A tool result as one framed block, collapsed or expanded.
 
-    The default flow is conversational (``✓ nmap: 3 puertos abiertos (…)``).
-    ``expanded=True`` keeps the reviewed card: folded body, diff syntax, hidden
-    line count and clickable footer. A guardrail is a correction, not a result,
-    so it always keeps its own amber guidance block.
+    The default flow is still conversational (``✓ nmap: 3 puertos abiertos``),
+    but the verdict lives inside a bordered card instead of floating as a bare
+    line. ``expanded=True`` keeps the reviewed card: folded body, diff syntax,
+    hidden line count and clickable footer. A guardrail is a correction, not a
+    result, so it keeps its own amber title.
     """
+    from .presentation import tool_result_block
+
     guardrail = is_guardrail(result)
+    content_width = max(20, int(width) - 6)
+    success = bool(result.get("success"))
     if not expanded and not guardrail:
         from rich.cells import cell_len
 
@@ -441,10 +456,13 @@ def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
             result,
             summary=summarize_tool_result(result),
             # Reserve the footer's cells before fitting, or the verdict overflows
-            # the width and the transcript wraps it into two rows (D1).
-            width=max(1, int(width) - cell_len(footer)) if footer else width,
+            # the card and wraps into two rows (D1).
+            width=max(1, content_width - cell_len(footer)) if footer else content_width,
         )
-        return f"{line}{footer}"
+        return tool_result_block(
+            f"{line}{footer}", success=success, width=width,
+            no_color=no_color, guardrail=guardrail,
+        )
     structured = structured_output(result)
     value, is_diff = trace_text(result)
     guidance = ""
@@ -462,19 +480,24 @@ def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
             and not result.get("stdout") and not result.get("stderr")):
         from .presentation import render_port_table
 
-        table = render_port_table(result, width=width, no_color=no_color)
+        table = render_port_table(result, width=content_width, no_color=no_color)
         if table:
             # The table *is* the body: the mapped ``Puerto …`` lines would say
             # the same thing twice, one per line and without the versions.
             value = ""
     rendered = render_rich(trace_block(
         value,
-        success=bool(result.get("success")), tool_id=str(result.get("tool_id") or ""),
+        success=success, tool_id=str(result.get("tool_id") or ""),
         summary=summarize_tool_result(result), expanded=expanded, limit=max_lines,
         diff=is_diff, defer_detail=structured is not None, structured=structured,
-        guardrail=guardrail, guidance=guidance, width=width,
-    ), width=width, no_color=no_color)
-    return f"{rendered}\n\n{table}" if table else rendered
+        guardrail=guardrail, guidance=guidance, width=content_width,
+    ), width=content_width, no_color=no_color)
+    if table:
+        rendered = f"{rendered}\n{table}"
+    return tool_result_block(
+        rendered, success=success, width=width, no_color=no_color,
+        guardrail=guardrail,
+    )
 
 
 def observation(message: dict[str, Any]) -> dict[str, Any]:
@@ -492,18 +515,21 @@ def observation(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_message(message: dict[str, Any], *, expanded: bool = False,
-                   width: int | None = None) -> str:
+                   width: int | None = None, no_color: bool = False) -> str:
     meta = message.get("metadata") or {}
     kind = meta.get("kind")
     if kind == "react.action":
-        thought = render_thought(str(meta.get("thought") or ""), expanded=expanded)
+        thought = render_thought(str(meta.get("thought") or ""), expanded=expanded,
+                                 width=width or 180, no_color=no_color)
         if meta.get("action") == "tool_call":
             call = format_tool_invocation(meta.get("tool_id", "?"),
-                                          meta.get("arguments", {}), width=width)
+                                          meta.get("arguments", {}), width=width,
+                                          no_color=no_color)
             return f"{thought}\n{call}" if thought else call
         # task_complete / request_clarification carry reasoning too: show it so
         # the cognitive loop is visible even when no tool runs.
         return thought
     if kind == "react.observation":
-        return render_tool_result(observation(message), expanded=expanded)
+        return render_tool_result(observation(message), expanded=expanded,
+                                  width=width or 100, no_color=no_color)
     return ""

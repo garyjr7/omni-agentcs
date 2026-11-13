@@ -69,7 +69,7 @@ def test_repl_banner_shown_before_first_prompt(tui_factory, monkeypatch):
     session.run_repl()
     from nexus_core.cli.tui.presentation import clean_text
     transcript = clean_text(ui.session.transcript)
-    assert transcript.index("Omni Agent CS") < transcript.index("▌ /exit")
+    assert transcript.index("Omni Agent CS") < transcript.index("/exit")
 
 
 def test_repl_output_routed_through_tui_output(tui_factory, monkeypatch):

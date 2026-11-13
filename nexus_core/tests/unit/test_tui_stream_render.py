@@ -42,11 +42,13 @@ def test_expanded_table_is_bounded_and_counts_the_rest():
     assert "svc0" in text and "svc12" not in text
 
 
-def test_collapsed_scan_stays_one_line_without_the_table():
+def test_collapsed_scan_is_a_block_without_the_table():
     ports = [_port(1000 + index, f"svc{index}") for index in range(15)]
     text = _plain(render_tool_result(_scan(ports), width=100, no_color=True))
-    assert len(text.splitlines()) == 1
+    assert text.startswith("╭")
+    assert "✓ nmap: 15 puertos abiertos" in text
     assert "Servicio" not in text
+    assert "Ver 13 líneas más" in text
 
 
 def test_tool_invocation_is_a_single_conversational_line():
@@ -120,21 +122,22 @@ def test_a_file_operation_redacts_a_credential_inside_the_path():
     assert text.startswith("> Leyendo") and "hunter2" not in text
 
 
-def test_a_narrow_width_crops_with_a_cell_accurate_ellipsis():
+def test_a_narrow_width_crops_inside_the_block_with_a_cell_accurate_ellipsis():
     command = "nmap -sV -p- " + " ".join(["10.0.0.5"] * 12)
     text = _plain(format_tool_invocation(
-        "nexus.session.interact", {"command": command}, width=60))
-    assert len(text.splitlines()) == 1
-    assert cell_len(text) <= 60
-    assert text.endswith("…")
+        "nexus.session.interact", {"command": command}, width=60, no_color=True))
+    lines = text.splitlines()
+    assert text.startswith("╭") and text.rstrip().endswith("╯")
+    assert all(cell_len(line) <= 60 for line in lines)
+    assert any("> Ejecutando interact" in line and "…" in line for line in lines)
 
 
 def test_a_wide_character_line_is_measured_in_cells():
     command = "日本語" * 30
     text = _plain(format_tool_invocation(
-        "nexus.session.interact", {"command": command}, width=40))
-    assert len(text.splitlines()) == 1
-    assert cell_len(text) <= 40
+        "nexus.session.interact", {"command": command}, width=40, no_color=True))
+    assert all(cell_len(line) <= 40 for line in text.splitlines())
+    assert "日本語" in text
 
 
 def test_file_operations_name_the_action_and_the_path():
@@ -143,11 +146,13 @@ def test_file_operations_name_the_action_and_the_path():
     assert _plain(format_tool_invocation("nexus.file.edit", {"path": "c.txt"})) == "> Ejecutando edit en c.txt..."
 
 
-def test_tool_complete_is_one_plain_line_by_default():
+def test_tool_complete_is_a_framed_block_by_default():
     text = render_tool_result({"success": True, "tool_id": "nexus.shell.exec",
-                               "stdout": "\n".join(f"l{n}" for n in range(10))})
-    assert len(text.splitlines()) == 1
-    assert text.startswith("✓ shell: ")
+                               "stdout": "\n".join(f"l{n}" for n in range(10))},
+                              no_color=True)
+    assert text.startswith("╭") and text.rstrip().endswith("╯")
+    assert "Resultado" in text and "✓ shell: " in text
+    assert "└ " not in text
 
 
 def test_the_full_body_is_available_when_expanded():
@@ -159,22 +164,25 @@ def test_the_full_body_is_available_when_expanded():
 
 def test_tool_complete_summary_line():
     text = render_tool_result({"success": True, "tool_id": "nexus.recon.nmap",
-                               "evidence": {"ports_open_total": 4, "noise_level": "low", "elapsed_seconds": 4.2}})
-    assert text == "✓ nmap: 4 puertos abiertos · ruido: low · 4.2s"
+                               "evidence": {"ports_open_total": 4, "noise_level": "low", "elapsed_seconds": 4.2}},
+                              no_color=True)
+    assert "✓ nmap: 4 puertos abiertos · ruido: low · 4.2s" in text
+    assert "Resultado" in text
 
 
 def test_tool_failed_shows_error():
     text = render_tool_result({"success": False, "tool_id": "nexus.recon.nmap",
                                "output": {"error": "timeout 120s"},
-                               "verification_method": "nmap_timeout"})
-    assert text == (
-        "× nmap: timeout 120s · verification_method=nmap_timeout · Ver 3 líneas más"
-    )
+                               "verification_method": "nmap_timeout"}, no_color=True)
+    assert "Fallo" in text
+    assert ("× nmap: timeout 120s · verification_method=nmap_timeout"
+            " · Ver 3 líneas más") in text
 
 
-def test_collapsed_card_is_a_single_plain_line():
-    text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))})
-    assert len(text.splitlines()) == 1
+def test_collapsed_card_is_a_framed_block():
+    text = render_tool_result({"success": True, "stdout": "\n".join(f"l{n}" for n in range(10))},
+                              no_color=True)
+    assert text.startswith("╭") and "Resultado" in text
     assert "✓ tool: l0" in text and "Ver 6 líneas más" in text
     assert "└ " not in text
     assert "Show more" not in text and "[ Show " not in text
@@ -200,10 +208,12 @@ def test_collapsed_line_reserves_the_footer_and_never_exceeds_the_width():
         "output": {"scan": {"hosts": [{"state": "up", "ip": "45.33.32.156", "ports": ports}],
                             "hosts_up": 1, "elapsed_seconds": 12.4}},
     }
-    line = render_tool_result(result, width=100, no_color=True)
-    assert cell_len(line) <= 100
-    assert line.count("(") == line.count(")")
-    assert line.endswith("· Ver 13 líneas más")
+    text = render_tool_result(result, width=100, no_color=True)
+    lines = text.splitlines()
+    assert all(cell_len(line) <= 100 for line in lines)
+    verdict = next(line for line in lines if "✓ nmap:" in line)
+    assert verdict.count("(") == verdict.count(")")
+    assert "Ver 13 líneas más" in verdict
 
 
 def test_report_result_summarizes_the_path_and_keeps_the_json_in_the_detail():
@@ -236,7 +246,8 @@ def test_a_structured_error_keeps_its_text_and_defers_the_json():
     result = {"success": False, "tool_id": "nexus.web.request",
               "output": {"error": "connection refused", "host": "10.0.0.5"}}
     collapsed = render_tool_result(result, no_color=True)
-    assert collapsed == "× request: connection refused · Ver 4 líneas más"
+    assert "× request: connection refused · Ver 4 líneas más" in collapsed
+    assert "Fallo" in collapsed
     assert "× failed" not in collapsed
     assert '"host"' not in collapsed
     assert '"host": "10.0.0.5"' in render_tool_result(result, expanded=True, no_color=True)
@@ -245,7 +256,7 @@ def test_a_structured_error_keeps_its_text_and_defers_the_json():
 def test_unknown_structured_output_is_summarized_in_one_line():
     result = {"success": True, "tool_id": "nexus.example", "output": {"foo": "bar"}}
     collapsed = render_tool_result(result, no_color=True)
-    assert collapsed == "✓ example: resultado estructurado · 1 campo(s) · Ver 3 líneas más"
+    assert "✓ example: resultado estructurado · 1 campo(s) · Ver 3 líneas más" in collapsed
     assert "└ foo" not in collapsed
     assert '"foo": "bar"' in render_tool_result(result, expanded=True, no_color=True)
 
@@ -293,9 +304,10 @@ def test_thought_is_rendered_before_the_tool_call():
     assert "Razonamiento" in plain and "escaneo los web" in plain
     assert "> Ejecutando nmap en lab..." in plain
     assert plain.index("Razonamiento") < plain.index("> Ejecutando nmap")
-    # Collapsed, the finished turn costs one row: the note is one click away.
-    collapsed = _plain(render_message(message))
-    assert collapsed.splitlines()[0] == "  ▸ Razonamiento"
+    # Collapsed, the note is one click away inside its own framed row.
+    collapsed = _plain(render_message(message, no_color=True))
+    assert "▸ Razonamiento" in collapsed
+    assert "Pensamiento" in collapsed
     assert "escaneo los web" not in collapsed
 
 

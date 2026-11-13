@@ -100,8 +100,10 @@ def test_thought_card_can_be_expanded_and_collapsed(tui_factory: Any) -> None:
     thought = 'first\nsecond\n' + 'detail ' * 50
     ui.append_card({}, thought=thought)
     ui.flush()
-    # Collapsed: exactly one row, and the header itself is the click target.
-    assert ui._scrollback.text.strip().endswith('▸ Razonamiento')
+    # Collapsed: the note is hidden, the card is framed, and its footer is the
+    # click target that expands it.
+    assert 'Pensamiento' in ui._scrollback.text
+    assert '▸ Razonamiento' in ui._scrollback.text
     assert 'ctrl+t' not in ui._scrollback.text
     assert ui.toggle_card_at_line(min(ui._toggle_rows))
     assert '▾ Razonamiento' in ui._scrollback.text
@@ -215,7 +217,9 @@ def test_input_panel_has_a_red_left_bar_and_no_horizontal_rule(tui_factory: Any)
     assert ui._footer_window.style == PANEL_STYLE == 'bg:#2a2a2a'
     panel = ui._input_window
     assert isinstance(panel, VSplit)
-    outer_gap, bar, gap, body = panel.get_children()
+    from typing import cast
+
+    outer_gap, bar, gap, body = cast(Any, panel).get_children()
     assert outer_gap.width == 2 and outer_gap.char == " "
     assert isinstance(bar, Window) and isinstance(body, HSplit)
     # The only border is the solid red vertical bar on the left edge.
@@ -223,7 +227,7 @@ def test_input_panel_has_a_red_left_bar_and_no_horizontal_rule(tui_factory: Any)
     assert not any(getattr(child, 'char', None) == '─' for child in panel.get_children())
     # Inside the panel: the prompt input first, then the footer line.
     assert gap.width == 1 and gap.char == ' '
-    children = body.get_children()
+    children = cast(Any, body).get_children()
     assert children[0].height == 1 and children[2].height == 1 and children[4].height == 1
     assert children[1] is ui._editor_window and children[3] is ui._footer_window
     assert panel.get_children() == [outer_gap, bar, gap, body]
