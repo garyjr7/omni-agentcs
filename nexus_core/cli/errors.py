@@ -286,7 +286,7 @@ def describe_provider_failure(detail: Any, *, operation: str = "la operación") 
 
 def _show(session: Any, error: UserError) -> None:
     tui = getattr(session, "_tui", None) if session is not None else None
-    if getattr(tui, "use_tui", False):
+    if tui is not None and getattr(tui, "use_tui", False):
         from .tui.presentation import error_panel
 
         width = int(getattr(tui, "text_width", 100) or 100)
