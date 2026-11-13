@@ -102,3 +102,77 @@ def test_tui_renders_an_error_panel_without_raw_json():
 def test_transport_errors_are_classified(exc):
     report = errors.describe_error(exc)
     assert "no respondió" in report.title.lower() or "contactar" in report.title.lower()
+
+
+class _StatusError(Exception):
+    def __init__(self, status: int, message: str = "") -> None:
+        super().__init__(message)
+        self.status_code = status
+
+
+class _ResponseError(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__("upstream rejected the request")
+        self.response = type("Response", (), {"status_code": status})()
+
+
+def test_status_can_come_from_the_response_object():
+    report = errors.describe_error(_ResponseError(403))
+    assert "autenticación" in report.title.lower()
+
+
+def test_quota_is_distinct_from_a_plain_rate_limit():
+    report = errors.describe_error(_StatusError(429, "quota exceeded"))
+    assert "cuota" in report.title.lower()
+
+
+def test_server_errors_are_reported_as_temporary():
+    report = errors.describe_error(_StatusError(503, "service unavailable"))
+    assert "no está disponible" in report.title.lower()
+
+
+def test_invalid_json_is_reported_as_a_model_answer_problem():
+    report = errors.describe_error(RuntimeError("invalid JSON from model"))
+    assert "respuesta inválida" in report.title.lower()
+
+
+def test_400_with_json_is_reported_as_invalid_answer():
+    report = errors.describe_error(_StatusError(400, "invalid json body"))
+    assert "respuesta inválida" in report.title.lower()
+
+
+def test_missing_api_key_is_a_configuration_error():
+    report = errors.describe_error(RuntimeError("OpenAI API key is required"))
+    assert "configuración" in report.title.lower()
+
+
+def test_unknown_detail_is_kept_but_never_as_json():
+    report = errors.describe_error(RuntimeError("upstream failed"))
+    assert "upstream failed" in report.summary
+
+
+def test_llm_chain_causes_carry_provider_and_status():
+    from nexus_core.llm.abstraction import LLMChainExhausted
+
+    exc = LLMChainExhausted(
+        [
+            {
+                "provider": "openai",
+                "status_code": 401,
+                "reason": "authentication",
+                "message": "raw SDK body {'error': 'secret'}",
+            }
+        ]
+    )
+    report = errors.describe_error(exc)
+    assert "autenticación" in report.title.lower()
+    assert "openai" in report.summary.lower()
+    assert "secret" not in "\n".join(report.lines())
+
+
+def test_report_provider_failure_and_plain_error_are_renderable(capsys):
+    errors.report_provider_failure(None, "all LLM providers failed: status 401")
+    errors.report_plain_error(RuntimeError("no provider configured"))
+    out = capsys.readouterr().out
+    assert "autenticación" in out.lower() or "configuración" in out.lower()
+    assert "Error code:" not in out

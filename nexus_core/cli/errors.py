@@ -52,13 +52,17 @@ def _causes(exc: BaseException) -> list[BaseException]:
 
 
 def _status_code(exc: BaseException) -> int | None:
-    """HTTP status carried by the exception or any wrapped cause."""
+    """HTTP status carried by the exception, its causes, or the LLM chain."""
     for item in _causes(exc):
         raw = getattr(item, "status_code", None)
         if isinstance(raw, int):
             return raw
         response = getattr(item, "response", None)
         raw = getattr(response, "status_code", None)
+        if isinstance(raw, int):
+            return raw
+    for cause in _chain_causes(exc):
+        raw = cause.get("status_code")
         if isinstance(raw, int):
             return raw
     return None
