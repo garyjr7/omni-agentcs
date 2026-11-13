@@ -10,7 +10,7 @@ from typing import Any
 from nexus_core.kernel.store_factory import get_control_store
 from nexus_core.scope import EngagementStore
 
-from . import render
+from . import errors, render
 from .session import DEFAULT_TENANT, OmniSession, build_llm_client
 
 PROGRAM = "omni"
@@ -602,11 +602,8 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
 
     try:
         llm_client = build_llm_client()
-    except RuntimeError as exc:
-        render.render_error(str(exc))
-        return 2
     except Exception as exc:  # noqa: BLE001 - misconfigured providers must be reported
-        render.render_error(f"no se pudo construir el cliente LLM: {type(exc).__name__}: {exc}")
+        errors.report_plain_error(exc, operation="construir el cliente LLM")
         return 2
 
     session = OmniSession(

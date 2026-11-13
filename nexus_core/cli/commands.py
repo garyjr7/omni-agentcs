@@ -10,12 +10,13 @@ from __future__ import annotations
 import getpass
 import json
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from nexus_core.kernel.approvals import ApprovalService
 
-from . import render
+from . import errors, render
 from .tool_result import tool_method, tool_payload, tool_success
 from .tui.markdown import DEFAULT_READING_WIDTH
 from .tui.output import routed
@@ -33,11 +34,55 @@ log = logging.getLogger("omni.tui")
 #: System prompt of ``/ask``: conversational, never executes anything.
 ASK_SYSTEM_PROMPT = (
     "Eres OmniAgentCS, un asistente experto en ciberseguridad ofensiva. "
-    "Respondes con información técnica precisa y práctica. No ejecutas "
-    "herramientas: solo explicas, aconsejas y respondes preguntas."
+    "Estás en MODO ASESOR: respondes con conocimiento técnico preciso y "
+    "práctico. No ejecutas herramientas, no inventas resultados de escaneos "
+    "y no afirmas haber tocado un objetivo. Si falta un dato para una acción "
+    "real, explica qué falta y qué comando usaría; no lances nada."
 )
 #: How many previous /ask exchanges stay in the local conversational context.
 ASK_HISTORY_LIMIT = 20
+
+#: A concrete target turns a conversational turn into an engagement request:
+#: IPv4/CIDR, URL or a DNS-looking name. Version strings (``Redis 2.8.24``) do
+#: not match because the last label must be alphabetic.
+_ADVISOR_TARGET_RE = re.compile(
+    r"(\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b)|"
+    r"(\bhttps?://[^\s]+)|"
+    r"(\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\.[a-z]{2,63}\b)",
+    re.IGNORECASE,
+)
+
+#: Imperative verbs that mean "run the agent" even without a named target.
+#: A question mark wins over these unless a concrete target is present, so
+#: "¿cómo escaneo con nmap?" stays advisory while "escanea 10.0.0.5" acts.
+_ADVISOR_ACTION_RE = re.compile(
+    r"\b(escane\w*|scan\w*|enumera\w*|enumerat\w*|explot\w*|exploit\w*|"
+    r"ataca\w*|attack\w*|compromet\w*|audita\w*|audit\w*|prueba\w*|"
+    r"verifica\w*|verif\w*|comprueba\w*|check\w*|analiza\w*|analy[sz]\w*|"
+    r"revisa\w*|review\w*|ejecuta\w*|execut\w*|lanza\w*|launch\w*|"
+    r"instala\w*|install\w*|configura\w*|configure\w*|captura\w*|captur\w*|"
+    r"escala\w*|escalat\w*|busca\w*|search\w*|find\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def is_advisor_question(text: str) -> bool:
+    """Whether free text should be answered by the advisor, not the ReAct loop.
+
+    The rule is deliberately conservative in the other direction: a concrete
+    target always routes to the governed engine, and an imperative action
+    without a question mark does too (it may ask for the missing target).
+    Everything else -a question, a version question, a greeting, an
+    explanation- is a consultation and must not open a run or touch a tool.
+    """
+    value = " ".join(str(text or "").split())
+    if not value or value.startswith("/"):
+        return False
+    if _ADVISOR_TARGET_RE.search(value):
+        return False
+    if "?" in value or "¿" in value:
+        return True
+    return not bool(_ADVISOR_ACTION_RE.search(value))
 
 
 def _tool_catalog(session: "OmniSession") -> dict[str, Any]:
@@ -87,8 +132,12 @@ def _build_ask_system_prompt(session: "OmniSession") -> str:
     return (
         f"{ASK_SYSTEM_PROMPT}\n\n"
         f"Eres la CLI OmniAgentCS v{PROGRAM_VERSION}. El usuario está en el REPL y usa "
-        "/ask para consultar sin ejecutar herramientas. Responde con ayuda CONCRETA y "
-        "BREVE sobre esta CLI, no teoría genérica de pentesting.\n\n"
+        "/ask para consultar sin ejecutar herramientas. Distingue dos casos:\n"
+        "1. Si pregunta por esta CLI, responde con comandos y objetivos concretos del "
+        "catálogo de abajo.\n"
+        "2. Si pregunta por una tecnología, versión, vulnerabilidad o técnica, responde "
+        "como consultor de seguridad usando tu conocimiento; no lo conviertas en una "
+        "orden ni inventes que ejecutaste algo.\n\n"
         f"Engagement activo: {engagement_context}\n"
         f"Proveedor LLM resuelto: {session._llm_summary()}\n\n"
         f"Comandos meta disponibles ({len(COMMANDS)}):\n" + "\n".join(command_lines) + "\n\n"
@@ -1266,7 +1315,9 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
         return
     except Exception as exc:  # noqa: BLE001 - the REPL survives a failed call
         session._tui.end_answer()
-        render.render_error(f"la consulta falló: {type(exc).__name__}: {exc}")
+        # The SDK puts the HTTP body in str(exc); the operator gets the
+        # translated panel, the log/audit keeps the original exception.
+        errors.report_error(session, exc, operation="la consulta")
         return
     _persist_ask(session, question, answer)
     max_width = None

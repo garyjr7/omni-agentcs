@@ -169,13 +169,38 @@ def test_cmd_ask_spinner_shown_during_llm_call(session):
     assert seen[0]["enabled"] is True
 
 
+def test_cmd_ask_authentication_error_is_rendered_as_text(session, capsys):
+    class _AuthError(Exception):
+        status_code = 401
+
+        def __init__(self) -> None:
+            super().__init__(
+                "Error code: 401 - {'error': {'message': 'Incorrect API key', "
+                "'type': 'invalid_request_error'}}"
+            )
+
+    async def _boom(messages, **kwargs):
+        raise _AuthError()
+
+    session.llm_client.complete = _boom
+    commands_module.cmd_ask(session, ["hola"])
+    out = capsys.readouterr().out
+    assert "Error de autenticación" in out
+    assert "omni auth login" in out
+    assert "Error code:" not in out
+    assert "{" not in out
+
+
 def test_cmd_ask_failure_does_not_break_the_repl(session, capsys):
     async def _boom(messages, **kwargs):
         raise RuntimeError("rate limited")
 
     session.llm_client.complete = _boom
     commands_module.cmd_ask(session, ["hola"])
-    assert "la consulta falló" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # A 429-ish failure is translated; the raw SDK/provider string is not shown.
+    assert "Límite de peticiones" in out
+    assert "rate limited" not in out
     # A failed exchange persists nothing in the work session.
     conversation = commands_module._work_conversations(session)
     assert all(

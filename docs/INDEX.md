@@ -29,7 +29,7 @@
 | Auditoría MCP y PTY | `AUDITORIA_ARQUITECTONICA_MCP_PTY_2026-10-21.md` | `docs/missions/` | Veredicto y orden P0–P4; base de `MASTER_ROADMAP.md` §4 |
 | Roadmap técnico post-auditoría | `10.md` | `docs/plans/roadmap_12/` | **WIP histórico versionado — no forma parte del ledger oficial** |
 | Cleanup de código legado | `CLEANUP_RESULT_V3.md` | `docs/missions/` | Resultado final; decisiones por archivo en `CLEANUP_DECISIONS.md` |
-| Decisiones de arquitectura | `ADR-004-sandbox-modes.md`, `ADR-005-surface-coverage-ledger.md`, `ADR-006-blackbox-default-authorization.md` | `docs/adr/` | Aceptadas; modos de sandbox, ledger de cobertura (veredicto por servicio) y autorización Caja Negra por defecto (RoE como única restricción de técnica) |
+| Decisiones de arquitectura | `ADR-004-sandbox-modes.md`, `ADR-005-surface-coverage-ledger.md`, `ADR-006-blackbox-default-authorization.md`, `ADR-007-tui-engine-decoupling.md` | `docs/adr/` | Aceptadas 004–006 (sandbox, ledger de cobertura, Caja Negra); ADR-007 propuesto: desacoplar motor y TUI antes de evaluar Rust |
 | Último run E2E autónomo | `TEST_E2E_BOUNTY_HACKER_RUN6.md` | `docs/missions/` | Bounty Hacker; fuente de `MANUAL_VS_AGENT.md` |
 | Último run manual | `TEST_MANUAL_BOUNTY_HACKER_RUN7.md` | `docs/missions/` | Bounty Hacker con `omni tool`; fuente de Fase 4.1 |
 | Evidencia de salas | `RUN_sala02.md` … `RUN_sala13.md` | `docs/missions/salas/` | 12 salas V0 resueltas con las tools gobernadas |

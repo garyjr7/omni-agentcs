@@ -28,7 +28,7 @@ from nexus_core.kernel.runtime import ExecutionContext, select_llm_client
 from nexus_core.scope import ScopeSignatureInvalid, ScopeViolation
 
 from . import commands as commands_module
-from . import render
+from . import errors, render
 from .approval import default_operator_id, make_approval_callback
 from .tool_result import tool_method, tool_payload, tool_success
 from .tui.history import history_path as tui_history_path
@@ -990,9 +990,10 @@ class OmniSession:
             return None
         except (PermissionError, ValueError, RuntimeError, KeyError, TypeError) as exc:
             from .tui.stream import render_tool_result
+            detail = errors.clean_detail(str(exc)) or type(exc).__name__
             self._output.write(render_tool_result(
                 {"success": False, "tool_id": tool_id,
-                 "error": f"{tool_id}: {type(exc).__name__}: {exc}"},
+                 "error": f"{tool_id}: {detail}"},
                 no_color=self.no_color or not self._tui.use_tui))
             return None
         self.record_tool_result(run_id, tool_id, dict(arguments or {}), result)
@@ -1356,6 +1357,12 @@ class OmniSession:
             # ``PermissionError``; it is still a refusal, not a crash.
             self._render_scope_failure(exc)
             return None
+        except Exception as exc:  # noqa: BLE001 - the REPL must survive a failed run
+            # Unexpected engine/provider failures must not dump a traceback or
+            # an SDK JSON body into the transcript. The log keeps the original.
+            log.exception("[omni.tui] run %s failed", run_id)
+            errors.report_error(self, exc, operation="el objetivo")
+            return None
         except KeyboardInterrupt:
             self.store.append_run_event(
                 self.tenant_id, run_id, "react.cancel_requested", {"source": "cli-sigint"}
@@ -1372,7 +1379,12 @@ class OmniSession:
         self.history.append(f"[{result.status}] {result.final_summary}")
         if result.status == "clarification" and result.question:
             self.last_question = result.question
-        if self._tui.use_tui:
+        if result.status == "provider_error":
+            # The coordinator stores a short terminal summary, not the
+            # provider body. Render the same actionable panel as ``/ask``
+            # instead of putting that summary in the result box.
+            errors.report_provider_failure(self, result.final_summary, operation="el objetivo")
+        elif self._tui.use_tui:
             self._render_final_markdown(result)
         else:
             render.render_summary(
@@ -1570,6 +1582,28 @@ class OmniSession:
 
     # ----------------------------------------------------------------- repl
     @routed
+    def handle_text(self, text: str) -> Any:
+        """Route one non-empty REPL line.
+
+        Slash commands keep their dispatcher, an attached C2 session keeps
+        receiving raw commands, and free text is either a consultation (advisor
+        mode, no tools) or a governed objective (ReAct). The decision is a pure
+        function in :func:`nexus_core.cli.commands.is_advisor_question` so it can
+        be tested without a terminal.
+        """
+        value = str(text or "").strip()
+        if not value:
+            return None
+        if value.startswith("/"):
+            return commands_module.run_command(self, value)
+        if self.active_session_uuid:
+            return self.run_session_command(value)
+        if commands_module.is_advisor_question(value):
+            commands_module.cmd_ask(self, [value])
+            return None
+        return self.run_objective(value)
+
+    @routed
     def run_repl(self) -> None:
         """Main loop: prompt → input → meta command or objective."""
         history_path = None if self._tui.use_tui else _install_readline()
@@ -1605,12 +1639,13 @@ class OmniSession:
                     if not text:
                         continue
                     self.history.append(f"{PROMPT_PREFIX}{text}")
-                    if text.startswith("/"):
-                        commands_module.run_command(self, text)
-                    elif self.active_session_uuid:
-                        self.run_session_command(text)
-                    else:
-                        self.run_objective(text)
+                    try:
+                        self.handle_text(text)
+                    except Exception as exc:  # noqa: BLE001 - keep the REPL alive
+                        # Last-resort boundary: a bug in a command or in the
+                        # router must not dump a traceback into the transcript.
+                        log.exception("[omni.tui] turn failed")
+                        errors.report_error(self, exc, operation="el comando")
                     self._update_status_bar()
                     self._tui.invalidate()
                 render.render_status("sesión terminada")
@@ -1757,7 +1792,8 @@ def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
             # Same per-block card the observation path uses (click to expand).
             session._tui.append_card({**result, "tool_id": result.get("tool_id") or payload.get("tool_id", "tool")})
     if event_type == "react.parse_error":
-        render.render_error(f"respuesta no parseable del LLM: {payload.get('error')}")
+        detail = errors.clean_detail(payload.get("error")) or "respuesta inválida"
+        render.render_error(f"respuesta no parseable del LLM: {detail}")
     elif event_type == "react.scope_violation":
         render.render_error(
             f"SCOPE VIOLATION · tool={payload.get('tool_id')} · {payload.get('error')}"
