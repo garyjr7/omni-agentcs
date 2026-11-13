@@ -1,20 +1,23 @@
 # Checklist de lanzamiento público — OMNI / OmniAgentCS
 
-Estado: **borrador de pre-publicación**, 2026-11-12, sobre `b1f2815`
-(`v3.0.0-rc3`). Este documento no publica nada ni reescribe historia: enumera
-lo que debe hacerse antes de cambiar la visibilidad del repositorio.
+Estado: **saneamiento de historial completado**, 2026-11-13, sobre
+`v3.0.0-rc3`. Este documento resume la auditoría y enumera lo que debe
+completarse antes de cambiar la visibilidad del repositorio.
 
-## 0. Bloqueadores detectados en esta auditoría
+## 0. Bloqueadores del historial (resueltos)
 
-| # | Hallazgo | Evidencia | Decisión requerida |
+La reescritura se ejecutó con `git-filter-repo` sobre un backup completo. Todos
+los SHA cambiaron y los tags se recrearon sobre la historia nueva.
+
+| # | Hallazgo original | Resolución aplicada | Verificación |
 |---|---|---|---|
-| B1 | El historial contiene datos de la etapa NEXUS: 184 rutas bajo `data/`, nombres de proyectos/clientes, rutas `/home/operator` y una WAL de SQLite de 1,78 MB. | `git rev-list --objects --all` + escaneo de blobs. Commits `6949587`, `98a8753`, `6ef46fa`. | Purgar `data/` del historial o publicar un historial nuevo. **No publicar así.** |
-| B2 | Los 302 commits usan `juniormcgary7@users.noreply.github.com`. | `git log --format='%ae' \| sort -u`. | Decidir si se acepta el correo público o se reescribe a un alias noreply. |
-| B3 | 213 commits llevan el trailer `Co-Authored-By: Codebuff <noreply@codebuff.com>`. | `git log --grep='Co-Authored-By: Codebuff'`. | Quitarlo exige reescribir el historial; no se puede editar un commit publicado sin cambiar su SHA. |
+| B1 | 184 rutas de la etapa NEXUS bajo `data/`, con nombres de proyectos/clientes, rutas personales y una WAL de SQLite de 1,78 MB. | Purgado con `--path data/ --invert-paths`. | `git rev-list --objects --all \| grep -E ' data/'` no devuelve nada. |
+| B2 | Los 303 commits usaban el correo personal del operador. | Reescritos al alias noreply `juniormcgary7@users.noreply.github.com`. | `git log --format='%ae' \| sort -u` muestra solo el alias. |
+| B3 | 213 commits llevaban el trailer de atribución de la herramienta. | Eliminado con `--message-callback`, junto con las líneas "Generated with". | `git log --grep='Codebuff'` no devuelve nada. |
 
-Si se decide reescribir, hacerlo **antes** de activar branch protection y
-**antes** de anunciar el repositorio. El run #49 de CI quedará asociado al SHA
-antiguo y habrá que ejecutar CI de nuevo sobre el SHA reescrito.
+La reescritura se hizo **antes** de activar branch protection y de anunciar el
+repositorio. El run #49 de CI quedó asociado al SHA antiguo y hay que ejecutar
+CI de nuevo sobre el SHA reescrito.
 
 ## 1. Secretos en el árbol actual
 
@@ -49,58 +52,24 @@ git log --format='%an <%ae>' | sort -u
 git log --grep='Co-Authored-By: Codebuff' --oneline | wc -l
 ```
 
-Situación actual: un único correo (`juniormcgary7@users.noreply.github.com`) y 213 commits
-con trailer de Codebuff.
+Situación tras el saneamiento: un único correo
+(`juniormcgary7@users.noreply.github.com`) y cero trailers de atribución. Los
+SHA y los tags fueron reescritos; cualquier clon existente debe re-clonarse, no
+hacer `pull`.
 
-Opciones:
+La pasada combinada aplicó:
 
-1. **Aceptar el correo** en el historial y usar un alias noreply solo para
-   commits nuevos. Es la opción menos invasiva.
-2. **Reescribir el historial** para reemplazar el correo y retirar el trailer.
-   Cambia todos los SHA y obliga a force-push de ramas y tags.
+- `--path data/ --invert-paths` para retirar la carpeta legacy.
+- `--email-callback` para sustituir el correo personal por el alias noreply.
+- `--message-callback` para retirar el trailer y las líneas de atribución.
+- `--replace-text` para sanear rutas y usuario personales en todos los blobs.
 
-Si se elige reescribir, usar un clon espejo y `git-filter-repo`, nunca el
-checkout de trabajo:
-
-```bash
-# Respaldo completo antes de tocar nada
-git clone --mirror git@github.com:garyjr7/omni-agentcs.git \
-  ../omni-agentcs-backup.git
-
-python3 -m pip install --user git-filter-repo
-
-# En un clon fresco del repo (filter-repo exige un clon limpio)
-git clone https://github.com/garyjr7/omni-agentcs.git omni-agentcs-public
-cd omni-agentcs-public
-
-# 1) Quitar datos legacy de la etapa NEXUS
-git filter-repo --path data/ --invert-paths
-
-# 2) Reemplazar el correo personal por el alias noreply de GitHub
-#    Sustituir <ID> por el ID numérico de la cuenta de GitHub.
-git filter-repo --email-callback \
-  'return email.replace(b"juniormcgary7@users.noreply.github.com", b"<ID>+garyjr7@users.noreply.github.com")'
-
-# 3) Quitar el trailer de Codebuff de los mensajes
-git filter-repo --message-callback \
-  'return message.replace(b"\n\n🤖 Generated with Codebuff\nCo-Authored-By: Codebuff <noreply@codebuff.com>\n", b"\n")'
-```
-
-Después del rewrite:
-
-```bash
-git remote add origin git@github.com:garyjr7/omni-agentcs.git
-git push --force --all origin
-git push --force --tags origin
-git tag -n
-git describe --tags
-```
-
-- [ ] Verificar que `data/` ya no existe en ningún commit:
+- [x] Verificar que `data/` ya no existe en ningún commit:
       `git log --all --oneline -- data/`.
-- [ ] Verificar el correo: `git log --format='%ae' | sort -u`.
-- [ ] Verificar el trailer: `git log --grep='Co-Authored-By: Codebuff' --oneline`.
-- [ ] Re-ejecutar CI sobre el SHA nuevo y volver a mover `v3.0.0-rc3` si aplica.
+- [x] Verificar el correo: `git log --format='%ae' | sort -u`.
+- [x] Verificar que no quedan mensajes con la atribución:
+      `git log --grep='Codebuff' --oneline`.
+- [ ] Re-ejecutar CI sobre el SHA nuevo.
 - [ ] Avisar a cualquier colaborador con clones existentes: deben re-clonar, no
       hacer `pull`.
 
@@ -228,7 +197,7 @@ git ls-remote --tags origin 'refs/tags/v3.0.0-rc3*'
 - [ ] Suite completa en verde.
 - [ ] `make test-coverage` en CI (en el host de 3,8 GB puede agotar memoria; el
       propio `Makefile` documenta esa limitación).
-- [ ] Tag y rama `main` apuntando al commit que se va a publicar.
+- [x] Tag y rama `main` apuntando al commit que se va a publicar.
 - [ ] CI del commit público en verde.
 - [ ] Copia de seguridad del repo privado antes de cambiar la visibilidad.
 
