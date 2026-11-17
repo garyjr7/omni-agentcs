@@ -1,5 +1,13 @@
 # OmniAgentCS — Changelog
 
+## v3.0.0-rc5 — 2026-11-17
+
+Release candidate de corrección sobre el árbol saneado de `rc4`. El fixture
+`hijack_v3.ndjson` conservaba la IP de laboratorio `10.0.0.5`, que su propia
+prueba de anonimización rechaza; se sustituyó por la dirección documental
+`192.0.2.10` y se actualizó el objetivo del test de regresión. La suite completa
+vuelve a pasar (4.949 passed, 55 skipped) y la versión pasa a `3.0.0rc5`.
+
 ## v3.0.0-rc4 — 2026-11-17
 
 Release candidate de saneamiento. Se eliminaron del árbol y de todo el
