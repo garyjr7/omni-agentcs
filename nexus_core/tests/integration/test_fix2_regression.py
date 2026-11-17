@@ -38,7 +38,7 @@ from nexus_core.tools.handlers.cred_bruteforce import cred_bruteforce_handler
 from nexus_core.tools.handlers.system_install import install_tool_handler
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "react" / "hijack_v3.ndjson"
-TARGET = "10.0.0.5"
+TARGET = "192.0.2.10"
 INSTALL_REASONS = {
     "already_installed",
     "sudo_required",
