@@ -966,13 +966,20 @@ class OmniSession:
 
         try:
             if self._tui.use_tui:
-                from .tui.stream import format_tool_invocation
-                self._tui.append_execution_block(
-                    format_tool_invocation(
-                        tool_id, arguments, width=self._tui.text_width,
-                        no_color=self._tui.no_color,
+                # The call opens the subagent's own card: the invocation and its
+                # result share one box, so the tool never floats on its own.
+                begin = getattr(self._tui, "begin_tool", None)
+                self._tui.note_tool(tool_id)
+                if begin is not None:
+                    begin(tool_id, dict(arguments or {}))
+                else:  # compatibility with minimal TUI facades
+                    from .tui.stream import format_tool_invocation
+                    self._tui.append_execution_block(
+                        format_tool_invocation(
+                            tool_id, arguments, width=self._tui.text_width,
+                            no_color=self._tui.no_color,
+                        )
                     )
-                )
             with self._busy(self._describe_tool_call(tool_id, arguments)), Spinner(
                 self._describe_tool_call(tool_id, dict(arguments or {})),
                 enabled=self._spinner_enabled(),
@@ -992,18 +999,28 @@ class OmniSession:
             )
             return None
         except (PermissionError, ValueError, RuntimeError, KeyError, TypeError) as exc:
-            from .tui.stream import render_tool_result
             detail = errors.clean_detail(str(exc)) or type(exc).__name__
-            self._output.write(render_tool_result(
-                {"success": False, "tool_id": tool_id,
-                 "error": f"{tool_id}: {detail}"},
-                no_color=self.no_color or not self._tui.use_tui))
+            failure = {"success": False, "tool_id": tool_id,
+                       "error": f"{tool_id}: {detail}"}
+            if self._tui.use_tui:
+                # The failure belongs to the same subagent card that opened the
+                # call, not to a frame floating outside it.
+                complete = getattr(self._tui, "complete_tool", None)
+                if complete is None or not complete(failure):
+                    self._tui.append_card(failure)
+            else:
+                from .tui.stream import render_tool_result
+                self._output.write(render_tool_result(failure, no_color=self.no_color))
             return None
         self.record_tool_result(run_id, tool_id, dict(arguments or {}), result)
         if self._tui.use_tui:
-            # Per-block accordion: the card remembers its own state and can be
-            # expanded by clicking its footer.
-            self._tui.append_card(result.get("output") or {})
+            # Fill the result into the card that already carries the invocation;
+            # the accordion keeps its own state per call.
+            payload_result = result.get("output") if isinstance(result, dict) else None
+            payload_result = payload_result if isinstance(payload_result, dict) else {}
+            complete = getattr(self._tui, "complete_tool", None)
+            if complete is None or not complete(payload_result):
+                self._tui.append_card(payload_result)
         return dict(result) if result is not None else None
 
     def record_tool_result(
@@ -1405,21 +1422,15 @@ class OmniSession:
         """Final result as a framed Markdown block on the dedicated screen.
 
         The TUI renders the facts as Markdown and wraps them in a quiet panel:
-        a muted border and the ``surface_alt`` background separate the result
-        from the execution stream without the fixed-geometry fragmentation of
-        the old ``RESULTADO`` box at wide widths. ``--no-tui`` keeps the box
-        unchanged.
+        a muted border and the card surface separate the result from the
+        execution stream without the fixed-geometry fragmentation of the old
+        ``RESULTADO`` box at wide widths. ``--no-tui`` keeps the box unchanged.
         """
-        from .tui.markdown import render_markdown
-        from .tui.presentation import result_panel, summary_markdown
+        from .tui.presentation import summary_markdown
 
-        try:
-            width = max(20, int(self._tui._session.output.get_size().columns) - 4)
-        except Exception:  # noqa: BLE001 - cosmetic sizing only
-            width = 80
-        # Two border cells and two cells of horizontal padding belong to the
-        # panel, so the Markdown is wrapped to the space the content really has.
-        content_width = max(20, width - 6)
+        # The raw Markdown is handed to the TUI, which renders it at the current
+        # transcript width. Painting the panel here would freeze its border at
+        # the width the run happened to finish at.
         # A completed run shows what its own blackboard already proves: the
         # services it discovered, then the report path only when a report was
         # really written. Reading these facts generates nothing.
@@ -1444,15 +1455,13 @@ class OmniSession:
                 report_path = os.path.relpath(directory)
             except ValueError:  # different drive on Windows
                 report_path = directory
-        body = render_markdown(
-            summary_markdown(result, service_facts=facts, report_path=report_path),
-            no_color=self.no_color, max_width=content_width,
-        )
+        body = summary_markdown(result, service_facts=facts, report_path=report_path)
         if not str(result.final_summary or "").strip():
             body = body.replace("_(sin resumen)_", f"(sin resumen · estado={result.status})")
-        self._tui.append_result_block(
-            result_panel(body, width=width, no_color=self.no_color)
-        )
+        # The closing block is OMNI itself advising, not the last subagent that
+        # happened to run: the subagent identity stays on its own tool cards.
+        from .tui.presentation import ADVISOR_TITLE
+        self._tui.append_result_block(body, title=ADVISOR_TITLE)
 
     def visible_input(self, prompt: str) -> str:
         """Read a non-secret line mid-command, TUI-safe.
@@ -1740,11 +1749,18 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
     for message in messages:
         if session._tui.use_tui:
             from .tui.stream import observation, render_message
-            if (message.get("metadata") or {}).get("kind") == "react.observation":
-                session._tui.append_card(observation(message))
+            meta = message.get("metadata") or {}
+            kind = meta.get("kind")
+            if kind == "react.observation":
+                # The result lands inside the card the invocation opened. A
+                # resumed session has no pending card, so it falls back to a
+                # result-only card instead of losing the evidence.
+                payload = observation(message)
+                complete = getattr(session._tui, "complete_tool", None)
+                if complete is None or not complete(payload):
+                    session._tui.append_card(payload)
             else:
-                meta = message.get("metadata") or {}
-                if meta.get("kind") == "react.action" and meta.get("thought"):
+                if kind == "react.action" and meta.get("thought"):
                     state["turn"] = int(state.get("turn") or 0) + 1
                     if state["turn"] > 1:
                         from .tui.presentation import render_rich, tactical_phase, turn_header
@@ -1759,12 +1775,31 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
                     session._tui.append_card({}, thought=str(meta["thought"]),
                                              reasoning=reasoning)
                     message = {**message, "metadata": {**meta, "thought": ""}}
-                text = render_message(
-                    message, expanded=session._tui.expand_cards,
-                    width=session._tui.text_width, no_color=session._tui.no_color,
-                )
-                if text:
-                    session._tui.append_execution_block(text)
+                    meta = message["metadata"]
+                if (kind == "react.action" and meta.get("action") == "tool_call"
+                        and meta.get("arguments") is not None):
+                    # The invocation opens the subagent's own card (``OMNI ·
+                    # Recon``); the observation that follows fills it. Nothing
+                    # floats outside the box that owns the call.
+                    begin = getattr(session._tui, "begin_tool", None)
+                    if begin is not None:
+                        begin(str(meta.get("tool_id") or "?"),
+                              meta.get("arguments") or {})
+                    else:
+                        text = render_message(
+                            message, expanded=session._tui.expand_cards,
+                            width=session._tui.text_width,
+                            no_color=session._tui.no_color,
+                        )
+                        if text:
+                            session._tui.append_execution_block(text)
+                else:
+                    text = render_message(
+                        message, expanded=session._tui.expand_cards,
+                        width=session._tui.text_width, no_color=session._tui.no_color,
+                    )
+                    if text:
+                        session._tui.append_execution_block(text)
         else:
             _render_message(message)
         state["message_sequence"] = int(message.get("sequence") or state.get("message_sequence") or 0)
@@ -1786,18 +1821,31 @@ def _render_run_event(session: OmniSession, event: dict[str, Any]) -> None:
         from .tui.stream import format_tool_invocation
 
         if event_type == "react.action" and "arguments" in payload:
-            session._tui.append_execution_block(
-                format_tool_invocation(
-                    payload.get("tool_id", "?"), payload["arguments"],
-                    width=session._tui.text_width, no_color=session._tui.no_color,
+            # A live call opens its subagent card; the matching completion
+            # closes it below. The invocation belongs inside the box that owns
+            # the tool, never as a loose line above the result.
+            begin = getattr(session._tui, "begin_tool", None)
+            session._tui.note_tool(payload.get("tool_id"))
+            if begin is not None:
+                begin(str(payload.get("tool_id") or "?"), payload.get("arguments") or {})
+            else:
+                session._tui.append_execution_block(
+                    format_tool_invocation(
+                        payload.get("tool_id", "?"), payload["arguments"],
+                        width=session._tui.text_width, no_color=session._tui.no_color,
+                    )
                 )
-            )
         elif event_type in {"tool.complete", "tool.failed"}:
             result = payload.get("tool_result") or payload
             if event_type == "tool.failed":
                 result = {**result, "success": False}
-            # Same per-block card the observation path uses (click to expand).
-            session._tui.append_card({**result, "tool_id": result.get("tool_id") or payload.get("tool_id", "tool")})
+            result = {**result,
+                      "tool_id": result.get("tool_id") or payload.get("tool_id", "tool")}
+            # Fill the pending subagent card; a standalone event (resumed run)
+            # keeps its own result-only card.
+            complete = getattr(session._tui, "complete_tool", None)
+            if complete is None or not complete(result):
+                session._tui.append_card(result)
     if event_type == "react.parse_error":
         detail = errors.clean_detail(payload.get("error")) or "respuesta inválida"
         render.render_error(f"respuesta no parseable del LLM: {detail}")

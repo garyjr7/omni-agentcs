@@ -21,8 +21,9 @@ from ..theme import THEME
 
 _CONTROLS = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]')
 
-#: Input panel (OpenCode-Zen style): dark grey textarea background with a solid
-#: red vertical bar as its only border. There is no top/bottom horizontal rule.
+#: Input panel (OpenCode-Zen style): a neutral dark textarea with no frame.
+#: Red stays available for the operator's rail and real alerts, never for the
+#: ordinary input surface.
 PANEL_STYLE = THEME.panel_style
 PANEL_BAR_STYLE = THEME.panel_bar_style
 
@@ -67,6 +68,8 @@ def startup_banner(engagement: str, version: str, *, width: int = 80,
     """
     name = clean_text(str(engagement or 'workspace'))[:24]
     line = Text()
+    # The wordmark carries the offensive-security identity: red is the brand,
+    # the operator rail and the live pulse, never an error on its own.
     line.append('██', style=THEME.primary_bold)
     line.append(f' Omni Agent CS v{clean_text(version)}', style=THEME.title_style)
     line.append(' · BAJIOWARE • Red Team · ', style=THEME.muted)
@@ -91,34 +94,46 @@ def render_rich(value: RenderableType, *, width: int = 100, no_color: bool = Fal
     return stream.getvalue().rstrip('\n')
 
 
-def _block_width(width: int) -> int:
-    """Content width inside a framed block: border plus two-cell padding."""
-    return max(12, int(width) - 6)
+def _block_width(width: int, horizontal_padding: int = 2) -> int:
+    """Content width inside a framed block: border plus horizontal padding."""
+    return max(12, int(width) - 2 - 2 * max(0, int(horizontal_padding)))
 
 
 def _framed(body: RenderableType, *, title: str | None, width: int,
             border_style: str, title_style: str = '',
+            padding: tuple[int, int] = (0, 2),
             no_color: bool = False) -> str:
     """One full-width transcript block with a quiet border and breathing room.
 
     Every block uses the same geometry so the transcript reads as a stack of
     cards instead of a wall of text. ``width`` is the outer width, including
-    the border and the two-cell horizontal padding; the caller wraps its body
-    to :func:`_block_width` so the border and the content never disagree.
+    the border and the horizontal padding; the caller wraps its body to
+    :func:`_block_width` so the border and the content never disagree.
+
+    Vertical padding defaults to zero: the blank line *between* blocks is what
+    creates rhythm. Stacking a blank row above and below every block made the
+    transcript feel like a diagnostics screen and pushed the conversation off
+    an 80x24 terminal.
     """
     content = body if isinstance(body, Text) else Text.from_ansi(str(body))
     panel = Panel(
         content, box=box.ROUNDED,
         title=Text(title, style=title_style) if title else None,
         title_align='left', border_style=border_style,
-        style=THEME.result_panel_style, padding=(1, 2), expand=True,
+        style=THEME.result_panel_style, padding=padding, expand=True,
         width=max(20, int(width)),
     )
     return render_rich(panel, width=max(20, int(width)), no_color=no_color)
 
 
 def wrap_terminal_text(value: str, *, width: int, no_color: bool = False) -> str:
-    """Wrap ANSI/plain scrollback on whitespace before prompt_toolkit sees it."""
+    """Wrap ANSI/plain scrollback on whitespace before prompt_toolkit sees it.
+
+    ``Text.wrap`` drops the final empty line of a text that ends in a newline.
+    The transcript builds its blank lines out of those exact separators, so the
+    wrapped result restores the trailing newlines the caller declared: a block
+    that ends in ``\\n\\n`` still renders as one empty row.
+    """
     stream = io.StringIO()
     console = Console(file=stream, width=max(1, width), force_terminal=not no_color,
                       color_system=None if no_color else 'truecolor', no_color=no_color,
@@ -130,7 +145,9 @@ def wrap_terminal_text(value: str, *, width: int, no_color: bool = False) -> str
         console.print(line, end='', overflow='fold', no_wrap=False)
         if index + 1 < len(lines):
             stream.write('\n')
-    return stream.getvalue()
+    trailing = len(value) - len(value.rstrip('\n'))
+    rendered = stream.getvalue().rstrip('\n')
+    return rendered + '\n' * trailing
 
 
 @dataclass(frozen=True)
@@ -175,19 +192,30 @@ def input_quote(value: str, *, width: int = 100, no_color: bool = False) -> str:
 
 def user_message(value: str, *, width: int = 100, no_color: bool = False,
                  now: datetime | None = None) -> str:
-    """One operator turn as its own full-width block.
+    """One operator turn as a compact, quiet block.
 
-    The transcript carries exactly one block per turn: a framed surface, the
-    time the operator submitted it in the title and the task itself inside the
-    padding. A long objective wraps inside the block instead of touching the
-    terminal edge.
+    The red rail is the only accent: the frame, the timestamp and the body use
+    neutral roles. Padding is one cell horizontally and zero vertically, so a
+    normal task occupies exactly three rows (top rule, text, bottom rule)
+    instead of spending five empty rows around one sentence.
     """
     when = (now or datetime.now()).strftime("%I:%M %p")
-    body = Text(clean_text(str(value or "")).strip(), style=THEME.offwhite)
+    raw = clean_text(str(value or "")).strip()
+    body_width = _block_width(width, 2) - 2  # the ``▌ `` rail below
+    rows: list[RenderableType] = []
+    for index, raw_line in enumerate(raw.splitlines() or [""]):
+        wrapped = textwrap.wrap(
+            raw_line, width=max(8, body_width),
+            break_long_words=False, break_on_hyphens=False,
+        ) or [""]
+        for row_index, line in enumerate(wrapped):
+            rail = "▌ " if index == 0 and row_index == 0 else "  "
+            rows.append(Text(rail, style=THEME.primary_bold) + Text(line, style=THEME.offwhite))
+    content = Text("\n").join(row for row in rows if isinstance(row, Text))
     return _framed(
-        body, title=f'Operador · {when}', width=width,
-        border_style=THEME.primary, title_style=THEME.primary_bold,
-        no_color=no_color,
+        content, title=f'Operador · {when}', width=width,
+        border_style=THEME.frame_border_style, title_style=THEME.muted,
+        padding=(0, 2), no_color=no_color,
     )
 
 
@@ -268,20 +296,14 @@ def summary_markdown(result: Any, *, service_facts: Any = None,
     body stop agreeing at 200 columns. The dedicated screen renders the same
     facts as a Markdown block instead, while ``--no-tui`` keeps the box.
     Only data the result already carries is listed: the final summary, the
-    services discovered, the findings, the phases still open and the run's
-    status/iteration count. ``report_path`` is rendered only when a report was
-    really written, and no report is generated here.
+    services discovered and the findings. It is the closing advice of
+    ``OMNI · Asesor``, not a diagnostics panel: run status, iteration count and
+    open plan branches are bookkeeping and stay off the screen. ``report_path``
+    is rendered only when a report was really written, and no report is
+    generated here.
     """
     status = str(getattr(result, "status", "") or "")
-    iterations = getattr(result, "iterations", None)
     findings = list(getattr(result, "findings", None) or [])
-    plan = getattr(result, "plan", None) or {}
-    phases = plan.get("phases") if isinstance(plan, dict) else None
-    pending = [
-        item for item in (phases or [])
-        if isinstance(item, dict) and str(item.get("status") or "") != "done"
-        and not item.get("optional")
-    ]
     if status == "cancelled":
         lines: list[str] = [
             "## Tarea cancelada", "", _cancelled_operator_line(result, len(findings)),
@@ -300,40 +322,103 @@ def summary_markdown(result: Any, *, service_facts: Any = None,
             title = str(finding.get("title") or finding.get("summary") or "").strip()
             if title:
                 lines.append(f"- **[{severity}]** {title}")
-    if pending:
-        lines.extend(["", "### Ramas abiertas", ""])
-        lines.extend(f"- {item.get('label') or item.get('id')}" for item in pending)
     if report_path:
         lines.extend(["", f"*Informe completo en {report_path}*"])
-    lines.extend(["", "### Estado", ""])
-    lines.append(f"- estado: {status or '?'}")
-    if iterations is not None:
-        lines.append(f"- iteraciones: {iterations}")
     return "\n".join(lines)
 
 
-def result_panel(body: str, *, width: int = 100,
+#: Presentation identity of each subagent. It is a *label*: dispatch, policy and
+#: audit keep the real tool id, and the gateway remains the only authority.
+#: Tools whose family is too coarse for the discipline they belong to win with
+#: an explicit entry; the family fallback covers everything else.
+_TOOL_SUBAGENT: dict[str, str] = {
+    'nexus.recon.nikto': 'OMNI · Vulnerability Assessment',
+    'nexus.recon.whatweb': 'OMNI · Scanning & Enum',
+    'nexus.web.nuclei': 'OMNI · Vulnerability Assessment',
+    'nexus.web.dalfox': 'OMNI · Vulnerability Assessment',
+    'nexus.web.ssti': 'OMNI · Vulnerability Assessment',
+    'nexus.web.sqlmap': 'OMNI · Vulnerability Assessment',
+    'nexus.web.git_dump': 'OMNI · Scanning & Enum',
+    'nexus.exploit.searchsploit': 'OMNI · Vulnerability Assessment',
+    'nexus.exploit.msf_search': 'OMNI · Vulnerability Assessment',
+    'nexus.exploit.compile_and_upload': 'OMNI · Explot',
+    'nexus.system.install_tool': 'OMNI · Dev',
+    'nexus.workspace.read': 'OMNI · Dev',
+    'nexus.workspace.search': 'OMNI · Dev',
+}
+
+_FAMILY_SUBAGENT: dict[str, str] = {
+    'recon': 'OMNI · Recon',
+    'web': 'OMNI · Scanning & Enum',
+    'cred': 'OMNI · Scanning & Enum',
+    'exploit': 'OMNI · Explot',
+    'attack': 'OMNI · Explot',
+    'pwn': 'OMNI · Explot',
+    'post': 'OMNI · Post-Explot',
+    'c2': 'OMNI · Post-Explot',
+    'session': 'OMNI · Post-Explot',
+    'win': 'OMNI · Post-Explot',
+    'report': 'OMNI · Reporting',
+    'knowledge': 'OMNI · Reporting',
+}
+
+#: Title of a conversational answer produced without tools (``/ask``).
+ADVISOR_TITLE = 'OMNI · Asesor'
+#: Title of the main agent's reasoning block.
+THINKING_TITLE = 'OMNI · Pensamiento'
+
+
+def numbered_title(base: str, index: int) -> str:
+    """``OMNI · Recon`` for the first call, ``OMNI · Recon (2)`` for the next.
+
+    A subagent may run many tools in one turn, but each call owns its own card:
+    the number is the call's place *for that subagent in the current turn*,
+    never a global counter, so a new operator turn restarts at one.
+    """
+    base = str(base or '').strip() or 'OMNI · Subagente'
+    number = int(index or 1)
+    return base if number <= 1 else f'{base} ({number})'
+
+
+def subagent_title(tool_id: str | None) -> str | None:
+    """``OMNI · Recon`` for a tool, or ``None`` when the family has no identity.
+
+    The lookup never invents a discipline: an unmapped tool keeps the neutral
+    ``Resultado`` title instead of being attributed to the wrong subagent.
+    """
+    value = str(tool_id or '').strip()
+    if not value:
+        return None
+    known = _TOOL_SUBAGENT.get(value)
+    if known is not None:
+        return known
+    parts = value.split('.')
+    return _FAMILY_SUBAGENT.get(parts[1]) if len(parts) > 2 else None
+
+
+def result_panel(body: str, *, width: int = 100, title: str = 'Resultado final',
                  no_color: bool = False) -> str:
     """Frame the final Markdown in a quiet, full-width surface.
 
     The body arrives already rendered by :func:`nexus_core.cli.tui.markdown`.
     ``Text.from_ansi`` turns those styles back into a Rich renderable so the
     panel background covers the whole block without re-parsing the Markdown.
-    The title names the block; the muted border separates it from the stream.
+    The title names the block (the active subagent when one is known); the
+    muted border separates it from the stream.
     """
     return _framed(
-        Text.from_ansi(str(body or '')), title='Resultado final', width=width,
-        border_style=THEME.result_border_style, title_style=THEME.title_style,
+        Text.from_ansi(str(body or '')), title=title, width=width,
+        border_style=THEME.frame_border_style, title_style=THEME.title_style,
         no_color=no_color,
     )
 
 
-def answer_panel(body: str, *, width: int = 80,
+def answer_panel(body: str, *, width: int = 80, title: str = ADVISOR_TITLE,
                  no_color: bool = False) -> str:
     """Conversational answer as a framed Markdown block, not a naked paragraph."""
     return _framed(
-        Text.from_ansi(str(body or '')), title='OMNI · respuesta', width=width,
-        border_style=THEME.result_border_style, title_style=THEME.primary_bold,
+        Text.from_ansi(str(body or '')), title=title, width=width,
+        border_style=THEME.frame_border_style, title_style=THEME.title_style,
         no_color=no_color,
     )
 
@@ -343,7 +428,7 @@ def execution_block(body: str, *, width: int = 100, no_color: bool = False,
     """One tool invocation as a framed block, with the command inside it."""
     return _framed(
         Text.from_ansi(str(body or '')), title=title, width=width,
-        border_style=THEME.muted, title_style=THEME.secondary_style,
+        border_style=THEME.frame_border_style, title_style=THEME.secondary_style,
         no_color=no_color,
     )
 
@@ -364,7 +449,7 @@ def error_panel(title: str, lines: Sequence[str], *, width: int = 100,
         body.append(clean_text(line), style=THEME.overlay_text)
     panel = Panel(
         body, box=box.SQUARE, border_style=THEME.error,
-        style=THEME.result_panel_style, padding=(1, 2), expand=True,
+        style=THEME.result_panel_style, padding=(0, 2), expand=True,
         width=max(20, int(width)),
     )
     return render_rich(panel, width=max(20, int(width)), no_color=no_color)
@@ -462,15 +547,20 @@ def thinking(value: str, *, expanded: bool = False, width: int = 100,
 
 
 def thinking_block(value: str, *, expanded: bool = False, width: int = 100,
-                   reasoning: str | None = None, no_color: bool = False) -> str:
-    """Reasoning as a framed block with the same geometry as every other card."""
+                   reasoning: str | None = None, no_color: bool = False,
+                   title: str = 'OMNI · Pensamiento') -> str:
+    """Reasoning as a framed block with the same geometry as every other card.
+
+    The identity is OMNI itself: reasoning is the main agent thinking before it
+    hands a task to a subagent, not a subagent narrating its own work.
+    """
     content = thinking(
-        value, expanded=expanded, width=_block_width(width), reasoning=reasoning,
+        value, expanded=expanded, width=_block_width(width, 2), reasoning=reasoning,
     )
     return _framed(
-        content, title='Pensamiento', width=width,
-        border_style=THEME.muted, title_style=THEME.secondary_style,
-        no_color=no_color,
+        content, title=title, width=width,
+        border_style=THEME.frame_border_style, title_style=THEME.subtle,
+        padding=(0, 2), no_color=no_color,
     )
 
 
@@ -614,8 +704,17 @@ def trace_block(value: str, *, success: bool, tool_id: str, summary: str,
     # A diff spends three lines on ``---``/``+++``/``@@``; folding it at the
     # normal limit hid the removals behind the headers. Keep the headers plus
     # the same number of data lines.
-    folded = fold_lines(value, expanded=expanded, limit=limit + 3 if diff else limit)
     lines = clean_text(value)
+    if not diff and not expanded and lines.strip():
+        # When the body's first data line *is* the summary, repeating it under
+        # the verdict says the same thing twice. Keep the real output once.
+        summary_clean = ' '.join(clean_text(str(summary_text)).split())
+        rows = lines.splitlines()
+        index = next((i for i, row in enumerate(rows) if row.strip()), None)
+        if index is not None and rows[index].strip() == summary_clean:
+            del rows[index]
+            lines = '\n'.join(rows)
+    folded = fold_lines(lines, expanded=expanded, limit=limit + 3 if diff else limit)
 
     def emit(rows: tuple[str, ...]) -> None:
         if not rows:
@@ -792,16 +891,35 @@ def is_plumbing_command(command: Any) -> bool:
 
 
 def tool_result_block(body: str, *, success: bool, width: int = 100,
-                      no_color: bool = False, guardrail: bool = False) -> str:
-    """A tool result as a framed block: verdict inside, border names the state."""
-    if guardrail:
-        title, border, title_style = 'Corrección', THEME.warn, f'bold {THEME.warn}'
+                      no_color: bool = False, guardrail: bool = False,
+                      title: str | None = None, pending: bool = False,
+                      force_title: bool = False) -> str:
+    """A tool result as a framed block: verdict inside, border names the state.
+
+    ``title`` is the active subagent identity (``OMNI · Recon``) supplied by the
+    caller; an unmapped tool keeps the neutral ``Resultado`` label. A failure
+    and a guardrail keep their own semantic titles so the verdict never hides
+    behind a discipline name, unless the caller owns the card (a combined
+    invocation + result) and passes ``force_title``.
+
+    ``pending`` paints the card while the tool is still running: the invocation
+    is already visible inside the subagent's own box, and the border stays
+    neutral instead of claiming a verdict that does not exist yet.
+    """
+    if pending:
+        block_title = title or 'Resultado'
+        border, title_style = THEME.frame_border_style, THEME.subtle
+    elif guardrail:
+        block_title, border, title_style = 'Corrección', THEME.warn, f'bold {THEME.warn}'
     elif success:
-        title, border, title_style = 'Resultado', THEME.result_border_style, THEME.ok
+        block_title = title or 'Resultado'
+        border, title_style = THEME.frame_border_style, THEME.ok
+    elif force_title and title:
+        block_title, border, title_style = title, THEME.error, THEME.error
     else:
-        title, border, title_style = 'Fallo', THEME.result_border_style, THEME.error
+        block_title, border, title_style = 'Fallo', THEME.error, THEME.error
     return _framed(
-        Text.from_ansi(str(body or '')), title=title, width=width,
+        Text.from_ansi(str(body or '')), title=block_title, width=width,
         border_style=border, title_style=title_style, no_color=no_color,
     )
 

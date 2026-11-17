@@ -30,7 +30,9 @@ def _inline(text, no_color):
     def replace(match):
         value = match.group()
         if value.startswith("`"):
-            return _style(value[1:-1], "100", no_color)
+            # Inline code is an accent, not a highlighter: foreground only, no
+            # bright background block behind every command in a paragraph.
+            return _style(value[1:-1], "38;2;125;207;255", no_color)
         if value.startswith(("**", "__")):
             return _style(value[2:-2], "1", no_color)
         if value.startswith("*"):

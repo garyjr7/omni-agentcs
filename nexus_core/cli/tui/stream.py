@@ -168,7 +168,9 @@ def _command_line(tool_id: str, safe: dict[str, Any]) -> str | None:
     if tool_id == "nexus.recon.nmap":
         flags = safe.get("flags") or []
         flags = flags if isinstance(flags, list) else [flags]
-        return shlex.join(["nmap", *map(str, flags), "-oX", "-", str(safe.get("target", ""))])
+        # ``-oX -`` is the handler's own XML plumbing, not what the operator
+        # asked for: the card shows the command they would type.
+        return shlex.join(["nmap", *map(str, flags), str(safe.get("target", ""))])
     return None
 
 
@@ -254,8 +256,17 @@ def output_text(result: dict[str, Any]) -> str:
         for host in scan.get("hosts", []):
             lines.append(f"Host {host.get('state', '?')}: {host.get('ip', '?')}")
             for port in host.get("ports", []):
-                lines.append(f"Puerto {port.get('port', port.get('portid', '?'))}/{port.get('protocol', 'tcp')} "
-                             f"{port.get('state', '?')}: {port.get('service', '')}")
+                number = port.get("port", port.get("portid", "?"))
+                protocol = port.get("protocol", "tcp")
+                detail = " ".join(
+                    str(part).strip() for part in (
+                        port.get("service"), port.get("product"),
+                        port.get("version"), port.get("extra_info"),
+                    ) if str(part or "").strip()
+                )
+                lines.append(
+                    f"{number}/{protocol} {port.get('state', '?')}: {detail}".rstrip(" :")
+                )
         lines.append(f"Nmap done: {scan.get('hosts_up', '?')} host(s) up · {scan.get('elapsed_seconds', '?')}s")
         return "\n".join(lines)
     return json.dumps(output, ensure_ascii=False, indent=2, default=str) if output else ""
@@ -428,22 +439,21 @@ def is_guardrail(result: dict[str, Any]) -> bool:
     )
 
 
-def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
-                       max_lines: int = 4, width: int = 100, no_color: bool = False) -> str:
-    """A tool result as one framed block, collapsed or expanded.
+def tool_result_content(result: dict[str, Any], *, expanded: bool = False,
+                        max_lines: int = 4, width: int = 100,
+                        no_color: bool = False, compact: bool = True) -> tuple[str, bool, bool]:
+    """The body of a tool card (no frame), plus its verdict and guardrail flag.
 
-    The default flow is still conversational (``✓ nmap: 3 puertos abiertos``),
-    but the verdict lives inside a bordered card instead of floating as a bare
-    line. ``expanded=True`` keeps the reviewed card: folded body, diff syntax,
-    hidden line count and clickable footer. A guardrail is a correction, not a
-    result, so it keeps its own amber title.
+    ``compact`` keeps the historical collapsed voice of a standalone card: one
+    conversational verdict line and an inline ``Ver N líneas más`` footer. The
+    combined invocation + result card sets it to ``False`` so the parsed body
+    of the tool is visible even before expanding it -the operator asked for the
+    tool's real output, not only the orchestrator's one-line interpretation.
     """
-    from .presentation import tool_result_block
-
     guardrail = is_guardrail(result)
     content_width = max(20, int(width) - 6)
     success = bool(result.get("success"))
-    if not expanded and not guardrail:
+    if compact and not expanded and not guardrail:
         from rich.cells import cell_len
 
         from .presentation import tool_result_line
@@ -459,10 +469,7 @@ def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
             # the card and wraps into two rows (D1).
             width=max(1, content_width - cell_len(footer)) if footer else content_width,
         )
-        return tool_result_block(
-            f"{line}{footer}", success=success, width=width,
-            no_color=no_color, guardrail=guardrail,
-        )
+        return f"{line}{footer}", success, guardrail
     structured = structured_output(result)
     value, is_diff = trace_text(result)
     guidance = ""
@@ -494,10 +501,94 @@ def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
     ), width=content_width, no_color=no_color)
     if table:
         rendered = f"{rendered}\n{table}"
+    return rendered, success, guardrail
+
+
+def render_tool_result(result: dict[str, Any], *, expanded: bool = False,
+                       max_lines: int = 4, width: int = 100, no_color: bool = False,
+                       title: str | None = None) -> str:
+    """A tool result as one framed block, collapsed or expanded.
+
+    The default flow is still conversational (``✓ nmap: 3 puertos abiertos``),
+    but the verdict lives inside a bordered card instead of floating as a bare
+    line. ``expanded=True`` keeps the reviewed card: folded body, diff syntax,
+    hidden line count and clickable footer. A guardrail is a correction, not a
+    result, so it keeps its own amber title. ``title`` overrides the identity
+    derived from ``tool_id`` (used for numbered subagent cards).
+    """
+    from .presentation import subagent_title, tool_result_block
+
+    identity = title or subagent_title(str(result.get("tool_id") or ""))
+    rendered, success, guardrail = tool_result_content(
+        result, expanded=expanded, max_lines=max_lines, width=width,
+        no_color=no_color, compact=True,
+    )
     return tool_result_block(
         rendered, success=success, width=width, no_color=no_color,
-        guardrail=guardrail,
+        guardrail=guardrail, title=identity,
     )
+
+
+def format_tool_card(tool_id: str, arguments: Any, result: dict[str, Any] | None, *,
+                     expanded: bool = False, max_lines: int = 6, width: int = 100,
+                     no_color: bool = False, title: str | None = None) -> str:
+    """One subagent card: the invocation *and* its result inside the same box.
+
+    The subagent owns the whole block -``• nexus.recon.nmap  nmap …`` followed
+    by the parsed output- so the call never floats outside the identity that
+    ran it. ``result is None`` draws the pending state while the tool runs.
+
+    The body is the tool's own data (parsed scan rows, stdout, diff), not the
+    orchestrator's interpretation: OMNI's reading of the evidence belongs to its
+    reasoning block, never to the tool card.
+    """
+    from .presentation import subagent_title, tool_result_block
+
+    base = title or subagent_title(tool_id) or 'Resultado'
+    content_width = max(20, int(width) - 6)
+    invocation = detailed_tool_invocation(tool_id, arguments, width=content_width)
+    if result is None:
+        body = f"{invocation}\n\n  · en ejecución…"
+        return tool_result_block(
+            body, success=True, width=width, no_color=no_color,
+            title=base, pending=True,
+        )
+    rendered, success, guardrail = tool_result_content(
+        result, expanded=expanded, max_lines=max_lines, width=width,
+        no_color=no_color, compact=False,
+    )
+    body = f"{invocation}\n\n{rendered}" if rendered else invocation
+    return tool_result_block(
+        body, success=success, width=width, no_color=no_color,
+        guardrail=guardrail, title=base, force_title=True,
+    )
+
+
+def plain_result_text(result: dict[str, Any]) -> str:
+    """The evidence of one tool result as plain text, for the clipboard.
+
+    The operator wants what the tool said, not the frame, the ANSI colouring or
+    the clickable ``Ver más`` footer. The summary line stays on top so a copied
+    nmap run is understandable without the surrounding conversation.
+    """
+    summary = summarize_tool_result(result)
+    structured = structured_output(result)
+    value, is_diff = trace_text(result)
+    if structured is not None:
+        value = json.dumps(structured, ensure_ascii=False, indent=2, default=str)
+    elif not is_diff:
+        value = "\n".join(data_lines(value, width=None)[0])
+    parts = [summary] if summary else []
+    body = clean_text(value).strip("\n")
+    if body:
+        parts.append(body)
+    if is_guardrail(result):
+        guidance = clean_text(str(
+            result.get("guidance") or result.get("error") or ""
+        )).strip()
+        if guidance:
+            parts.append(guidance)
+    return "\n\n".join(part for part in parts if part)
 
 
 def observation(message: dict[str, Any]) -> dict[str, Any]:

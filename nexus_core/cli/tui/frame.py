@@ -32,6 +32,9 @@ DEFAULT_ENGAGEMENT = "workspace"
 #: leaving the rest of the row for the operation and the keycap hint.
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 SPINNER_STEP_SECONDS = 0.09
+#: Activity is the product's identity: the busy marker keeps the same red as the
+#: operator rail and the wordmark. A real failure is still distinguished by its
+#: ``×`` verdict and its red frame, not by the colour alone.
 SPINNER_BRIGHT = f"{THEME.primary} bold"
 
 #: ``(label, token)`` in reading order. The default selection is the single-use

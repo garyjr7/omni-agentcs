@@ -28,9 +28,12 @@ class Theme:
     #: Operator rail, badges, focus and the single interactive accent.
     primary: str = "#ff0055"
     #: Input panel and ordinary dark surfaces.
-    surface: str = "#2a2a2a"
-    #: Modal/approval surface, slightly warmer than the input panel.
-    surface_alt: str = "#1a0d11"
+    surface: str = "#202226"
+    #: Neutral block surface, one step darker than the input panel.
+    surface_alt: str = "#16181b"
+    #: Quiet frame of a transcript block. Red is reserved for real failures
+    #: and the operator's own rail, never for ordinary conversation.
+    frame_border: str = "#343941"
     #: High-contrast headings and selected labels.
     text: str = "#ffffff"
     #: The legacy near-white output token, kept separate from pure white.
@@ -99,12 +102,28 @@ class Theme:
         return f"{self.muted} on {self.surface}"
 
     @property
+    def app_background_style(self) -> str:
+        """Default surface behind every region of the TUI.
+
+        Cards are painted one step lighter (``surface``) so a frame reads as a
+        card over the screen instead of black-on-black; the transcript never
+        relies on the terminal's own background.
+        """
+        return f"bg:{self.surface_alt}"
+
+    @property
     def result_panel_style(self) -> str:
-        return f"on {self.surface_alt}"
+        # The card surface, one step lighter than ``app_background_style``:
+        # a panel has to be distinguishable from the global background.
+        return f"on {self.surface}"
 
     @property
     def result_border_style(self) -> str:
-        return self.muted
+        return self.frame_border
+
+    @property
+    def frame_border_style(self) -> str:
+        return self.frame_border
 
     @property
     def dim_style(self) -> str:

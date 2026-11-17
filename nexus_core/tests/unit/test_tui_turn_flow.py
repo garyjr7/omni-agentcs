@@ -99,21 +99,24 @@ def test_execution_blocks_are_separated_by_one_blank_line(tui_factory: Any) -> N
 
     ui = tui_factory(enable_completion=False).session
     ui.print("Reviso el servicio 80/tcp.")
-    ui.append_execution_block("• nexus.recon.nmap  nmap -sV -p 80 lab")
-    ui.append_card({"success": True, "tool_id": "nexus.recon.nmap",
-                    "stdout": "80/tcp open http"})
+    card_id = ui.begin_tool("nexus.recon.nmap", {"target": "lab", "flags": ["-sV", "-p", "80"]})
+    assert card_id is not None
+    ui.complete_tool({"success": True, "tool_id": "nexus.recon.nmap",
+                      "stdout": "80/tcp open http"})
     ui.append_execution_block("• nexus.web.curl  http://lab/")
     ui.append_card({}, thought="El puerto responde.")
     ui.print("Confirmado el servicio web.")
     ui.flush()
     transcript = clean_text(ui.transcript)
-    assert "Reviso el servicio 80/tcp.\n\n• nexus.recon.nmap" in transcript
-    # The call and its result are distinct framed blocks, one blank line apart.
-    assert "nmap -sV -p 80 lab\n\n╭─ Resultado" in transcript
-    assert "✓ nmap: 80/tcp open http" in transcript
-    # ...while each following block starts after exactly one blank line.
+    # The invocation and its result share the subagent's own card: the call
+    # never floats outside the box that owns it.
+    assert "Reviso el servicio 80/tcp.\n\n╭─ OMNI · Recon" in transcript
+    assert "$ nmap -sV -p 80 lab" in transcript
+    assert "✓ 80/tcp open http" in transcript
+    assert "• nexus.recon.nmap" not in transcript
+    # One blank line separates the card from the next block.
     assert "╯\n\n• nexus.web.curl" in transcript
-    assert "http://lab/\n\n╭─ Pensamiento" in transcript
+    assert "http://lab/\n\n╭─ OMNI · Pensamiento" in transcript
     assert "▸ Razonamiento" in transcript
     assert "╯\n\nConfirmado el servicio web." in transcript
     assert "\n\n\n" not in transcript
@@ -126,11 +129,11 @@ def test_toggling_a_card_keeps_the_block_separation(tui_factory: Any) -> None:
     ui.print("intro")
     ui.append_card({}, thought="razonamiento")
     ui.flush()
-    assert "intro\n\n╭─ Pensamiento" in clean_text(ui.transcript)
+    assert "intro\n\n╭─ OMNI · Pensamiento" in clean_text(ui.transcript)
     assert "▸ Razonamiento" in clean_text(ui.transcript)
     assert ui.toggle_card_at_line(max(ui._toggle_rows))
     # The rebuilt transcript reproduces the same block and body.
-    assert "intro\n\n╭─ Pensamiento" in clean_text(ui.transcript)
+    assert "intro\n\n╭─ OMNI · Pensamiento" in clean_text(ui.transcript)
     assert "▾ Razonamiento" in clean_text(ui.transcript)
     assert "ctrl+t colapsar" in clean_text(ui.transcript)
 
@@ -148,7 +151,7 @@ def test_turn_history_spaces_user_thought_and_response(tui_factory: Any) -> None
     transcript = clean_text(ui.transcript)
     assert "╭─ Operador · " in transcript
     assert "revisa el resultado" in transcript
-    assert "╯\n\n╭─ Pensamiento" in transcript
+    assert "╯\n\n╭─ OMNI · Pensamiento" in transcript
     assert "▸ Razonamiento" in transcript
     assert "╯\n\nRespuesta verificada." in transcript
 

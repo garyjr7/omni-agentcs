@@ -127,6 +127,18 @@ class TuiSession:
         self._cards: dict[int, dict[str, Any]] = {}
         self._toggle_rows: dict[int, int] = {}
         self._next_card_id = 1
+        #: Calls already opened for each subagent in the current operator turn:
+        #: the first card is ``OMNI · Recon``, the next ``OMNI · Recon (2)``.
+        self._identity_seq: dict[str, int] = {}
+        #: Last tool that produced a block in this session. It only feeds the
+        #: subagent label of the next answer/result panel; it never changes
+        #: dispatch, scope or policy.
+        self._last_tool_id: str | None = None
+        #: Width the transcript was last rendered at. A resize is handled once
+        #: per width change, so reflowing the log cannot loop with invalidate.
+        self._last_render_width: int | None = None
+        #: A resize arrived while a typewriter reveal owned the document.
+        self._resize_pending = False
         #: Live ReAct "thinking" text shown while the model streams a turn.
         self._thought_text: str | None = None
         #: Provider's native reasoning, attached to the next thought card.
@@ -134,6 +146,12 @@ class TuiSession:
         from .presentation import WorkingIndicator
         self._working_indicator = WorkingIndicator()
         self._auto_scroll = True
+        #: Mirror of ``_auto_scroll`` for the rest of the UI. ``True`` means the
+        #: operator moved the viewport up and new output must not drag the view
+        #: back to the tail until PageDown (or a new command) resumes it.
+        self._is_scrolling = False
+        #: The dedicated screen is cleared exactly once, before its first frame.
+        self._screen_cleared = False
         self._cancel_event = threading.Event()
         self._error: BaseException | None = None
         from .tasks import TaskPanel
@@ -279,10 +297,34 @@ class TuiSession:
 
         @keys.add("c-d", eager=True)
         def eof(event: Any) -> None:
-            if self._can_edit and not event.current_buffer.text:
+            buffer = event.current_buffer
+            if buffer.text:
+                if self._can_edit:
+                    buffer.delete()
+                return
+            # While the reader is paused above the live tail, Ctrl+D walks the
+            # history forward instead of closing the session: the same key that
+            # resumes follow must not swallow the pending work.
+            if self._is_scrolling:
+                self.scroll_transcript(self._page_lines())
+                return
+            if self._can_edit:
                 self._answer(EOFError())
-            elif self._can_edit:
-                event.current_buffer.delete()
+
+        @keys.add("c-u", eager=True)
+        def scroll_up(event: Any) -> None:
+            buffer = event.current_buffer
+            if buffer.text:
+                # With text in the editor the emacs meaning wins: kill back to
+                # the start of the line. The transcript only takes the key when
+                # there is nothing to edit (the editor is read-only while busy).
+                if not self._can_edit:
+                    return
+                from prompt_toolkit.key_binding.bindings.named_commands import get_by_name
+
+                get_by_name("unix-line-discard").call(event)
+                return
+            self.scroll_transcript(-self._page_lines())
 
         @keys.add("c-c", eager=True)
         def interrupt(event: Any) -> None:
@@ -343,11 +385,15 @@ class TuiSession:
                      prompt_style, input, output, full_screen=self.full_screen)
 
     def _input_height(self) -> Any:
-        """Editor rows, footer and three lines of breathing room in its panel."""
+        """Editor rows, footer and breathing room in its panel.
+
+        The panel reserves one blank row above the editor, one between the
+        editor and the model/folder footer, and one below it.
+        """
         from prompt_toolkit.utils import get_cwidth
 
         size = self._session.output.get_size()
-        # The panel loses one column to the red bar and two to the ``> `` prefix.
+        # Two cells of left inset and two for the ``> `` prefix.
         columns = max(1, size.columns - 4)
         rows = sum(max(1, (get_cwidth(line) + columns - 1) // columns)
                    for line in self.input_document.render().split("\n"))
@@ -364,6 +410,11 @@ class TuiSession:
         """What the operator can read right now, including a block mid-reveal."""
         with self._lock:
             return "".join(self._segment_text(segment) for segment in self._segments)
+
+    @property
+    def is_scrolling(self) -> bool:
+        """True while the viewport is paused above the live tail."""
+        return self._is_scrolling
 
     def _formatted(self, text: str) -> StyleAndTextTuples:
         from prompt_toolkit.formatted_text import ANSI, to_formatted_text
@@ -408,8 +459,8 @@ class TuiSession:
         startup masthead is still on screen, so the brand is never painted over
         the banner.
         """
+        from ..theme import THEME
         from .frame import header_text
-        from .presentation import ACCENT_STYLE
 
         if not self._show_engagement_badge():
             return []
@@ -422,7 +473,7 @@ class TuiSession:
             width = self._session.output.get_size().columns
         except Exception:  # noqa: BLE001 - cosmetic sizing only
             width = None
-        return [("" if self.no_color else ACCENT_STYLE,
+        return [("" if self.no_color else THEME.primary,
                  header_text(self._engagement_label(), elapsed_seconds=elapsed,
                              width=width))]
 
@@ -571,10 +622,11 @@ class TuiSession:
         """Markdown-rendered lines of the in-progress answer (cached per width)."""
         if self._answer_text is None:
             return []
-        from .markdown import DEFAULT_READING_WIDTH, render_markdown
+        from .markdown import render_markdown
 
-        columns = self._session.output.get_size().columns
-        width = max(20, min(DEFAULT_READING_WIDTH, columns - 4))
+        # The live overlay uses the same content width as the committed panel:
+        # one geometry for both, with no 100-column cap on wide terminals.
+        width = max(20, self.text_width - 6)
         key = (self._answer_text, width)
         if self._answer_cache is not None and self._answer_cache[0] == key:
             return self._answer_cache[1]
@@ -806,12 +858,7 @@ class TuiSession:
         chevron, so every run showed the task twice. The editor is the only
         writer of this block.
         """
-        from .presentation import user_message
-
-        width = int(self._session.output.get_size().columns) if self.use_tui else 100
-        self.append_scrollback(user_message(
-            value, width=max(8, width - 2), no_color=self.no_color,
-        ) + "\n\n")
+        self.append_user_turn(value)
 
     def _input_prefix(self) -> str:
         """The chevron that opens the echoed user turn.
@@ -900,7 +947,30 @@ class TuiSession:
             self._input.save_to_undo_stack()
             self._set_input_document(self.input_document.replace_ref(pos, expand=False))
 
+    def _clear_screen_once(self) -> None:
+        """Erase whatever the terminal had before the first frame.
+
+        The transcript paints its own solid background, but a terminal that
+        still holds the shell's previous output (or an inline banner) shows it
+        through any cell prompt_toolkit has not touched yet. Clearing here, in
+        the UI thread before the event loop starts, leaves a clean canvas.
+        """
+        if self._screen_cleared:
+            return
+        self._screen_cleared = True
+        output = getattr(self._session, "output", None)
+        if output is None:
+            return
+        try:
+            output.erase_screen()
+            output.cursor_goto(0, 0)
+            output.flush()
+        except Exception:  # noqa: BLE001 - clearing is best-effort
+            pass
+
     def _run(self) -> None:
+        self._clear_screen_once()
+
         async def run() -> None:
             def ready() -> None:
                 self._loop = asyncio.get_running_loop()
@@ -1018,32 +1088,87 @@ class TuiSession:
             return
         self.append_scrollback(self._block_break() + body + "\n")
 
-    def append_result_block(self, text: str) -> None:
-        """Append the final result as a panel with air above and below it.
+    def append_result_block(self, markdown: str, *, title: str | None = None) -> None:
+        """Append the final result as a framed panel with air above and below.
 
-        Execution blocks are followed by whatever comes next, which already
-        contributes their separating blank line. The result is terminal, so it
-        owns the trailing gap itself; otherwise the next command would start
-        glued to the panel's bottom border.
+        The raw Markdown is stored, not a painted box: :meth:`_segment_text`
+        re-renders it at the current width, so a resize or a reflow redraws the
+        border instead of cutting it. Execution blocks already contribute their
+        separating blank line; the result is terminal and owns the trailing gap.
         """
-        body = str(text or "").rstrip("\n")
+        body = str(markdown or "").rstrip("\n")
         if not body:
             return
-        self.append_scrollback(self._block_break() + body + "\n\n")
+        if not self.use_tui:
+            print(body)
+            return
+        lead = self._block_break()
+        self._enqueue_segment({
+            "kind": "result", "markdown": body, "title": title,
+            "lead": lead, "trail": "\n\n",
+        })
+
+    def append_answer_block(self, markdown: str, *, title: str | None = None) -> None:
+        """Append a conversational answer as a reflowable framed block."""
+        body = str(markdown or "").rstrip("\n")
+        if not body:
+            return
+        if not self.use_tui:
+            print(body)
+            return
+        lead = self._block_break()
+        self._enqueue_segment({
+            "kind": "answer", "markdown": body, "title": title,
+            "lead": lead, "trail": "\n\n",
+        })
+
+    def append_user_turn(self, value: str) -> None:
+        """Append one operator turn as a reflowable framed block.
+
+        A turn opens a new identity context: the next block is titled by the
+        tools *this* turn runs, never by a subagent left over from the previous
+        one. The timestamp is captured here so a redraw keeps the original time.
+        """
+        from datetime import datetime
+
+        text = str(value or "")
+        if not text:
+            return
+        if not self.use_tui:
+            print(text)
+            return
+        lead = self._block_break()
+        self._last_tool_id = None
+        # A new turn starts a fresh identity context: the first Recon card is
+        # ``OMNI · Recon`` again, not ``(3)`` from the previous question.
+        with self._lock:
+            self._identity_seq.clear()
+        self._enqueue_segment({
+            "kind": "user", "text": text, "lead": lead, "trail": "\n\n",
+            "now": datetime.now(),
+        })
+        # Submitting a question resumes the live tail: the operator sees the new
+        # turn, while the previous work stays above and remains scrollable.
+        if not self._auto_scroll:
+            self._follow_tail()
 
     def append_scrollback(self, text: str, *, typed: bool = False) -> None:
         if not self.use_tui:
             print(text, end="")
             return
-        segment = {"kind": "text", "text": str(text)}
+        self._enqueue_segment({"kind": "text", "text": str(text)}, typed=typed)
+
+    def _enqueue_segment(self, segment: dict[str, Any], *, typed: bool = False) -> None:
+        """Queue one transcript segment, typed or whole, in program order."""
         schedule = False
         typed_block = False
         with self._lock:
-            self._lines.append(segment["text"])
+            text = self._segment_text(segment)
+            self._lines.append(text)
             self._segments.append(segment)
             typed_block = bool(typed) and self._typewriter_enabled()
             if typed_block:
-                segment["_type_full"] = segment["text"]
+                segment["_type_full"] = text
                 segment["text"] = ""
                 # Visible to ``flush``/``close`` at once: a block waiting for
                 # its dispatch can never be lost.
@@ -1134,6 +1259,9 @@ class TuiSession:
                 # The reveal held the trim so it could never resurrect a
                 # dropped block; now the bounded view can be compacted.
                 self._dispatch(self._compact_transcript)
+                if self._resize_pending:
+                    self._resize_pending = False
+                    self._dispatch(self.handle_resize)
 
     def _commit_partial(self, base: str, revealed: str) -> None:
         """Draw the block being typed over the committed transcript.
@@ -1150,7 +1278,13 @@ class TuiSession:
         tail = (wrap_terminal_text(revealed, width=self._scrollback_width(),
                                   no_color=self.no_color) if revealed else "")
         plain = base + tail
-        self._scrollback.set_document(Document(plain, len(plain)), bypass_readonly=True)
+        # A reveal must not yank the operator back to the tail: if they scrolled
+        # up to read earlier work, the growing block keeps arriving below,
+        # outside the viewport, until they return to the bottom.
+        cursor = len(plain) if self._auto_scroll else min(
+            self._scrollback.cursor_position, len(plain)
+        )
+        self._scrollback.set_document(Document(plain, cursor), bypass_readonly=True)
 
     def _commit_typed_block(self, segment: dict[str, Any], *, base: str | None = None) -> None:
         """Close a reveal: the block becomes an ordinary transcript segment."""
@@ -1189,34 +1323,153 @@ class TuiSession:
         self._typing_deferred = False
         if task is not None and not task.done():
             task.cancel()
+        if self._resize_pending:
+            self._resize_pending = False
+            self._dispatch(self.handle_resize)
+
+    def _next_identity(self, base: str | None) -> int:
+        """The call number of ``base`` inside the current operator turn."""
+        key = str(base or 'Resultado')
+        index = int(self._identity_seq.get(key, 0)) + 1
+        self._identity_seq[key] = index
+        return index
+
+    def _new_tool_card(self, tool_id: str | None, arguments: Any,
+                       result: dict[str, Any] | None, *,
+                       expanded: bool | None, typed: bool | None) -> dict[str, Any]:
+        """Build one subagent card holding its invocation (and result, if any)."""
+        from .presentation import subagent_title
+
+        base = subagent_title(tool_id) or 'Resultado'
+        card: dict[str, Any] = {
+            "kind": "card",
+            "thought": None,
+            "reasoning": None,
+            "pasted_input": None,
+            "input_prefix": None,
+            "id": self._next_card_id,
+            "tool_id": str(tool_id or ''),
+            "arguments": arguments,
+            "title_base": base,
+            "identity_index": self._next_identity(base),
+            "result": result,
+            "expanded": bool(self.expand_cards if expanded is None else expanded),
+        }
+        self._next_card_id += 1
+        if tool_id:
+            self._last_tool_id = str(tool_id)
+        return card
+
+    def begin_tool(self, tool_id: str, arguments: Any) -> int | None:
+        """Open the subagent card for a call that is about to run.
+
+        The invocation is painted *inside* the identity that owns it, so the
+        operator never sees ``• nexus.recon.nmap`` floating above a result box.
+        :meth:`complete_tool` fills the result into this same card; a second
+        call of the same subagent opens a new card (``OMNI · Recon (2)``).
+        """
+        if not self.use_tui:
+            return None
+        with self._lock:
+            card = self._new_tool_card(tool_id, arguments, None, expanded=None, typed=False)
+            # A pending call is not a typewriter block: its result must be able
+            # to land in the same segment as soon as the tool returns.
+            card["lead"] = self._block_break()
+            self._cards[card["id"]] = card
+            self._lines.append(self._card_text(card))
+            self._segments.append(card)
+            self._write_queue.append(card)
+            schedule = not self._flush_scheduled
+            self._flush_scheduled = True
+        if schedule:
+            self._schedule_flush()
+        return int(card["id"])
+
+    def complete_tool(self, result: dict[str, Any]) -> bool:
+        """Attach a result to the pending card of the same tool, if any.
+
+        Returns ``False`` when there is no open card (a resumed session or a
+        result rendered on its own); the caller then appends an ordinary card.
+        """
+        if not self.use_tui:
+            return False
+        value = dict(result) if isinstance(result, dict) else {}
+        tool_id = str(value.get("tool_id") or '')
+        with self._lock:
+            card: dict[str, Any] | None = None
+            for segment in reversed(self._segments):
+                if segment.get("kind") != 'card':
+                    continue
+                if segment.get("thought") is not None or segment.get("pasted_input") is not None:
+                    continue
+                if segment.get("result") is not None:
+                    continue
+                other = str(segment.get('tool_id') or '')
+                if other and tool_id and other != tool_id:
+                    continue
+                card = segment
+                break
+            if card is None:
+                return False
+            card["result"] = value
+            if tool_id:
+                card["tool_id"] = tool_id
+                self._last_tool_id = tool_id
+            queued = card in self._write_queue or card in self._typing_queue
+            if queued:
+                return True
+            plain = self._rebuild_state_locked()
+            cursor = len(plain) if self._auto_scroll else min(
+                self._scrollback.cursor_position, len(plain)
+            )
+        self._dispatch(lambda: self._commit_transcript(plain, cursor))
+        return True
 
     def append_card(self, result: dict[str, Any], *, expanded: bool | None = None,
                     thought: str | None = None, pasted_input: str | None = None,
                     input_prefix: str | None = None, typed: bool | None = None,
-                    reasoning: str | None = None) -> None:
-        """Append a tool-result card that expands/collapses on its own (click)."""
-        card: dict[str, Any] = {
-            "kind": "card",
-            "thought": thought,
-            "reasoning": reasoning,
-            "pasted_input": pasted_input,
-            "input_prefix": input_prefix,
-            "id": self._next_card_id,
-            "result": result if isinstance(result, dict) else {},
-            "expanded": bool(self.expand_cards if expanded is None else expanded),
-        }
+                    reasoning: str | None = None, tool_id: str | None = None,
+                    arguments: Any = None) -> None:
+        """Append a tool-result card that expands/collapses on its own (click).
+
+        ``arguments`` turns it into a combined subagent card: the invocation and
+        the result share one box. Without arguments it keeps the historical
+        result-only card (used by resumed sessions and standalone renderers).
+        """
+        value = dict(result) if isinstance(result, dict) else {}
         schedule = False
         typed_block = False
         with self._lock:
+            if thought is None and pasted_input is None and tool_id is None:
+                tool_id = str(value.get("tool_id") or '') or None
+            if thought is None and pasted_input is None and tool_id:
+                card = self._new_tool_card(tool_id, arguments, value,
+                                           expanded=expanded, typed=typed)
+            else:
+                card = {
+                    "kind": "card",
+                    "thought": thought,
+                    "reasoning": reasoning,
+                    "pasted_input": pasted_input,
+                    "input_prefix": input_prefix,
+                    "id": self._next_card_id,
+                    "result": value,
+                    "expanded": bool(self.expand_cards if expanded is None else expanded),
+                }
+                self._next_card_id += 1
             # The card is a block of its own: keep it off the previous line.
             card["lead"] = self._block_break()
-            self._next_card_id += 1
             self._cards[card["id"]] = card
             text = self._card_text(card)
             self._lines.append(text)
             self._segments.append(card)
-            typed_block = (self._typewriter_enabled() if typed is None
-                           else bool(typed) and self._typewriter_enabled())
+            # A combined call is only revealed while it is a plain result card;
+            # the pending segment must stay updatable in place.
+            typed_block = (
+                arguments is None
+                and (self._typewriter_enabled() if typed is None
+                     else bool(typed) and self._typewriter_enabled())
+            )
             if typed_block:
                 card["_type_full"] = text
                 card["text"] = ""
@@ -1232,7 +1485,7 @@ class TuiSession:
             self._schedule_flush()
 
     def _card_text(self, card: dict[str, Any]) -> str:
-        from .stream import render_tool_result
+        from .stream import format_tool_card, render_tool_result
 
         lead = str(card.get("lead") or "")
         if card.get("pasted_input") is not None:
@@ -1243,7 +1496,7 @@ class TuiSession:
             expanded = bool(card.get('expanded'))
             visible = clean_text(value) if expanded else input_chip(value).plain
             prefix = clean_text(str(card.get('input_prefix') or self._input_prefix()))
-            width = max(1, int(self._session.output.get_size().columns) - 2)
+            width = self.text_width
             quote = input_quote(prefix + visible, width=width, no_color=self.no_color)
             footer = render_rich(Text(HIDE_REASONING if expanded else SHOW_PASTED_INPUT, style='dim'),
                                  width=width, no_color=self.no_color)
@@ -1251,25 +1504,90 @@ class TuiSession:
         if card.get("thought") is not None:
             from .presentation import thinking_block
             expanded = bool(card.get("expanded"))
-            width = int(self._session.output.get_size().columns) if self.use_tui else 100
             rendered = thinking_block(
                 str(card["thought"]), expanded=expanded,
-                width=max(20, width - 2), reasoning=card.get("reasoning"),
+                width=self.text_width, reasoning=card.get("reasoning"),
                 no_color=self.no_color,
             )
             return lead + rendered + "\n\n"
-        width = int(self._session.output.get_size().columns) if self.use_tui else 100
-        return lead + render_tool_result(card.get("result") or {}, expanded=bool(card.get("expanded")),
-                                         max_lines=4, width=max(20, width - 2),
-                                         no_color=self.no_color) + "\n\n"
+        tool_id = str(card.get("tool_id") or (card.get("result") or {}).get("tool_id") or '')
+        if card.get("arguments") is not None:
+            from .presentation import numbered_title
+            title = numbered_title(
+                str(card.get("title_base") or 'Resultado'),
+                int(card.get("identity_index") or 1),
+            )
+            return lead + format_tool_card(
+                tool_id, card.get("arguments"), card.get("result"),
+                expanded=bool(card.get("expanded")), max_lines=6,
+                width=self.text_width, no_color=self.no_color, title=title,
+            ) + "\n\n"
+        from .presentation import numbered_title
+        card_title: str | None = None
+        if card.get("title_base"):
+            card_title = numbered_title(
+                str(card.get("title_base")), int(card.get("identity_index") or 1)
+            )
+        return lead + render_tool_result(
+            card.get("result") or {}, expanded=bool(card.get("expanded")),
+            max_lines=4, width=self.text_width, no_color=self.no_color,
+            title=card_title,
+        ) + "\n\n"
 
     def _segment_text(self, segment: dict[str, Any]) -> str:
-        # A card being revealed shows what has been typed so far, not its full
-        # rendering; once committed it is rebuilt from its result again.
+        """Render one segment at the *current* transcript width.
+
+        Pre-rendered text is fine for incidental output, but every framed block
+        is stored as data (kind + payload) and redrawn here. That is what lets a
+        terminal resize repaint the borders instead of wrapping and cutting a
+        panel that was frozen at the old width.
+        """
+        # A block being revealed shows what has been typed so far, not its full
+        # rendering; once committed it is rebuilt from its payload again.
         if segment.get("_type_full") is not None:
             return str(segment.get("text") or "")
-        if segment.get("kind") == "card":
+        kind = segment.get("kind")
+        if kind == "card":
             return self._card_text(segment)
+        if kind == "user":
+            from .presentation import user_message
+
+            return (
+                str(segment.get("lead") or "")
+                + user_message(
+                    str(segment.get("text") or ""),
+                    width=self.text_width,
+                    no_color=self.no_color,
+                    now=segment.get("now"),
+                )
+                + str(segment.get("trail") or "\n\n")
+            )
+        if kind in {"answer", "result"}:
+            from .markdown import render_markdown
+            from .presentation import ADVISOR_TITLE, answer_panel, result_panel
+
+            width = self.text_width
+            body = render_markdown(
+                str(segment.get("markdown") or ""),
+                no_color=self.no_color,
+                max_width=max(20, width - 6),
+            )
+            title = str(segment.get("title") or "")
+            if kind == "answer":
+                panel = answer_panel(
+                    body, width=width, title=title or ADVISOR_TITLE,
+                    no_color=self.no_color,
+                )
+            else:
+                panel = result_panel(
+                    body, width=width, title=title or ADVISOR_TITLE,
+                    no_color=self.no_color,
+                )
+            return (
+                str(segment.get("lead") or "")
+                + panel
+                + str(segment.get("trail") or "\n\n")
+            )
         return str(segment.get("text") or "")
 
     @staticmethod
@@ -1407,6 +1725,7 @@ class TuiSession:
         self._styled_lines = styled
         self._toggle_rows = toggle
         self._lines = raw_lines
+        self._last_render_width = self._scrollback_width()
         return plain
 
     def _flush_scrollback(self) -> None:
@@ -1468,12 +1787,18 @@ class TuiSession:
         # BufferControl observes the document change; no explicit invalidation.
 
     def _page_lines(self) -> int:
-        """Logical lines moved by PageUp/PageDown, sized to the visible region."""
+        """Logical lines moved by PageUp/PageDown, sized to the visible region.
+
+        The transcript does not own the whole terminal: the badge, the prompt
+        dock (five rows), the helper hints and the operational bar keep their
+        own rows. Subtracting them from ``rows`` makes one PageUp move one
+        *visible* page instead of overshooting the whole history.
+        """
         try:
             rows = int(self._session.output.get_size().rows)
         except Exception:  # noqa: BLE001 - cosmetic sizing only
             rows = 24
-        return max(1, rows - 5)
+        return max(1, rows - 10)
 
     def _scrollback_width(self) -> int:
         """Usable text width after the console's two-cell left inset."""
@@ -1483,10 +1808,131 @@ class TuiSession:
             columns = 80
         return max(1, columns - 2)
 
+    def block_width(self) -> int:
+        """The one geometry of the transcript: every framed block uses it.
+
+        The scrollback owns two inset cells (``left=2``/``right=2``), so a block
+        painted at ``columns - 2`` fills the region exactly. Renderers call
+        :attr:`text_width`; keeping the arithmetic here means a future inset
+        change touches one place instead of every panel.
+        """
+        return self._scrollback_width()
+
     @property
     def text_width(self) -> int:
         """Usable transcript width, for renderers that pre-wrap a block."""
-        return self._scrollback_width()
+        return self.block_width()
+
+    def note_tool(self, tool_id: str | None) -> None:
+        """Remember the last tool that ran, for the next block's identity.
+
+        This is a label only. Scope, approvals, risk and the audit chain keep
+        using the real tool id through the gateway.
+        """
+        value = str(tool_id or "").strip()
+        if value:
+            self._last_tool_id = value
+
+    def last_subagent_title(self) -> str | None:
+        """``OMNI · Recon`` for the last tool of this turn, or ``None``."""
+        from .presentation import subagent_title
+
+        return subagent_title(self._last_tool_id)
+
+    def copy_candidates(self) -> list[dict[str, str]]:
+        """Assistant blocks that ``/copy`` can deliver, newest first.
+
+        Only content the model produced counts: a conversational answer, a
+        final result or a tool body. Operator turns are context, not an answer,
+        and thinking cards are excluded because reasoning is not evidence. The
+        stored payload is rendered again as plain text, so the clipboard never
+        receives ANSI codes or half a frame.
+        """
+        from .markdown import render_markdown
+        from .presentation import ADVISOR_TITLE, clean_text, subagent_title
+        from .stream import plain_result_text
+
+        with self._lock:
+            segments = list(self._segments)
+        items: list[dict[str, str]] = []
+        for segment in reversed(segments):
+            kind = segment.get("kind")
+            if kind in {"answer", "result"}:
+                markdown = str(segment.get("markdown") or "").strip()
+                if not markdown:
+                    continue
+                default = ADVISOR_TITLE if kind == "answer" else "Resultado final"
+                items.append({
+                    "kind": str(kind),
+                    "title": str(segment.get("title") or default),
+                    "text": clean_text(
+                        render_markdown(markdown, no_color=True)
+                    ).strip(),
+                })
+                continue
+            if kind == "card" and segment.get("thought") is None:
+                result = segment.get("result") or {}
+                text = plain_result_text(result).strip()
+                if not text:
+                    continue
+                items.append({
+                    "kind": "tool",
+                    "title": subagent_title(result.get("tool_id")) or "Resultado",
+                    "text": text,
+                })
+        return items
+
+    def plain_transcript(self) -> str:
+        """The whole conversation as unframed plain text, for ``/copy all``."""
+        from .markdown import render_markdown
+        from .presentation import clean_text
+        from .stream import plain_result_text
+
+        with self._lock:
+            segments = list(self._segments)
+        blocks: list[str] = []
+        for segment in segments:
+            kind = segment.get("kind")
+            if kind == "user":
+                blocks.append(clean_text(str(segment.get("text") or "")).strip())
+            elif kind in {"answer", "result"}:
+                blocks.append(clean_text(render_markdown(
+                    str(segment.get("markdown") or ""), no_color=True,
+                )).strip())
+            elif kind == "card":
+                if segment.get("thought") is not None:
+                    thought = clean_text(str(segment.get("thought") or "")).strip()
+                    if thought:
+                        blocks.append(f"▸ Razonamiento\n{thought}")
+                else:
+                    blocks.append(plain_result_text(segment.get("result") or {}).strip())
+            else:
+                blocks.append(clean_text(str(segment.get("text") or "")).strip())
+        return "\n\n".join(block for block in blocks if block)
+
+    def handle_resize(self) -> None:
+        """Redraw every framed block at the new terminal width.
+
+        A box painted at the old width is text, so prompt_toolkit would merely
+        wrap it and cut the border. Rebuilding from the stored payload is the
+        only way to keep the geometry honest after a resize.
+        """
+        if not self.use_tui:
+            return
+        if self._typing_active:
+            # The reveal owns the document; reflow once it closes.
+            self._resize_pending = True
+            return
+        width = self._scrollback_width()
+        with self._lock:
+            if width == self._last_render_width:
+                return
+            self._last_render_width = width
+            plain = self._rebuild_state_locked()
+            cursor = len(plain) if self._auto_scroll else min(
+                self._scrollback.cursor_position, len(plain)
+            )
+        self._commit_transcript(plain, cursor)
 
     def _scroll_to(self, line: int) -> None:
         """Put logical line ``line`` at the top of the transcript region."""
@@ -1499,11 +1945,52 @@ class TuiSession:
     def _follow_tail(self) -> None:
         """Resume following new output (the view returns to the live tail)."""
         self._auto_scroll = True
+        self._is_scrolling = False
         self._scrollback.cursor_position = len(self._scrollback.text)
         self._scrollback_window.vertical_scroll = max(
             0, self._scrollback.document.line_count - 1
         )
         self.invalidate()
+
+    def _visible_height(self) -> int:
+        """Rows the transcript actually paints, including wrapped lines.
+
+        ``render_info`` is the honest source once the first frame is on screen;
+        before that (and in headless tests) the row estimate is used.
+        """
+        info = getattr(self._scrollback_window, "render_info", None)
+        if info is not None:
+            try:
+                height = int(info.window_height)
+                if height > 0:
+                    return height
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return self._page_lines()
+
+    def _max_vertical_scroll(self) -> int:
+        """Top line that still leaves the tail visible.
+
+        A logical line may occupy several rows, so ``line_count - height``
+        overshoots on a wrapped transcript. Walking up from the last line with
+        the renderer's own wrapped heights keeps the anchor exact and makes
+        PageDown return to the live tail on the first press that reaches it.
+        """
+        document = self._scrollback.document
+        last = max(0, document.line_count - 1)
+        height = max(1, self._visible_height())
+        info = getattr(self._scrollback_window, "render_info", None)
+        if info is None or not getattr(info, "wrap_lines", True):
+            return max(0, document.line_count - height)
+        used = 0
+        for lineno in range(last, -1, -1):
+            try:
+                used += max(1, int(info.get_height_for_line(lineno)))
+            except Exception:  # noqa: BLE001 - cosmetic anchor only
+                used += 1
+            if used >= height:
+                return lineno
+        return 0
 
     def scroll_transcript(self, lines: int) -> None:
         """Scroll the transcript by ``lines`` (negative scrolls up).
@@ -1514,11 +2001,11 @@ class TuiSession:
         """
         if lines < 0:
             self._auto_scroll = False
+            self._is_scrolling = True
             self._scroll_to(self._scrollback_window.vertical_scroll + lines)
             return
-        document = self._scrollback.document
         target = self._scrollback_window.vertical_scroll + max(0, int(lines))
-        if target >= max(0, document.line_count - self._page_lines()):
+        if target >= self._max_vertical_scroll():
             self._follow_tail()
         else:
             self._scroll_to(target)

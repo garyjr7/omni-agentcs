@@ -18,7 +18,6 @@ from nexus_core.kernel.approvals import ApprovalService
 
 from . import errors, render
 from .tool_result import tool_method, tool_payload, tool_success
-from .tui.markdown import DEFAULT_READING_WIDTH
 from .tui.output import routed
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -1320,15 +1319,13 @@ def cmd_ask(session: "OmniSession", args: list[str]) -> None:
         errors.report_error(session, exc, operation="la consulta")
         return
     _persist_ask(session, question, answer)
-    max_width = None
     if session._tui.use_tui:
-        columns = session._tui._session.output.get_size().columns
-        # The framed answer spends six cells on border and horizontal padding.
-        max_width = max(20, min(DEFAULT_READING_WIDTH, columns - 8))
-    render.render_answer(
-        answer, no_color=session.no_color, markdown=session._tui.use_tui,
-        max_width=max_width,
-    )
+        # The TUI stores the raw Markdown and paints it at the transcript width,
+        # so the committed panel matches the live overlay and the rest of the
+        # conversation. ``/ask`` runs no tool: the title is the advisor.
+        session._tui.append_answer_block(answer)
+    else:
+        render.render_answer(answer, no_color=session.no_color)
     # Commit is done: hide the live overlay so the transcript shows the answer.
     session._tui.end_answer()
 
@@ -1733,6 +1730,54 @@ def cmd_skills(session: "OmniSession", args: list[str]) -> None:
     render.render_error(f"acción desconocida: {action} (usa list|show|use|off)")
 
 
+def cmd_copy(session: "OmniSession", args: list[str]) -> None:
+    """Copia la última respuesta al portapapeles (/copy N, /copy all)."""
+    tui = session._tui
+    if not tui.use_tui:
+        render.render_error("el portapapeles con /copy requiere la TUI interactiva")
+        return
+    argument = str(args[0]).strip().lower() if args else "1"
+    if argument in {"all", "todo"}:
+        text = tui.plain_transcript()
+        if not text:
+            render.render_status("todavía no hay conversación que copiar")
+            return
+        label = "la conversación completa"
+    else:
+        try:
+            index = int(argument)
+        except ValueError:
+            render.render_error("uso: /copy [N|all] · 1 = la respuesta más reciente")
+            return
+        candidates = tui.copy_candidates()
+        if not candidates:
+            render.render_status("todavía no hay respuestas que copiar")
+            return
+        if not 1 <= index <= len(candidates):
+            render.render_error(
+                f"no existe la respuesta {index}: hay {len(candidates)} "
+                "(1 = la más reciente)"
+            )
+            return
+        item = candidates[index - 1]
+        text = item["text"]
+        label = f"{item['title']} (#{index})"
+    from .tui.clipboard import copy_to_clipboard
+
+    backend = copy_to_clipboard(
+        text, output=getattr(getattr(tui, "_app", None), "output", None),
+    )
+    if backend is None:
+        render.render_error(
+            "no se pudo usar el portapapeles: OSC 52 no está disponible y no hay "
+            "wl-copy/xclip/xsel. Instala wl-clipboard o xclip."
+        )
+        return
+    render.render_status(
+        f"copiado {label} · {len(text)} caracteres · {backend}"
+    )
+
+
 def cmd_help(session: "OmniSession", args: list[str]) -> None:
     """Muestra esta ayuda."""
     render.write(render.paint("Comandos disponibles:", render.BOLD))
@@ -1759,6 +1804,7 @@ COMMANDS: dict[str, Callable[["OmniSession", list[str]], None]] = {
     "/history": cmd_history,
     "/clear": cmd_clear,
     "/export": cmd_export,
+    "/copy": cmd_copy,
     "/approvals": cmd_approvals,
     "/sessions": cmd_sessions,
     "/session": cmd_session,

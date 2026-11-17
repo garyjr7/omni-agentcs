@@ -22,8 +22,10 @@ def test_markdown_bold_italic():
     assert "\x1b[1mbold" in text and "\x1b[3mitalic" in text
 
 
-def test_markdown_inline_code():
-    assert "\x1b[100mcode" in render_markdown("`code`")
+def test_markdown_inline_code_is_cyan_without_a_background():
+    rendered = render_markdown("`code`")
+    assert "\x1b[38;2;125;207;255mcode" in rendered
+    assert "\x1b[100m" not in rendered
 
 
 def test_markdown_code_block():
@@ -77,7 +79,7 @@ def test_markdown_pipe_output_uses_router(tui_factory):
     ui.session.flush()
     assert "Title" in ui.session.transcript and "• item" in ui.session.transcript
     assert "# Title" not in ui.session.transcript
-    assert "╭─ OMNI · respuesta" in ui.session.transcript
+    assert "╭─ OMNI · Asesor" in ui.session.transcript
 
 
 def test_fallback_answer_keeps_original_markdown(capsys):

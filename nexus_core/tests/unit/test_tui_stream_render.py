@@ -167,7 +167,7 @@ def test_tool_complete_summary_line():
                                "evidence": {"ports_open_total": 4, "noise_level": "low", "elapsed_seconds": 4.2}},
                               no_color=True)
     assert "✓ nmap: 4 puertos abiertos · ruido: low · 4.2s" in text
-    assert "Resultado" in text
+    assert "OMNI · Recon" in text
 
 
 def test_tool_failed_shows_error():
@@ -355,7 +355,12 @@ def test_daemon_uses_compact_messages_in_tui(tui_factory):
     state = {"run_id": "r", "sequence": 0, "message_sequence": None, "turn": 0}
     _drain_stream(session, state)
     _drain_stream(session, state)
-    assert _plain(ui.session.transcript).count("> Ejecutando nmap") == 1
+    text = _plain(ui.session.transcript)
+    # The call opens the subagent card and lives inside it: nothing floats
+    # above the result box.
+    assert text.count("╭─ OMNI · Recon") == 1
+    assert "$ nmap lab" in text
+    assert "> Ejecutando nmap" not in text
     # The second poll asks the store only for what follows the last row it saw.
     assert cursors == [None, 7]
 
@@ -371,6 +376,8 @@ class _RecordingTui:
     def __init__(self):
         self.blocks = []
         self.cards = []
+        #: Combined subagent cards: ``{"tool_id", "arguments", "result"}``.
+        self.tools: list[dict] = []
         self._pending_reasoning = None
 
     def task_event(self, event):
@@ -384,6 +391,17 @@ class _RecordingTui:
 
     def append_card(self, result, **kwargs):
         self.cards.append((result, kwargs))
+
+    def begin_tool(self, tool_id, arguments):
+        self.tools.append({"tool_id": tool_id, "arguments": arguments, "result": None})
+        return len(self.tools)
+
+    def complete_tool(self, result):
+        for entry in reversed(self.tools):
+            if entry["result"] is None:
+                entry["result"] = result
+                return True
+        return False
 
 
 def _action(sequence, thought, target="lab"):
@@ -452,3 +470,46 @@ def test_the_reasoning_event_reaches_the_reasoning_card():
     _result, kwargs = tui.cards[0]
     assert kwargs["thought"] == "reviso el puerto 445"
     assert kwargs["reasoning"] == "El SMB está abierto."
+
+
+def test_an_observation_fills_the_card_the_call_opened():
+    from types import SimpleNamespace
+
+    from nexus_core.cli.session import _drain_stream
+
+    tui = _RecordingTui()
+    messages = [
+        _action(1, "reviso el puerto 80"),
+        {
+            "sequence": 2,
+            "metadata": {
+                "kind": "react.observation",
+                "tool_id": "nexus.recon.nmap",
+                "success": True,
+                "tool_result": {
+                    "success": True,
+                    "tool_id": "nexus.recon.nmap",
+                    "evidence": {"ports_open_total": 1},
+                    "stdout": "80/tcp open http",
+                },
+            },
+        },
+    ]
+    session = SimpleNamespace(
+        store=SimpleNamespace(
+            list_run_events=lambda *a, **k: [],
+            list_messages=lambda *a, **k: messages,
+        ),
+        tenant_id="system",
+        conversation_id="c",
+        run_id="r",
+        _tui=tui,
+    )
+    _drain_stream(session, {"run_id": "r", "sequence": 0, "message_sequence": None, "turn": 0})
+
+    # One invocation, one card; the result is attached to that same call and
+    # never becomes a second floating box.
+    assert len(tui.tools) == 1
+    assert tui.tools[0]["tool_id"] == "nexus.recon.nmap"
+    assert tui.tools[0]["result"]["stdout"] == "80/tcp open http"
+    assert not any(result.get("stdout") for result, _ in tui.cards)

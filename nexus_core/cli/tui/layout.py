@@ -32,6 +32,16 @@ class RegionApplication(Application[Any]):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.refresh_wake = asyncio.Event()
+        #: Called after prompt_toolkit notices a terminal resize. The session
+        #: uses it to redraw every framed block at the new width, so a border is
+        #: never left frozen at the width it was first painted at.
+        self.on_resize_callback: Callable[[], None] | None = None
+
+    def _on_resize(self) -> None:
+        super()._on_resize()
+        callback = self.on_resize_callback
+        if callback is not None:
+            callback()
 
     def _start_auto_refresh_task(self) -> None:
         async def refresh() -> None:
@@ -53,11 +63,47 @@ class ScrollbackControl(BufferControl):
     consumed; every other event falls back to the buffer (selection/scroll).
     """
 
-    def __init__(self, *args: Any, on_line_click: Callable[[int], bool] | None = None, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, on_line_click: Callable[[int], bool] | None = None,
+                 on_scroll: Callable[[int], None] | None = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._on_line_click = on_line_click
+        self._on_scroll = on_scroll
+
+    def create_content(self, width: int, height: int,
+                       preview_search: bool = False) -> Any:
+        """Build the transcript content without ``BufferControl``'s cursor cell.
+
+        ``BufferControl.create_content`` appends one blank cell to every line so
+        the cursor can sit after the last character. The transcript never shows
+        a cursor, and at ``columns - 2`` every panel fills the window exactly:
+        that extra cell overflowed by one and the renderer wrapped each panel
+        row into a second, empty row. Dropping the placeholder keeps the panel
+        geometry exact.
+        """
+        content = super().create_content(width, height, preview_search)
+        get_line = content.get_line
+
+        def get_line_without_cursor(lineno: int) -> StyleAndTextTuples:
+            fragments = get_line(lineno)
+            if fragments and fragments[-1] == ("", " "):
+                return fragments[:-1]
+            return fragments
+
+        content.get_line = get_line_without_cursor
+        return content
 
     def mouse_handler(self, mouse_event: MouseEvent) -> Any:
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            if self._on_scroll is not None:
+                # The wheel owns the same follow state as PageUp. Delegating to
+                # ``Window`` only moved ``vertical_scroll``; the cursor stayed at
+                # the tail and the next render snapped the view back.
+                self._on_scroll(-3)
+                return None
+        elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            if self._on_scroll is not None:
+                self._on_scroll(3)
+                return None
         if (
             self._on_line_click is not None
             and mouse_event.event_type == MouseEventType.MOUSE_DOWN
@@ -69,7 +115,7 @@ class ScrollbackControl(BufferControl):
 
 #: Hint drawn inside an empty editor. It is a rendering processor, never text:
 #: it is not in the buffer, the history, the transcript or a submitted turn.
-from .strings import HISTORY_HINT, HELP_HINT, PLACEHOLDER_TEXT
+from .strings import COPY_HINT, HISTORY_HINT, HELP_HINT, PLACEHOLDER_TEXT
 
 PLACEHOLDER = PLACEHOLDER_TEXT
 
@@ -124,7 +170,11 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         def create_margin(self, window_render_info: WindowRenderInfo,
                           width: int, height: int) -> StyleAndTextTuples:
             del window_render_info
-            return [("", " " * width + "\n") for _ in range(height)]
+            # The inset is part of the console surface, not a hole through it:
+            # leaving these cells unstyled let the previous screen show between
+            # the terminal edge and a panel.
+            return [(THEME.app_background_style, " " * width + "\n")
+                    for _ in range(height)]
 
     inset = [ConsoleInset()]
 
@@ -276,8 +326,13 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         ScrollbackControl(
             ui._scrollback, lexer=ScrollbackLexer(), focusable=False,
             on_line_click=ui.toggle_card_at_line,
+            on_scroll=ui.scroll_transcript,
         ),
         wrap_lines=True, always_hide_cursor=True, left_margins=inset,
+        # A solid surface under every transcript row: the window must paint the
+        # background itself instead of relying on the default style, or cells
+        # the renderer skips keep whatever was on screen before.
+        style=THEME.app_background_style,
     )
     # The working pulse and the "Worked for" summary are the same fixed row of
     # the dock, right above the input panel -never transcript lines, so they
@@ -285,17 +340,20 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     # while the agent works the pulse has one row, when it stops the completion
     # line takes it.
     ui._busy_window = Window(FormattedTextControl(ui._render_busy),
-                             height=lambda: int(ui._status.busy), left_margins=inset)
+                             height=lambda: int(ui._status.busy), left_margins=inset,
+                             style=THEME.app_background_style)
     ui._completion_window = Window(FormattedTextControl(ui._completion_formatted),
-                                   height=lambda: int(bool(ui._completion_status)), left_margins=inset)
-    ui._completion_gap = Window(height=lambda: int(bool(ui._completion_status)))
+                                   height=lambda: int(bool(ui._completion_status)),
+                                   left_margins=inset, style=THEME.app_background_style)
+    ui._completion_gap = Window(height=lambda: int(bool(ui._completion_status)),
+                                style=THEME.app_background_style)
     # Transient prompt chips (trust/session/report, plus the paste keys hint).
     # They belong to the prompt, not to the textarea, so they render above the
     # panel: inside it the editor stays the top line and the footer the bottom.
     chips = Window(FormattedTextControl(lambda: ui._formatted(
         "\n".join(ui.prompt_text.splitlines()[:-1] + (["F3 expandir/editar pegado · F4 eliminar (cursor junto al chip)"] if ui.input_document.refs else [])))),
         height=lambda: max(0, len(ui.prompt_text.splitlines()) - 1) + bool(ui.input_document.refs),
-        left_margins=inset)
+        left_margins=inset, style=THEME.app_background_style)
     # While a secure prompt is active the input is masked through a conditional
     # ``PasswordProcessor``, so a secret is never rendered to the screen (see
     # ``TuiSession.prompt_secret``).
@@ -314,18 +372,18 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     ), wrap_lines=True, style=PANEL_STYLE,
                     get_line_prefix=lambda line, wrapped: ui._formatted(
                         ui.prompt_text.splitlines()[-1] if line == 0 and wrapped == 0 else "  · "))
-    # OpenCode-Zen style textarea: a dark grey panel whose only border is a solid
-    # red vertical bar on the left. The editor is its top line and the agent's
-    # identity (``model · cwd``) its bottom-left corner.
+    # OpenCode-Zen style textarea: a neutral dark surface with no frame. The
+    # editor is its top line and the agent's identity (``model · cwd``) its
+    # bottom-left corner. Red is reserved for the operator rail and alerts, so
+    # the input never looks like an error state.
     outer_input_gap = Window(width=2, char=" ", style=PANEL_STYLE)
-    bar = Window(width=1, char="│", style=PANEL_BAR_STYLE)
     footer = Window(FormattedTextControl(ui._workspace_footer), height=1,
                     align=WindowAlign.LEFT, style=PANEL_STYLE)
     top_padding = Window(height=1, style=PANEL_STYLE)
+    # One blank row between the editor and the model/folder line: the input
+    # must not read as if it were glued to the status footer.
     input_padding = Window(height=1, style=PANEL_STYLE)
     bottom_padding = Window(height=1, style=PANEL_STYLE)
-    input_gap = Window(width=1, char=" ", style=PANEL_STYLE)
-    ui._bar_window = bar
     ui._footer_window = footer
     ui._chips_window = chips
     ui._editor_window = editor
@@ -336,16 +394,17 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
                    align=WindowAlign.LEFT, style=THEME.badge_style, left_margins=inset)
     ui._badge_window = badge
     ui._input_window = VSplit(
-        [outer_input_gap, bar, input_gap, HSplit([top_padding, editor, input_padding, footer, bottom_padding],
-                                height=ui._input_height)],
+        [outer_input_gap, HSplit([top_padding, editor, input_padding, footer, bottom_padding],
+                                 height=ui._input_height)],
         height=ui._input_height,
     )
     # The helper hints are a static footer line outside the panel, and the
     # operational bar only occupies a row when it has an alert to show.
-    hints = Window(FormattedTextControl(f"← {HISTORY_HINT} · ? {HELP_HINT}"), height=1,
-                   style=THEME.hints_style, left_margins=inset)
-    hints_top_margin = Window(height=1)
-    hints_bottom_margin = Window(height=1)
+    hints = Window(FormattedTextControl(
+        f"← {HISTORY_HINT} · ? {HELP_HINT} · {COPY_HINT}"), height=1,
+        style=THEME.hints_style, left_margins=inset)
+    hints_top_margin = Window(height=1, style=THEME.app_background_style)
+    hints_bottom_margin = Window(height=1, style=THEME.app_background_style)
     ui._hints_top_margin = hints_top_margin
     ui._hints_bottom_margin = hints_bottom_margin
     ui._hints_window = hints
@@ -387,6 +446,7 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         height=approval_height, style=THEME.approval_surface_style,
     )
     ui._approval_bar = Window(width=1, char="│", style=PANEL_BAR_STYLE)
+    input_gap = Window(width=1, char=" ", style=PANEL_STYLE)
     ui._approval_panel = VSplit(
         [outer_input_gap, ui._approval_bar, input_gap, ui._approval_window],
         height=approval_height,
@@ -397,7 +457,7 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     ui._thought_row = ConditionalContainer(
         Window(
             FormattedTextControl(ui._thought_formatted), wrap_lines=True,
-            height=ui.thought_height,
+            height=ui.thought_height, style=THEME.app_background_style,
         ),
         filter=Condition(lambda: bool(ui.thought_active and not ui.answer_active)),
     )
@@ -450,6 +510,10 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
         mouse_support=True, refresh_interval=None, min_redraw_interval=0.25,
         key_bindings=keys, input=input, output=output,
         style=Style.from_dict({
+            # The default class paints every region not covered by a panel:
+            # cards use ``surface``, the screen uses ``surface_alt``, so a box
+            # is visibly lighter than the background instead of black-on-black.
+            "": THEME.app_background_style,
             **panel_style(), **approval_style(), **THEME.prompt_toolkit_styles(),
             **(prompt_style or {}),
         }),
@@ -457,6 +521,8 @@ def build_layout(ui: Any, keys: Any, history: Any, prompt_style: Any, input: Any
     )
     ui._app.ttimeoutlen = 0.1
     ui._app.timeoutlen = 0.3
+    # A resize reflows the transcript; the redraw itself stays prompt_toolkit's.
+    ui._app.on_resize_callback = getattr(ui, "handle_resize", None)
     # Preserve the existing facade used by CLI renderers and embedded clients.
     ui._session = SimpleNamespace(
         app=ui._app, output=ui._app.output, default_buffer=ui._input,

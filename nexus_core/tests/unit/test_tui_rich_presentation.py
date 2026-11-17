@@ -6,9 +6,9 @@ from typing import Any
 from prompt_toolkit.formatted_text import fragment_list_to_text
 from prompt_toolkit.utils import get_cwidth
 
+from nexus_core.cli.theme import THEME
 from nexus_core.cli.tui.paste import InputDocument, paste_threshold
 from nexus_core.cli.tui.presentation import (
-    PANEL_BAR_STYLE,
     PANEL_STYLE,
     WorkingIndicator,
     clean_text,
@@ -21,6 +21,7 @@ from nexus_core.cli.tui.presentation import (
 )
 from nexus_core.cli.tui.status import StatusState, render_status_bar
 from nexus_core.cli.tui.stream import output_text, render_tool_result
+from nexus_core.cli.tui.strings import COPY_HINT
 
 
 def test_exact_four_line_boundary_and_three_head_one_tail() -> None:
@@ -181,7 +182,7 @@ def test_header_badge_uses_the_id_never_the_name_nor_the_folder(tui_factory: Any
     assert fragment_list_to_text(ui._header_badge()) == 'BW • OMNI [ eng-other ]'
     # The footer and the helper hints never move with the badge.
     assert fragment_list_to_text(ui._workspace_footer()) == footer
-    assert hints == ui._hints_window.content.text == '← historial · ? ayuda'
+    assert hints == ui._hints_window.content.text == f'← historial · ? ayuda · {COPY_HINT}'
 
 
 def test_cli_session_badge_follows_the_active_engagement(tui_factory: Any, monkeypatch: Any) -> None:
@@ -207,36 +208,35 @@ def test_cli_session_badge_follows_the_active_engagement(tui_factory: Any, monke
         session._tui.close()
 
 
-def test_input_panel_has_a_red_left_bar_and_no_horizontal_rule(tui_factory: Any) -> None:
-    from prompt_toolkit.layout import HSplit, VSplit, Window
+def test_input_panel_is_a_borderless_dark_surface(tui_factory: Any) -> None:
+    from prompt_toolkit.layout import HSplit, VSplit
 
     ui = tui_factory().session
     # Styles first: narrowing ``ui`` attribute expressions through identity
     # comparisons below would blind mypy to their real (Any) type.
-    assert ui._bar_window.style == PANEL_BAR_STYLE == 'fg:#ff0055 bg:#2a2a2a'
-    assert ui._footer_window.style == PANEL_STYLE == 'bg:#2a2a2a'
+    assert ui._footer_window.style == PANEL_STYLE == f'bg:{THEME.surface}'
     panel = ui._input_window
     assert isinstance(panel, VSplit)
     from typing import cast
 
-    outer_gap, bar, gap, body = cast(Any, panel).get_children()
+    outer_gap, body = cast(Any, panel).get_children()
     assert outer_gap.width == 2 and outer_gap.char == " "
-    assert isinstance(bar, Window) and isinstance(body, HSplit)
-    # The only border is the solid red vertical bar on the left edge.
-    assert bar.char == '│' and bar.width == 1
-    assert not any(getattr(child, 'char', None) == '─' for child in panel.get_children())
-    # Inside the panel: the prompt input first, then the footer line.
-    assert gap.width == 1 and gap.char == ' '
+    assert isinstance(body, HSplit)
+    # No red bar and no horizontal rule: the input is only a dark surface.
+    assert not hasattr(ui, '_bar_window')
+    assert not any(getattr(child, 'char', None) in {'│', '─'} for child in panel.get_children())
+    # Inside the panel: one blank row above the prompt, one between the prompt
+    # and the model/folder footer, and one below it.
     children = cast(Any, body).get_children()
     assert children[0].height == 1 and children[2].height == 1 and children[4].height == 1
     assert children[1] is ui._editor_window and children[3] is ui._footer_window
-    assert panel.get_children() == [outer_gap, bar, gap, body]
+    assert panel.get_children() == [outer_gap, body]
 
 
 def test_helper_hints_render_outside_the_panel(tui_factory: Any) -> None:
     ui = tui_factory().session
     hints = ui._hints_window
-    assert hints.content.text == '← historial · ? ayuda'
+    assert hints.content.text == f'← historial · ? ayuda · {COPY_HINT}'
     assert hints.style == '#ffffff'
     # The hint line is a sibling of the panel, painted right underneath it.
     rows = ui._rows

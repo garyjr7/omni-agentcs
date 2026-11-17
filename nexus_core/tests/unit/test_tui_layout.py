@@ -207,10 +207,74 @@ def test_wheel_scrolls_three_lines(tui_factory):
     import time
     time.sleep(0.3)
     before = ui.session._scrollback_window.vertical_scroll
-    ui.pipe.send_bytes(b"\x1b[62~")  # mouse wheel up maps to ScrollUp
+    # A real SGR wheel event, not the keyboard approximation: it must reach the
+    # scrollback control and update the follow state, not only Window's offset.
+    ui.pipe.send_bytes(b"\x1b[<64;10;10M")
     time.sleep(0.3)
     assert ui.session._scrollback_window.vertical_scroll == before - 3
     assert ui.session._auto_scroll is False
+
+
+def test_ctrl_u_scrolls_up_and_ctrl_d_returns_to_the_tail(tui_factory):
+    """The emacs keys move the viewport when the editor is empty."""
+    import threading
+    import time
+
+    ui = tui_factory()
+    ui.pipe.send_text("start\r")
+    ui.session.prompt()
+    ui.session.print("\n".join(f"line {n}" for n in range(100)))
+    ui.session.flush()
+    time.sleep(0.3)
+
+    moved = threading.Event()
+    ui.session._scrollback.on_cursor_position_changed += lambda _: moved.set()
+    ui.pipe.send_bytes(b"\x15")  # Ctrl+U
+    assert moved.wait(2)
+    assert ui.session._auto_scroll is False
+    assert ui.session.is_scrolling is True
+    assert ui.session._is_scrolling is True
+
+    returned = threading.Event()
+    ui.session._scrollback.on_cursor_position_changed += lambda _: returned.set()
+    ui.pipe.send_bytes(b"\x04")  # Ctrl+D
+    assert returned.wait(2)
+    assert ui.session._auto_scroll is True
+    assert ui.session.is_scrolling is False
+    assert ui.session._scrollback.cursor_position == len(ui.session._scrollback.text)
+
+
+def test_ctrl_u_keeps_line_discard_while_the_editor_has_text(tui_factory):
+    import time
+
+    ui = tui_factory(enable_completion=False)
+    ui.pipe.send_text("start\r")
+    ui.session.prompt()
+    ui.session._input.insert_text("una tarea")
+    ui.pipe.send_bytes(b"\x15")  # Ctrl+U
+    time.sleep(0.2)
+    assert ui.session._input.text == ""
+    assert ui.session.is_scrolling is False
+
+
+def test_scrollback_and_inset_paint_a_solid_background(tui_factory):
+    from nexus_core.cli.theme import THEME
+
+    ui = tui_factory()
+    assert ui.session._scrollback_window.style == THEME.app_background_style
+    margin = ui.session._scrollback_window.left_margins[0]
+    fragments = margin.create_margin(None, 2, 3)
+    assert fragments and all(style == THEME.app_background_style for style, _ in fragments)
+
+
+def test_screen_is_cleared_once_before_the_first_frame(tui_factory):
+    from unittest.mock import patch
+
+    ui = tui_factory()
+    with patch.object(ui.output, "erase_screen") as erase:
+        ui.session._clear_screen_once()
+        ui.session._clear_screen_once()
+    erase.assert_called_once()
 
 
 def test_answer_buffer_has_no_agent_label_and_commits(tui_factory):
@@ -255,6 +319,30 @@ def test_pageup_preserves_history_and_pauses_follow(tui_factory):
     assert "line 0\n" in ui.session._scrollback.text
 
 
+def test_pagedown_returns_to_the_live_tail_after_a_pageup(tui_factory):
+    import threading
+
+    ui = tui_factory()
+    ui.pipe.send_text("start\r")
+    ui.session.prompt()
+    ui.session.print("\n".join(f"line {n}" for n in range(100)))
+    ui.session.flush()
+    ui.session._follow_tail()  # the live tail, where the new work is written
+
+    moved = threading.Event()
+    ui.session._scrollback.on_cursor_position_changed += lambda _: moved.set()
+    ui.pipe.send_bytes(b"\x1b[5~")  # PageUp
+    assert moved.wait(2)
+    assert ui.session._auto_scroll is False
+
+    returned = threading.Event()
+    ui.session._scrollback.on_cursor_position_changed += lambda _: returned.set()
+    ui.pipe.send_bytes(b"\x1b[6~")  # PageDown, back to where the work is written
+    assert returned.wait(2)
+    assert ui.session._auto_scroll is True
+    assert ui.session._scrollback.cursor_position == len(ui.session._scrollback.text)
+
+
 def test_idle_typeahead_between_prompts_is_not_discarded(tui_factory):
     import threading
     ui = tui_factory()
@@ -265,3 +353,75 @@ def test_idle_typeahead_between_prompts_is_not_discarded(tui_factory):
     ui.pipe.send_text("second\r")
     assert typed.wait(2)
     assert ui.session.prompt() == "second"
+
+
+def test_a_second_question_keeps_the_previous_cards_and_resumes_follow(tui_factory):
+    import threading
+
+    ui = tui_factory()
+    session = ui.session
+    ui.pipe.send_text("primera pregunta\r")
+    assert session.prompt() == "primera pregunta"
+    session.begin_tool("nexus.recon.nmap", {"target": "10.0.0.5", "flags": ["-sV"]})
+    session.complete_tool({
+        "success": True, "tool_id": "nexus.recon.nmap",
+        "output": {"scan": {
+            "hosts": [{"state": "up", "ip": "10.0.0.5", "ports": [
+                {"port": 80, "protocol": "tcp", "state": "open",
+                 "service": "http", "product": "nginx", "version": "1.24.0"},
+            ]}],
+            "hosts_up": 1, "elapsed_seconds": 2.1,
+        }},
+    })
+    session.append_answer_block("## Servicio\nnginx en 80/tcp.")
+    session.flush()
+
+    moved = threading.Event()
+    session._scrollback.on_cursor_position_changed += lambda _: moved.set()
+    ui.pipe.send_bytes(b"\x1b[5~")  # PageUp over the previous work
+    assert moved.wait(2)
+    assert session._auto_scroll is False
+
+    ui.pipe.send_text("segunda pregunta\r")
+    assert session.prompt() == "segunda pregunta"
+    session.begin_tool("nexus.recon.nmap", {"target": "10.0.0.5", "flags": ["-p", "443"]})
+    session.complete_tool({"success": True, "tool_id": "nexus.recon.nmap",
+                           "stdout": "443/tcp open https"})
+    # A second call of the same subagent in this turn opens its own box.
+    session.begin_tool("nexus.recon.nmap", {"target": "10.0.0.5", "flags": ["-p", "8443"]})
+    session.complete_tool({"success": True, "tool_id": "nexus.recon.nmap",
+                           "stdout": "8443/tcp closed"})
+    session.flush()
+
+    text = session._scrollback.text
+    # Asking again never discards the work above: both turns and every call
+    # stay in the transcript.
+    assert "primera pregunta" in text and "segunda pregunta" in text
+    assert "nginx" in text and "443/tcp open https" in text
+    assert "8443/tcp closed" in text
+    # Numbering is per subagent and per turn: the second call is ``(2)``.
+    assert "╭─ OMNI · Recon (2) ─" in text
+    assert text.count("╭─ OMNI · Recon ─") == 2
+    # The new question returns to the live tail, where the answer is coming.
+    assert session._auto_scroll is True
+    assert session.is_scrolling is False
+    assert session._scrollback.cursor_position == len(text)
+
+
+def test_a_reveal_does_not_pull_a_scrolled_reader_back_to_the_tail(tui_factory):
+    ui = tui_factory(no_color=True)
+    session = ui.session
+    session.append_scrollback("\n".join(f"line {n:03d}" for n in range(120)))
+    session.flush()
+    session.scroll_transcript(-40)
+    position = session._scrollback.cursor_position
+    assert session._auto_scroll is False
+
+    base = session._scrollback.text
+    session._commit_partial(base, "bloque que se está escribiendo")
+    plain = session._scrollback.text
+    # The growing block lands below the viewport; the cursor keeps the line
+    # the operator was reading instead of jumping to the end.
+    assert plain.startswith(base)
+    assert session._scrollback.cursor_position == position
+    assert session._scrollback.cursor_position < len(plain)

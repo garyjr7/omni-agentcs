@@ -27,14 +27,17 @@ def _result(**overrides: Any) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
-def test_summary_markdown_lists_facts_findings_branches_and_status():
+def test_summary_markdown_lists_facts_and_findings_without_technical_panels():
     text = summary_markdown(_result())
     assert text.startswith("## Resultado")
     assert "Acceso root verificado" in text
     assert "- **[critical]** SQLi en /login" in text
-    assert "- Reporte" in text and "- Reconocimiento" not in text
-    assert "- estado: completed" in text
-    assert "- iteraciones: 14" in text
+    # The closing block is OMNI advising, not a run diagnostics panel.
+    assert "### Ramas abiertas" not in text
+    assert "### Estado" not in text
+    assert "- estado:" not in text
+    assert "- iteraciones:" not in text
+    assert "- Reporte" not in text and "- Reconocimiento" not in text
 
 
 def test_summary_markdown_keeps_the_empty_summary_readable():
@@ -113,7 +116,7 @@ def test_tui_renders_the_summary_as_markdown_inside_a_quiet_panel(tui_factory: A
 
 
 def test_tui_final_panel_has_air_before_and_after_it(tui_factory: Any):
-    session = tui_factory(enable_completion=False).session
+    session = tui_factory(enable_completion=False, no_color=True).session
     session._session = SimpleNamespace(output=__import__(
         "prompt_toolkit.output", fromlist=["DummyOutput"]
     ).DummyOutput())

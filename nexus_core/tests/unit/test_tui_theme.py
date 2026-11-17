@@ -18,15 +18,18 @@ def test_theme_exposes_the_semantic_roles() -> None:
     for role in ("primary", "surface", "surface_alt", "text", "muted", "thinking",
                  "ok", "error", "warn", "subtle"):
         assert getattr(theme.THEME, role)
-    assert theme.THEME.panel_style == "bg:#2a2a2a"
-    assert theme.THEME.panel_bar_style == "fg:#ff0055 bg:#2a2a2a"
+    assert theme.THEME.panel_style == f"bg:{theme.THEME.surface}"
+    assert theme.THEME.panel_bar_style == f"fg:{theme.THEME.primary} bg:{theme.THEME.surface}"
 
 
 def test_reasoning_is_muted_italic_and_the_result_uses_a_surface() -> None:
     assert theme.THEME.thinking_style == f"{theme.THEME.muted} italic"
     assert theme.THEME.keycap_style == f"{theme.THEME.muted} on {theme.THEME.surface}"
-    assert theme.THEME.result_panel_style == f"on {theme.THEME.surface_alt}"
-    assert theme.THEME.result_border_style == theme.THEME.muted
+    # Cards sit one step lighter than the screen background, never black-on-black.
+    assert theme.THEME.result_panel_style == f"on {theme.THEME.surface}"
+    assert theme.THEME.app_background_style == f"bg:{theme.THEME.surface_alt}"
+    assert theme.THEME.result_border_style == theme.THEME.frame_border
+    assert theme.THEME.frame_border_style == theme.THEME.frame_border
 
 
 def test_compatibility_ansi_tokens_are_derived_from_the_theme() -> None:

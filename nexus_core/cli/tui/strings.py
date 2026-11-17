@@ -26,6 +26,9 @@ ESC_INTERRUPT = "esc para interrumpir"
 #: Ayudas del footer.
 HISTORY_HINT = "historial"
 HELP_HINT = "ayuda"
+#: El ratón pertenece a la app (scroll en alt-screen): la selección nativa es
+#: con Shift, y ``/copy N`` es la vía que no depende del emulador.
+COPY_HINT = "Shift+flechas selecciona · /copy N copia"
 #: Veredictos.
 FAILED = "falló"
 NOISE = "ruido"
@@ -38,6 +41,7 @@ GUARDRAIL = "corrección del orquestador"
 EXPAND_HINT = "clic en la tarjeta o ctrl+o"
 
 __all__ = [
+    "COPY_HINT",
     "ESC_INTERRUPT",
     "EXPAND_HINT",
     "FAILED",

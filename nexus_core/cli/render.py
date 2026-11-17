@@ -363,6 +363,10 @@ def render_answer(text: str, *, no_color: bool = False, markdown: bool = False, 
         if gap:
             write(gap, end="")
         write(answer_panel(body, width=width, no_color=no_color or not color_enabled()))
+        # The answer is a block: keep the next turn from starting against its
+        # bottom border. ``_block_break`` sees this blank line and does not add
+        # a second one.
+        write()
         return
     write()
     write(paint("OmniAgent", AQUA, BOLD) + paint(" ·", DIM))
