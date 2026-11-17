@@ -1,7 +1,9 @@
 # Checklist de release — `v3.0.0-rc3`
 
-Estado medido a **2026-11-12** sobre `main` en `b1f2815`. Versión en código: `3.0.0rc3`
-(`pyproject.toml:7`, `nexus_core/cli/main.py:17`).
+Estado medido a **2026-11-17** sobre el commit de código `c5de0ec` de `main`. Versión
+en código: `3.0.0rc3` (`pyproject.toml:7`, `nexus_core/cli/main.py:17`). El commit
+documental que contiene este archivo tiene un SHA posterior; el tag se moverá al
+HEAD final, no a `c5de0ec`, para que incluya también esta actualización.
 
 Este documento no crea ni mueve tags y no autoriza un push: enumera lo medido,
 lo que queda abierto y lo que requiere decisión del operador.
@@ -12,12 +14,28 @@ lo que queda abierto y lo que requiere decisión del operador.
 | --- | --- | --- |
 | Versión en código | `.venv/bin/python omni.py --version` | `omni 3.0.0rc3` |
 | Tipos estrictos | `make typecheck-strict` | **0 errores en 181 ficheros** |
-| Suite completa | `.venv/bin/python -m pytest nexus_core/tests -q -p no:cacheprovider` | **4894 passed, 56 skipped** (223,38 s, 2026-11-12) |
-| Lint | `make lint` | **All checks passed** (`F,E9`, el contrato del proyecto) |
+| Tipos incrementales | `make typecheck TYPECHECK_BASE=HEAD` | **0 errores en 21 ficheros** |
+| Suite completa | `CI=true make test` | **4948 passed, 56 skipped** (231,07 s, 2026-11-17) |
+| Lint | `make syntax lint` | **All checks passed** (`F,E9`, el contrato del proyecto) |
 | Auditoría de dependencias | `make audit` | **Sin vulnerabilidades conocidas**; solo las excepciones justificadas en `SECURITY.md` §4.1 |
-| Wheel | `.venv/bin/pip wheel . --no-deps -w /tmp/omni-wheel-rc3` | `omniagentcs-3.0.0rc3-py3-none-any.whl` (2.507.595 bytes) |
+| Wheel | `.venv/bin/pip wheel . --no-deps -w /tmp/omni-wheel-rc3` | No re-medido tras `c5de0ec`; la medición previa del RC fue `omniagentcs-3.0.0rc3-py3-none-any.whl` (2.507.595 bytes) |
 | Instalación (plan) | `bash install.sh --dry-run` | `pipx install --force "/home/<operador>/omni-agentcs"`; no toca `~/.config/omni` |
 | Secretos en historia | escaneo de patrones + `gitleaks` en CI | Sin `.env` versionado; las 2 coincidencias son un fixture RSA truncado en `test_phase3n_fixes.py:44` |
+
+## Bloqueadores de la TUI
+
+- [x] **Scroll y follow.** `PageUp`, `PageDown`, `Ctrl+U`, `Ctrl+D` y la rueda
+  real comparten el mismo estado. La rueda llegaba como `MouseEventType.SCROLL_UP`
+  y `Window` solo movía el offset; el cursor seguía en el tail y el siguiente
+  render devolvía la vista. `ScrollbackControl` ahora delega en
+  `scroll_transcript()`.
+- [x] **Verificación en terminal real.** En tmux, con 200 líneas, `PageUp`
+  pasó de `OLD 101` a `OLD 083`; con la vista arriba llegó output nuevo y se
+  mantuvo en `OLD 083`; la rueda real movió `101 → 98 → 95 → 98`. Con 12 paneles
+  de ancho completo, 12 pulsaciones llegaron al `TURNO 00` sin cortar bordes.
+- [x] **Rediseño visual.** Bloques al mismo ancho, reconstrucción al
+  redimensionar, tarjetas de subagente con resultado integrado, títulos
+  dinámicos, identidad roja `#ff0055` y `/copy` con OSC 52 y fallbacks nativos.
 
 ## Cambios de este RC
 
@@ -57,32 +75,35 @@ lo que queda abierto y lo que requiere decisión del operador.
 
 ## Publicación ejecutada
 
-- **`main`**: `b1f2815` (`git push origin main`).
-- **Tag `v3.0.0-rc3`**: anotado y publicado; `refs/tags/v3.0.0-rc3^{}` =
-  `b1f2815`. El tag contiene `version = "3.0.0rc3"` y `license =
-  "Apache-2.0"`.
+- **`main`**: `4329074` → `c5de0ec` (`git push origin main`, 2026-11-17).
+- **Documentación**: este archivo se actualiza en un commit posterior a
+  `c5de0ec`; el SHA final de `main` se reporta al operador para el CI.
+- **Tag `v3.0.0-rc3`**: sin cambios; sigue en `78fd3bd`. El tag final se moverá
+  al HEAD de `main` **solo después de que el CI de GitHub esté verde**; hasta
+  entonces no se afirma que `c5de0ec` esté tagged.
 - **Reinstalación**: `pipx install --force /home/<operador>/omni-agentcs` →
-  `omniagentcs 3.0.0rc3` (Python 3.14.8); `omni --version` → `omni 3.0.0rc3`.
-- **CI remoto**: el operador reportó el run #49 con los cuatro jobs en verde
-  sobre `b1f2815`. Esta máquina no puede leer GitHub Actions (sin `gh` ni
-  token); tras la reorganización hay que ejecutar CI de nuevo.
+  `omniagentcs 3.0.0rc3` (Python 3.14.10); `omni --version` → `omni 3.0.0rc3`.
+- **CI remoto**: pendiente para `c5de0ec` y el commit documental. Esta máquina
+  no puede leer GitHub Actions (sin `gh` ni token); no se afirma “CI verde”.
 
 ## Pendiente antes de publicar
 
-1. **Verificación del CI remoto** — el workflow está actualizado, pero el run
-   no se puede leer desde esta máquina. No se afirma “CI verde” sin ese run.
-   Tras la reorganización documental hay que repetirlo.
-2. **Historial público** — contiene datos legacy de la etapa NEXUS bajo
+1. **Verificación del CI remoto** — ejecutar el workflow sobre `c5de0ec` y el
+   HEAD documental, y confirmar los cuatro jobs en verde. No se afirma “CI
+   verde” sin ese run.
+2. **Tag final** — mover `v3.0.0-rc3` al HEAD de `main` cuando el CI esté
+   verde; el tag actual (`78fd3bd`) no incluye la TUI final.
+3. **Historial público** — contiene datos legacy de la etapa NEXUS bajo
    `data/` y un correo personal en 302 commits. No publicar el historial hasta
    decidir la purga descrita en `docs/LAUNCH_CHECKLIST.md` §0 y §2.
-3. **Cobertura** — no re-medida en este RC. Suelo actual: 86 %
+4. **Cobertura** — no re-medida en este RC. Suelo actual: 86 %
    (`Makefile:24-27`); última medida documentada: 86,2 % el 2026-11-06.
-4. **Release en PyPI** — no preparada. La vía documentada es `install.sh` desde
+5. **Release en PyPI** — no preparada. La vía documentada es `install.sh` desde
    el repo.
-5. **Benchmark externo vs PentAGI** — no ejecutado; ver
+6. **Benchmark externo vs PentAGI** — no ejecutado; ver
    `audits/RELEASE_AUDIT_OMNI.md` §2 y §4.
-6. **Documentación en inglés** — portada en inglés; `SECURITY.md`, este
+7. **Documentación en inglés** — portada en inglés; `SECURITY.md`, este
    checklist y `docs/README-detailed.md` siguen en español.
-7. **Documentos obsoletos** — `docs/MASTER_ROADMAP.md:1106` declara SEC-00
+8. **Documentos obsoletos** — `docs/MASTER_ROADMAP.md:1106` declara SEC-00
    abierto con commits que ya no existen en este clon; conviene archivarlo o
    actualizarlo en un commit aparte.
