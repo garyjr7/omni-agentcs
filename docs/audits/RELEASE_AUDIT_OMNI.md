@@ -1,5 +1,9 @@
 # Auditoría de publicación — OMNI v3.0.0rc1 / tag `v3.0.0-rc2`
 
+> **Documento histórico.** Describe la etapa `rc1`/`rc2`; sus SHA, tags y
+> conclusiones no aplican a `v3.0.0-rc4`. Para el estado público vigente, ver
+> `docs/RC-CHECKLIST.md`.
+
 Fecha de medición: **2026-11-10**. Commit auditado: `0497991` (`main`, árbol limpio).
 Alcance: auditoría interna de release + benchmark contra PentAGI con fuentes públicas.
 No se hizo push, tag ni cambio de versión durante esta auditoría.

@@ -194,7 +194,7 @@ def test_list_reads_the_export_with_the_userland_client():
 
 def test_read_returns_the_file_without_a_kernel_mount():
     sandbox = FakeSandbox(
-        {"nfs-cat": _result("user.txt: flag{fake_flag}\n"), "showmount": _result(EXPORTS_STDOUT)}
+        {"nfs-cat": _result("user.txt: flag{test}\n"), "showmount": _result(EXPORTS_STDOUT)}
     )
     with mock.patch.object(
         nfs_module, "sandbox_for_environment", lambda *args, **kwargs: sandbox
@@ -210,7 +210,7 @@ def test_read_returns_the_file_without_a_kernel_mount():
     assert sandbox.calls[0] == ["nfs-cat", "nfs://203.0.113.10/srv/nfs/user.txt"]
     assert result.verified is True
     assert result.verification_method == "nfs_file_read"
-    assert "flag{fake_flag}" in result.output["preview"]
+    assert "flag{test}" in result.output["preview"]
 
 
 def test_restricted_export_stays_partial_and_shows_what_is_visible():

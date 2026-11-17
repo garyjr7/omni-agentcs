@@ -13,8 +13,10 @@ operational security.
 LLMs are chaotic. Giving an LLM unrestricted access to a shell is a recipe for
 disaster. OMNI puts a **ToolGateway** in front of every action:
 
-1. **Scope validation (HMAC):** a command against a target outside the signed
-   engagement scope never executes.
+1. **Scope validation (HMAC):** target-aware tools validate the destination
+   against the signed engagement scope before executing. The universal shell is
+   only covered end-to-end when the opt-in SEC-01 egress mode is enabled; see
+   the security model below.
 2. **Durable approvals:** high-risk tools require an explicit human decision
    (`y/n/e/?`), recorded in the audit trail; `--trust-mode` auto-approves them
    except `DESTRUCTIVE` tools.
@@ -113,8 +115,10 @@ shows the install plan; it only executes with `--yes`.
   reported as such.
 - **SEC-05:** plugin entry points are hash-pinned and only imported after
   operator approval.
-- **Sandboxing:** local shell execution runs under `bwrap` when available, with
-  a private HOME and a pinned filesystem view.
+- **Sandboxing:** local modes constrain the working directory, argv and HOME,
+  but they do **not** isolate reads or network access. `oci` / `oci_network`
+  provide the real isolation; `bwrap` is used by the opt-in SEC-01 egress mode.
+  See `SECURITY.md` for the exact guarantees.
 
 ## 📚 Documentation
 

@@ -1,6 +1,6 @@
 """Durable ``nexus.post.tftp`` handler: governed TFTP payload delivery (put/get).
 
-Why this tool exists (the synthetic run / the synthetic lab): the tryhackme *Osiris* box exposes
+Why this tool exists (a synthetic lab run): the tryhackme *Osiris* box exposes
 **only** a TFTP server (UDP/69, SolarWinds Free tftpd) — every TCP port is
 filtered on purpose "to simulate" the CEO's laptop being off-network. The room's
 whole initial-access vector is *uploading a RubberDucky script to that TFTP

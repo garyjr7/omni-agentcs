@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omniagentcs"
-version = "3.0.0rc3"
+version = "3.0.0rc4"
 description = "Agente autónomo de ciberseguridad ofensiva para terminal"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -82,6 +82,8 @@ py-modules = ["omni", "nexus_worker"]
 
 [tool.setuptools.packages.find]
 include = ["nexus_core*"]
+# Tests are source-tree only; a public wheel must not ship test fixtures.
+exclude = ["nexus_core.tests*"]
 
 [tool.setuptools.package-data]
 # Non-Python files read at runtime through ``Path(__file__)``. Source-tree runs

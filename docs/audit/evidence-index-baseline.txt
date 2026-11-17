@@ -1,0 +1,9 @@
+# Baseline de evidencia trackeada (SEC-08).
+#
+# Vacía a propósito desde el 2026-10-26: la purga con git-filter-repo
+# eliminó docs/missions/salas/, docs/missions/evidence/ y *.hash del
+# historial, así que no queda evidencia en el índice.
+#
+# Solo añadir rutas aquí si vuelve a entrar evidencia legítima que no
+# pueda sacarse del índice todavía. Cada línea debe apuntar a un path
+# dentro de docs/missions/salas/, docs/missions/evidence/ o acabar en .hash.

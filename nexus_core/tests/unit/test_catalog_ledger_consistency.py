@@ -24,7 +24,7 @@ from nexus_core.tools.registry import tool_catalog
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HANDLERS_DIR = REPO_ROOT / "nexus_core" / "tools" / "handlers"
-CATALOG_PATH = REPO_ROOT / "docs" / "missions" / "audit-v1" / "catalog.json"
+CATALOG_PATH = REPO_ROOT / "docs" / "audit" / "catalog.json"
 BACKLOG_PATH = REPO_ROOT / "docs" / "BACKLOG.md"
 
 #: Ledger ids that were never opened as a debt. Declared so the numbering is

@@ -4,10 +4,12 @@
 #   curl -fsSL https://raw.githubusercontent.com/garyjr7/omni-agentcs/main/install.sh | bash
 #
 # Fuente de instalación, en orden de preferencia:
-#   1. $OMNI_SOURCE     spec instalable de pip/pipx (ruta local, git URL o nombre)
+#   1. $OMNI_SOURCE     spec instalable de pip/pipx (ruta local o git URL)
 #   2. checkout local   si este script vive en un repo con pyproject.toml
 #   3. $OMNI_GIT_URL    repo del proyecto (por defecto git+https://github.com/garyjr7/omni-agentcs.git)
-#   4. PyPI             $OMNI_PYPI_NAME (último recurso, solo si las anteriores fallan)
+#
+# No hay fallback a PyPI: un nombre no publicado podría ser registrado por un
+# tercero. Si la fuente falla, el instalador falla cerrado.
 #
 # Instala de forma aislada con pipx (preferido) o, si no está, crea un venv en
 # ~/.local/share/omniagentcs/venv y enlaza `omni` en ~/.local/bin.
@@ -19,7 +21,6 @@
 # de crear esa carpeta (wizard de primera ejecución).
 set -euo pipefail
 
-PYPI_NAME="${OMNI_PYPI_NAME:-omniagentcs}"
 GIT_URL="${OMNI_GIT_URL:-git+https://github.com/garyjr7/omni-agentcs.git}"
 BIN_DIR="${HOME}/.local/bin"
 VENV_DIR="${HOME}/.local/share/omniagentcs/venv"
@@ -176,12 +177,7 @@ install_from_source() {
     if install_spec "$via" "$SOURCE"; then
         return 0
     fi
-    if [[ "$SOURCE" != "$PYPI_NAME" ]]; then
-        log "la fuente '$SOURCE' falló; reintentando con PyPI ($PYPI_NAME)"
-        install_spec "$via" "$PYPI_NAME"
-        return $?
-    fi
-    fail "no se pudo instalar '$SOURCE'."
+    fail "no se pudo instalar '$SOURCE'. Revisa la ruta o la URL y vuelve a intentarlo; no se usa ningún paquete de PyPI como fallback."
 }
 
 install_nuclei_templates() {

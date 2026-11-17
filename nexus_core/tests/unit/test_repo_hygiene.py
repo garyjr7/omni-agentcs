@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BASELINE_PATH = REPO_ROOT / "docs" / "missions" / "audit-v1" / "evidence-index-baseline.txt"
+BASELINE_PATH = REPO_ROOT / "docs" / "audit" / "evidence-index-baseline.txt"
 #: Directories that hold engagement evidence and never belong in a release.
 EVIDENCE_DIRS = ("docs/missions/salas/", "docs/missions/evidence/")
 

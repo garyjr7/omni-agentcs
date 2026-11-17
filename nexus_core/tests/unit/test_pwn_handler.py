@@ -120,7 +120,7 @@ def _exploit_client(*, uid_root: bool, base: int = 0x7F0000000000) -> SandboxRes
     marker = {
         "leak": base + 0x84420, "libc_base": base if uid_root else base + 1,
         "output": "uid=0(root) gid=0" if uid_root else "uid=1002(andy)",
-        "uid_root": uid_root, "flag": "flag{fake_flag}" if uid_root else None, "error": None,
+        "uid_root": uid_root, "flag": "thm{abc}" if uid_root else None, "error": None,
     }
     return _client({"ok": True, "mode": "exploit", "connected": True,
                     "stdout": "noise\n" + PWN_RESULT_MARKER + json.dumps(marker) + "\n",
@@ -134,7 +134,7 @@ def test_ret2libc_verified_when_root_and_aligned():
     assert result.verified is True
     assert result.verification_method == "ret2libc_root_command"
     assert result.output["ui"] == "root"
-    assert result.output["flag"] == "flag{fake_flag}"
+    assert result.output["flag"] == "thm{abc}"
     assert result.evidence["libc_base_aligned"] is True
 
 

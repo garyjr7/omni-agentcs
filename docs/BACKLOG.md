@@ -290,16 +290,16 @@ hallazgos. `pytest -q` invocado desde la raíz **no** carga `nexus_core/tests/py
 functions are not natively supported»): la invocación del gate es la de dentro del
 árbol de tests.
 
-## Fase V0 · Validación con salas (deudas de the synthetic run · the synthetic lab / WindCorp · endgame)
+## Fase V0 · Validación con salas (deudas de the synthetic fixture · synthetic fixture / WindCorp · endgame)
 
-Sala #11 **cerrada** (caja negra: `10.0.0.1` = **the synthetic lab**, Windows 10 19041, unida
+Sala #11 **cerrada** (caja negra: `10.0.0.1` = **synthetic fixture**, Windows 10 19041, unida
 a `windcorp.thm`, **solo UDP/69 TFTP** — todos los TCP `filtered`; la entrada es un
 *ducky* que se sube por TFTP y la víctima teclea ⇒ `alcrez`, y de ahí **SYSTEM** por
 *unquoted service path* en el servicio `IVPN Client`). La **Flag 3** (KeePass/DPAPI de
 `synthetic-user`) exigía el DC, así que se abrió un **segundo engagement firmado** que sí lo
 incluye: escalada gobernada con `nexus.attack.nopac` y cadena DPAPI→KDBX verificada
-offline. Ver `docs/missions/salas/the synthetic run.md`. Engagements `eng-e8074a112ecf`
-(`the synthetic lab-osiris`) y `eng-da320a6df76f` (`the synthetic lab-flag3-dc`). **3 flags** (2 leídas en
+offline. Ver `docs/missions/salas/the synthetic fixture.md`. Engagements `eng-e8074a112ecf`
+(`synthetic-osiris`) y `eng-da320a6df76f` (`synthetic-flag3-dc`). **3 flags** (2 leídas en
 disco + 1 en `Database.kdbx` de `synthetic-user`). **Dos cambios de motor** — **`nexus.post.tftp`**
 (entrega de payload por TFTP, 19 tests) y **`nexus.post.dpapi`** (loot DPAPI/KeePass
 offline, 26 tests + 1), catálogo 60 → **62** — que cierran la deuda medida en esta sala
@@ -307,7 +307,7 @@ offline, 26 tests + 1), catálogo 60 → **62** — que cierran la deuda medida 
 
 | ID | Pendiente | Impacto actual | Criterio de cierre |
 | --- | --- | --- | --- |
-| V0-39 · Loot DPAPI/KeePass sin tool gobernada | **CERRADA**: `nexus.post.dpapi` (`nexus_core/tools/handlers/dpapi.py` + cliente embarcado `nexus_core/tools/dpapi_client.py`, stdlib puro, **26 tests** + 1 que se omite cuando falta un lector de referencia). Offline, por el sandbox, `risk=MEDIUM`, `effect=credential_access`, `scope_required=False` (sin red: el dato ya está exfiltrado). Caso de aceptación = la cadena **real** de the synthetic run con los artefactos de `synthetic-user` (`ProtectedUserKey.bin`, `synthetic-user_masterkey.hex`, `Database.kdbx`): reproduce el material (sha256 `009e32…6c0d`) y la Flag 3, contrastado con **implementaciones de referencia** (dploot y pykeepass) cuando están presentes. El cliente se ejecuta como subprocess real (no se prueba contra sí mismo) y las primitivas se fijan contra vectores FIPS/eSTREAM. Catálogo 61 → **62**. | El loot final que vive en un almacén DPAPI (KeePass, Chrome, vault) queda **acreditado por el motor**: `verified` + promoción a `loot`/`credential` en `derive_assertions`, artefacto del material en el workspace gobernado y auditoría del paso. | Cumplido: `unwrap` prueba la **firma HMAC** del blob antes de devolver material (negativo declarado `dpapi_signature_invalid` con masterkey o entropía equivocadas); `open_kdbx` prueba `StreamStartBytes` y el hash de cada bloque (`kdbx_credentials_invalid` si el material no abre); los dos errores que costaron tiempo (entropía ausente, KDF con `master_seed`) son casos negativos; `test_definition_*` y el invariante de *no-spawn* (`asyncio.create_subprocess_exec` prohibido en el handler). |
+| V0-39 · Loot DPAPI/KeePass sin tool gobernada | **CERRADA**: `nexus.post.dpapi` (`nexus_core/tools/handlers/dpapi.py` + cliente embarcado `nexus_core/tools/dpapi_client.py`, stdlib puro, **26 tests** + 1 que se omite cuando falta un lector de referencia). Offline, por el sandbox, `risk=MEDIUM`, `effect=credential_access`, `scope_required=False` (sin red: el dato ya está exfiltrado). Caso de aceptación = la cadena **real** de the synthetic fixture con los artefactos de `synthetic-user` (`ProtectedUserKey.bin`, `synthetic-user_masterkey.hex`, `Database.kdbx`): reproduce el material (sha256 `009e32…6c0d`) y la Flag 3, contrastado con **implementaciones de referencia** (dploot y pykeepass) cuando están presentes. El cliente se ejecuta como subprocess real (no se prueba contra sí mismo) y las primitivas se fijan contra vectores FIPS/eSTREAM. Catálogo 61 → **62**. | El loot final que vive en un almacén DPAPI (KeePass, Chrome, vault) queda **acreditado por el motor**: `verified` + promoción a `loot`/`credential` en `derive_assertions`, artefacto del material en el workspace gobernado y auditoría del paso. | Cumplido: `unwrap` prueba la **firma HMAC** del blob antes de devolver material (negativo declarado `dpapi_signature_invalid` con masterkey o entropía equivocadas); `open_kdbx` prueba `StreamStartBytes` y el hash de cada bloque (`kdbx_credentials_invalid` si el material no abre); los dos errores que costaron tiempo (entropía ausente, KDF con `master_seed`) son casos negativos; `test_definition_*` y el invariante de *no-spawn* (`asyncio.create_subprocess_exec` prohibido en el handler). |
 
 ## Fase V0 · Validación con salas (deudas de RUN_sala12 · Intrusion Detection / `idsevasion`)
 

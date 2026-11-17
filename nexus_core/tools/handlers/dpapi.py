@@ -1,6 +1,6 @@
 """Durable ``nexus.post.dpapi`` handler: offline DPAPI / KeePass loot (V0-39).
 
-Why this tool exists (the synthetic run / the synthetic lab): the room's last flag lives in the
+Why this tool exists (a synthetic lab run): the room's last flag lives in the
 KeePass database of a user and the database key is wrapped in **user-scope DPAPI**
 (``ProtectedUserKey.bin``), which in turn is unlocked by that user's DPAPI
 masterkey. With domain admin the masterkey comes from the domain backup key; both

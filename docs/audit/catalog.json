@@ -1,0 +1,1239 @@
+{
+  "schema_version": "1.0.0",
+  "parsers_version": "1.1.0",
+  "tool_count": 88,
+  "tools": [
+    {
+      "tool_id": "nexus.attack.ad_acl",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.attack.ad_acl"
+      ]
+    },
+    {
+      "tool_id": "nexus.attack.ad_user_enum",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "recon",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "dc_ip",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.attack.ad_user_enum"
+      ]
+    },
+    {
+      "tool_id": "nexus.attack.impacket_changepasswd",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.attack.impacket_changepasswd"
+      ]
+    },
+    {
+      "tool_id": "nexus.attack.impacket_getuserspns",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "credential_access",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "dc_ip",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.attack.impacket_getuserspns"
+      ]
+    },
+    {
+      "tool_id": "nexus.attack.impacket_psexec",
+      "version": "1.0.0",
+      "risk": "destructive",
+      "effect": "execution",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.attack.impacket_psexec"
+      ]
+    },
+    {
+      "tool_id": "nexus.attack.impacket_secretsdump",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "credential_dump",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.attack.impacket_secretsdump"
+      ]
+    },
+    {
+      "tool_id": "nexus.attack.nopac",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.attack.nopac"
+      ]
+    },
+    {
+      "tool_id": "nexus.c2.sliver_deploy",
+      "version": "1.0.0",
+      "risk": "destructive",
+      "effect": "lateral_movement",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.c2.sliver_deploy"
+      ]
+    },
+    {
+      "tool_id": "nexus.c2.sliver_download",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.c2.sliver_download"
+      ]
+    },
+    {
+      "tool_id": "nexus.c2.sliver_exec",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.c2.sliver_exec"
+      ]
+    },
+    {
+      "tool_id": "nexus.c2.sliver_generate",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "c2_implant_build",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.c2.sliver_generate"
+      ]
+    },
+    {
+      "tool_id": "nexus.c2.sliver_implants",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.c2.sliver_implants"
+      ]
+    },
+    {
+      "tool_id": "nexus.c2.sliver_loot",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "state_write",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.c2.sliver_loot"
+      ]
+    },
+    {
+      "tool_id": "nexus.c2.sliver_pivot",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "pivoting",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.c2.sliver_pivot"
+      ]
+    },
+    {
+      "tool_id": "nexus.c2.sliver_server",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.c2.sliver_server"
+      ]
+    },
+    {
+      "tool_id": "nexus.c2.sliver_sessions",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.c2.sliver_sessions"
+      ]
+    },
+    {
+      "tool_id": "nexus.cred.bruteforce",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "credential_access",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.cred.bruteforce"
+      ]
+    },
+    {
+      "tool_id": "nexus.exploit.compile_and_upload",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "target_write",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target_url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.exploit.compile_and_upload"
+      ]
+    },
+    {
+      "tool_id": "nexus.exploit.find_and_prepare",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.exploit.find_and_prepare"
+      ]
+    },
+    {
+      "tool_id": "nexus.exploit.msf_auxiliary",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "network_scan",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool"
+      ]
+    },
+    {
+      "tool_id": "nexus.exploit.msf_exploit",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.exploit.msf_exploit"
+      ]
+    },
+    {
+      "tool_id": "nexus.exploit.msf_search",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool"
+      ]
+    },
+    {
+      "tool_id": "nexus.exploit.searchsploit",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.exploit.searchsploit"
+      ]
+    },
+    {
+      "tool_id": "nexus.knowledge.query_facts",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.knowledge.query_facts"
+      ]
+    },
+    {
+      "tool_id": "nexus.knowledge.record_fact",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "state_write",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.knowledge.record_fact"
+      ]
+    },
+    {
+      "tool_id": "nexus.orchestrator.create_plan",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "state_write",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.orchestrator.create_plan"
+      ]
+    },
+    {
+      "tool_id": "nexus.orchestrator.get_plan_status",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.orchestrator.get_plan_status"
+      ]
+    },
+    {
+      "tool_id": "nexus.orchestrator.playbook",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.orchestrator.playbook"
+      ]
+    },
+    {
+      "tool_id": "nexus.orchestrator.update_plan",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "state_write",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.orchestrator.update_plan"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.crack_hash",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "credential_access",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.crack_hash"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.dns_update",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": true,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.dns_update"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.dpapi",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "credential_access",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": true,
+      "idempotent": true,
+      "required_permissions": [
+        "execute:tool:nexus.post.dpapi"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.enum_system",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.enum_system"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.http_server",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.http_server"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.job",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "target_write",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.job"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.listener",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.listener"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.ntlm_capture",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.ntlm_capture"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.pivot_bruteforce",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "pivoting",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.pivot_bruteforce"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.pivot_http",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "pivoting",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.pivot_http"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.privesc_hints",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.privesc_hints"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.pwnkit",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.pwnkit"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.shell_exec",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.shell_exec"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.smb_upload",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.smb_upload"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.ssh_exec",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.ssh_exec"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.ssh_upload",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.ssh_upload"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.tftp",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": true,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.post.tftp"
+      ]
+    },
+    {
+      "tool_id": "nexus.post.verify_route",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": true,
+      "required_permissions": [
+        "execute:tool:nexus.post.verify_route"
+      ]
+    },
+    {
+      "tool_id": "nexus.pwn.analyze",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.pwn.analyze"
+      ]
+    },
+    {
+      "tool_id": "nexus.pwn.ret2libc",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.pwn.ret2libc"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.bloodhound_python",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "recon",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "dc",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.recon.bloodhound_python"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.dns",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": true,
+      "idempotent": true,
+      "required_permissions": [
+        "execute:tool:nexus.recon.dns"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.ftp",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.recon.ftp"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.gobuster",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.recon.gobuster"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.httpx",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "targets",
+      "sandbox_required": false,
+      "idempotent": true,
+      "required_permissions": [
+        "execute:tool:nexus.recon.httpx"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.netexec",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "recon",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.recon.netexec"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.nfs",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.recon.nfs"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.nikto",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.recon.nikto"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.nmap",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": true,
+      "required_permissions": [
+        "execute:tool:nexus.recon.nmap"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.smb",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.recon.smb"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.subfinder",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "domain",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.recon.subfinder"
+      ]
+    },
+    {
+      "tool_id": "nexus.recon.whatweb",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "targets",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.recon.whatweb"
+      ]
+    },
+    {
+      "tool_id": "nexus.report.generate",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "report",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.report.generate"
+      ]
+    },
+    {
+      "tool_id": "nexus.session.interact",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.session.interact"
+      ]
+    },
+    {
+      "tool_id": "nexus.session.kill",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.session.kill"
+      ]
+    },
+    {
+      "tool_id": "nexus.session.list",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.session.list"
+      ]
+    },
+    {
+      "tool_id": "nexus.session.pty",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "execution",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": true,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.session.pty"
+      ]
+    },
+    {
+      "tool_id": "nexus.shell.exec",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "execution",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": true,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.shell.exec"
+      ]
+    },
+    {
+      "tool_id": "nexus.skill.list",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.skill.list"
+      ]
+    },
+    {
+      "tool_id": "nexus.skill.load",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.skill.load"
+      ]
+    },
+    {
+      "tool_id": "nexus.system.check_env",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.system.check_env"
+      ]
+    },
+    {
+      "tool_id": "nexus.system.discover_tools",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.system.discover_tools"
+      ]
+    },
+    {
+      "tool_id": "nexus.system.execute_and_parse",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "execution",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": null,
+      "sandbox_required": true,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.system.execute_and_parse"
+      ]
+    },
+    {
+      "tool_id": "nexus.system.install_tool",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "system_install",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.system.install_tool"
+      ]
+    },
+    {
+      "tool_id": "nexus.system.status",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.dalfox",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.dalfox"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.ffuf",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.ffuf"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.git_dump",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.git_dump"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.nuclei",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "targets",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.nuclei"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.request",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "target_write",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.request"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.sqlmap",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.sqlmap"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.ssti",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.ssti"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.upload",
+      "version": "1.0.0",
+      "risk": "medium",
+      "effect": "target_write",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.upload"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.wp_bruteforce",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "credential_access",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.wp_bruteforce"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.wp_enum",
+      "version": "1.0.0",
+      "risk": "low",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.wp_enum"
+      ]
+    },
+    {
+      "tool_id": "nexus.web.wp_exec",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "exploit",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "url",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.web.wp_exec"
+      ]
+    },
+    {
+      "tool_id": "nexus.win.winrm_exec",
+      "version": "1.0.0",
+      "risk": "high",
+      "effect": "post_exploitation",
+      "enabled": true,
+      "scope_required": true,
+      "scope_target_field": "target",
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.win.winrm_exec"
+      ]
+    },
+    {
+      "tool_id": "nexus.workspace.read",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool:nexus.workspace.read"
+      ]
+    },
+    {
+      "tool_id": "nexus.workspace.search",
+      "version": "1.0.0",
+      "risk": "read_only",
+      "effect": "read_only",
+      "enabled": true,
+      "scope_required": false,
+      "scope_target_field": null,
+      "sandbox_required": false,
+      "idempotent": false,
+      "required_permissions": [
+        "execute:tool"
+      ]
+    }
+  ]
+}

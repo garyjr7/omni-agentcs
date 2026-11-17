@@ -1,6 +1,6 @@
 """Standalone DPAPI / KDBX 3.1 loot client (stdlib only) shipped into the sandbox.
 
-Why it exists (the synthetic run / the synthetic lab · deuda V0-39): the room's last flag lives in
+Why it exists (a synthetic lab run · deuda V0-39): the room's last flag lives in
 the KeePass database of a user and the *database key* is wrapped in **user-scope
 DPAPI** (``ProtectedUserKey.bin``, itself decrypted with the user's DPAPI
 masterkey, which needs the domain backup key). Reaching that flag took three steps
@@ -14,7 +14,7 @@ any sandbox image (this repo ships stdlib-only clients: TFTP, DNS, the ADIDNS
 updater) the three primitives are implemented here rather than imported:
 
 * **DES/3DES** — DPAPI user blobs are still written with ``CALG_3DES`` (measured:
-  the the synthetic lab blob declares ``CryptAlgo=0x6603`` with 72 bytes of ciphertext).
+  the synthetic lab blob declares ``CryptAlgo=0x6603`` with 72 bytes of ciphertext).
 * **AES-128/192/256** — KDBX 3.x uses AES-ECB for its key-derivation rounds and
   AES-CBC for the payload.
 * **Salsa20** — KDBX 3.x protects individual values with a Salsa20 keystream.
@@ -911,7 +911,7 @@ def open_kdbx(data: bytes, material: bytes, max_entries: int = MAX_ENTRIES) -> d
 
 
 def _flag_tokens(text: str) -> list[str]:
-    """Return flag-shaped tokens (``flag{fake_flag}``, ``flag{fake_flag}``, …) inside ``text``."""
+    """Return flag-shaped tokens (``THM{...}``, ``HTB{...}``, …) inside ``text``."""
     tokens: list[str] = []
     for prefix in ("THM{", "HTB{", "FLAG{", "flag{", "CTF{", "ctf{"):
         start = 0

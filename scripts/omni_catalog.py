@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_OUT = Path("docs/missions/audit-v1/catalog.json")
+DEFAULT_OUT = Path("docs/audit/catalog.json")
 
 
 def main(argv: list[str] | None = None) -> int:

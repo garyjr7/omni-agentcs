@@ -19,8 +19,8 @@ def test_registry_is_healthy_against_the_durable_catalog():
     # 56 tools after adding the two Windows tools (ntlm_capture, winrm_exec).
     # + nexus.recon.dns, nexus.post.dns_update,
     # nexus.attack.impacket_changepasswd and nexus.attack.nopac (RUN_sala10/Ra 2).
-    # + nexus.post.tftp (the synthetic run/the synthetic lab: only UDP/69 was reachable).
-    # + nexus.post.dpapi (the synthetic run/the synthetic lab: the KeePass flag behind user DPAPI).
+    # + nexus.post.tftp (a synthetic lab run: only UDP/69 was reachable).
+    # + nexus.post.dpapi (a synthetic lab run: the KeePass flag behind user DPAPI).
     # + nexus.post.ssh_upload, nexus.recon.nikto (RUN_sala12/Intrusion Detection).
     # + nexus.skill.list, nexus.skill.load (WP4: the dynamic skill loader).
     # + nexus.orchestrator.create_plan/update_plan/get_plan_status (PLAN MODE:

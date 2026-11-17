@@ -1,10 +1,21 @@
 # OmniAgentCS — Changelog
 
+## v3.0.0-rc4 — 2026-11-17
+
+Release candidate de saneamiento. Se eliminaron del árbol y de todo el
+historial `docs/missions/`, los fixtures DPAPI reales, el NDJSON de Hijack v3
+antiguo y los tests con flags/credenciales de laboratorio; los fixtures nuevos
+son sintéticos. `install.sh` ya no cae a un paquete de PyPI si falla Git, el
+README y SECURITY describen el aislamiento parcial real (SEC-01/SEC-02), el
+wheel excluye tests y documentación, y la versión pasa a `3.0.0rc4`. Los SHA y
+tags anteriores quedan obsoletos por la reescritura de historia.
+
 ## v3.0.0-rc3 — 2026-11-12
 
-Release candidate publicado desde `b1f2815`. Licencia Apache-2.0, gate de
+Release candidate privado, superado por `rc4`. Licencia Apache-2.0, gate de
 tipado estricto bloqueante, corrección de `PostgresControlStore` y suite de CI
-determinista. El tag `v3.0.0-rc3` apunta a ese commit.
+determinista. La etiqueta `rc3` fue recreada durante la reescritura de historia;
+la referencia pública saneada es `v3.0.0-rc4`.
 
 ## v3.0.0b1 — 2026-11-06 (BETA)
 

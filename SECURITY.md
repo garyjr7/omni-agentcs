@@ -61,9 +61,10 @@ Por eso:
   (`~/.local/share/omni/artifacts`). No se envían a ningún servicio propio: la
   única salida de red es el proveedor de LLM que configures y las herramientas
   que apuntes a un objetivo autorizado.
-- Si compartes un reporte, recuerda que el JSON/Markdown incluye evidencia. Los
-  datos de laboratorio de este repositorio **no** deben publicarse ni
-  redistribuirse.
+- Si compartes un reporte, recuerda que el JSON/Markdown incluye evidencia. El
+  repositorio público **no** versiona informes de misión, bases KeePass, claves
+  DPAPI ni credenciales de laboratorio: los tests usan fixtures sintéticos y los
+  datos de runs reales se quedan fuera del índice.
 
 ## 4. Hallazgos abiertos conocidos
 

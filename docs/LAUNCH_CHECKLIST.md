@@ -1,8 +1,11 @@
 # Checklist de lanzamiento público — OMNI / OmniAgentCS
 
-Estado: **saneamiento de historial completado**, 2026-11-13, sobre
-`v3.0.0-rc3`. Este documento resume la auditoría y enumera lo que debe
-completarse antes de cambiar la visibilidad del repositorio.
+Estado: **saneamiento de árbol e historial completado**, 2026-11-17, sobre
+`v3.0.0-rc4`. Este documento resume la auditoría y enumera lo que debe
+completarse antes de cambiar la visibilidad del repositorio. La reescritura de
+`rc4` añadió la purga de `docs/missions/`, fixtures DPAPI, `hijack_v3.ndjson`
+antiguo y credenciales/flags de laboratorio; los tags remotos antiguos deben
+forzarse o borrarse antes de anunciar.
 
 ## 0. Bloqueadores del historial (resueltos)
 
@@ -29,7 +32,8 @@ Resultado medido:
   (`postgresql://user:password@localhost/omni`, secretos vacíos).
 - Los `-----BEGIN … PRIVATE KEY-----` encontrados son fixtures/documentación:
   `nexus_core/tests/unit/test_phase3n_fixes.py` (PEM truncado usado para probar
-  redacción) y `docs/audits/SEC00_VERIFICATION.md` (falso positivo citado).
+  redacción). El informe `SEC00_VERIFICATION.md` se eliminó del árbol y del
+  historial por contener credenciales reales.
 - `CI` ya tiene un job `secrets` con `gitleaks-action` y `fetch-depth: 0`.
 
 Checklist:
