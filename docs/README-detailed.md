@@ -166,14 +166,14 @@ escribe en un fichero temporal `0600` y el script siembra `/etc/default/msfrpcd`
 escribas la contraseña; sin TTY usa `sudo -n` y, si falta sudo sin contraseña,
 obtienes el comando exacto para ejecutarlo a mano en vez de un prompt colgado.
 
-### Instalación del CLI (un comando, sin depender de PyPI)
+### Instalación del CLI (un comando, con fallo cerrado)
 
 `install.sh` (raíz del repo) resuelve su fuente en este orden: `$OMNI_SOURCE` →
 el **checkout local** si el script vive dentro de un repo con `pyproject.toml` →
-`$OMNI_GIT_URL` (por defecto `git+https://github.com/garyjr7/omni-agentcs.git`) →
-PyPI. Así el one-liner funciona hoy contra el repositorio y no solo si el
-paquete está publicado. `bash install.sh --dry-run` muestra la fuente y el plan
-sin instalar nada.
+`$OMNI_GIT_URL` (por defecto `git+https://github.com/garyjr7/omni-agentcs.git`).
+No hay fallback a PyPI: si la fuente falla, el instalador termina con un error
+explícito. `bash install.sh --dry-run` muestra la fuente y el plan sin instalar
+nada.
 
 Si `nuclei` ya está instalado, `install.sh` descarga sus templates en
 `~/.local/nuclei-templates` cuando todavía no hay ninguno. Si Nuclei no está

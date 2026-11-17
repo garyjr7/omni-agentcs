@@ -31,7 +31,8 @@ curl … /main/install.sh | bash        omni            omni update
    `OMNI_MIN_PYTHON` (por defecto **3.12**, que es lo que declara
    `pyproject.toml`; ver §4.1), y exige `pip` y `git` presentes.
 2. **Fuente**, por orden: `$OMNI_SOURCE` → checkout local (el script junto a un
-   `pyproject.toml`) → `$OMNI_GIT_URL` → PyPI.
+   `pyproject.toml`) → `$OMNI_GIT_URL`. No hay fallback a PyPI: si la fuente
+   falla, el instalador falla cerrado.
 3. **Instalación aislada:** `pipx install --force` si hay pipx; si no, crea
    `~/.local/share/omniagentcs/venv` e instala ahí. El Python del sistema no se
    modifica en ningún caso.

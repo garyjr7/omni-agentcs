@@ -70,7 +70,8 @@ omni
 ```
 
 Instalación "one-command" (`install.sh`, raíz del repo) resuelve su fuente en este
-orden: `$OMNI_SOURCE` → checkout local → `$OMNI_GIT_URL` → PyPI.
+orden: `$OMNI_SOURCE` → checkout local → `$OMNI_GIT_URL`. No hay fallback a
+PyPI: si la fuente falla, el instalador falla cerrado.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/garyjr7/omni-agentcs/main/install.sh | bash
