@@ -174,6 +174,111 @@ def _command_line(tool_id: str, safe: dict[str, Any]) -> str | None:
     return None
 
 
+#: Contract ceiling per tool, read once from the same durable catalog the
+#: gateway registers. ``None`` means the catalog does not know the tool, and the
+#: card simply omits the suffix instead of inventing a number.
+_TOOL_TIMEOUTS: dict[str, int] | None = None
+
+
+#: Plan tools are a contract, not a shell command: their card names what the plan
+#: promises, never the raw ``todos`` JSON the model sent.
+PLAN_TOOLS = frozenset({
+    "nexus.orchestrator.create_plan",
+    "nexus.orchestrator.update_plan",
+})
+
+_PLAN_MARKS = {
+    "done": "[x]",
+    "in_progress": "[>]",
+    "pending": "[ ]",
+    "failed": "[!]",
+}
+
+
+def tool_timeout_seconds(tool_id: str) -> int | None:
+    """Seconds the tool's own contract publishes (``None`` when unknown)."""
+    global _TOOL_TIMEOUTS
+    if _TOOL_TIMEOUTS is None:
+        timeouts: dict[str, int] = {}
+        try:
+            from nexus_core.tools.registry import durable_tool_definitions
+
+            for key, entry in durable_tool_definitions("system").items():
+                definition = entry[0] if isinstance(entry, tuple) and entry else entry
+                seconds = int(getattr(definition, "timeout_seconds", 0) or 0)
+                if seconds > 0:
+                    timeouts[str(key)] = seconds
+        except Exception:  # noqa: BLE001 - cosmetic metadata only
+            timeouts = {}
+        _TOOL_TIMEOUTS = timeouts
+    return _TOOL_TIMEOUTS.get(str(tool_id or "")) or None
+
+
+def plan_invocation(tool_id: str, arguments: Any) -> str:
+    """One readable line for a plan call: what it proposes, not the TODO JSON."""
+    args = arguments if isinstance(arguments, dict) else {}
+    adding = args.get("todos") or args.get("add") or []
+    count = len(adding) if isinstance(adding, (list, tuple)) else 0
+    changes = args.get("status") or []
+    change_count = len(changes) if isinstance(changes, (list, tuple)) else 0
+    parts: list[str] = []
+    if count:
+        parts.append(f"{count} TODO(s)")
+    if change_count:
+        parts.append(f"{change_count} cambio(s)")
+    detail = " · ".join(parts) or "sin cambios"
+    if args.get("replace"):
+        detail += " · reemplaza el plan"
+    return f"• plan  {detail}"
+
+
+def plan_card_body(tool_id: str, arguments: Any, result: dict[str, Any] | None) -> str:
+    """Body of a plan card: the contract in words, never the request payload.
+
+    The summary line is the same shape as every other tool card (a verdict and
+    the counts), and the TODOs are listed with their real state so the operator
+    reads what the engagement promised without a 4 000-character JSON line.
+    """
+    head = plan_invocation(tool_id, arguments)
+    timeout = tool_timeout_seconds(tool_id)
+    if timeout:
+        head += f"  (timeout: {timeout}s)"
+    if result is None:
+        return f"{head}\n\n  · en ejecución…"
+    output = result.get("output") if isinstance(result.get("output"), dict) else {}
+    if is_guardrail(result) or not result.get("success"):
+        detail = str(
+            result.get("guidance")
+            or result.get("error")
+            or output.get("guidance")
+            or output.get("error")
+            or "el plan no se actualizó"
+        )
+        return f"{head}\n\n  ⚠ {detail}"
+    counts = output.get("counts") if isinstance(output.get("counts"), dict) else {}
+    todos = output.get("todos") if isinstance(output.get("todos"), list) else []
+    verb = "Plan creado" if tool_id.endswith("create_plan") else "Plan actualizado"
+    done = int(counts.get("done") or 0)
+    pending = int(counts.get("pending") or 0)
+    failed = int(counts.get("failed") or 0)
+    line = (
+        f"  ✓ {verb}: {len(todos)} TODO(s) · {done} hechos · "
+        f"{pending} pendientes"
+    )
+    if failed:
+        line += f" · {failed} fallidos"
+    lines = [head, "", line]
+    for todo in todos[:10]:
+        if not isinstance(todo, dict):
+            continue
+        mark = _PLAN_MARKS.get(str(todo.get("status") or "pending"), "[ ]")
+        description = " ".join(str(todo.get("description") or "").split())[:90]
+        lines.append(f"  {mark} {todo.get('id') or '?'} — {description}")
+    if len(todos) > 10:
+        lines.append(f"  … {len(todos) - 10} TODO(s) más")
+    return "\n".join(lines)
+
+
 def format_tool_invocation(tool_id: str, arguments: Any, *,
                            width: int | None = None,
                            no_color: bool = False) -> str:
@@ -194,9 +299,11 @@ def format_tool_invocation(tool_id: str, arguments: Any, *,
 
 
 def detailed_tool_invocation(tool_id: str, arguments: Any, *,
-                             width: int | None = None) -> str:
+                             width: int | None = None,
+                             timeout_seconds: int | None = None) -> str:
     """One tool header. A shell command reads ``$ nmap …``; a structured call
-    reads ``• tool_id  key=value``. Phase lives in the step header.
+    reads ``• tool_id  key=value``. ``timeout_seconds`` appends the ceiling the
+    tool's own contract publishes, so the operator sees how long it may run.
 
     Every branch reads ``display_arguments`` first, so a credential cannot reach
     the transcript through a flag, a path, a nested value or free text. With
@@ -227,12 +334,14 @@ def detailed_tool_invocation(tool_id: str, arguments: Any, *,
 
     from .strings import TOOL_FALLBACK
     name = clean_text(str(tool_id or TOOL_FALLBACK))
+    suffix = f"  (timeout: {int(timeout_seconds)}s)" if timeout_seconds else ""
     if command is not None:
         head, plain_prefix, body_style = f"{GREEN}$ {RESET}{OFFWHITE}", "$ ", OFFWHITE
     else:
         head, plain_prefix, body_style = f"{BOLD}• {name}{RESET}{DIM}  ", f"• {name}  ", DIM
     if not text:
-        return f"{BOLD}• {name}{RESET}{DIM}  (sin argumentos){RESET}"
+        return f"{BOLD}• {name}{RESET}{DIM}  (sin argumentos){suffix}{RESET}"
+    text = f"{text}{suffix}"
     lines = _invocation_lines(text, width=width, prefix=plain_prefix)
     continuation = "".join(
         f"\n{DIM}{INVOCATION_CONTINUATION}{RESET}{body_style}{line}{RESET}"
@@ -418,6 +527,10 @@ def trace_text(result: dict[str, Any]) -> tuple[str, bool]:
 GUARDRAIL_OUTCOMES = frozenset({
     "plan_status_unchanged", "repeated_action", "scope_denied",
     "branch_closed_recent",
+    # A plan TODO named an unknown fact type: the handler answered with the
+    # closed list, so the next call can be right. Amber correction, never a red
+    # tool failure.
+    "invalid_fact_type",
 })
 
 
@@ -544,9 +657,24 @@ def format_tool_card(tool_id: str, arguments: Any, result: dict[str, Any] | None
     """
     from .presentation import subagent_title, tool_result_block
 
-    base = title or subagent_title(tool_id) or 'Resultado'
+    base = title or subagent_title(tool_id) or (
+        'Plan' if tool_id in PLAN_TOOLS else 'Resultado'
+    )
     content_width = max(20, int(width) - 6)
-    invocation = detailed_tool_invocation(tool_id, arguments, width=content_width)
+    if tool_id in PLAN_TOOLS:
+        # The plan card owns its body: the invocation is a sentence and the
+        # result is a contract, not the raw TODO JSON or the handler's payload.
+        return tool_result_block(
+            plan_card_body(tool_id, arguments, result),
+            success=bool(isinstance(result, dict) and result.get("success")),
+            width=width, no_color=no_color, pending=result is None,
+            guardrail=bool(isinstance(result, dict) and is_guardrail(result)),
+            title=base, force_title=True,
+        )
+    invocation = detailed_tool_invocation(
+        tool_id, arguments, width=content_width,
+        timeout_seconds=tool_timeout_seconds(tool_id),
+    )
     if result is None:
         body = f"{invocation}\n\n  · en ejecución…"
         return tool_result_block(

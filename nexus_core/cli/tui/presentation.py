@@ -43,7 +43,6 @@ TOOL_STYLE = ''
 RESULT_OK_STYLE = OK_STYLE
 RESULT_ERROR_STYLE = ERROR_STYLE
 GUARDRAIL_STYLE = WARN_STYLE
-TURN_STYLE = SECONDARY_STYLE
 BRANCH = '└'
 
 #: Typewriter pacing of the transcript: one reveal every 12 ms, at most 96 per
@@ -602,13 +601,6 @@ def live_thought(value: str, *, width: int = 100) -> Text:
             last = last[: max(0, limit - 1)]
         lines[-1] = last + '…'
     return Text('\n'.join(lines), style=THINKING_STYLE)
-
-
-def turn_header(step: int, phase: str, *, width: int = 80) -> Text:
-    """``── paso N · phase ───`` filling the transcript width."""
-    label = f'── paso {int(step)} · {str(phase or "Trabajo")} '
-    room = max(0, int(width) - len(label))
-    return Text(label + '─' * room, style=TURN_STYLE, no_wrap=True, overflow='crop')
 
 
 def diff_block(value: str) -> Syntax:

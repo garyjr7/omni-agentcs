@@ -1762,18 +1762,17 @@ def _drain_stream(session: OmniSession, state: dict[str, Any]) -> None:
             else:
                 if kind == "react.action" and meta.get("thought"):
                     state["turn"] = int(state.get("turn") or 0) + 1
-                    if state["turn"] > 1:
-                        from .tui.presentation import render_rich, tactical_phase, turn_header
-                        session._tui.append_execution_block(render_rich(
-                            turn_header(state["turn"],
-                                        tactical_phase(str(meta.get("tool_id") or ""))),
-                            width=max(20, session._tui.text_width),
-                            no_color=session._tui.no_color,
-                        ))
                     reasoning = getattr(session._tui, "_pending_reasoning", None)
                     session._tui._pending_reasoning = None
-                    session._tui.append_card({}, thought=str(meta["thought"]),
-                                             reasoning=reasoning)
+                    # The live overlay already showed this paragraph while the
+                    # model streamed it; repeating it as a durable card painted
+                    # the same reasoning twice (above the spinner and in the
+                    # transcript). A provider without streaming never raised the
+                    # flag, so its reasoning still lands in a card.
+                    consume = getattr(session._tui, "consume_thought_streamed", None)
+                    if not (consume and consume()):
+                        session._tui.append_card({}, thought=str(meta["thought"]),
+                                                 reasoning=reasoning)
                     message = {**message, "metadata": {**meta, "thought": ""}}
                     meta = message["metadata"]
                 if (kind == "react.action" and meta.get("action") == "tool_call"

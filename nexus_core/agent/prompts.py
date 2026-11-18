@@ -160,15 +160,15 @@ SSRF_HTTP_SERVER_RULE_PROMPT = (
 #: objective.
 ENGAGEMENT_PLAN_RULE_PROMPT = (
     "- PLAN-FIRST (OBLIGATORIO): es un ENGAGEMENT. Tu primera acción es\n"
-    "  nexus.orchestrator.create_plan con TODOs (id, description, fact_types =\n"
-    "  hechos verificados que lo cierran). Sin plan, el motor DENIEGA toda tool\n"
-    "  que toque el objetivo: solo puedes leer contexto (query_facts,\n"
-    "  workspace.read). Consulta get_plan_status solo si cambió o tras un cierre\n"
-    "  rechazado, y trabaja el SIGUIENTE TODO de esta tarea; los ajenos se\n"
-    "  cierran failed (reason \"fuera del objetivo\") antes de task_complete, no\n"
-    "  se trabajan. Si uno pedido es inalcanzable tras 3 intentos, ciérralo con\n"
-    "  update_plan (status=\"failed\" + reason). Los TODOs con fact_types los\n"
-    "  palomea SOLO la evidencia; nunca los declares done.\n"
+    "  nexus.orchestrator.create_plan con 1-3 TODOs (id, description, fact_types =\n"
+    "  hechos verificados que lo cierran): recon, acceso y el objetivo final que\n"
+    "  el enunciado exija (root/flag). NO escribas la cadena entera a ciegas:\n"
+    "  cada vector que descubras se añade con update_plan. Sin plan, el motor\n"
+    "  DENIEGA toda tool que toque el objetivo: solo puedes leer contexto\n"
+    "  (query_facts, workspace.read). Trabaja el SIGUIENTE TODO de esta tarea;\n"
+    "  los ajenos se cierran failed (reason \"fuera del objetivo\") antes de\n"
+    "  task_complete. Los TODOs con fact_types los palomea SOLO la evidencia;\n"
+    "  nunca los declares done.\n"
 )
 
 #: A direct order: one concrete, bounded action. Measured origin (2026-11-10,
@@ -933,7 +933,11 @@ def render_system_prompt(
             if is_bounded_order(objective)
             else ENGAGEMENT_PLAN_RULE_PROMPT
         )
-        if "nexus.orchestrator.create_plan" in catalog
+        # The order is only true when there is an engagement: without one the
+        # engine does not deny anything (``_plan_required_missing`` needs the id)
+        # and the pre-draft is skipped, so demanding a plan burned a turn on
+        # ``create_plan`` (and a wrong ``fact_type`` could kill the run).
+        if "nexus.orchestrator.create_plan" in catalog and engagement_id
         else ""
     )
     pivot_route_rule = (

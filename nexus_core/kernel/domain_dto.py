@@ -257,7 +257,7 @@ class ToolResultDTO(DomainDTO):
     outcome: Literal[
         "success", "negative", "denied", "unsupported", "unavailable", "timeout",
         "command_failed", "scope_denied", "invalid_failure_string", "partial",
-        "in_flight",
+        "in_flight", "invalid_fact_type",
         "error",
     ]
     output: dict[str, JsonValue]

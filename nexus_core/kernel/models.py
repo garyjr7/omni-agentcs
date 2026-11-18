@@ -209,6 +209,14 @@ OUTCOME_TAXONOMY = frozenset({
     #: ``curl``/``wget``/``nc``. Same outcome name in both channels, so the model
     #: reads one rule instead of two.
     "scope_denied",
+    #: The plan TODO named a ``fact_type`` the board does not understand
+    #: (``final_report`` instead of ``report``). It is a vocabulary correction,
+    #: not a broken tool: the handler answered with the closed list, so the call
+    #: decides something and must complete instead of raising. Raising it turned
+    #: a typo into ``tool post-condition was not verified``, counted a tool
+    #: failure, and after three of them retired ``create_plan`` -the only writer
+    #: of the plan- while the plan-first gate still demanded one.
+    "invalid_fact_type",
     #: The caller's own input cannot answer the question it asks: hydra's
     #: ``failure_string`` is present in both branches of the login, so a sweep
     #: with it can never report the credential it walks past (Brute It v6,
@@ -251,6 +259,10 @@ OUTCOME_TAXONOMY = frozenset({
 #: the resulting message as a bad credential (measured in Simple CTF).
 COMPLETED_OUTCOMES = frozenset({
     "negative", "denied", "unsupported", "unavailable", "command_failed",
+    # A plan TODO named an unknown fact type: the call decided the vocabulary,
+    # the handler returned the closed list and the model can correct it on the
+    # next turn. It must not become a broken post-condition (see OUTCOME_TAXONOMY).
+    "invalid_fact_type",
     # A refusal of the *arguments* that ends the call before it starts. Raising
     # instead would journal an ``unknown`` effect for something that never ran
     # and block the corrected retry (Brute It v6, iterations 11-17).

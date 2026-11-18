@@ -141,6 +141,10 @@ class TuiSession:
         self._resize_pending = False
         #: Live ReAct "thinking" text shown while the model streams a turn.
         self._thought_text: str | None = None
+        #: Whether the current turn's reasoning was rendered in the live dock.
+        #: Consumed once when the durable action arrives, so the transcript does
+        #: not repeat what the overlay already showed.
+        self._thought_streamed = False
         #: Provider's native reasoning, attached to the next thought card.
         self._pending_reasoning: str | None = None
         from .presentation import WorkingIndicator
@@ -658,6 +662,7 @@ class TuiSession:
         """Show the partial ``thought`` of the current ReAct turn (streaming)."""
         with self._lock:
             self._thought_text = str(text or "…")
+            self._thought_streamed = True
         self.invalidate()
 
     def end_thought(self) -> None:
@@ -665,6 +670,17 @@ class TuiSession:
         with self._lock:
             self._thought_text = None
         self.invalidate()
+
+    def consume_thought_streamed(self) -> bool:
+        """Whether this turn's reasoning already reached the operator live.
+
+        Reads and resets the flag: the transcript asks once per durable action,
+        and a provider that never streamed must still get its reasoning card.
+        """
+        with self._lock:
+            shown = self._thought_streamed
+            self._thought_streamed = False
+        return shown
 
     def _thought_width(self) -> int:
         try:

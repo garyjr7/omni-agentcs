@@ -545,7 +545,13 @@ DETERMINATE_NEGATIVE_OUTCOMES = frozenset({"negative", "denied", "unsupported"})
 #: Every outcome that is *determinate* but not a positive finding. ``in_flight``
 #: belongs here and not above: it is coordination (the identical step was already
 #: running), so it is neither an observation of the target nor a broken tool.
-DETERMINATE_NON_FAILURE_OUTCOMES = DETERMINATE_NEGATIVE_OUTCOMES | {"in_flight"}
+#: ``invalid_fact_type`` is the same shape of correction: the plan tools answered
+#: with the closed list of allowed types, so the tool works and the next call can
+#: be right. Counting it retired ``create_plan`` after three typos.
+DETERMINATE_NON_FAILURE_OUTCOMES = DETERMINATE_NEGATIVE_OUTCOMES | {
+    "in_flight",
+    "invalid_fact_type",
+}
 
 
 def flag_for_error(error_type: str | None) -> FrictionFlag:

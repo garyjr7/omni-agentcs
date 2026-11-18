@@ -288,7 +288,10 @@ def _fact_type_refusal(
             ),
         },
         verified=False,
-        outcome="error",
+        # A vocabulary correction, not a broken tool: a determinate answer the
+        # model can act on. ``error`` made the gateway raise a post-condition
+        # failure and the loop retire ``create_plan`` after three typos.
+        outcome="invalid_fact_type",
         verification_method="invalid_fact_type",
         evidence={"invalid": names, "todos": len(issues)},
         stdout=summary,

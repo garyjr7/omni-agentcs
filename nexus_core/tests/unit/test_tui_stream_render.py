@@ -417,7 +417,8 @@ def _action(sequence, thought, target="lab"):
     }
 
 
-def test_the_first_turn_has_no_step_header_and_the_second_does():
+def test_no_step_header_is_painted_between_turns():
+    """The separator was engine chrome: the operator reads the call, not a phase."""
     from types import SimpleNamespace
 
     from nexus_core.cli.session import _drain_stream
@@ -437,7 +438,64 @@ def test_the_first_turn_has_no_step_header_and_the_second_does():
 
     joined = "\n".join(_plain(block) for block in tui.blocks)
     assert "paso 1" not in joined
-    assert "paso 2" in joined
+    assert "paso 2" not in joined
+    assert "──" not in joined
+
+
+def test_reasoning_already_streamed_is_not_repeated_as_a_card():
+    """The live dock showed it; the durable card would say it twice."""
+    from types import SimpleNamespace
+
+    from nexus_core.cli.session import _drain_stream
+
+    tui = _RecordingTui()
+    tui.consume_thought_streamed = lambda: True
+    session = SimpleNamespace(
+        store=SimpleNamespace(
+            list_run_events=lambda *a, **k: [],
+            list_messages=lambda *a, **k: [_action(1, "reviso el puerto 445")],
+        ),
+        tenant_id="system",
+        conversation_id="c",
+        run_id="r",
+        _tui=tui,
+    )
+    _drain_stream(session, {"run_id": "r", "sequence": 0, "message_sequence": None, "turn": 0})
+
+    assert tui.cards == []
+    assert tui.tools
+
+
+def test_a_plan_card_reads_the_contract_not_the_todo_json(monkeypatch):
+    from nexus_core.cli.tui import stream as stream_module
+    from nexus_core.cli.tui.stream import format_tool_card
+
+    monkeypatch.setattr(stream_module, "_TOOL_TIMEOUTS", {})
+    arguments = {
+        "objective": "comprometer el objetivo",
+        "todos": [
+            {"id": "recon", "description": "Descubrir puertos", "fact_types": ["host"]},
+        ],
+    }
+    result = {
+        "tool_id": "nexus.orchestrator.create_plan",
+        "success": True,
+        "output": {
+            "counts": {"done": 0, "pending": 1, "in_progress": 0, "failed": 0},
+            "todos": [{"id": "recon", "description": "Descubrir puertos", "status": "pending"}],
+        },
+        "evidence": {},
+        "stdout": "",
+    }
+
+    plain = _plain(format_tool_card(
+        "nexus.orchestrator.create_plan", arguments, result, width=90, no_color=True,
+    ))
+
+    assert "Plan creado: 1 TODO(s)" in plain
+    assert "[ ] recon — Descubrir puertos" in plain
+    assert "fact_types" not in plain
+    assert "{'id'" not in plain
 
 
 def test_the_reasoning_event_reaches_the_reasoning_card():

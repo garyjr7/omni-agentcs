@@ -158,6 +158,11 @@ async def test_an_invalid_fact_type_lists_the_allowed_ones(tmp_path, monkeypatch
     )
 
     assert not result.success
+    # A vocabulary correction is a determinate answer: the gateway must not
+    # turn it into a post-condition failure (and the loop must not retire the
+    # only writer of the plan after three typos).
+    assert result.outcome == "invalid_fact_type"
+    assert result.completed is True
     assert result.output["invalid"] == [{"todo": "t1", "unknown": ["sesion"]}]
     assert "session" in result.output["allowed_fact_types"]
     assert "loot" in result.output["allowed_fact_types"]

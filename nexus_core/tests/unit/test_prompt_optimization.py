@@ -60,6 +60,22 @@ def test_a_bounded_order_replaces_the_plan_first_order(catalog):
     assert "PLAN-FIRST (OBLIGATORIO)" not in prompt
 
 
+def test_the_plan_first_order_requires_an_engagement(catalog):
+    """Without an engagement the engine denies nothing, so the order is a lie.
+
+    Measured: the prompt demanded ``create_plan`` while ``_plan_required_missing``
+    required an engagement id, and the model spent a turn (plus a ``fact_type``
+    rejection) planning something no gate asked for.
+    """
+    prompt = render_system_prompt(
+        catalog=catalog,
+        objective="compromete el objetivo y escala privilegios",
+        engagement_id=None,
+        scope_summary="(sin engagement)",
+    )
+    assert "PLAN-FIRST (OBLIGATORIO)" not in prompt
+
+
 def test_prompt_requires_full_tcp_recon(catalog):
     prompt = _prompt(catalog)
     assert "METODOLOGÍA DE RECONOCIMIENTO" in prompt
