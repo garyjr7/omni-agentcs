@@ -126,6 +126,8 @@ async def draft_engagement_plan(
     objective: str,
     engagement_id: str | None,
     workspace: str | None = None,
+    store: Any | None = None,
+    tenant_id: str = "system",
 ) -> EngagementPlan | None:
     """Create or reuse the engagement plan before the loop starts.
 
@@ -135,7 +137,9 @@ async def draft_engagement_plan(
     """
     if not is_engagement_objective(objective):
         return None
-    existing = load_plan_for(engagement_id, workspace)
+    existing = load_plan_for(
+        engagement_id, workspace, store=store, tenant_id=tenant_id
+    )
     if existing is not None and existing.todos:
         # Resume: the model already committed to this plan. Rewriting it from the
         # objective would erase every tick the evidence earned.
@@ -166,7 +170,7 @@ async def draft_engagement_plan(
             seed_todos(objective),
             source="seed",
         )
-    save_plan(plan, workspace)
+    save_plan(plan, workspace, store=store, tenant_id=tenant_id)
     return plan
 
 

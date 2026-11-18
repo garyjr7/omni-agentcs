@@ -5,14 +5,15 @@ from the blackboard. That is a frame, not a contract: it never says what this
 engagement promised to do, so a run can close the moment one flag lands (run v8,
 ``run_a00cddfa69da488d8946188daddee3e3``). This module is the missing contract.
 
-The plan is a Markdown file inside the engagement workspace, on purpose:
+The plan lives in ``kernel_plan_todos`` (Fase 2), and the Markdown file is a
+projection written from it after every commit, on purpose:
 
 * the human can ``cat loot/ENGAGEMENT_PLAN.md`` and read the same checkboxes the
   agent sees;
 * every subagent of the run reads it through the system prompt, and an isolated
   child (``supervisor``) reads the same file because the workspace is shared;
-* it survives a ``--resume``: the file *is* the state, so a new process does not
-  have to reconstruct it from a transcript.
+* it survives a ``--resume``: a new process reloads the TODOs from the database,
+  and a deleted or stale file cannot erase a tick.
 
 Only the model closes a TODO, and only two ways: a verifier assertion whose
 ``fact_type`` the TODO declares (``fact_types``) ticks it automatically, or the
@@ -157,6 +158,10 @@ class EngagementPlan:
     #: fallback had to (the LLM call failed). Both are binding once on disk.
     source: str = "model"
     todos: tuple[Todo, ...] = field(default_factory=tuple)
+    #: Row version in ``kernel_engagement_plans``. ``0`` means "not committed
+    #: yet" (a fresh or file-only plan); every database write bumps it, and the
+    #: next write must present the version it read.
+    version: int = 0
 
     # ------------------------------------------------------------- derived
     def by_id(self, todo_id: str) -> Todo | None:
@@ -201,6 +206,7 @@ class EngagementPlan:
             "failed": [todo.id for todo in self.failed],
             "flags_pending": [todo.id for todo in self.flags_pending],
             "complete": self.complete,
+            "version": self.version,
             "todos": [todo.to_dict() for todo in self.todos],
         }
 
@@ -243,31 +249,119 @@ def load_plan(root: str | None = None) -> EngagementPlan | None:
     return parse_markdown(text)
 
 
+def _matches_engagement(plan: EngagementPlan | None, engagement_id: str | None) -> bool:
+    """Whether *plan* belongs to *engagement_id* (an empty id matches nothing)."""
+    return plan is not None and str(plan.engagement_id or "") == str(
+        engagement_id or ""
+    )
+
+
+def plan_from_snapshot(snapshot: Mapping[str, Any]) -> EngagementPlan:
+    """Rebuild the plan the database committed (the authoritative copy).
+
+    ``todo_from_mapping`` re-validates every TODO, so a row written by an older
+    process is held to the current vocabulary instead of being trusted blindly;
+    ``verified_by`` is not part of the model-facing shape, so it is restored
+    here.
+    """
+    todos: list[Todo] = []
+    for raw in snapshot.get("todos") or ():
+        todo = todo_from_mapping(raw)
+        todos.append(
+            replace(todo, verified_by=str(raw.get("verified_by") or ""))
+        )
+    return EngagementPlan(
+        objective=str(snapshot.get("objective") or ""),
+        engagement_id=str(snapshot.get("engagement_id") or ""),
+        created_at=str(snapshot.get("created_at") or ""),
+        updated_at=str(snapshot.get("updated_at") or ""),
+        source=str(snapshot.get("source") or "model"),
+        todos=tuple(todos),
+        version=max(0, int(snapshot.get("version") or 0)),
+    )
+
+
 def load_plan_for(
-    engagement_id: str | None, root: str | None = None
+    engagement_id: str | None,
+    root: str | None = None,
+    *,
+    store: Any | None = None,
+    tenant_id: str = "system",
 ) -> EngagementPlan | None:
     """The plan of *this* engagement, or ``None``.
 
-    A workspace can outlive one engagement, and a plan from another engagement
-    must never bind this run: its TODOs are somebody else's promise. Comparing
-    the header line is what keeps a stale file from refusing a closure it has
-    nothing to do with.
+    With a store the database is the source of truth: the file is only read once
+    to import a plan written by an older version (or by a process that ran
+    before the table existed), and never again while the database holds one. A
+    workspace can outlive one engagement, so the engagement id still decides
+    whether a legacy file belongs to this run.
+
+    Without a store (unit tests, a report over a workspace) the file remains the
+    only copy available and is read as before.
     """
+    if store is not None and engagement_id:
+        unavailable = False
+        try:
+            snapshot = store.load_engagement_plan(tenant_id, engagement_id)
+        except Exception:  # noqa: BLE001 - an unavailable database degrades to the file
+            snapshot = None
+            unavailable = True
+        else:
+            if snapshot is not None:
+                return plan_from_snapshot(snapshot)
+        legacy = load_plan(root)
+        if legacy is None or not _matches_engagement(legacy, engagement_id):
+            return None
+        # First run of a pre-F2 engagement: the file is the only copy, so it is
+        # imported once and from then on the database leads. A database that is
+        # down is not imported over: the file stays the fallback until it returns.
+        if not unavailable:
+            save_plan(legacy, root, store=store, tenant_id=tenant_id)
+        return legacy
     plan = load_plan(root)
-    if plan is None:
-        return None
-    if str(plan.engagement_id or "") != str(engagement_id or ""):
+    if not _matches_engagement(plan, engagement_id):
         return None
     return plan
 
 
-def save_plan(plan: EngagementPlan, root: str | None = None) -> str:
-    """Write ``plan`` atomically and return its path.
+def save_plan(
+    plan: EngagementPlan,
+    root: str | None = None,
+    *,
+    store: Any | None = None,
+    tenant_id: str = "system",
+) -> str:
+    """Commit ``plan`` and project it to ``ENGAGEMENT_PLAN.md``.
 
-    Atomic because the TUI and a resumed run may read it while the loop writes:
-    a reader never sees half a checkbox list (``os.replace`` is atomic on the
-    same filesystem).
+    With a store the commit happens first and is authoritative; the Markdown is
+    only a projection for the operator and for isolated subagents. The write is
+    optimistic: a plan that read version *N* only applies over *N*, and a
+    concurrent writer raises :class:`~nexus_core.kernel.errors.PlanConflict`
+    instead of silently dropping a TODO.
+
+    The file write stays atomic because the TUI may read it while the loop
+    writes: a reader never sees half a checkbox list (``os.replace`` is atomic on
+    the same filesystem).
     """
+    if store is not None and plan.engagement_id:
+        from nexus_core.kernel.errors import PlanConflict
+
+        try:
+            version = store.save_engagement_plan(
+                tenant_id,
+                plan.engagement_id,
+                objective=plan.objective,
+                source=plan.source,
+                todos=[todo.to_dict() for todo in plan.todos],
+                expected_version=plan.version or None,
+                created_at=plan.created_at or None,
+                updated_at=plan.updated_at or None,
+            )
+        except PlanConflict:
+            raise
+        # ``EngagementPlan`` is frozen; the caller's object is the handle that
+        # the next load/save pair carries, so its version is advanced in place.
+        object.__setattr__(plan, "version", version)
     path = plan_path(root)
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)

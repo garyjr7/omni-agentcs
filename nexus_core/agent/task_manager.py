@@ -391,6 +391,19 @@ class TaskManager:
             self._wakeup.clear()
         return pending
 
+    async def wait_for_change(self, timeout: float | None = None) -> bool:
+        """Block until a task finishes, without draining the delivery queue.
+
+        The wake-on-change gate races this against the model call: it must learn
+        that something finished *before* deciding whether to cancel the request,
+        and the coordinator drains the queue only if it wins.
+        """
+        try:
+            await asyncio.wait_for(self._wakeup.wait(), timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            return False
+        return True
+
     async def wait_for_result(self, timeout: float | None = None) -> list[TaskRecord]:
         """Block until at least one task finishes (or ``timeout`` expires)."""
         try:

@@ -417,7 +417,9 @@ def _revalidate_plan_on_resume(session: OmniSession) -> list[str]:
     if not engagement_id:
         return []
     try:
-        plan = load_plan_for(engagement_id, root)
+        plan = load_plan_for(
+            engagement_id, root, store=session.store, tenant_id=session.tenant_id
+        )
         if plan is None or not any(todo.done and todo.verified_by for todo in plan.todos):
             return []
         facts = [
@@ -440,7 +442,7 @@ def _revalidate_plan_on_resume(session: OmniSession) -> list[str]:
     ]
     if not demoted:
         return []
-    save_plan(updated, root)
+    save_plan(updated, root, store=session.store, tenant_id=session.tenant_id)
     done, total = len(updated.todos) - len(updated.pending), len(updated.todos)
     render.render_status(
         f"plan recalculado: {', '.join(demoted)} vuelve a pendiente "

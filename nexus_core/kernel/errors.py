@@ -76,6 +76,17 @@ class ProviderFailure(RuntimeError):
         self.kind = kind
 
 
+class PlanConflict(RuntimeError):
+    """An optimistic write lost against the version the database already holds.
+
+    The engagement plan is written by the loop, by a resumed process and by any
+    subagent that calls ``nexus.orchestrator.update_plan``. The database is the
+    source of truth, so a write that read version *N* and finds *N+1* is not
+    applied: the caller reloads and re-decides instead of overwriting a TODO that
+    another writer just ticked.
+    """
+
+
 class BudgetExceeded(RuntimeError):
     """A durable token reservation would oversubscribe a shared tree budget."""
 

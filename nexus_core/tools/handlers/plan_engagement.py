@@ -20,6 +20,8 @@ from typing import Any
 
 from nexus_core.kernel.models import RiskLevel, RunContext, ToolDefinition, ToolResult
 
+from nexus_core.kernel.errors import PlanConflict
+
 from nexus_core.agent.engagement_plan import (
     PLAN_RELATIVE_PATH,
     TODO_DONE,
@@ -219,14 +221,63 @@ def _root(context: RunContext) -> str | None:
     return str(getattr(context, "project_root", "") or "") or None
 
 
+def _load(context: RunContext) -> EngagementPlan | None:
+    """The engagement's plan: the database when there is a store, else the file."""
+    return load_plan_for(
+        context.engagement_id,
+        _root(context),
+        store=getattr(context, "store", None),
+        tenant_id=str(getattr(context, "tenant_id", "system") or "system"),
+    )
+
+
+def _save(plan: EngagementPlan, context: RunContext) -> str:
+    """Commit the plan (database first) and project it to the Markdown file."""
+    return save_plan(
+        plan,
+        _root(context),
+        store=getattr(context, "store", None),
+        tenant_id=str(getattr(context, "tenant_id", "system") or "system"),
+    )
+
+
 def _reconciled(context: RunContext, plan: EngagementPlan | None) -> EngagementPlan | None:
-    """Tick what the board already proves, persisting only when it moved."""
+    """Tick what the board already proves, persisting only when it moved.
+
+    A lost optimistic write is not an error the model must see: another writer
+    committed a newer plan, and the next turn re-reconciles against it. Nothing
+    is overwritten here.
+    """
+    from nexus_core.kernel.errors import PlanConflict
+
     updated, ticks = reconcile(
         plan, _verified_facts(context), engagement_id=context.engagement_id
     )
     if ticks and updated is not None:
-        save_plan(updated, _root(context))
+        try:
+            _save(updated, context)
+        except PlanConflict:
+            return plan
     return updated
+
+
+def _plan_conflict_result(exc: Exception) -> ToolResult:
+    """Deterministic answer for a plan write that lost the version race."""
+    summary = (
+        f"el plan cambió mientras lo editabas ({exc}). Recarga el estado con "
+        f"{GET_PLAN_STATUS_TOOL} y repite el cambio sobre la versión vigente."
+    )
+    return ToolResult(
+        output={
+            "error": summary,
+            "plan_conflict": True,
+            "guidance": "No se aplicó nada: otro escritor ganó la versión. Relee el plan.",
+        },
+        verified=False,
+        outcome="plan_conflict",
+        verification_method="plan_conflict",
+        stdout=summary,
+    )
 
 
 def _invalid_fact_types(
@@ -313,13 +364,11 @@ async def create_plan_handler(arguments: dict[str, Any], context: RunContext) ->
     issues, allowed = _invalid_fact_types(arguments.get("todos"))
     if issues:
         return _fact_type_refusal(issues, allowed)
-    existing = _reconciled(
-        context, load_plan_for(context.engagement_id, _root(context))
-    )
-    replace = bool(arguments.get("replace"))
+    existing = _reconciled(context, _load(context))
+    replace_plan = bool(arguments.get("replace"))
     if (
         existing is not None
-        and not replace
+        and not replace_plan
         and (existing.complete or any(todo.done for todo in existing.todos) or existing.failed)
     ):
         raise ValueError(
@@ -329,7 +378,14 @@ async def create_plan_handler(arguments: dict[str, Any], context: RunContext) ->
     todos = [todo_from_mapping(raw) for raw in arguments["todos"]]
     objective = str(arguments.get("objective") or "") or getattr(context, "objective", "")
     plan = new_plan(objective, context.engagement_id, todos, source="model")
-    path = save_plan(plan, _root(context))
+    if existing is not None:
+        # A deliberate replacement still writes over the version it just read,
+        # instead of trying to create a second plan.
+        plan = replace(plan, version=existing.version)
+    try:
+        path = _save(plan, context)
+    except PlanConflict as exc:
+        return _plan_conflict_result(exc)
     # A TODO the board already proves is ticked on creation: the planning phase
     # may run on a resumed engagement, and re-doing proven work is not the job.
     plan = _reconciled(context, plan) or plan
@@ -361,9 +417,7 @@ async def update_plan_handler(arguments: dict[str, Any], context: RunContext) ->
     issues, allowed = _invalid_fact_types(arguments.get("add"))
     if issues:
         return _fact_type_refusal(issues, allowed)
-    plan = _reconciled(
-        context, load_plan_for(context.engagement_id, _root(context))
-    )
+    plan = _reconciled(context, _load(context))
     if plan is None:
         raise ValueError(
             "there is no engagement plan yet: call "
@@ -405,7 +459,10 @@ async def update_plan_handler(arguments: dict[str, Any], context: RunContext) ->
             reason=reason if status == TODO_FAILED else "",
         )
     updated = replace(plan, todos=tuple(todos), updated_at=now_stamp())
-    path = save_plan(updated, _root(context))
+    try:
+        path = _save(updated, context)
+    except PlanConflict as exc:
+        return _plan_conflict_result(exc)
     return ToolResult(
         output={
             "plan": "updated",
@@ -433,9 +490,7 @@ async def get_plan_status_handler(
     from nexus_core.kernel.schema_validation import validate
 
     validate(arguments, get_plan_status_definition().input_schema)
-    plan = _reconciled(
-        context, load_plan_for(context.engagement_id, _root(context))
-    )
+    plan = _reconciled(context, _load(context))
     payload = _payload(plan, context)
     if plan is None:
         payload["message"] = (

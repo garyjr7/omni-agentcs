@@ -1046,6 +1046,9 @@ class ReActCoordinator:
         #: instantly. A run resumed from history starts untracked for the phases it
         #: already ran, which at worst costs one extra turn.
         self.phase_turns: dict[str, int] = {}
+        # Recover the retirements, locked vectors and phase turns of a previous
+        # process of this same run (``--resume`` keeps the run id).
+        self._restore_run_state()
         #: WP2: the only hard ceiling of a run (``NEXUS_RUN_BUDGET_TOKENS``) and
         #: the 5-turn grace the board grants once the objective is complete.
         self.iteration_limit = self.config.max_iterations
@@ -1197,6 +1200,103 @@ class ReActCoordinator:
     def _persisted_work_seconds(self) -> float:
         """Work seconds a previous process already spent on this run."""
         return self._persisted_clock()[0]
+
+    # ------------------------------------------------------- durable run state
+    def _restore_run_state(self) -> None:
+        """Recover what a previous process learned about this run.
+
+        The loop retires a tool after three consecutive failures and locks a
+        vector after repeated failures on the same target. Keeping that only in
+        memory made ``--resume`` forget it: the broken route looked new and the
+        run spent its first failure again (and, on a full restart, the three of
+        them). The state is one row per key in ``kernel_run_state``, so it is
+        also inspectable by an operator.
+        """
+        try:
+            state = self.store.load_run_state(self.tenant_id, self.run_id) or {}
+        except Exception:  # noqa: BLE001 - a run must start without its history
+            return
+        unavailable = state.get("unavailable_tools")
+        if isinstance(unavailable, list):
+            self.unavailable_tools.update(str(tool) for tool in unavailable if tool)
+        failures = state.get("tool_failures")
+        if isinstance(failures, dict):
+            for tool_id, count in failures.items():
+                try:
+                    self.tool_failures[str(tool_id)] = max(0, int(count))
+                except (TypeError, ValueError):
+                    continue
+        for name, target in (
+            ("refusal_retired", self.refusal_retired),
+            ("resurrected_tools", self.resurrected_tools),
+        ):
+            values = state.get(name)
+            if isinstance(values, list):
+                target.update(str(tool) for tool in values if tool)
+        turns = state.get("phase_turns")
+        if isinstance(turns, dict):
+            for phase, count in turns.items():
+                try:
+                    self.phase_turns[str(phase)] = max(0, int(count))
+                except (TypeError, ValueError):
+                    continue
+        vectors = state.get("vectors")
+        for entry in vectors if isinstance(vectors, list) else ():
+            if not isinstance(entry, dict):
+                continue
+            key = (
+                str(entry.get("tool") or ""),
+                str(entry.get("subcommand") or ""),
+                str(entry.get("target") or ""),
+            )
+            if not key[0]:
+                continue
+            try:
+                count = max(0, int(entry.get("failures") or 0))
+                iteration = max(0, int(entry.get("last_iteration") or 0))
+            except (TypeError, ValueError):
+                continue
+            if count:
+                self.vector_failures[key] = count
+            if iteration:
+                self.vector_last_failure[key] = iteration
+            if entry.get("locked"):
+                self.vector_locked.add(key)
+
+    def _persist_run_state(self) -> None:
+        """Commit the retirements, locked vectors and phase turns of this run.
+
+        Best-effort by design: a database hiccup must not stop the loop. Called
+        when a retirement happens (so a crash right after it is remembered) and
+        once per completed turn for the counters.
+        """
+        keys = set(self.vector_failures) | set(self.vector_locked)
+        vectors = [
+            {
+                "tool": key[0],
+                "subcommand": key[1],
+                "target": key[2],
+                "failures": int(self.vector_failures.get(key, 0)),
+                "last_iteration": int(self.vector_last_failure.get(key, 0)),
+                "locked": key in self.vector_locked,
+            }
+            for key in sorted(keys)
+        ]
+        try:
+            self.store.save_run_state(
+                self.tenant_id,
+                self.run_id,
+                {
+                    "unavailable_tools": sorted(self.unavailable_tools),
+                    "tool_failures": dict(self.tool_failures),
+                    "refusal_retired": sorted(self.refusal_retired),
+                    "resurrected_tools": sorted(self.resurrected_tools),
+                    "phase_turns": dict(self.phase_turns),
+                    "vectors": vectors,
+                },
+            )
+        except Exception:  # noqa: BLE001 - durability must never break a turn
+            return
 
     def _work_seconds(self) -> float:
         """Work time of this run: persisted base plus this process's uptime."""
@@ -2205,12 +2305,13 @@ class ReActCoordinator:
         self.target_reached_emitted = True
 
     def _refresh_engagement_plan(self) -> None:
-        """Load ``ENGAGEMENT_PLAN.md`` and tick what the board already proves.
+        """Load the durable plan and tick what the board already proves.
 
-        The file is the source of truth (shared with the human and with any
-        isolated child of the run); this only refreshes it with the facts that
-        landed since the last turn. A TODO ticked here is a verifier assertion,
-        never a model claim.
+        The database is authoritative (``kernel_plan_todos``); the Markdown file
+        is written from it as a projection for the operator and isolated
+        children. A TODO ticked here is a verifier assertion, never a model
+        claim. A concurrent writer that advanced the version makes this reload
+        and re-reconcile once instead of overwriting its TODO.
 
         Never raises: a plan that cannot be read degrades to "no plan" and the
         gate below decides what that means for this run.
@@ -2221,47 +2322,66 @@ class ReActCoordinator:
             reconcile,
             save_plan,
         )
+        from nexus_core.kernel.errors import PlanConflict
 
         # The same directory the CLI wrote the plan into: the payload's
         # ``project_root`` (the operator's workspace), never an implicit cwd. A
         # bound local workspace lives in ``scope.notes``, so the two can differ.
         root = str(self.payload.get("project_root") or "") or None
+        store = getattr(self, "store", None)
         plan = None
         try:
-            plan = load_plan_for(self.engagement_id, root)
-            if plan is not None:
-                facts = [
-                    fact
-                    for fact in self._blackboard_facts()
-                    if fact.get("verified") is True
-                ]
-                # Flags this run read out of a tool output are evidence too, and
-                # the verifier does not always derive a loot fact for them.
-                facts.extend(
-                    {
-                        "fact_type": "loot",
-                        "key": str(source.get("ref") or "flag"),
-                        "value": {"flag": flag},
-                        "verified": True,
-                    }
-                    for flag, source in self.captured_flag_refs.items()
+            facts = [
+                fact for fact in self._blackboard_facts() if fact.get("verified") is True
+            ]
+            # Flags this run read out of a tool output are evidence too, and
+            # the verifier does not always derive a loot fact for them.
+            facts.extend(
+                {
+                    "fact_type": "loot",
+                    "key": str(source.get("ref") or "flag"),
+                    "value": {"flag": flag},
+                    "verified": True,
+                }
+                for flag, source in self.captured_flag_refs.items()
+            )
+            for _attempt in range(2):
+                plan = load_plan_for(
+                    self.engagement_id,
+                    root,
+                    store=store,
+                    tenant_id=self.tenant_id,
                 )
+                if plan is None:
+                    break
                 updated, ticks = reconcile(
                     plan, facts, engagement_id=self.engagement_id
                 )
-                if ticks and updated is not None:
-                    save_plan(updated, root)
-                    plan = updated
-                    self.store.append_run_event(
-                        self.tenant_id,
-                        self.run_id,
-                        "orchestrator.plan_todos",
-                        {
-                            "iteration": self.iteration,
-                            "done": list(ticks),
-                            "pending": [todo.id for todo in plan.pending],
-                        },
+                if not ticks or updated is None:
+                    break
+                try:
+                    save_plan(
+                        updated,
+                        root,
+                        store=store,
+                        tenant_id=self.tenant_id,
                     )
+                except PlanConflict:
+                    # Another writer committed first: its TODOs are newer than
+                    # this reconciliation. Reload and re-apply the facts.
+                    continue
+                plan = updated
+                self.store.append_run_event(
+                    self.tenant_id,
+                    self.run_id,
+                    "orchestrator.plan_todos",
+                    {
+                        "iteration": self.iteration,
+                        "done": list(ticks),
+                        "pending": [todo.id for todo in plan.pending],
+                    },
+                )
+                break
         except Exception:  # noqa: BLE001 - the plan must never abort a turn
             plan = None
         self.engagement_plan = plan
@@ -5316,8 +5436,13 @@ class ReActCoordinator:
                 self.refusal_retired.add(tool_id)
             self.telemetry.flag(FrictionFlag.TOOL_RETIRED)
             self.observation["tool_retired"] = True
+            # ``subagent`` is chosen when the turn's context is built; a resumed
+            # or rebuilt coordinator may retire before that, and losing the whole
+            # turn over a missing label is worse than an empty one.
+            subagent = getattr(self, "subagent", None)
+            tools = tuple(getattr(subagent, "tools", ()) or ())
             self.observation["available_tools"] = sorted(
-                (tool for tool in self.subagent.tools if tool not in self.unavailable_tools)
+                (tool for tool in tools if tool not in self.unavailable_tools)
             )
             self.store.append_run_event(
                 self.tenant_id,
@@ -5325,7 +5450,7 @@ class ReActCoordinator:
                 TOOL_UNAVAILABLE_EVENT_TYPE,
                 {
                     "tool_id": tool_id,
-                    "subagent_id": self.subagent.id,
+                    "subagent_id": getattr(subagent, "id", ""),
                     "failures": count,
                     "cause": cause,
                     "iteration": self.iteration,
@@ -5338,6 +5463,8 @@ class ReActCoordinator:
                 tool_id=tool_id,
                 failures=count,
             )
+            # A crash right after the retirement must not resurrect the tool.
+            self._persist_run_state()
         return count
 
     def _resurrect_tools_for_new_context(self) -> None:
@@ -5398,6 +5525,7 @@ class ReActCoordinator:
             tools=candidates,
             fact_types=sorted(landed),
         )
+        self._persist_run_state()
         # The observation this turn already carries the retired catalog: name the
         # returned tools there so the very next prompt offers them again.
         available = self.observation.get("available_tools")
@@ -5512,6 +5640,7 @@ class ReActCoordinator:
                 target=key[2],
                 failures=count,
             )
+            self._persist_run_state()
 
     def _warn_vector_lock(self, key: tuple[str, str, str], count: int) -> None:
         """Inject the system warning as a history turn and journal the event."""
@@ -6207,6 +6336,7 @@ class ReActCoordinator:
                     turn_ms=_elapsed_ms(turn_started),
                 )
                 self._note_completed_turn()
+                self._persist_run_state()
                 # Durable anchor for a resumed run: the work spent up to here is
                 # never re-spent, and the clock does not restart from zero.
                 self._persist_work_clock(iteration=self.iteration)
@@ -6219,11 +6349,50 @@ class ReActCoordinator:
             # writing after the loop ended would be an unattributed effect.
             await self.task_manager.cancel_all()
 
+    async def _request_action_or_wakeup(self) -> Transition:
+        """Await the model, unless a background task finishes first.
+
+        Wake-on-change: a scan that completes while the model is still thinking
+        makes that thought stale. The in-flight request is cancelled (it is only
+        a provider call; no tool ran) and the finished result is delivered
+        *before* the next prompt, so the model never spends a turn discovering
+        that nothing changed. The iteration is charged -an extra model call is
+        cheaper than acting on a world that no longer exists- and quota
+        reservations are excluded because the reservation is settled around the
+        provider call in ``_request_action``.
+        """
+        if (
+            self.task_manager.running_count() <= 0
+            or self.config.before_provider_call is not None
+        ):
+            return await self._request_action()
+        request = asyncio.ensure_future(self._request_action())
+        wakeup = asyncio.ensure_future(self.task_manager.wait_for_change())
+        try:
+            done, _ = await asyncio.wait(
+                {request, wakeup}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if wakeup in done and wakeup.result() and request not in done:
+                request.cancel()
+                try:
+                    await request
+                except asyncio.CancelledError:
+                    pass
+                finished = self.task_manager.pending_results()
+                if finished:
+                    self._deliver_background_results(finished)
+                    return Transition.NEXT_TURN
+            return await request
+        finally:
+            for pending in (request, wakeup):
+                if not pending.done():
+                    pending.cancel()
+
     async def _iteration_body(self) -> Transition:
         """One model turn and the transition it asked for (the loop's unit)."""
         # ``_request_action`` may also answer ``NEXT_TURN``: a malformed JSON
         # answer is corrected and the turn re-issued instead of decoded.
-        request = await self._request_action()
+        request = await self._request_action_or_wakeup()
         if request is not Transition.READY:
             return request
         if self._decode_action() is Transition.NEXT_TURN:

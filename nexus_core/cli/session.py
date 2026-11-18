@@ -790,7 +790,12 @@ class OmniSession:
         try:
             from nexus_core.agent.engagement_plan import load_plan_for, panel_todos
 
-            contract = load_plan_for(self.engagement_id, str(self.workspace_root))
+            contract = load_plan_for(
+                self.engagement_id,
+                str(self.workspace_root),
+                store=self.store,
+                tenant_id=self.tenant_id,
+            )
         except Exception:  # noqa: BLE001 - presentation must not fail
             return payload
         if contract is not None:
@@ -1190,6 +1195,8 @@ class OmniSession:
                 objective=objective,
                 engagement_id=self.engagement_id,
                 workspace=workspace,
+                store=self.store,
+                tenant_id=self.tenant_id,
             )
         except Exception:  # noqa: BLE001 - planning must never block the run
             return None

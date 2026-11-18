@@ -24,8 +24,9 @@ from nexus_core.agent.engagement_plan import (
     TODO_DONE,
     TODO_PENDING,
     Todo,
-    load_plan,
+    load_plan_for,
     new_plan,
+    now_stamp,
     save_plan,
 )
 from nexus_core.agent.react import (
@@ -117,15 +118,22 @@ class ToolSpy:
     when the scan proves a service: the plan the tool answers with has changed.
     """
 
-    def __init__(self, workspace) -> None:
+    def __init__(self, workspace, store=None, tenant_id: str = "system") -> None:
         self.workspace = workspace
+        self.store = store
+        self.tenant_id = tenant_id
         self.payloads: list[dict] = []
 
     async def __call__(self, payload, context):
         self.payloads.append(payload)
         tool_id = payload["tool_id"]
         if tool_id == "nexus.recon.nmap":
-            plan = load_plan(str(self.workspace))
+            plan = load_plan_for(
+                ENGAGEMENT,
+                str(self.workspace),
+                store=self.store,
+                tenant_id=self.tenant_id,
+            )
             if plan is not None:
                 save_plan(
                     replace(
@@ -136,8 +144,11 @@ class ToolSpy:
                             else todo
                             for todo in plan.todos
                         ),
+                        updated_at=now_stamp(),
                     ),
                     str(self.workspace),
+                    store=self.store,
+                    tenant_id=self.tenant_id,
                 )
         return {
             "tool_id": tool_id,
@@ -200,7 +211,7 @@ async def test_a_poll_after_real_progress_runs_again(harness):
     store, context, workspace = harness
     _save_open_plan(workspace)
     llm = ScriptedLLM_loop([_poll(), _tool_call("nexus.recon.nmap", target=TARGET), _poll()])
-    spy = ToolSpy(workspace)
+    spy = ToolSpy(workspace, store, context.tenant_id)
 
     with mock.patch.object(runtime_module, "execute_tool", spy):
         result = await run_react_loop(

@@ -180,6 +180,27 @@ CREATE TABLE IF NOT EXISTS kernel_run_events (
 );
 CREATE INDEX IF NOT EXISTS ix_kernel_run_events
     ON kernel_run_events(tenant_id,run_id,sequence);
+CREATE TABLE IF NOT EXISTS kernel_engagement_plans (
+    tenant_id TEXT NOT NULL, engagement_id TEXT NOT NULL,
+    objective TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'model',
+    version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY(tenant_id,engagement_id)
+);
+CREATE TABLE IF NOT EXISTS kernel_plan_todos (
+    tenant_id TEXT NOT NULL, engagement_id TEXT NOT NULL, todo_id TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '', fact_types TEXT NOT NULL DEFAULT '[]',
+    condition TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending',
+    verified_by TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+    PRIMARY KEY(tenant_id,engagement_id,todo_id)
+);
+CREATE TABLE IF NOT EXISTS kernel_run_state (
+    tenant_id TEXT NOT NULL, run_id TEXT NOT NULL, state_key TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT 'null', version INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL, PRIMARY KEY(tenant_id,run_id,state_key)
+);
 CREATE TABLE IF NOT EXISTS kernel_conversations (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, owner_id TEXT NOT NULL,
     title TEXT NOT NULL, agent_id TEXT, classification TEXT NOT NULL DEFAULT 'internal',
@@ -599,6 +620,177 @@ class ControlStore:
                 "SELECT * FROM kernel_runs WHERE id=? AND tenant_id=?", (run_id, tenant_id)
             ).fetchone()
         return self._decode_row(row, ("context", "result")) if row else None
+
+    # ------------------------------------------------------ durable plan (F2)
+    def load_engagement_plan(
+        self, tenant_id: str, engagement_id: str
+    ) -> Dict[str, Any] | None:
+        """The plan of an engagement as the database holds it, or ``None``.
+
+        The returned dict is the whole contract: header fields plus ``todos`` in
+        their committed order. A projection file is derived from this and never
+        read back as the source.
+        """
+        with self.connect() as conn:
+            header = conn.execute(
+                """SELECT objective,source,version,created_at,updated_at
+                FROM kernel_engagement_plans
+                WHERE tenant_id=? AND engagement_id=?""",
+                (tenant_id, engagement_id),
+            ).fetchone()
+            if header is None:
+                return None
+            rows = conn.execute(
+                """SELECT todo_id,description,evidence,fact_types,condition,status,
+                verified_by,reason FROM kernel_plan_todos
+                WHERE tenant_id=? AND engagement_id=? ORDER BY position""",
+                (tenant_id, engagement_id),
+            ).fetchall()
+        plan = dict(header)
+        plan["engagement_id"] = engagement_id
+        plan["todos"] = [
+            {
+                "id": row["todo_id"],
+                "description": row["description"],
+                "evidence": row["evidence"],
+                "fact_types": json.loads(row["fact_types"] or "[]"),
+                "condition": json.loads(row["condition"] or "{}"),
+                "status": row["status"],
+                "verified_by": row["verified_by"],
+                "reason": row["reason"],
+            }
+            for row in rows
+        ]
+        return plan
+
+    def save_engagement_plan(
+        self,
+        tenant_id: str,
+        engagement_id: str,
+        *,
+        objective: str,
+        source: str,
+        todos: Iterable[Dict[str, Any]],
+        expected_version: int | None,
+        created_at: str | None = None,
+        updated_at: str | None = None,
+    ) -> int:
+        """Commit the whole plan, or raise :class:`PlanConflict`.
+
+        Optimistic concurrency: ``expected_version=None`` means *create* and
+        fails when the engagement already has a plan; an integer means the write
+        only applies if the stored version is exactly that one. The header and
+        every TODO move together in one locked transaction, so a reader never
+        sees a half-written checklist.
+        """
+        from .errors import PlanConflict
+
+        now = updated_at or utc_now()
+        created = created_at or now
+        rows = list(todos)
+        with self.locked_transaction(
+            f"engagement_plan:{tenant_id}:{engagement_id}"
+        ) as conn:
+            header = conn.execute(
+                "SELECT version FROM kernel_engagement_plans "
+                "WHERE tenant_id=? AND engagement_id=?",
+                (tenant_id, engagement_id),
+            ).fetchone()
+            current = int(header["version"]) if header is not None else None
+            if expected_version is None:
+                if header is not None:
+                    raise PlanConflict(
+                        f"engagement {engagement_id!r} already has a plan "
+                        f"(version {current})"
+                    )
+                version = 1
+                conn.execute(
+                    """INSERT INTO kernel_engagement_plans
+                    (tenant_id,engagement_id,objective,source,version,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?)""",
+                    (tenant_id, engagement_id, objective, source, version, created, now),
+                )
+            else:
+                if header is None:
+                    raise PlanConflict(
+                        f"engagement {engagement_id!r} has no plan to update"
+                    )
+                if current != int(expected_version):
+                    raise PlanConflict(
+                        f"plan version is {current}, not {expected_version}; "
+                        "reload it before writing"
+                    )
+                version = int(expected_version) + 1
+                conn.execute(
+                    """UPDATE kernel_engagement_plans
+                    SET objective=?,source=?,version=?,updated_at=?
+                    WHERE tenant_id=? AND engagement_id=?""",
+                    (objective, source, version, now, tenant_id, engagement_id),
+                )
+            conn.execute(
+                "DELETE FROM kernel_plan_todos WHERE tenant_id=? AND engagement_id=?",
+                (tenant_id, engagement_id),
+            )
+            for position, row in enumerate(rows):
+                conn.execute(
+                    """INSERT INTO kernel_plan_todos
+                    (tenant_id,engagement_id,todo_id,position,description,evidence,
+                     fact_types,condition,status,verified_by,reason,version,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        tenant_id,
+                        engagement_id,
+                        str(row.get("id") or ""),
+                        position,
+                        str(row.get("description") or ""),
+                        str(row.get("evidence") or ""),
+                        json.dumps(list(row.get("fact_types") or [])),
+                        json.dumps(dict(row.get("condition") or {})),
+                        str(row.get("status") or "pending"),
+                        str(row.get("verified_by") or ""),
+                        str(row.get("reason") or ""),
+                        version,
+                        now,
+                    ),
+                )
+        return version
+
+    # ------------------------------------------------- durable run state (F2)
+    def load_run_state(self, tenant_id: str, run_id: str) -> Dict[str, Any]:
+        """Every durable state entry of one run (``{key: decoded_value}``)."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT state_key,value FROM kernel_run_state "
+                "WHERE tenant_id=? AND run_id=?",
+                (tenant_id, run_id),
+            ).fetchall()
+        state: Dict[str, Any] = {}
+        for row in rows:
+            try:
+                state[str(row["state_key"])] = json.loads(row["value"])
+            except (TypeError, ValueError):
+                continue
+        return state
+
+    def save_run_state(
+        self, tenant_id: str, run_id: str, values: Dict[str, Any]
+    ) -> None:
+        """Upsert state entries of one run; each write bumps its own version."""
+        if not values:
+            return
+        now = utc_now()
+        with self.connect() as conn:
+            for key, value in values.items():
+                conn.execute(
+                    """INSERT INTO kernel_run_state
+                    (tenant_id,run_id,state_key,value,version,updated_at)
+                    VALUES(?,?,?,?,1,?)
+                    ON CONFLICT(tenant_id,run_id,state_key) DO UPDATE SET
+                    value=excluded.value,
+                    version=kernel_run_state.version+1,
+                    updated_at=excluded.updated_at""",
+                    (tenant_id, run_id, str(key), json.dumps(value), now),
+                )
 
     def append_run_event(self, tenant_id: str, run_id: str, event_type: str,
                          payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

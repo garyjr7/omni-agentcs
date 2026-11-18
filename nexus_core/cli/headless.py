@@ -455,6 +455,8 @@ def _run_headless(
                     objective=objective,
                     engagement_id=session.engagement_id,
                     workspace=os.getenv("NEXUS_WORKSPACE_ROOT", os.getcwd()),
+                    store=session.store,
+                    tenant_id=session.tenant_id,
                 )
                 if plan is not None:
                     write_line(out, {
