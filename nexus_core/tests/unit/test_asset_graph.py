@@ -1,0 +1,289 @@
+"""Fase 3: the asset & exploration graph.
+
+Pinned here:
+
+* a fact and its edges are committed together, and an anchor that names a fact
+  the board does not have is dropped (no dangling edges);
+* the graph links a discovered port, the credential it yielded and the
+  privilege gained through that credential into one chain;
+* coverage attributes facts by edge instead of by text when the fact is
+  anchored, and the prompt view names services per host and credential origins;
+* the six verifiers pass their origin anchor.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from nexus_core.agent.coverage import (
+    STATUS_OWNED,
+    build_coverage,
+    render_asset_graph,
+)
+from nexus_core.kernel.blackboard import Blackboard, fact_uri
+from nexus_core.kernel.control_store import ControlStore
+from nexus_core.kernel.fact_verification import derive_assertions
+
+pytestmark = pytest.mark.unit
+
+TENANT = "system"
+ENGAGEMENT = "eng-graph"
+HOST = "10.0.0.5"
+SERVICE_KEY = f"{HOST}:22:tcp"
+CRED_KEY = f"cred:ssh:lin@{HOST}"
+
+
+def _store(tmp_path) -> ControlStore:
+    store = ControlStore(tmp_path / "nexus.db")
+    store.initialize()
+    return store
+
+
+def _board(tmp_path) -> Blackboard:
+    return Blackboard(_store(tmp_path))
+
+
+def _record(board, fact_type, key, value=None, *, anchors=None, relation="derived_from"):
+    return board.record(
+        tenant_id=TENANT,
+        engagement_id=ENGAGEMENT,
+        fact_type=fact_type,
+        key=key,
+        value=value or {},
+        source="test",
+        created_by="verifier-test",
+        verified=True,
+        asserted_by="verifier",
+        verification_method="unit",
+        invocation_id=f"inv-{fact_type}-{key}",
+        anchors=anchors,
+        relation=relation,
+    )
+
+
+def test_an_anchor_to_a_fact_that_does_not_exist_creates_no_edge(tmp_path):
+    board = _board(tmp_path)
+    _record(board, "host", HOST)
+    missing = fact_uri(ENGAGEMENT, "host", "10.0.0.99")
+    _record(
+        board,
+        "service",
+        SERVICE_KEY,
+        {"port": 22, "protocol": "tcp", "service": "ssh"},
+        anchors=[
+            (fact_uri(ENGAGEMENT, "host", HOST), "host_has_service"),
+            (missing, "host_has_service"),
+        ],
+    )
+    _record(
+        board,
+        "credential",
+        CRED_KEY,
+        {"username": "lin", "service": "ssh"},
+        anchors=[(fact_uri(ENGAGEMENT, "host", "10.0.0.98"), "host_yields_credential")],
+    )
+
+    edges = board.list_edges(TENANT, ENGAGEMENT)
+    (edge,) = edges
+    assert edge["src_uri"] == fact_uri(ENGAGEMENT, "host", HOST)
+    assert edge["dst_uri"] == fact_uri(ENGAGEMENT, "service", SERVICE_KEY)
+
+    # No edge points at a document the tenant does not have.
+    with board.store.connect() as conn:
+        known = {
+            str(row["source_uri"])
+            for row in conn.execute(
+                "SELECT DISTINCT source_uri FROM kernel_knowledge_documents "
+                "WHERE tenant_id=?",
+                (TENANT,),
+            ).fetchall()
+        }
+    assert missing not in known
+    for row in edges:
+        assert row["src_uri"] in known
+        assert row["dst_uri"] in known
+
+
+def test_the_attack_chain_is_connected_in_the_graph(tmp_path):
+    board = _board(tmp_path)
+    host_uri = fact_uri(ENGAGEMENT, "host", HOST)
+    service_uri = fact_uri(ENGAGEMENT, "service", SERVICE_KEY)
+    cred_uri = fact_uri(ENGAGEMENT, "credential", CRED_KEY)
+    privilege_uri = fact_uri(ENGAGEMENT, "privilege", HOST)
+
+    _record(board, "host", HOST, {"state": "up"})
+    _record(
+        board,
+        "service",
+        SERVICE_KEY,
+        {"port": 22, "protocol": "tcp", "service": "ssh"},
+        anchors=[(host_uri, "host_has_service")],
+    )
+    _record(
+        board,
+        "credential",
+        CRED_KEY,
+        {"username": "lin", "service": "ssh"},
+        anchors=[(service_uri, "service_yields_credential")],
+    )
+    _record(
+        board,
+        "privilege",
+        HOST,
+        {"uid": 0, "user": "root"},
+        anchors=[(cred_uri, "credential_grants_privilege")],
+    )
+
+    edges = board.list_edges(TENANT, ENGAGEMENT)
+    pairs = {(row["src_uri"], row["dst_uri"], row["relation"]) for row in edges}
+    assert (host_uri, service_uri, "host_has_service") in pairs
+    assert (service_uri, cred_uri, "service_yields_credential") in pairs
+    assert (cred_uri, privilege_uri, "credential_grants_privilege") in pairs
+
+    # Walk the chain: port -> credential -> privilege.
+    outgoing: dict[str, set[str]] = {}
+    for src, dst, _relation in pairs:
+        outgoing.setdefault(src, set()).add(dst)
+    assert privilege_uri in outgoing.get(cred_uri, set())
+    assert cred_uri in outgoing.get(service_uri, set())
+    assert service_uri in outgoing.get(host_uri, set())
+
+    facts = board.list_facts(TENANT, ENGAGEMENT)
+    coverage = build_coverage(facts, edges=edges, engagement_id=ENGAGEMENT)
+    entry = coverage.find(f"{HOST}:22")
+    assert entry is not None
+    assert entry.status == STATUS_OWNED, "la credencial cuelga del servicio por arista"
+
+    view = render_asset_graph(facts, edges)
+    assert f"host {HOST}" in view and "22/tcp (ssh)" in view
+    assert f"credencial {CRED_KEY} ← {SERVICE_KEY}" in view
+
+
+def test_coverage_prefers_the_edge_over_the_text(tmp_path):
+    """A fact anchored to :22 is not attributed to :80 by a port in its text."""
+    board = _board(tmp_path)
+    host_uri = fact_uri(ENGAGEMENT, "host", HOST)
+    _record(board, "host", HOST)
+    _record(
+        board,
+        "service",
+        f"{HOST}:22:tcp",
+        {"port": 22, "protocol": "tcp", "service": "ssh"},
+        anchors=[(host_uri, "host_has_service")],
+    )
+    _record(
+        board,
+        "service",
+        f"{HOST}:80:tcp",
+        {"port": 80, "protocol": "tcp", "service": "http"},
+        anchors=[(host_uri, "host_has_service")],
+    )
+    # The value mentions 80, but the edge says it came from the SSH service.
+    _record(
+        board,
+        "credential",
+        CRED_KEY,
+        {"username": "lin", "service": "ssh", "note": "pista en 80"},
+        anchors=[(fact_uri(ENGAGEMENT, "service", f"{HOST}:22:tcp"),
+                  "service_yields_credential")],
+    )
+
+    facts = board.list_facts(TENANT, ENGAGEMENT)
+    edges = board.list_edges(TENANT, ENGAGEMENT)
+    coverage = build_coverage(facts, edges=edges, engagement_id=ENGAGEMENT)
+
+    ssh = coverage.find(f"{HOST}:22")
+    http = coverage.find(f"{HOST}:80")
+    assert ssh is not None and http is not None
+    assert ssh.status == STATUS_OWNED
+    assert http.status != STATUS_OWNED
+
+
+# ------------------------------------------------------------------ verifiers
+def _context(engagement_id: str = ENGAGEMENT) -> SimpleNamespace:
+    return SimpleNamespace(
+        engagement_id=engagement_id,
+        invocation_id="inv-verifier",
+        run_id="run-verifier",
+        tenant_id=TENANT,
+        scope=SimpleNamespace(engagement_id=engagement_id),
+    )
+
+
+class _Result:
+    success = True
+    outcome = "success"
+    verification_method = ""
+    exit_code = 0
+    output: dict = {}
+
+    def __init__(self, method: str, output: dict) -> None:
+        self.verification_method = method
+        self.output = output
+
+
+def test_nmap_anchors_each_service_to_its_host():
+    result = _Result(
+        "nmap_xml_parsed",
+        {
+            "scan": {
+                "hosts": [
+                    {
+                        "ip": HOST,
+                        "state": "up",
+                        "ports": [
+                            {"port": 22, "protocol": "tcp", "state": "open"},
+                            {"port": 80, "protocol": "tcp", "state": "open"},
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+    rows = derive_assertions("nexus.recon.nmap", {}, result, _context())
+
+    host_uri = fact_uri(ENGAGEMENT, "host", HOST)
+    services = [row for row in rows if row["fact_type"] == "service"]
+    assert len(services) == 2
+    assert all([host_uri, "host_has_service"] in row["anchors"] for row in services)
+
+
+def test_cred_bruteforce_anchors_the_credential_to_the_service():
+    result = _Result(
+        "cred_bruteforce_completed",
+        {
+            "target": HOST,
+            "service": "ssh",
+            "port": 22,
+            "valid_credentials": [{"username": "lin", "password": "secret"}],
+        },
+    )
+    rows = derive_assertions("nexus.cred.bruteforce", {}, result, _context())
+
+    (credential,) = [row for row in rows if row["fact_type"] == "credential"]
+    service_uri = fact_uri(ENGAGEMENT, "service", SERVICE_KEY)
+    assert [service_uri, "service_yields_credential"] in credential["anchors"]
+
+
+def test_ssh_exec_anchors_privilege_to_the_credential_it_used():
+    result = _Result(
+        "ssh_exec_completed",
+        {
+            "target": HOST,
+            "command": "id",
+            "stdout": "uid=0(root) gid=0(root) groups=0(root)",
+            "exit_status": 0,
+        },
+    )
+    rows = derive_assertions(
+        "nexus.post.ssh_exec",
+        {"username": "lin", "password": "secret", "port": 22},
+        result,
+        _context(),
+    )
+
+    (privilege,) = [row for row in rows if row["fact_type"] == "privilege"]
+    cred_uri = fact_uri(ENGAGEMENT, "credential", CRED_KEY)
+    assert [cred_uri, "credential_grants_privilege"] in privilege["anchors"]

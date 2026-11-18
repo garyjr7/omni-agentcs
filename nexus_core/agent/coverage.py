@@ -765,7 +765,67 @@ def _vector_entries(
     )
 
 
-def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
+def _uri_parts(uri: str) -> tuple[str, str]:
+    """``(fact_type, key)`` of a blackboard URI (``("", "")`` when foreign)."""
+    parts = str(uri or "").split("/", 3)
+    if len(parts) != 4 or parts[0] != "blackboard":
+        return "", ""
+    return parts[2], parts[3]
+
+
+def _fact_uri(engagement_id: str, fact_type: str, key: Any) -> str:
+    from nexus_core.kernel.blackboard import fact_uri
+
+    return fact_uri(engagement_id, fact_type, str(key or ""))
+
+
+def _edge_index(edges: Iterable[Mapping[str, Any]] | None) -> dict[str, set[str]]:
+    """``dst_uri -> {src_uri}`` for the facts that have at least one anchor."""
+    index: dict[str, set[str]] = {}
+    for edge in edges or ():
+        if not isinstance(edge, Mapping):
+            continue
+        src = str(edge.get("src_uri") or "")
+        dst = str(edge.get("dst_uri") or "")
+        if src and dst:
+            index.setdefault(dst, set()).add(src)
+    return index
+
+
+def _graph_service_refs(
+    fact: Mapping[str, Any], engagement_id: str, graph: dict[str, set[str]]
+) -> set[str] | None:
+    """Services this fact hangs from, read from its edges (``None`` without edges).
+
+    A fact with no incoming edge (an agent-recorded barrier, a fact written by a
+    tool that does not anchor yet) returns ``None`` and the caller falls back to
+    text matching. A fact with edges returns exactly the services its anchors
+    name, even when that set is empty: the regex must not re-attribute it.
+    """
+    if not engagement_id:
+        return None
+    sources = graph.get(
+        _fact_uri(engagement_id, str(fact.get("fact_type") or ""), fact.get("key"))
+    )
+    if not sources:
+        return None
+    refs: set[str] = set()
+    for source in sources:
+        fact_type, key = _uri_parts(source)
+        if fact_type != "service" or not key:
+            continue
+        match = _SERVICE_KEY.match(key)
+        if match is not None:
+            refs.add(f"{match.group('host')}:{int(match.group('port'))}")
+    return refs
+
+
+def build_coverage(
+    facts: Iterable[Mapping[str, Any]] | None,
+    *,
+    edges: Iterable[Mapping[str, Any]] | None = None,
+    engagement_id: str = "",
+) -> Coverage:
     """Build the ledger of one engagement from its blackboard facts.
 
     Only ``service`` facts *create* entries (recon is what discovers a port);
@@ -775,6 +835,12 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
     rediscovers the port -and an older barrier wins over nothing-, but a
     *newer* vulnerability reopens it: the ledger's newest verdict is the one
     that counts, which is exactly what ``pivot_hint`` tells the model.
+
+    Fact-to-service attribution reads ``kernel_fact_edges`` (Fase 3): the
+    verifier that produced the fact anchored it to the host/service it came
+    from, so no text pattern decides it. Facts without an anchor -agent-written
+    barriers, or a board from before the graph- keep the historical text match
+    as a migration fallback.
     """
     records = [fact for fact in (facts or ()) if isinstance(fact, Mapping)]
     entries: list[SurfaceEntry] = []
@@ -791,6 +857,7 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
     if not entries:
         return Coverage()
 
+    graph = _edge_index(edges)
     related: list[tuple[Mapping[str, Any], str]] = [
         (fact, _fact_blob(fact))
         for fact in records
@@ -805,15 +872,21 @@ def build_coverage(facts: Iterable[Mapping[str, Any]] | None) -> Coverage:
         vectors: list[Mapping[str, Any]] = []
         for fact, blob in related:
             fact_type = str(fact.get("fact_type") or "")
+            anchored = _graph_service_refs(fact, engagement_id, graph)
+            belongs = (
+                entry.ref in anchored
+                if anchored is not None
+                else (_same_ref(fact, entry) or _mentions(blob, entry))
+            )
             if fact_type == "barrier":
-                if not (_same_ref(fact, entry) or _mentions(blob, entry)):
+                if not belongs:
                     continue
                 # R6: a barrier that does not prove an attempt is a hypothesis,
                 # not a closed branch (V12, HackPark iteration 17).
                 if not barrier_is_conclusive(fact):
                     continue
                 barriers.append(fact)
-            elif not _mentions(blob, entry):
+            elif not belongs:
                 continue
             elif fact_type in OWNERSHIP_TYPES and fact.get("verified") is True:
                 owned = True
@@ -910,15 +983,85 @@ def load_coverage(store: Any, tenant_id: str, engagement_id: str | None) -> Cove
     empty ledger (no block) instead of aborting a run -the same contract the
     rest of the blackboard view follows.
     """
+    coverage, _graph = load_graph_context(store, tenant_id, engagement_id)
+    return coverage
+
+
+def render_asset_graph(
+    facts: Iterable[Mapping[str, Any]] | None,
+    edges: Iterable[Mapping[str, Any]] | None,
+    *,
+    top_n: int = 6,
+) -> str:
+    """Bounded prompt view of the asset graph (``""`` without edges).
+
+    Two questions, read from the edges instead of from text: which services hang
+    from a host, and which host/service a credential came from. Top-N by host and
+    by credential so a large board cannot grow the prompt without bound.
+    """
+    records = [fact for fact in (facts or ()) if isinstance(fact, Mapping)]
+    edge_rows = [edge for edge in (edges or ()) if isinstance(edge, Mapping)]
+    if not edge_rows:
+        return ""
+    services: dict[str, Mapping[str, Any]] = {}
+    for fact in records:
+        if str(fact.get("fact_type") or "") == "service":
+            services[str(fact.get("key") or "")] = fact
+
+    children: dict[str, list[str]] = {}
+    credentials: list[tuple[str, str]] = []
+    for edge in edge_rows:
+        src_type, src_key = _uri_parts(str(edge.get("src_uri") or ""))
+        dst_type, dst_key = _uri_parts(str(edge.get("dst_uri") or ""))
+        if src_type == "host" and dst_type == "service":
+            children.setdefault(src_key, []).append(dst_key)
+        elif dst_type == "credential" and src_type in {"service", "host"}:
+            credentials.append((src_key, dst_key))
+
+    lines: list[str] = []
+    for host, keys in sorted(children.items()):
+        rendered: list[str] = []
+        for key in sorted(set(keys)):
+            match = _SERVICE_KEY.match(key)
+            port = f"{match.group('port')}/{match.group('proto') or 'tcp'}" if match else key
+            raw_value = services.get(key, {}).get("value")
+            value = raw_value if isinstance(raw_value, Mapping) else {}
+            name = str(value.get("service") or value.get("product") or "").strip()
+            rendered.append(f"{port} ({name})" if name else port)
+            if len(rendered) >= 6:
+                break
+        lines.append(
+            f"- host {host} → {len(set(keys))} servicio(s): {', '.join(rendered)}"
+        )
+        if len(lines) >= top_n:
+            break
+    for source, credential in credentials:
+        if len(lines) >= top_n:
+            break
+        lines.append(f"- credencial {credential} ← {source}")
+    if not lines:
+        return ""
+    return "\n".join(["GRAFO DE ACTIVOS (aristas verificadas):", *lines])
+
+
+def load_graph_context(
+    store: Any, tenant_id: str, engagement_id: str | None
+) -> tuple[Coverage, str]:
+    """Ledger + bounded graph view from one board read (never raises)."""
     if not engagement_id or store is None:
-        return Coverage()
+        return Coverage(), ""
     try:
         from nexus_core.kernel.blackboard import Blackboard
 
-        facts = Blackboard(store).list_facts(tenant_id, engagement_id, limit=500)
+        board = Blackboard(store)
+        facts = board.list_facts(tenant_id, engagement_id, limit=500)
+        edges = board.list_edges(tenant_id, engagement_id, limit=2000)
     except Exception:  # noqa: BLE001 - memory must never kill a run
-        return Coverage()
-    return build_coverage(facts)
+        return Coverage(), ""
+    return (
+        build_coverage(facts, edges=edges, engagement_id=engagement_id),
+        render_asset_graph(facts, edges),
+    )
 
 
 # --------------------------------------------------------------------------- #

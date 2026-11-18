@@ -81,6 +81,11 @@ def _source_uri(engagement_id: str, fact_type: str, key: str) -> str:
     return f"{SOURCE_URI_PREFIX}/{engagement_id}/{fact_type}/{key}"
 
 
+def fact_uri(engagement_id: str, fact_type: str, key: str) -> str:
+    """Stable URI of one fact (edge endpoints and prompt references)."""
+    return _source_uri(engagement_id, fact_type, key)
+
+
 class Fact(TypedDict):
     fact_type: str
     key: str
@@ -120,8 +125,18 @@ class Blackboard:
         verification_method: str = "",
         invocation_id: str = "",
         classification: str = "internal",
+        anchors: Any = None,
+        relation: str = "derived_from",
     ) -> dict[str, Any]:
-        """Persist one fact and return its normalized record."""
+        """Persist one fact and return its normalized record.
+
+        ``anchors`` names the facts this one came from, as fact URIs (see
+        :func:`fact_uri`) or ``(uri, relation)`` pairs. They become rows of
+        ``kernel_fact_edges`` in the **same transaction** as the fact and the
+        Markdown/knowledge copy, so the graph can never claim an edge the board
+        did not commit. A plain URI uses ``relation`` (default
+        ``derived_from``); a missing source fact is skipped, not invented.
+        """
         if fact_type not in FACT_TYPES:
             raise ValueError(f"unsupported fact type: {fact_type!r}")
         key = sanitize_text(str(key).strip())
@@ -144,6 +159,12 @@ class Blackboard:
             "invocation_id": invocation_id,
             "recorded_at": utc_now(),
         }
+        edges: list[tuple[str, str]] = []
+        for anchor in anchors or ():
+            if isinstance(anchor, (tuple, list)) and len(anchor) == 2:
+                edges.append((str(anchor[0]), str(anchor[1])))
+            else:
+                edges.append((str(anchor), relation))
         record = sanitized_object(record)
         self.knowledge.ingest(
             tenant_id=tenant_id,
@@ -159,8 +180,50 @@ class Blackboard:
                 "source": record["source"],
                 "verified": record["verified"],
             },
+            engagement_id=engagement_id,
+            edges=edges,
         )
         return record
+
+    def list_edges(
+        self,
+        tenant_id: str,
+        engagement_id: str,
+        *,
+        relation: str | None = None,
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Edges of one engagement, oldest first (bounded by ``limit``).
+
+        Read-only and store-agnostic; the coverage ledger and the prompt's graph
+        view share it so both describe the same board. A store without the
+        table (an old database that was never re-initialised) degrades to
+        ``[]``: the prompt loses the view, never the run.
+        """
+        sql = (
+            "SELECT src_uri,dst_uri,relation,created_at FROM kernel_fact_edges "
+            "WHERE tenant_id=? AND engagement_id=?"
+        )
+        params: list[Any] = [tenant_id, engagement_id]
+        if relation:
+            sql += " AND relation=?"
+            params.append(relation)
+        sql += " ORDER BY created_at, id LIMIT ?"
+        params.append(max(1, int(limit)))
+        try:
+            with self.store.connect() as conn:
+                rows = conn.execute(sql, tuple(params)).fetchall()
+        except Exception:  # noqa: BLE001 - a missing table must not hide the board
+            return []
+        return [
+            {
+                "src_uri": str(row["src_uri"]),
+                "dst_uri": str(row["dst_uri"]),
+                "relation": str(row["relation"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
 
     def list_facts(
         self,

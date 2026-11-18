@@ -201,6 +201,15 @@ CREATE TABLE IF NOT EXISTS kernel_run_state (
     value TEXT NOT NULL DEFAULT 'null', version INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL, PRIMARY KEY(tenant_id,run_id,state_key)
 );
+CREATE TABLE IF NOT EXISTS kernel_fact_edges (
+    id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, engagement_id TEXT NOT NULL,
+    src_uri TEXT NOT NULL, dst_uri TEXT NOT NULL, relation TEXT NOT NULL,
+    created_at TEXT NOT NULL, UNIQUE(tenant_id,src_uri,dst_uri,relation)
+);
+CREATE INDEX IF NOT EXISTS ix_kernel_fact_edges_src
+    ON kernel_fact_edges(tenant_id,src_uri);
+CREATE INDEX IF NOT EXISTS ix_kernel_fact_edges_dst
+    ON kernel_fact_edges(tenant_id,dst_uri);
 CREATE TABLE IF NOT EXISTS kernel_conversations (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, owner_id TEXT NOT NULL,
     title TEXT NOT NULL, agent_id TEXT, classification TEXT NOT NULL DEFAULT 'internal',

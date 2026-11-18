@@ -17,7 +17,7 @@ Two invariants this module enforces on the facts it asserts (V1-29, V1-31):
 """
 import re
 import shlex
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlsplit
 
 from .blackboard import Blackboard, is_verified_fact
@@ -897,6 +897,28 @@ def sql_error_signature(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _fact_anchor(context: Any, fact_type: str, key: Any, relation: str) -> tuple[str, str] | None:
+    """``(uri, relation)`` of a fact this assertion came from (``None`` if unknown).
+
+    The URI is the same one :class:`Blackboard` writes, so the edge lands where
+    the graph reads it. A verifier that cannot name its origin (no engagement, no
+    key) simply contributes no edge: the fact is still recorded and no orphan is
+    invented.
+    """
+    if not key:
+        return None
+    engagement = str(
+        getattr(context, "engagement_id", "")
+        or getattr(getattr(context, "scope", None), "engagement_id", "")
+        or ""
+    )
+    if not engagement:
+        return None
+    from .blackboard import fact_uri
+
+    return fact_uri(engagement, fact_type, str(key)), relation
+
+
 def derive_assertions(tool_id, arguments, result, context):
     # A determinate "no" is never evidence *for* anything. Some handlers mark a
     # negative observation as ``verified`` (they proved the directory is empty),
@@ -914,13 +936,17 @@ def derive_assertions(tool_id, arguments, result, context):
     output = result.output
     rows = []
 
-    def add(kind, target, value, key=None, method=None):
+    def add(kind, target, value, key=None, method=None, anchors=None):
         if not target:
             return
         rows.append(dict(fact_type=kind, target=str(target), key=str(key or target),
                          value=value, verified=True, asserted_by='verifier',
                          verification_method=method or result.verification_method,
-                         invocation_id=context.invocation_id, run_id=context.run_id))
+                         invocation_id=context.invocation_id, run_id=context.run_id,
+                         # JSON lists, not tuples: assertions travel through the
+                         # ToolResult DTO, which only admits JSON containers.
+                         anchors=[[str(item[0]), str(item[1])]
+                                  for item in (anchors or ()) if item]))
 
     if tool_id == 'nexus.recon.nmap' and result.verification_method == 'nmap_xml_parsed':
         for host in output.get('scan', {}).get('hosts', []):
@@ -928,13 +954,27 @@ def derive_assertions(tool_id, arguments, result, context):
                 continue
             target = host.get('ip')
             add('host', target, {'state': 'up'})
+            host_anchor = _fact_anchor(context, 'host', target, 'host_has_service')
             for port in host.get('ports', []):
                 if port.get('state') == 'open':
-                    add('service', target, port, f"{target}:{port.get('port')}:{port.get('protocol')}")
+                    key = f"{target}:{port.get('port')}:{port.get('protocol')}"
+                    add('service', target, port, key,
+                        anchors=[host_anchor] if host_anchor else None)
     elif tool_id == 'nexus.recon.httpx' and result.verification_method == 'httpx_jsonl_parsed':
         for probe in output.get('probes', []):
             if probe.get('status_code'):
-                add('endpoint', probe.get('url'), probe)
+                url = str(probe.get('url') or '')
+                parsed = urlsplit(url)
+                host_name = parsed.hostname or str(probe.get('host') or '').split(':')[0]
+                port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+                anchors = [
+                    anchor for anchor in (
+                        _fact_anchor(context, 'service', f'{host_name}:{port}:tcp',
+                                     'service_exposes_web'),
+                        _fact_anchor(context, 'host', host_name, 'host_exposes_web'),
+                    ) if anchor
+                ]
+                add('endpoint', url, probe, anchors=anchors)
     elif tool_id == 'nexus.recon.gobuster' and result.verification_method == 'gobuster_text_parsed':
         # The parser names the HTTP code ``status`` (its ``to_dict``), not
         # ``status_code``; reading the wrong key silently dropped every verified
@@ -943,16 +983,42 @@ def derive_assertions(tool_id, arguments, result, context):
         # of 2026-10-17: 11 hits, 0 assertions, 27 turns on the same phase).
         for hit in output.get('hits', []):
             if hit.get('status') or hit.get('status_code'):
-                add('endpoint', hit.get('url') or output.get('target'), hit, hit.get('path'))
+                url = str(hit.get('url') or output.get('target') or '')
+                parsed = urlsplit(url)
+                host_name = parsed.hostname or url.split(':')[0]
+                port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+                anchors = [
+                    anchor for anchor in (
+                        _fact_anchor(context, 'service', f'{host_name}:{port}:tcp',
+                                     'service_exposes_endpoint'),
+                        _fact_anchor(context, 'host', host_name, 'host_exposes_endpoint'),
+                    ) if anchor
+                ]
+                add('endpoint', url, hit, hit.get('path'), anchors=anchors)
     elif tool_id == 'nexus.post.ssh_exec' and result.verification_method in SSH_EXEC_CHANNEL_METHODS:
         target = output.get('target')
         username = arguments.get('username')
         port = arguments.get('port')
         port = port if isinstance(port, int) and 0 < port < 65536 else None
+        # Graph anchors: the host and the SSH service are the origin of the
+        # access/credential, and the credential is the origin of the privilege.
+        host_anchor = _fact_anchor(context, 'host', target, 'host_yields_access')
+        service_anchor = _fact_anchor(
+            context, 'service', f'{target}:{port or 22}:tcp', 'service_yields_credential'
+        )
+        credential_key = f'cred:ssh:{username}@{target}' if username else ''
+        credential_anchor = (
+            _fact_anchor(context, 'credential', credential_key,
+                         'credential_grants_privilege')
+            if credential_key else None
+        )
+        access_anchor = _fact_anchor(context, 'access', target, 'access_grants_privilege')
+        origin = [item for item in (service_anchor, host_anchor) if item]
         # The port rides with the access fact: it is the one an authenticated
         # session really used, so the handlers can complete a later call from the
         # board instead of falling back to 22 (Simple CTF runs on 2222).
-        add('access', target, {'transport': 'ssh', 'username': username, 'port': port})
+        add('access', target, {'transport': 'ssh', 'username': username, 'port': port},
+            anchors=origin)
         # V1-29 continuity: the password that just authenticated goes to the
         # vault and the fact carries only its handle, so the next turn -and the
         # next tool- reuse it without the model retyping a secret. Measured in
@@ -969,7 +1035,7 @@ def derive_assertions(tool_id, arguments, result, context):
         if handle and username:
             add('credential', target,
                 {'username': username, 'secret_ref': handle, 'service': 'ssh', 'port': port},
-                f'cred:ssh:{username}@{target}')
+                f'cred:ssh:{username}@{target}', anchors=origin)
         command = output.get('command', '').strip()
         stdout = output.get('stdout', '').strip()
         if output.get('exit_status') == 0 and (
@@ -985,7 +1051,8 @@ def derive_assertions(tool_id, arguments, result, context):
             # planner could not see that the objective had been reached (V1-35).
             or re.search(r'uid=0\(root\) gid=\d+', stdout)
         ):
-            add('privilege', target, {'uid': 0, 'user': 'root'})
+            add('privilege', target, {'uid': 0, 'user': 'root'},
+                anchors=[item for item in (credential_anchor, access_anchor) if item])
         # A flag-shaped token in the output of a verified authenticated command is
         # loot: the channel is proven, so the flag came from a command that really
         # ran on the host. Same contract as ``nexus.web.wp_exec`` (the Windows
@@ -994,7 +1061,8 @@ def derive_assertions(tool_id, arguments, result, context):
             captured = FLAG_RE.findall(stdout)
             for flag in captured:
                 add('loot', target,
-                    {'flag': flag, 'command': command, 'service': 'ssh'}, flag)
+                    {'flag': flag, 'command': command, 'service': 'ssh'}, flag,
+                    anchors=[item for item in (access_anchor, host_anchor) if item])
             # A verified read of a conventional flag file is loot on its own
             # evidence: the SSH channel is proven (exit 0) and the path says what
             # the text is, so a room whose flags carry no prefix still registers
@@ -1238,13 +1306,21 @@ def derive_assertions(tool_id, arguments, result, context):
         # ``access`` is derived - a validated password is not a session (V1-31).
         target = output.get('target')
         service = output.get('service')
+        port = output.get('port')
         tenant = str(getattr(context, 'tenant_id', 'system'))
+        anchors = [
+            anchor for anchor in (
+                _fact_anchor(context, 'service', f'{target}:{port}:tcp' if port else '',
+                             'service_yields_credential'),
+                _fact_anchor(context, 'host', target, 'host_yields_credential'),
+            ) if anchor
+        ]
         for credential in output.get('valid_credentials') or ():
             username = credential.get('username') or output.get('username')
             add('credential', target, {'username': username,
                                        'secret_ref': _credential_handle(credential, tenant_id=tenant),
                                        'service': service},
-                f"cred:{service}:{username}@{target}")
+                f"cred:{service}:{username}@{target}", anchors=anchors)
     elif tool_id == 'nexus.post.crack_hash' and result.verification_method == 'crack_hash_john_show':
         # ``john --show`` reads its own pot file: a row there is a password john
         # recovered and verified against the hash, not a line the model typed.
@@ -1527,10 +1603,19 @@ def derive_assertions(tool_id, arguments, result, context):
             via_exploit = str(record.get('via_exploit') or output.get('module') or '')
             owner = _session_owner(record)
             sid = _session_sid(result)
+            session_port = record.get('session_port') or output.get('port')
+            anchors = [
+                anchor for anchor in (
+                    _fact_anchor(context, 'service',
+                                 f'{target}:{session_port}:tcp' if session_port else '',
+                                 'service_yields_session'),
+                    _fact_anchor(context, 'host', target, 'host_yields_session'),
+                ) if anchor
+            ]
             add('session', target,
                 {'session_uuid': session_uuid, 'via_exploit': via_exploit,
                  'target': target, 'user': owner or None, 'sid': sid},
-                f'{target}:{session_uuid}', method=MSF_SESSION_METHOD)
+                f'{target}:{session_uuid}', method=MSF_SESSION_METHOD, anchors=anchors)
             if owner:
                 # Only a descriptor that names an account can substantiate the
                 # access claim: the fact is keyed on that account, and without
@@ -1538,7 +1623,8 @@ def derive_assertions(tool_id, arguments, result, context):
                 add('access', target,
                     {'kind': str(record.get('type') or ''), 'user': owner,
                      'via_exploit': via_exploit},
-                    f'{target}:{owner}@{session_uuid}', method=MSF_SESSION_METHOD)
+                    f'{target}:{owner}@{session_uuid}', method=MSF_SESSION_METHOD,
+                    anchors=anchors)
     elif tool_id == 'nexus.c2.sliver_loot' and result.verification_method == 'sliver_loot_recorded':
         loot = output.get('loot') or {}
         if loot.get('sha256'):
@@ -1623,4 +1709,5 @@ def persist_assertions(assertions, context, tool_id):
                      fact_type=item['fact_type'], key=item['key'], value=item['value'],
                      source=tool_id, created_by='deterministic-verifier', verified=True,
                      asserted_by='verifier', verification_method=item['verification_method'],
-                     invocation_id=item['invocation_id'])
+                     invocation_id=item['invocation_id'],
+                     anchors=item.get('anchors'))

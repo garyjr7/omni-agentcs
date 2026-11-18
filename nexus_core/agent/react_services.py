@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from nexus_core.hooks import HookRunner
-from .coverage import Coverage, load_coverage, parse_directive, render_coverage
+from .coverage import (
+    Coverage,
+    load_graph_context,
+    parse_directive,
+    render_coverage,
+)
 from .planner import Plan
 from .subagents import SubAgentDefinition
 from .project_context import ProjectInstruction
@@ -204,6 +209,10 @@ class ContextSnapshot:
     #: the *same* board image of this turn, and so a caller without a store (a
     #: test, the CLI) gets an empty ledger instead of an error.
     coverage: Coverage = field(default_factory=Coverage)
+    #: Bounded view of ``kernel_fact_edges``: which services hang from a host and
+    #: where a credential came from (Fase 3). Empty when the engagement has no
+    #: edges yet, so a pre-graph board pays nothing.
+    asset_graph: str = ""
 
 
 class ContextBuilder:
@@ -271,13 +280,17 @@ class ContextBuilder:
         plan, facts_text = _blackboard_view(
             store, tenant_id, engagement_id, phase_turns=phase_turns
         )
+        # One board read feeds both the ledger and the graph view, so the prompt
+        # and the pivot rule see the same image of the turn.
+        coverage, asset_graph = load_graph_context(store, tenant_id, engagement_id)
         return ContextSnapshot(
             run_history,
             history_summary,
             plan,
             facts_text,
             run_id,
-            coverage=load_coverage(store, tenant_id, engagement_id),
+            coverage=coverage,
+            asset_graph=asset_graph,
         )
 
     def render(
@@ -353,8 +366,15 @@ class ContextBuilder:
             # The operator's objective outranks the ledger: the frontier may only
             # suggest a branch the objective allows (V15 obeyed the pivot into a
             # service the same objective had excluded).
-            coverage_summary=render_coverage(
-                snapshot.coverage, directive=parse_directive(objective)
+            coverage_summary="\n\n".join(
+                block
+                for block in (
+                    render_coverage(
+                        snapshot.coverage, directive=parse_directive(objective)
+                    ),
+                    snapshot.asset_graph,
+                )
+                if block
             ),
             subagent_summary=subagent.describe(),
             # WP2: the single ``omni`` profile is unrestricted, and the system
