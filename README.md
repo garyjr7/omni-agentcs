@@ -38,9 +38,15 @@ disaster. OMNI puts a **ToolGateway** in front of every action:
 - **Bounded orders:** say *"scan ports 80 and 443"* and OMNI executes the tool
   directly with no engagement plan. Say *"compromise the DC"* and it creates a
   multi-phase plan with evidence-gated TODOs.
-- **Durable ReAct loop:** every action, observation, approval and plan
+- **Durable State & Asset Graph:** every action, observation, approval and plan
   transition is persisted and hash-chained, so a run is auditable and can be
-  resumed.
+  resumed mid-plan. Verified facts also record *where they came from* in a
+  transactional asset graph, which feeds host→service and credential-origin
+  views into the prompt.
+- **Configurable Time Budget:** `--time-budget` / `--time-budget-hours` cap the
+  work time of an engagement (waiting on approvals or background jobs does not
+  count). When it runs out, the agent wraps up and closes an auditable report
+  instead of being killed mid-action.
 - **Premium TUI:** `prompt_toolkit` + `rich`, a red-rail operator block,
   collapsible reasoning, one-line tool calls, expandable evidence cards, a
   real port table and clickable `Ver N líneas más` / `Ver menos` footers.
@@ -95,6 +101,9 @@ omni
 
 # Or create one non-interactively (24 h by default)
 omni --new-engagement my_lab --scope "10.0.0.1/24, scanme.nmap.org"
+
+# Cap the engagement's work time (approval waits and background jobs do not count)
+omni --engagement eng-my_lab --time-budget-hours 6
 
 # Launch the TUI for that engagement
 omni --engagement eng-my_lab

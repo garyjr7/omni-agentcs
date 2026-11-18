@@ -1,5 +1,31 @@
 # OmniAgentCS — Changelog
 
+## v3.1.0 — 2026-11-18
+
+Release de autonomía gobernada sobre `rc6`. Tres fases, todas auditables:
+
+- **Time Budget.** `--time-budget` (segundos) y `--time-budget-hours` fijan un
+  techo de *tiempo de trabajo* (las esperas de aprobación y los jobs en segundo
+  plano no lo consumen). Al agotarse, el run no se cancela: entra en una ventana
+  de wrap-up acotada para cerrar el informe, se marca `time_budget` y queda
+  registrado `time_budget_exhausted` con el presupuesto y los flags obtenidos.
+- **Durable State.** El plan del engagement y el estado del run se persisten y
+  sobreviven a un reinicio: un plan aprobado no se pierde ni se reescribe al
+  reanudar, y el bucle despierta ante cambios del plan en vez de sondear. Un
+  plan explícito mínimo (1-3 TODOs) se completa con `update_plan` sin reabrir la
+  aprobación ya concedida.
+- **Asset Graph.** Nueva tabla `kernel_fact_edges(src_uri, dst_uri, relation)`:
+  cada hecho verificado guarda sus anclas en la **misma transacción**, y un
+  ancla que apunte a un hecho inexistente se descarta. Los verificadores de
+  nmap, httpx, gobuster, ssh_exec, cred_bruteforce y msf_exploit declaran el
+  host/servicio de origen; cobertura atribuye cada hecho por arista (el regex
+  queda solo como compatibilidad para tableros sin grafo) y el prompt recibe una
+  vista Top-N de qué servicios cuelgan de cada host y de dónde salió cada
+  credencial.
+
+Suite completa: 4.971 passed, 53 skipped (el único fallo local sigue siendo
+`test_tui_clipboard`, dependiente de `pyperclip` en el sistema). Versión `3.1.0`.
+
 ## v3.0.0-rc6 — 2026-11-18
 
 Release candidate de corrección P0 sobre `rc5`. Un `fact_type` inválido en un
