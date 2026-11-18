@@ -1,5 +1,21 @@
 # OmniAgentCS — Changelog
 
+## v3.0.0-rc6 — 2026-11-18
+
+Release candidate de corrección P0 sobre `rc5`. Un `fact_type` inválido en un
+TODO del plan (`final_report` en vez de `report`) ya no se convierte en
+`tool post-condition was not verified`: el rechazo declara `invalid_fact_type`,
+se trata como respuesta determinada y no retira
+`nexus.orchestrator.create_plan` tras tres intentos. El plan inicial pasa a ser
+mínimo (1-3 TODOs; la cadena intermedia se añade con `update_plan`) y la orden
+PLAN-FIRST solo se inyecta cuando hay un engagement activo. En la TUI
+desaparecen los separadores `── paso N ──`, el razonamiento no se repite como
+tarjeta tras mostrarse en el dock en vivo, cada comando muestra su `timeout` y
+`create_plan` se renderiza como lista de TODOs en vez del JSON crudo. Suite
+completa: 4.951 passed, 53 skipped (el único fallo local es
+`test_tui_clipboard`, dependiente de que `pyperclip` no esté instalado en el
+sistema). Versión `3.0.0rc6`.
+
 ## v3.0.0-rc5 — 2026-11-17
 
 Release candidate de corrección sobre el árbol saneado de `rc4`. El fixture
