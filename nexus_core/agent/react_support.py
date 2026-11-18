@@ -29,6 +29,9 @@ from .react_types import (
     MAX_CONSECUTIVE_TOOL_FAILURES,
     CANCEL_EVENT_TYPE,
     PHASE_TIMEOUT_ENV,
+    WRAP_UP_ENV,
+    DEFAULT_WRAP_UP_SECONDS,
+    MIN_TOOL_SECONDS,
     STUCK_THRESHOLD_ENV,
     DEFAULT_STUCK_THRESHOLD,
     VECTOR_FAILURE_WARN_THRESHOLD,
@@ -402,6 +405,45 @@ def _phase_timeout_seconds() -> float:
         return max(0.0, float(str(raw).strip() or 0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def wrap_up_window(budget_seconds: int, configured: int | None = None) -> int:
+    """Seconds of wrap-up inside a work-time budget (``0`` when no budget).
+
+    The window is the configured ten minutes, clamped to **half the budget**: a
+    ``--time-budget 300`` run cannot spend ten minutes closing, so it gets its
+    last 150 seconds; a three-hour engagement keeps the full ten minutes. A
+    non-positive budget disables the window along with the clock.
+    """
+    budget = max(0, int(budget_seconds or 0))
+    if not budget:
+        return 0
+    window = DEFAULT_WRAP_UP_SECONDS if configured is None else int(configured)
+    window = max(0, window)
+    return min(window, budget // 2)
+
+
+def clamp_tool_timeout(base_seconds: float | int, remaining_seconds: float | None) -> float:
+    """Timeout of one tool call, never longer than the work time left.
+
+    A 1 800-second sweep started two minutes before the deadline would eat the
+    wrap-up window and then be cancelled mid-effect; the journal would keep the
+    invocation ``unknown`` and the run would close without its report. Clamping
+    lets the handler answer with its own ``timeout`` outcome instead.
+    """
+    base = max(0.0, float(base_seconds or 0))
+    if remaining_seconds is None:
+        return base
+    return max(MIN_TOOL_SECONDS, min(base, float(remaining_seconds)))
+
+
+def wrap_up_threshold() -> int:
+    """Operator override of the wrap-up window (``NEXUS_WRAP_UP_SECONDS``)."""
+    raw = os.getenv(WRAP_UP_ENV, str(DEFAULT_WRAP_UP_SECONDS))
+    try:
+        return max(0, int(float(str(raw).strip() or DEFAULT_WRAP_UP_SECONDS)))
+    except (TypeError, ValueError):
+        return DEFAULT_WRAP_UP_SECONDS
 
 
 def stuck_threshold() -> int:

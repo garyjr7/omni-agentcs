@@ -266,6 +266,7 @@ def run_headless(
     stream: TextIO | None = None,
     max_iterations: int | None = None,
     budget_tokens: int | None = None,
+    time_budget_seconds: int | None = None,
     preflight: PreflightVerdict | None = None,
 ) -> int:
     """Run one objective headlessly; return the process exit code.
@@ -291,6 +292,7 @@ def run_headless(
                 stream=stream if stream is not None else machine_stream(),
                 max_iterations=max_iterations,
                 budget_tokens=budget_tokens,
+                time_budget_seconds=time_budget_seconds,
                 preflight=preflight,
             )
     return _run_headless(
@@ -300,6 +302,7 @@ def run_headless(
         stream=stream,
         max_iterations=max_iterations,
         budget_tokens=budget_tokens,
+        time_budget_seconds=time_budget_seconds,
         preflight=preflight,
     )
 
@@ -312,6 +315,7 @@ def _run_headless(
     stream: TextIO | None = None,
     max_iterations: int | None = None,
     budget_tokens: int | None = None,
+    time_budget_seconds: int | None = None,
     preflight: PreflightVerdict | None = None,
 ) -> int:
     """Body of :func:`run_headless` (already inside the stdout guard)."""
@@ -372,6 +376,11 @@ def _run_headless(
             "session_id": session.conversation_id,
             "engagement_id": session.engagement_id,
             "max_iterations": iterations,
+            "time_budget_seconds": (
+                int(time_budget_seconds)
+                if time_budget_seconds is not None
+                else int(getattr(session, "time_budget_seconds", 0) or 0)
+            ),
             # R1: the explicit ceiling (``--budget-tokens``). Absent, the loop
             # derives it from ``max_iterations`` so the two ceilings agree.
             **(
@@ -394,6 +403,11 @@ def _run_headless(
     context = ExecutionContext(session.store, task, session.worker_id)
     config = ReActConfig(
         max_iterations=iterations,
+        time_budget_seconds=(
+            int(time_budget_seconds)
+            if time_budget_seconds is not None
+            else int(getattr(session, "time_budget_seconds", 0) or 0)
+        ),
         # No human at the terminal: approvals are denied unless trust mode asked
         # for the audited auto-approval of high-risk (never destructive) tools.
         on_approval_needed=_trust_approval(session),

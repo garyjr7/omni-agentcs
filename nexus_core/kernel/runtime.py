@@ -427,7 +427,11 @@ async def execute_react(payload: dict[str, Any], context: ExecutionContext) -> d
         raise ValueError("objective is required")
 
     llm = select_llm_client()
-    config = ReActConfig(max_iterations=max(1, int(payload.get("max_iterations") or 12)))
+    config = ReActConfig(
+        max_iterations=max(1, int(payload.get("max_iterations") or 12)),
+        # Work-time budget for a queued run: the same clock the CLI passes.
+        time_budget_seconds=max(0, int(payload.get("time_budget_seconds") or 0)),
+    )
     budget = str(payload.get("budget_tokens") or os.getenv("NEXUS_RUN_BUDGET_TOKENS", "0"))
     try:
         budget_tokens = max(0, int(budget))

@@ -8,7 +8,7 @@ import os
 import re
 import shlex
 import time
-from typing import Any
+from typing import Any, Callable
 
 from nexus_core.kernel.audit import AuditWriter
 from nexus_core.llm.abstraction import LLMMessage, is_invalid_json_error
@@ -79,6 +79,11 @@ from .react_types import (
     STATUS_BLOCKED,
     STATUS_BUDGET_EXCEEDED,
     STATUS_SUBAGENT_BUDGET,
+    STATUS_TIME_BUDGET,
+    TIME_BUDGET_EVENT_TYPE,
+    WORK_CLOCK_EVENT_TYPE,
+    WRAP_UP_EVENT_TYPE,
+    WRAP_UP_TOOLS,
     PROVIDER_REFUSAL_EVENT_TYPE,
     TERMINATION_PROVIDER_REFUSAL,
     SUBAGENT_EVENT_TYPE,
@@ -140,6 +145,9 @@ from .react_support import (
     _elapsed_ms,
     _failure_kind,
     _phase_timeout_seconds,
+    clamp_tool_timeout,
+    wrap_up_threshold,
+    wrap_up_window,
     stuck_threshold,
     vector_lock_thresholds,
     _keep_going_after_failures,
@@ -796,6 +804,7 @@ class ReActCoordinator:
         tool_execution: ToolExecutionService | None = None,
         completion_verifier: CompletionVerifier | None = None,
         model_selector: Any | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.context = context
         self.objective = objective
@@ -818,6 +827,10 @@ class ReActCoordinator:
         self.completion_verifier = completion_verifier or CompletionVerifier()
         self._phase_timeout_override = phase_timeout_seconds
         self._initial_unavailable_tools = initial_unavailable_tools
+        #: Monotonic clock of the work-time budget. Injectable so the wrap-up and
+        #: the deadline are tested without sleeping; production keeps
+        #: ``time.monotonic`` (immune to system clock changes).
+        self._clock = clock or time.monotonic
 
     async def _initialize(self) -> None:
         from nexus_core.kernel import runtime as runtime_module
@@ -903,6 +916,32 @@ class ReActCoordinator:
         self.budget = _budget_tokens(
             self.payload, self.budget_tokens, max_iterations=self.config.max_iterations
         )
+        # Work-time budget: it counts only the time this loop spends working, so
+        # a resumed run keeps the seconds it already spent and never inherits the
+        # wall clock (and the downtime) of the process that wrote the history.
+        # The payload is the durable source (a queued run carries it); the config
+        # is the in-process one. ``0`` is a real value (unlimited), so only an
+        # absent payload field falls back to the config.
+        raw_budget = self.payload.get("time_budget_seconds")
+        if raw_budget in (None, ""):
+            raw_budget = getattr(self.config, "time_budget_seconds", 0)
+        self.time_budget_seconds = max(0, int(raw_budget or 0))
+        persisted_used, persisted_budget = self._persisted_clock()
+        if not self.time_budget_seconds:
+            # The ceiling is a property of the run, not of the invocation: a
+            # resume that omits ``--time-budget`` inherits the one the engagement
+            # was started with instead of silently becoming unlimited.
+            self.time_budget_seconds = persisted_budget
+        self.wrap_up_seconds = wrap_up_window(
+            self.time_budget_seconds,
+            getattr(self.config, "wrap_up_seconds", 0) or wrap_up_threshold(),
+        )
+        self._work_base_seconds = persisted_used
+        self._work_started = self._clock()
+        self.wrap_up = False
+        self._wrap_up_announced = False
+        self._time_budget_closed = False
+        self._persist_work_clock(iteration=0)
         self.store.append_run_event(
             self.tenant_id,
             self.run_id,
@@ -920,6 +959,15 @@ class ReActCoordinator:
                     or self.payload.get("budget_tokens") not in (None, "")
                     else "derived"
                 ),
+                # Work-time ceiling: the operator's ``--time-budget`` and the
+                # clock this run inherits from a previous process. ``deadline_at``
+                # is informational (wall clock if the loop keeps working without
+                # pauses); the authoritative number is ``work_seconds_remaining``.
+                "time_budget_seconds": self.time_budget_seconds,
+                "wrap_up_seconds": self.wrap_up_seconds,
+                "work_seconds_used": round(self._work_base_seconds, 1),
+                "work_seconds_remaining": self._remaining_seconds(),
+                "deadline_at": self._deadline_at(),
             },
         )
         history = memory.load_history(self.store, self.tenant_id, self.conversation_id, limit=500)
@@ -1112,6 +1160,242 @@ class ReActCoordinator:
                 TOOL_UNAVAILABLE_EVENT_TYPE,
                 {"tool_id": tool_id, "reason": "binary_missing", "iteration": 0},
             )
+
+    # ------------------------------------------------------------ work clock
+    def _persisted_clock(self) -> tuple[float, int]:
+        """``(work seconds, budget)`` a previous process left for this run.
+
+        The last ``react.work_clock`` wins; ``react.budget_plan`` and a forced
+        closure are fallbacks for a run that died before its first turn. Reading
+        the journal keeps the clock and the ceiling durable without a new table:
+        a resumed run cannot restart its budget by being resumed, and omitting
+        ``--time-budget`` does not turn a timed engagement into an unlimited one.
+        """
+        try:
+            events = self.store.list_run_events(self.tenant_id, self.run_id)
+        except Exception:  # noqa: BLE001 - a clock must never break the run
+            return 0.0, 0
+        for event in reversed(events):
+            if event.get("event_type") not in {
+                WORK_CLOCK_EVENT_TYPE,
+                TIME_BUDGET_EVENT_TYPE,
+                "react.budget_plan",
+            }:
+                continue
+            payload = event.get("payload") or {}
+            try:
+                used = max(0.0, float(payload.get("work_seconds_used") or 0))
+            except (TypeError, ValueError):
+                used = 0.0
+            try:
+                budget = max(0, int(payload.get("time_budget_seconds") or 0))
+            except (TypeError, ValueError):
+                budget = 0
+            return used, budget
+        return 0.0, 0
+
+    def _persisted_work_seconds(self) -> float:
+        """Work seconds a previous process already spent on this run."""
+        return self._persisted_clock()[0]
+
+    def _work_seconds(self) -> float:
+        """Work time of this run: persisted base plus this process's uptime."""
+        return self._work_base_seconds + max(0.0, self._clock() - self._work_started)
+
+    def _remaining_seconds(self) -> float | None:
+        """Work seconds left before the hard deadline (``None`` when unlimited)."""
+        if not self.time_budget_seconds:
+            return None
+        return self.time_budget_seconds - self._work_seconds()
+
+    def _deadline_at(self) -> str:
+        """Wall-clock estimate of the deadline (informational, never enforced)."""
+        remaining = self._remaining_seconds()
+        if remaining is None:
+            return ""
+        from datetime import datetime, timedelta, timezone
+
+        moment = datetime.now(timezone.utc) + timedelta(seconds=max(0, int(remaining)))
+        return moment.isoformat()
+
+    def _persist_work_clock(self, *, iteration: int) -> None:
+        """Publish the durable clock once per turn (the resume anchor)."""
+        if not self.time_budget_seconds:
+            return
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            WORK_CLOCK_EVENT_TYPE,
+            {
+                "iteration": iteration,
+                "work_seconds_used": round(self._work_seconds(), 3),
+                "work_seconds_remaining": round(self._remaining_seconds() or 0, 3),
+                "time_budget_seconds": self.time_budget_seconds,
+                "wrap_up": self.wrap_up,
+            },
+        )
+
+    def _refresh_time_budget(self) -> bool:
+        """Open the wrap-up window or report the hard deadline (``True``).
+
+        Called at the top of every iteration, before the context is built: the
+        prompt and the allowed catalog of the turn must already say that the run
+        is closing, not learn it one turn later.
+        """
+        remaining = self._remaining_seconds()
+        if remaining is None:
+            return False
+        if remaining <= 0:
+            return True
+        if not self.wrap_up and remaining <= self.wrap_up_seconds:
+            self.wrap_up = True
+            self._announce_wrap_up(remaining)
+        return False
+
+    def _announce_wrap_up(self, remaining: float) -> None:
+        """Tell the operator (and the audit trail) that the run is closing."""
+        if self._wrap_up_announced:
+            return
+        self._wrap_up_announced = True
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            WRAP_UP_EVENT_TYPE,
+            {
+                "iteration": self.iteration,
+                "work_seconds_used": round(self._work_seconds(), 1),
+                "work_seconds_remaining": round(max(0.0, remaining), 1),
+                "time_budget_seconds": self.time_budget_seconds,
+                "wrap_up_seconds": self.wrap_up_seconds,
+                "tools": sorted(WRAP_UP_TOOLS),
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action="time_budget_wrap_up",
+            decision="allow",
+            remaining_seconds=round(max(0.0, remaining), 1),
+            tools=sorted(WRAP_UP_TOOLS),
+        )
+
+    def _tool_timeout_seconds(self) -> float:
+        """Ceiling of one tool call, never longer than the work time left."""
+        return clamp_tool_timeout(
+            self.config.timeout_per_tool_seconds, self._remaining_seconds()
+        )
+
+    def _force_time_completion(self) -> Transition:
+        """Close for time with a synthesized ``task_complete`` (never a cancel).
+
+        The deadline is a decision of the engine, so it must read as one: the
+        partial summary, the findings already proved, the open TODOs and the
+        report artifact (when one was generated) are persisted, the run is
+        audited with ``time_budget_exhausted`` and the status is
+        ``time_budget``. Cancelling the coroutine instead would journal the
+        in-flight call ``unknown`` and lose what the engagement had proved.
+        """
+        if self._time_budget_closed:
+            return Transition.STOP
+        self._time_budget_closed = True
+        self.forced_completion = True
+        used = round(self._work_seconds(), 1)
+        flags = list(self.captured_flag_refs)
+        board_facts = [
+            {
+                "fact_type": str(fact.get("fact_type") or ""),
+                "key": str(fact.get("key") or ""),
+                "verified": bool(fact.get("verified")),
+                "verification_method": str(fact.get("verification_method") or ""),
+            }
+            for fact in self._blackboard_facts()[:50]
+            if isinstance(fact, dict)
+        ]
+        plan = getattr(self, "engagement_plan", None)
+        open_todos = [todo.id for todo in (plan.pending if plan is not None else ())]
+        # The partial report is what the engagement proved, not what the model
+        # promised: verified board facts (``info``) plus the flags this run
+        # captured, deduplicated by title so a loot fact is not listed twice.
+        preserved = self._preserved_findings()
+        titles = {str(finding.get("title") or "") for finding in preserved}
+        self.findings = preserved + [
+            finding
+            for finding in self._flag_findings()
+            if str(finding.get("title") or "") not in titles
+        ]
+        self.status = STATUS_TIME_BUDGET
+        self.completion_verified_override = False
+        tail = (
+            f"; TODOs abiertos: {', '.join(open_todos[:6])}" if open_todos else ""
+        )
+        self.final_summary = (
+            f"Cierre por presupuesto de tiempo: {used:.0f}s de "
+            f"{self.time_budget_seconds}s de trabajo; {len(flags)} flag(s) "
+            f"capturada(s){tail}; {self._report_status_line()}"
+        )
+        self.actions.append(
+            _action_entry(
+                self.iteration,
+                ACTION_TASK_COMPLETE,
+                thought=(
+                    "Cierre forzado: se agotó el presupuesto de tiempo de trabajo "
+                    "y el motor cierra con la evidencia ya verificada."
+                ),
+                summary=self.final_summary,
+                findings=self.findings,
+                forced=True,
+                time_budget=True,
+                flags=flags,
+                board_facts=board_facts,
+                open_todos=open_todos,
+            )
+        )
+        self.store.append_run_event(
+            self.tenant_id,
+            self.run_id,
+            TIME_BUDGET_EVENT_TYPE,
+            {
+                "iteration": self.iteration,
+                "work_seconds_used": used,
+                "time_budget_seconds": self.time_budget_seconds,
+                "wrap_up_seconds": self.wrap_up_seconds,
+                "wrap_up": self.wrap_up,
+                "open_todos": open_todos,
+                "flags": flags,
+                "board_facts": board_facts,
+                "report": self.report_artifact or {"generated": False},
+                "subagent_id": self.last_subagent_id,
+            },
+        )
+        memory.append_step(
+            self.store,
+            self.tenant_id,
+            self.conversation_id,
+            "assistant",
+            json.dumps(
+                {"summary": self.final_summary, "findings": self.findings},
+                ensure_ascii=False,
+            ),
+            {
+                "kind": "react.final",
+                "iteration": self.iteration,
+                "findings_count": len(self.findings),
+                "forced": True,
+                "time_budget": True,
+                "work_seconds_used": used,
+                "run_id": self.run_id,
+            },
+        )
+        self.audit_step(
+            iteration=self.iteration,
+            action=ACTION_TASK_COMPLETE,
+            decision="allow",
+            reason="time_budget_exhausted",
+            forced=True,
+            open_todos=open_todos,
+            findings_count=len(self.findings),
+            report=self.report_artifact or {"generated": False},
+        )
+        return Transition.STOP
 
     def audit_step(self, *, iteration: int, action: str, decision: str, **extra: Any) -> None:
         "Audit one step, always tagged with the active subagent (3C)."
@@ -2330,12 +2614,23 @@ class ReActCoordinator:
                 retired_tools=stalled,
             )
             self.phase_started = time.monotonic()
-        self.allowed_catalog = {
-            tool_id: entry
-            for tool_id, entry in filter_catalog(self.subagent, self.catalog).items()
-            if tool_id not in self.unavailable_tools
-            and tool_id not in getattr(self, "login_withheld", set())
-        }
+        if self.wrap_up:
+            # Wrap-up: the deliverable, not a new branch. The subset is built from
+            # the engine catalog on purpose -a profile that lacks the report tool
+            # must still be able to close- and ``_call_refusal`` is the gate that
+            # actually enforces it (the prompt only reflects it).
+            self.allowed_catalog = {
+                tool_id: entry
+                for tool_id, entry in self.catalog.items()
+                if tool_id in WRAP_UP_TOOLS
+            }
+        else:
+            self.allowed_catalog = {
+                tool_id: entry
+                for tool_id, entry in filter_catalog(self.subagent, self.catalog).items()
+                if tool_id not in self.unavailable_tools
+                and tool_id not in getattr(self, "login_withheld", set())
+            }
         if self.plan.current != self.last_phase:
             self.store.append_run_event(
                 self.tenant_id,
@@ -2388,6 +2683,8 @@ class ReActCoordinator:
             reflection_hint=self.reflection_hint,
             pivot_hint=self.pivot_hint,
             engagement_plan_summary=self.engagement_plan_text,
+            wrap_up=self.wrap_up,
+            wrap_up_seconds=max(0, int(self._remaining_seconds() or 0)),
         )
         reservation = None
         estimated = _estimate_request_tokens(self.messages)
@@ -2986,7 +3283,24 @@ class ReActCoordinator:
                 "error": f"tool '{tool_id}' does not exist in the catalog",
                 "available_tools": sorted(self.catalog),
             }
-        if not permits(self.subagent, tool_id, self.catalog.get(tool_id)):
+        if self.wrap_up and tool_id not in WRAP_UP_TOOLS:
+            # The deadline is not a suggestion: outside the wrap-up set the call
+            # is refused before policy/approval, exactly like an out-of-catalog
+            # tool. It is a closure order, not a tool failure (no retirement).
+            return "time_budget_wrap_up", {
+                "success": False,
+                "status": "denied_time_budget",
+                "tool_id": tool_id,
+                "error": (
+                    "el presupuesto de tiempo está en la ventana de cierre: solo "
+                    "se admite nexus.report.generate y "
+                    "nexus.orchestrator.update_plan; termina con task_complete"
+                ),
+                "available_tools": sorted(
+                    tool_id for tool_id in WRAP_UP_TOOLS if tool_id in self.catalog
+                ),
+            }
+        if not self.wrap_up and not permits(self.subagent, tool_id, self.catalog.get(tool_id)):
             return "subagent_tool_denied", {
                 "success": False,
                 "error": f"tool '{tool_id}' is outside subagent '{self.subagent.id}' subset",
@@ -3127,6 +3441,31 @@ class ReActCoordinator:
                 decision="deny",
                 tool_id=self.action.tool_id,
                 reason="plan_required",
+            )
+            return Transition.NEXT_TURN
+        if refusal is not None and refusal[0] == "time_budget_wrap_up":
+            # The wrap-up window is a closure order, not a broken tool: record the
+            # correction, tell the model what it may still call and spend no
+            # failure budget on it.
+            self.observation = refusal[1]
+            self.entry["tool_result"] = self.observation
+            self.actions.append(self.entry)
+            _inject_observation(
+                self.store,
+                self.tenant_id,
+                self.conversation_id,
+                self.run_id,
+                self.iteration,
+                self.action,
+                self.observation,
+                subagent_id=self.active_subagent_id,
+            )
+            self.audit_step(
+                iteration=self.iteration,
+                action=self.action.action,
+                decision="deny",
+                tool_id=self.action.tool_id,
+                reason="time_budget_wrap_up",
             )
             return Transition.NEXT_TURN
         if refusal is not None and refusal[0] == "vector_locked":
@@ -4293,7 +4632,7 @@ class ReActCoordinator:
                     payload, self.context, timeout=timeout, cancel_event=cancel_event
                 ),
                 limit=parallel_limit(),
-                timeout=call_timeout(self.config.timeout_per_tool_seconds),
+                timeout=call_timeout(self._tool_timeout_seconds()),
                 cancel_event=self.cancel_event,
             )
         cancelled_now = False
@@ -4467,7 +4806,9 @@ class ReActCoordinator:
             invocation, cancelled_now = await self.tool_execution.execute(
                 self.tool_payload,
                 self.context,
-                timeout=self.config.timeout_per_tool_seconds,
+                # Never longer than the work time left: a sweep started two
+                # minutes before the deadline must not eat the wrap-up window.
+                timeout=self._tool_timeout_seconds(),
                 cancel_event=self.cancel_event,
             )
         except ScopeViolation as exc:
@@ -5812,6 +6153,12 @@ class ReActCoordinator:
         await self._initialize()
         try:
             while self.iteration < self.iteration_limit:
+                # The clock is read before any model call: when the work budget is
+                # spent the loop closes itself, and inside the window it turns the
+                # next turn into a closure instead of an exploration.
+                if self._refresh_time_budget():
+                    self._force_time_completion()
+                    break
                 if self._guard() is Transition.STOP:
                     break
                 # A model that idles on an unchanged plan while a scan runs is
@@ -5860,6 +6207,9 @@ class ReActCoordinator:
                     turn_ms=_elapsed_ms(turn_started),
                 )
                 self._note_completed_turn()
+                # Durable anchor for a resumed run: the work spent up to here is
+                # never re-spent, and the clock does not restart from zero.
+                self._persist_work_clock(iteration=self.iteration)
                 if transition is Transition.STOP:
                     break
             await self.telemetry.flush()
@@ -5927,7 +6277,7 @@ class ReActCoordinator:
         invocation, cancelled = await self.tool_execution.execute(
             payload,
             self.context,
-            timeout=self.config.timeout_per_tool_seconds,
+            timeout=self._tool_timeout_seconds(),
             cancel_event=cancel_event,
         )
         if cancelled or invocation is None:
@@ -5995,6 +6345,11 @@ class ReActCoordinator:
         the wake-up is awaited, never spun on.
         """
         limit = float(self.config.timeout_per_tool_seconds or 0) + 5.0
+        remaining = self._remaining_seconds()
+        if remaining is not None:
+            # Waiting for a long scan must not spend the wrap-up window: at the
+            # deadline the loop closes with what it already has.
+            limit = max(0.0, min(limit, remaining))
         deadline = time.monotonic() + limit
         while self.task_manager.running_count():
             if self.cancel_event is not None and self.cancel_event.is_set():
@@ -6085,7 +6440,7 @@ class ReActCoordinator:
                 arguments=spawn.arguments,
                 payload=payload,
                 label=spawn.label,
-                timeout_seconds=self.config.timeout_per_tool_seconds,
+                timeout_seconds=self._tool_timeout_seconds(),
             )
         except TaskManagerError as error:
             return self._record_background_refusal(

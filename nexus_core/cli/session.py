@@ -210,6 +210,7 @@ class OmniSession:
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         *,
         budget_tokens: int | None = None,
+        time_budget_seconds: int = 0,
         agent_id: str = DEFAULT_AGENT_ID,
         operator_id: str | None = None,
         input_reader: Callable[[str], str] | None = None,
@@ -242,6 +243,12 @@ class OmniSession:
         #: R1: ``--budget-tokens``. ``None`` derives the ceiling from
         #: ``max_iterations``; ``0`` keeps its documented "unlimited" meaning.
         self.budget_tokens = None if budget_tokens is None else int(budget_tokens)
+        #: ``--time-budget``: work-time ceiling (0 = unlimited). The loop counts
+        #: only working seconds, so a resumed run continues instead of restarting.
+        try:
+            self.time_budget_seconds = max(0, int(time_budget_seconds or 0))
+        except (TypeError, ValueError):
+            self.time_budget_seconds = 0
         self.agent_id = agent_id
         self.operator_id = operator_id or default_operator_id()
         self.input_reader = input_reader
@@ -1272,6 +1279,7 @@ class OmniSession:
                 if self.budget_tokens is not None
                 else {}
             ),
+            "time_budget_seconds": self.time_budget_seconds,
             "agent_id": self.agent_id,
             "identity": self.agent_identity_payload,
             "permissions": list(self.permissions),
@@ -1296,6 +1304,7 @@ class OmniSession:
         context = ExecutionContext(self.store, task, self.worker_id)
         config = ReActConfig(
             max_iterations=self.max_iterations,
+            time_budget_seconds=self.time_budget_seconds,
             on_approval_needed=make_approval_callback(
                 self, self.store, self.tenant_id, run_id, trust_mode=self.trust_mode
             ),

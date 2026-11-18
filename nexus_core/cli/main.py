@@ -17,7 +17,17 @@ PROGRAM = "omni"
 PROGRAM_VERSION = "3.0.0rc6"
 
 #: Run statuses that do not mean "the agent broke".
-ACCEPTABLE_ONESHOT_STATUSES = frozenset({"completed", "max_iterations", "clarification"})
+ACCEPTABLE_ONESHOT_STATUSES = frozenset(
+    {"completed", "max_iterations", "clarification", "time_budget"}
+)
+
+
+def time_budget_seconds(args: argparse.Namespace) -> int:
+    """Work-time ceiling from ``--time-budget`` (s) or ``--time-budget-hours``."""
+    hours = getattr(args, "time_budget_hours", None)
+    if hours is not None:
+        return max(0, int(round(float(hours) * 3600)))
+    return max(0, int(getattr(args, "time_budget", 0) or 0))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -71,6 +81,28 @@ def build_parser() -> argparse.ArgumentParser:
             "techo de tokens del run (default: derivado de --max-iterations; "
             "0 = sin límite)"
         ),
+    )
+    # Work-time ceiling. It is measured in *work* seconds, not wall clock, so a
+    # resumed run keeps what it already spent and downtime does not count. The
+    # last minutes are a wrap-up window (``NEXUS_WRAP_UP_SECONDS``, 10 min by
+    # default) where only the report and the plan update are accepted.
+    time_group = parser.add_mutually_exclusive_group()
+    time_group.add_argument(
+        "--time-budget",
+        type=int,
+        default=0,
+        metavar="SEGUNDOS",
+        help=(
+            "presupuesto de tiempo de trabajo en segundos (0 = sin límite); "
+            "los últimos minutos son de cierre (informe + task_complete)"
+        ),
+    )
+    time_group.add_argument(
+        "--time-budget-hours",
+        type=float,
+        default=None,
+        metavar="HORAS",
+        help="igual que --time-budget, expresado en horas (admite decimales)",
     )
     # P2 (Fase 3.7): pin the subagent profile. The loop already accepted
     # ``payload["subagent"]``; without a flag an operator whose profile lacked
@@ -613,6 +645,7 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
         llm_client=llm_client,
         max_iterations=args.max_iterations,
         budget_tokens=args.budget_tokens,
+        time_budget_seconds=time_budget_seconds(args),
         run_id=args.resume,
         trust_mode=args.trust_mode,
         # V1-54: the retry policy of an ``unknown`` invocation. It only reaches
@@ -658,6 +691,7 @@ def _dispatch(args: Any, *, config: Any = None, paths: Any = None) -> int:
             session, objective, mode=headless_mode,
             max_iterations=args.max_iterations,
             budget_tokens=args.budget_tokens,
+            time_budget_seconds=time_budget_seconds(args),
         ))
     if objective:
         result = session.run_objective(objective)

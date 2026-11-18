@@ -47,6 +47,7 @@ from .react_types import (
     SKILL_NUDGE_TURNS,
     STUCK_PROMPT_LINE,
     TARGET_REACHED_PROMPT,
+    WRAP_UP_PROMPT,
 )
 from .project_context import render_project_instruction
 from .skills import default_skills_root, discover_skills, render_skill_index, render_skills
@@ -309,6 +310,11 @@ class ContextBuilder:
         reflection_hint: str = "",
         pivot_hint: str = "",
         engagement_plan_summary: str = "",
+        #: Work-time budget: inside the wrap-up window the prompt orders the
+        #: closure and names the remaining minutes. ``False`` keeps the historical
+        #: prompt byte-for-byte (the budget is opt-in).
+        wrap_up: bool = False,
+        wrap_up_seconds: int = 0,
     ) -> list[LLMMessage]:
         full_catalog = self.full_catalog_for(iteration=iteration, subagent=subagent)
         history_summary, plan, facts_text = (
@@ -426,6 +432,11 @@ class ContextBuilder:
         # if it ignores the order for the whole margin, the loop closes itself.
         if target_reached:
             system_prompt = f"{system_prompt}\n\n{TARGET_REACHED_PROMPT}"
+        # Work-time budget: the last minutes are for the deliverable. The rule is
+        # injected last so it outranks every hint that asks for more exploration.
+        if wrap_up:
+            minutes = max(1, int(round(wrap_up_seconds / 60)))
+            system_prompt = f"{system_prompt}\n\n{WRAP_UP_PROMPT.format(minutes=minutes)}"
         messages: list[LLMMessage] = [LLMMessage(role="system", content=system_prompt)]
         # Bound the raw history: a shared work session accumulates every prior
         # run's messages, and paying for all of them on every turn can exceed a

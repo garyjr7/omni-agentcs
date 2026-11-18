@@ -36,12 +36,14 @@ def _capture(monkeypatch):
     seen = {}
 
     def fake_run_headless(
-        session, objective, *, mode, max_iterations=None, budget_tokens=None
+        session, objective, *, mode, max_iterations=None, budget_tokens=None,
+        time_budget_seconds=None,
     ):
         seen["objective"] = objective
         seen["mode"] = mode
         seen["max_iterations"] = max_iterations
         seen["budget_tokens"] = budget_tokens
+        seen["time_budget_seconds"] = time_budget_seconds
         seen["use_tui"] = session._tui.use_tui
         seen["active_skills"] = list(session.active_skills)
         return 0
@@ -90,6 +92,16 @@ def test_run_shim_forwards_the_explicit_token_budget(monkeypatch, no_repl):
 
     omni.main(["run", "Escanea x", "--budget-tokens", "900", "--no-wizard"])
     assert seen["budget_tokens"] == 900
+
+
+def test_run_shim_forwards_the_work_time_budget(monkeypatch, no_repl):
+    """``--time-budget`` (and its hours form) reach the loop's work clock."""
+    seen = _capture(monkeypatch)
+    omni.main(["run", "Escanea x", "--time-budget", "300", "--no-wizard"])
+    assert seen["time_budget_seconds"] == 300
+
+    omni.main(["run", "Escanea x", "--time-budget-hours", "1.5", "--no-wizard"])
+    assert seen["time_budget_seconds"] == 5400
 
 
 def test_unknown_subcommand_fails_without_running_anything(monkeypatch, no_repl):

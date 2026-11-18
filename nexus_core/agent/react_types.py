@@ -271,6 +271,42 @@ STATUS_SCOPE_VIOLATION = "scope_violation_aborted"
 #: an unconfirmed invocation, or the tunnel that makes the next hop routable.
 STATUS_BLOCKED = "blocked"
 STATUS_BUDGET_EXCEEDED = "budget_exceeded"
+#: The run spent its whole *work-time* budget and closed through the wrap-up
+#: window instead of being cancelled: the partial summary, the findings proved so
+#: far and the report artifact (if one was generated) are kept.
+STATUS_TIME_BUDGET = "time_budget"
+#: Emitted once when the loop enters the wrap-up window: from then on only
+#: ``WRAP_UP_TOOLS`` are accepted and the prompt orders the closure.
+WRAP_UP_EVENT_TYPE = "react.wrap_up"
+#: Emitted once when the run closes for time, with the work clock and what the
+#: run still owed. It is the auditable record of a forced (never cancelled) stop.
+TIME_BUDGET_EVENT_TYPE = "react.time_budget"
+#: One per turn: the durable work clock. A resumed run reads the last one and
+#: keeps counting from it, so downtime between processes is not work time.
+WORK_CLOCK_EVENT_TYPE = "react.work_clock"
+#: Operator override of the wrap-up window (seconds; default 10 minutes).
+WRAP_UP_ENV = "NEXUS_WRAP_UP_SECONDS"
+DEFAULT_WRAP_UP_SECONDS = 600
+#: Tools the model may still call inside the wrap-up window. ``task_complete`` is
+#: an action, not a tool, and stays available on its own.
+WRAP_UP_TOOLS = frozenset({
+    "nexus.report.generate",
+    "nexus.orchestrator.update_plan",
+})
+#: Injected while the wrap-up window is open. It replaces exploration with the
+#: deliverable: a partial report and a plan whose open TODOs are justified.
+WRAP_UP_PROMPT = (
+    "PRESUPUESTO DE TIEMPO: quedan {minutes} minuto(s) de trabajo. Ya NO "
+    "explores: cierra el engagement. Llama a nexus.report.generate con la "
+    "evidencia verificada (informe parcial si el plan sigue abierto), marca con "
+    "nexus.orchestrator.update_plan los TODOs que dejes sin cerrar "
+    "(status=\"failed\" + reason) y termina con task_complete. Cualquier otra "
+    "tool será rechazada por el motor hasta que cierres."
+)
+#: Never start a tool with less than this much work time left: a call cancelled a
+#: second after it began would journal an unconfirmed effect, and the deadline is
+#: not a good reason to gamble with the journal.
+MIN_TOOL_SECONDS = 5
 #: A subagent exhausted its own iteration/token allowance. In the WP2 default
 #: loop this status is unreachable (the limits are soft); it stays for the
 #: ``NEXUS_LEGACY_PROFILES=1`` path and its regression tests.
@@ -399,6 +435,15 @@ class ReActConfig:
     after_provider_call: Callable[[Any, int], None] | None = None
     #: Durable root of the spawning tree, for budget attribution and audit.
     root_id: str = ""
+    #: Work-time ceiling of the run (seconds; 0 disables it). It counts only the
+    #: time the loop is working, so a resumed run continues where it stopped
+    #: instead of inheriting the wall clock of the previous process.
+    time_budget_seconds: int = 0
+    #: Length of the wrap-up window at the end of ``time_budget_seconds``. It is
+    #: clamped to half the budget, so a short ``--time-budget`` still gets real
+    #: work before its closure (a 5-minute run wraps up in its last 2.5 minutes).
+    #: ``0`` means "the default, or ``NEXUS_WRAP_UP_SECONDS`` when set".
+    wrap_up_seconds: int = 0
 
 
 @dataclass
