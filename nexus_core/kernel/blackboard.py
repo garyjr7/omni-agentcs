@@ -225,6 +225,55 @@ class Blackboard:
             for row in rows
         ]
 
+    def list_edges_for_facts(
+        self,
+        tenant_id: str,
+        engagement_id: str,
+        fact_uris: Any,
+        *,
+        relation: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Edges whose destination is one of ``fact_uris`` (no global limit).
+
+        The coverage ledger and the prompt need the provenance of the facts they
+        actually render, not the first 2.000 edges of the engagement: a run that
+        scanned tens of thousands of ports pushed every later edge out of the
+        window and silently fell back to the text parser. Chunked to keep the
+        SQLite parameter count bounded; an absent table still degrades to ``[]``.
+        """
+        wanted = sorted({str(uri) for uri in (fact_uris or ()) if str(uri)})
+        if not wanted:
+            return []
+        rows: list[Any] = []
+        try:
+            with self.store.connect() as conn:
+                for start in range(0, len(wanted), 900):
+                    chunk = wanted[start:start + 900]
+                    placeholders = ",".join("?" for _ in chunk)
+                    sql = (
+                        "SELECT src_uri,dst_uri,relation,created_at "
+                        "FROM kernel_fact_edges "
+                        "WHERE tenant_id=? AND engagement_id=? "
+                        f"AND dst_uri IN ({placeholders})"
+                    )
+                    params: list[Any] = [tenant_id, engagement_id, *chunk]
+                    if relation:
+                        sql += " AND relation=?"
+                        params.append(relation)
+                    sql += " ORDER BY created_at, id"
+                    rows.extend(conn.execute(sql, tuple(params)).fetchall())
+        except Exception:  # noqa: BLE001 - a missing table must not hide the board
+            return []
+        return [
+            {
+                "src_uri": str(row["src_uri"]),
+                "dst_uri": str(row["dst_uri"]),
+                "relation": str(row["relation"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
     def list_facts(
         self,
         tenant_id: str,

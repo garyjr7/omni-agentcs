@@ -1,5 +1,34 @@
 # OmniAgentCS — Changelog
 
+## v3.1.1 — 2026-11-19
+
+Correcciones de la prueba en la sala Wreath y deuda del Asset Graph:
+
+- **Time Budget primario.** Con `--time-budget` definido, el techo de tiempo
+  manda: `max_iterations` pasa a ser una red de seguridad derivada del reloj (y
+  el presupuesto de tokens se deriva de esa misma red), así que un run de 4 h no
+  muere en la iteración 20 a los 12 minutos. Sin presupuesto de tiempo, el
+  comportamiento histórico no cambia.
+- **TUI sin JSON ni tracebacks.** `discover_tools`, `subfinder`,
+  `record_fact` y `web.request` muestran una frase (herramientas descubiertas,
+  subdominios, hecho registrado, `200 OK` con tamaño). Los fallos de SSL,
+  conexión FTP reiniciada, post-condition del parser y skill inexistente se
+  traducen a una advertencia legible. El cierre por iteraciones dice ahora
+  «Presupuesto de ejecución agotado. Se guardó el estado para --resume».
+- **Asset Graph escalable y vigente.** La cobertura consulta las aristas por los
+  hechos del snapshot (`dst_uri IN …`), no las primeras 2.000 del engagement;
+  re-grabar un hecho reemplaza sus aristas anteriores en la misma transacción
+  (una re-registración del agente sin anclas no borra la procedencia del
+  verificador). httpx y gobuster normalizan el hostname de la URL contra los
+  hosts ya probados (resolución OS incluida) para no perder el ancla cuando
+  nmap registró la IP.
+- **Cadena de ataque en el informe.** El Markdown incluye
+  `## Cadena de ataque` con las rutas verificadas Host → Servicio → Credencial →
+  Privilegio/Loot leídas de las aristas, y el JSON del informe las expone.
+- **Documentación.** `INDEX`, `RC-CHECKLIST`, `BACKLOG` y `MASTER_ROADMAP`
+  actualizados; P1-C (JSON Schema completo) y P1-B (`oci_network`) dejan de
+  figurar como deuda no implementada.
+
 ## v3.1.0 — 2026-11-18
 
 Release de autonomía gobernada sobre `rc6`. Tres fases, todas auditables:

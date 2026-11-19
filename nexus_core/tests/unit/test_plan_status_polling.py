@@ -275,7 +275,9 @@ async def test_the_iteration_limit_reads_as_reached_not_as_success(harness):
 
     assert result.status == STATUS_MAX_ITERATIONS
     summary = str(result.final_summary)
-    assert "límite de iteraciones alcanzado; trabajo incompleto" in summary
+    assert "Presupuesto de ejecución agotado" in summary
+    assert "Se guardó el estado para --resume" in summary
+    assert "Trabajo incompleto" in summary
     assert "termination_reason=max_iterations" in summary
     assert "findings=0" in summary
     assert [todo["status"] for todo in result.engagement_plan["todos"]] == [

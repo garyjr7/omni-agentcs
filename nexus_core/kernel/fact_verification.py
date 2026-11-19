@@ -897,6 +897,88 @@ def sql_error_signature(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _resolve_addresses(host: str) -> list[str]:
+    """Addresses ``host`` resolves to, without letting DNS break a run.
+
+    The resolver is deliberately the OS one (``/etc/hosts`` included): a lab
+    engagement usually maps a room name to its IP there, and that mapping is the
+    same one the worker process already used to reach the target. Failures are an
+    empty list, never an exception.
+    """
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError, ValueError):
+        return []
+    addresses: list[str] = []
+    for info in infos:
+        sockaddr = info[4] if len(info) > 4 else ()
+        address = str(sockaddr[0]) if sockaddr else ""
+        if address and address not in addresses:
+            addresses.append(address)
+    return addresses
+
+
+def _known_hosts(context: Any) -> set[str]:
+    """Host keys the engagement's board already proved (never raises)."""
+    store = getattr(context, "store", None)
+    engagement = str(
+        getattr(context, "engagement_id", "")
+        or getattr(getattr(context, "scope", None), "engagement_id", "")
+        or ""
+    )
+    if store is None or not engagement:
+        return set()
+    try:
+        from .blackboard import Blackboard
+
+        facts = Blackboard(store).list_facts(
+            str(getattr(context, "tenant_id", "system")), engagement,
+            fact_type="host", limit=500,
+        )
+    except Exception:  # noqa: BLE001 - an unreadable board just skips the alias
+        return set()
+    return {
+        str(fact.get("key") or "").strip()
+        for fact in facts
+        if isinstance(fact, dict) and str(fact.get("key") or "").strip()
+    }
+
+
+def _canonical_host(host: Any, known: set[str]) -> str:
+    """Normalize a URL host to the address the board recorded, when it can.
+
+    nmap registers ``10.10.10.10`` and httpx/gobuster often report
+    ``wreath.example`` for the same machine. Without this alias the service and
+    host anchors do not exist, the edge is dropped and coverage silently falls
+    back to text parsing. Only an address that is already a **proved host** is
+    accepted: the resolver never invents a board fact, and an unknown name keeps
+    its own key (the edge is then simply absent, as before).
+    """
+    value = str(host or "").strip().strip("[]").rstrip(".")
+    if not value:
+        return ""
+    if value in known:
+        return value
+    # No board means no normalization: resolving every name of a scripted run
+    # would add DNS latency (and flakiness) without a fact to anchor it to.
+    if not known:
+        return value
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        return value
+    for address in _resolve_addresses(value):
+        if address in known:
+            return address
+    return value
+
+
 def _fact_anchor(context: Any, fact_type: str, key: Any, relation: str) -> tuple[str, str] | None:
     """``(uri, relation)`` of a fact this assertion came from (``None`` if unknown).
 
@@ -961,11 +1043,13 @@ def derive_assertions(tool_id, arguments, result, context):
                     add('service', target, port, key,
                         anchors=[host_anchor] if host_anchor else None)
     elif tool_id == 'nexus.recon.httpx' and result.verification_method == 'httpx_jsonl_parsed':
+        known_hosts = _known_hosts(context)
         for probe in output.get('probes', []):
             if probe.get('status_code'):
                 url = str(probe.get('url') or '')
                 parsed = urlsplit(url)
                 host_name = parsed.hostname or str(probe.get('host') or '').split(':')[0]
+                host_name = _canonical_host(host_name, known_hosts)
                 port = parsed.port or (443 if parsed.scheme == 'https' else 80)
                 anchors = [
                     anchor for anchor in (
@@ -976,6 +1060,7 @@ def derive_assertions(tool_id, arguments, result, context):
                 ]
                 add('endpoint', url, probe, anchors=anchors)
     elif tool_id == 'nexus.recon.gobuster' and result.verification_method == 'gobuster_text_parsed':
+        known_hosts = _known_hosts(context)
         # The parser names the HTTP code ``status`` (its ``to_dict``), not
         # ``status_code``; reading the wrong key silently dropped every verified
         # hit, so a directory scan could never close ``enumeration`` and the plan
@@ -986,6 +1071,7 @@ def derive_assertions(tool_id, arguments, result, context):
                 url = str(hit.get('url') or output.get('target') or '')
                 parsed = urlsplit(url)
                 host_name = parsed.hostname or url.split(':')[0]
+                host_name = _canonical_host(host_name, known_hosts)
                 port = parsed.port or (443 if parsed.scheme == 'https' else 80)
                 anchors = [
                     anchor for anchor in (

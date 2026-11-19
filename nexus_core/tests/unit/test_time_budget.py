@@ -17,7 +17,11 @@ import pytest
 
 from nexus_core.agent.react import ReActConfig
 from nexus_core.agent.react_coordinator import ReActCoordinator
-from nexus_core.agent.react_support import clamp_tool_timeout, wrap_up_window
+from nexus_core.agent.react_support import (
+    clamp_tool_timeout,
+    iteration_limit_for_time_budget,
+    wrap_up_window,
+)
 from nexus_core.agent.react_types import (
     MIN_TOOL_SECONDS,
     STATUS_TIME_BUDGET,
@@ -185,6 +189,16 @@ def test_a_tool_timeout_is_clamped_to_the_work_time_left():
     assert clamp_tool_timeout(1860, 1) == MIN_TOOL_SECONDS
 
 
+def test_a_time_budget_disables_the_default_iteration_ceiling():
+    """4 hours must not inherit the default 20-turn ceiling (Wreath run)."""
+    assert iteration_limit_for_time_budget(4 * 3600, 20) >= 4 * 3600 // 15
+    assert iteration_limit_for_time_budget(4 * 3600, 20) > 20
+    # An operator ceiling larger than the derived net is still honoured.
+    assert iteration_limit_for_time_budget(300, 500) == 500
+    # Without a time budget the historical behaviour is untouched.
+    assert iteration_limit_for_time_budget(0, 20) == 20
+
+
 # ------------------------------------------------------------- simulated run
 async def test_a_five_minute_run_wraps_up_and_closes_as_time_budget(harness, tmp_path):
     store, context = harness
@@ -220,6 +234,20 @@ async def test_a_five_minute_run_wraps_up_and_closes_as_time_budget(harness, tmp
     forced = next(e for e in events if e["event_type"] == TIME_BUDGET_EVENT_TYPE)
     assert forced["payload"]["work_seconds_used"] >= 300
     assert "report" in forced["payload"]
+
+
+async def test_a_time_budget_keeps_running_past_max_iterations(harness):
+    """A 10-minute budget outlives a 5-turn ceiling: time is the primary gate."""
+    store, context = harness
+    clock = FakeClock()
+
+    result, _, _ = await _run(
+        store, context, clock, max_iterations=5, time_budget_seconds=600
+    )
+
+    assert result.status == STATUS_TIME_BUDGET
+    assert result.iterations > 5
+    assert "Se guardó el estado para --resume" in result.final_summary
 
 
 async def test_the_work_clock_survives_a_resume(harness):

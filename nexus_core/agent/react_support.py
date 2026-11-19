@@ -1015,6 +1015,36 @@ MEASURED_TOKENS_PER_TURN = 11_800
 #: on the first retry; 20 % buys two extra turns at ``max_iterations=10``.
 BUDGET_TURNS_MARGIN = 1.2
 
+#: Floor of one budgeted turn when the operator asks for *work time* instead of
+#: a turn count. The iteration ceiling is only a safety net there: a 4-hour run
+#: that died at turn 20 because the default ``--max-iterations`` still applied
+#: wasted 3h48m of the window the operator paid for. Fifteen seconds is below
+#: any measured turn (~36 s in Wreath) so the derived ceiling never binds first.
+MIN_SECONDS_PER_BUDGET_TURN = 15
+
+
+def iteration_limit_for_time_budget(seconds: Any, fallback: Any = 0) -> int:
+    """Iteration ceiling coherent with a work-time budget (0 = no budget).
+
+    When the operator fixes ``--time-budget``, that clock is the primary
+    ceiling and ``--max-iterations`` becomes a secondary floor: the loop must
+    not close on the default 20 turns after twelve minutes. The returned limit
+    is at least ``fallback`` and, when a budget exists, at least one turn per
+    :data:`MIN_SECONDS_PER_BUDGET_TURN` of it. Without a budget the historical
+    ``max_iterations`` behaviour is unchanged.
+    """
+    try:
+        floor = max(0, int(fallback or 0))
+    except (TypeError, ValueError):
+        floor = 0
+    try:
+        budget = max(0, int(seconds or 0))
+    except (TypeError, ValueError):
+        budget = 0
+    if not budget:
+        return floor
+    return max(floor, 1, int(budget // MIN_SECONDS_PER_BUDGET_TURN))
+
 
 def budget_tokens_for_iterations(max_iterations: Any) -> int:
     """Token budget that is coherent with the iteration ceiling.

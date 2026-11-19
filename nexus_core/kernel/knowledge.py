@@ -79,7 +79,22 @@ class KnowledgeStore:
         edges: Any,
         created_at: str,
     ) -> None:
-        """Insert the anchors that point at an existing fact (no orphans)."""
+        """Replace the anchors of one fact with the edges just proved (V0-33).
+
+        A fact URI is stable across re-recordings, so appending the anchors of
+        the newest version used to leave the old provenance in place: a credential
+        found again from another service showed both origins, and the graph
+        could no longer say which one was current. When the new record carries
+        anchors, the previous rows of that fact are deleted in the same
+        transaction and only the new ones remain.
+
+        An empty anchor set does **not** erase provenance: an agent re-registering
+        a key the verifier already proved (V1-33) must not hide where it came
+        from. Orphan sources are still dropped, and only after the surviving set
+        is known - so a bad anchor never wipes a good one.
+        """
+        resolved: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
         for edge in edges:
             try:
                 src_uri, relation = edge
@@ -87,7 +102,7 @@ class KnowledgeStore:
                 continue
             src = str(src_uri or "").strip()
             rel = " ".join(str(relation or "derived_from").split())[:80]
-            if not src or src == dst_uri:
+            if not src or src == dst_uri or (src, rel) in seen:
                 continue
             exists = conn.execute(
                 """SELECT 1 FROM kernel_knowledge_documents
@@ -96,6 +111,16 @@ class KnowledgeStore:
             ).fetchone()
             if exists is None:
                 continue
+            seen.add((src, rel))
+            resolved.append((src, rel))
+        if not resolved:
+            return
+        conn.execute(
+            """DELETE FROM kernel_fact_edges
+            WHERE tenant_id=? AND engagement_id=? AND dst_uri=?""",
+            (tenant_id, engagement_id, dst_uri),
+        )
+        for src, rel in resolved:
             conn.execute(
                 """INSERT OR IGNORE INTO kernel_fact_edges
                 (id,tenant_id,engagement_id,src_uri,dst_uri,relation,created_at)

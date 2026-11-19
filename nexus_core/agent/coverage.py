@@ -1051,11 +1051,24 @@ def load_graph_context(
     if not engagement_id or store is None:
         return Coverage(), ""
     try:
-        from nexus_core.kernel.blackboard import Blackboard
+        from nexus_core.kernel.blackboard import Blackboard, fact_uri
 
         board = Blackboard(store)
         facts = board.list_facts(tenant_id, engagement_id, limit=500)
-        edges = board.list_edges(tenant_id, engagement_id, limit=2000)
+        # Ask for the provenance of the facts this snapshot actually carries,
+        # not for the oldest 2.000 edges of the engagement: one large scan used
+        # to push every later edge out of the window and coverage fell back to
+        # text parsing without saying so (V0-33 follow-up).
+        uris = [
+            fact_uri(
+                engagement_id,
+                str(fact.get("fact_type") or ""),
+                str(fact.get("key") or ""),
+            )
+            for fact in facts
+            if isinstance(fact, dict) and fact.get("fact_type") and fact.get("key")
+        ]
+        edges = board.list_edges_for_facts(tenant_id, engagement_id, uris)
     except Exception:  # noqa: BLE001 - memory must never kill a run
         return Coverage(), ""
     return (

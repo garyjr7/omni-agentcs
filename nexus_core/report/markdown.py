@@ -85,6 +85,28 @@ def render_markdown(report: EngagementReport) -> str:
         lines.append(f"- Nota: {report.notes}")
     lines.append("")
 
+    if report.attack_chain:
+        lines += ["## Cadena de ataque", ""]
+        lines.append(
+            "Rutas verificadas del grafo de activos: cada paso procede de una "
+            "arista atestiguada por el motor, no de la narración del agente."
+        )
+        lines.append("")
+        for chain in report.attack_chain:
+            rendered: list[str] = []
+            for index, step in enumerate(chain.steps):
+                label = str(step.label or step.key).replace("`", "'")
+                if step.fact_type == "host":
+                    rendered.append(f"**{label}**")
+                elif index == len(chain.steps) - 1 and step.fact_type in {
+                    "privilege", "loot"
+                }:
+                    rendered.append(f"**{label}**")
+                else:
+                    rendered.append(f"`{label}`")
+            lines.append("- " + " → ".join(rendered))
+        lines.append("")
+
     priorities = [
         finding for finding in report.findings if finding.severity in {"critical", "high"} and finding.verification_status == "confirmed_finding"
     ]

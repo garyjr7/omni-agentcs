@@ -114,3 +114,14 @@ class ReportRepository:
 
     def facts(self, tenant_id: str, engagement_id: str) -> list[dict[str, Any]]:
         return _load_facts(self.store, tenant_id, engagement_id)
+
+    def edges(self, tenant_id: str, engagement_id: str) -> list[dict[str, Any]]:
+        """Verified fact edges of the engagement (best-effort, never raises)."""
+        try:
+            return list(
+                Blackboard(self.store).list_edges(
+                    tenant_id, engagement_id, limit=100_000
+                )
+            )
+        except Exception:  # noqa: BLE001 - a report is better than an exception
+            return []

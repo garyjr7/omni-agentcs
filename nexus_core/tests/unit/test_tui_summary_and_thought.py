@@ -242,7 +242,10 @@ async def test_a_finished_run_reads_as_finished_and_an_unfinished_one_does_not(h
     render.render_summary(pending.final_summary, pending.findings, width=BOX_ROW_WIDTH)
     unfinished = capsys.readouterr().out
     assert pending.status == "max_iterations"
-    assert "límite de iteraciones alcanzado; trabajo incompleto" in unfinished
+    flat = " ".join(unfinished.replace("│", " ").split())
+    assert "Presupuesto de ejecución agotado" in flat
+    assert "Se guardó el estado para --resume" in flat
+    assert "Trabajo incompleto" in flat
     assert "termination_reason=max_iterations" in unfinished
     assert "findings=0" in unfinished
     assert "informe" in unfinished

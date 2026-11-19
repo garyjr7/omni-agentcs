@@ -27,6 +27,7 @@ from . import cvss as cvss_module
 from . import cvss4 as cvss4_module
 from . import frameworks as frameworks_module
 from . import mitre
+from .attack_chain import build_attack_chains
 from .models import (
     EngagementReport,
     Evidence,
@@ -444,7 +445,9 @@ async def build_report(
     """
     metadata = await extract_engagement_metadata(store, tenant_id, engagement_id)
     collection = _collect(store, tenant_id, engagement_id, run_ids)
-    facts = ReportRepository(store).facts(tenant_id, engagement_id)
+    repository = ReportRepository(store)
+    facts = repository.facts(tenant_id, engagement_id)
+    edges = repository.edges(tenant_id, engagement_id)
     findings, failed = findings_from_collection(collection, facts)
     if enrich_cves:
         findings = list(cve_module.enrich_findings(findings, root=cve_cache_dir))
@@ -512,6 +515,9 @@ async def build_report(
         references=references,
         surfaces=surfaces,
         evidences=evidences,
+        attack_chain=build_attack_chains(
+            facts, edges, engagement_id=engagement_id
+        ),
     )
     return with_digest(report)
 

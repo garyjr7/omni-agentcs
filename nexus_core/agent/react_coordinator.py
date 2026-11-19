@@ -139,6 +139,7 @@ ACTIONABLE_FACT_TYPES = frozenset({
 })
 from .react_support import (
     termination_summary,
+    iteration_limit_for_time_budget,
     _task_payload,
     _cancellation_requested,
     _audit_step,
@@ -910,12 +911,6 @@ class ReActCoordinator:
         )
         if self.cancel_event is None:
             self.cancel_event = getattr(self.context, "cancel_event", None)
-        # R1: the token ceiling follows the iteration ceiling. A run asked for 50
-        # turns with a fixed 250k dies at ~21 of them (HackPark V12); the
-        # operator's ``--max-iterations`` is a promise the budget has to keep.
-        self.budget = _budget_tokens(
-            self.payload, self.budget_tokens, max_iterations=self.config.max_iterations
-        )
         # Work-time budget: it counts only the time this loop spends working, so
         # a resumed run keeps the seconds it already spent and never inherits the
         # wall clock (and the downtime) of the process that wrote the history.
@@ -932,6 +927,21 @@ class ReActCoordinator:
             # resume that omits ``--time-budget`` inherits the one the engagement
             # was started with instead of silently becoming unlimited.
             self.time_budget_seconds = persisted_budget
+        # Precedence: an explicit work-time budget is the primary ceiling. The
+        # default ``--max-iterations 20`` used to close a 4-hour Wreath run at
+        # twelve minutes; with a time budget the iteration count becomes a
+        # secondary safety net derived from the clock (and at least the
+        # operator's value), and the token ceiling follows that same net so it
+        # cannot stop the run early either.
+        self.iteration_limit = iteration_limit_for_time_budget(
+            self.time_budget_seconds, self.config.max_iterations
+        )
+        # R1: the token ceiling follows the iteration ceiling. A run asked for 50
+        # turns with a fixed 250k dies at ~21 of them (HackPark V12); the
+        # operator's ``--max-iterations`` is a promise the budget has to keep.
+        self.budget = _budget_tokens(
+            self.payload, self.budget_tokens, max_iterations=self.iteration_limit
+        )
         self.wrap_up_seconds = wrap_up_window(
             self.time_budget_seconds,
             getattr(self.config, "wrap_up_seconds", 0) or wrap_up_threshold(),
@@ -949,6 +959,10 @@ class ReActCoordinator:
             {
                 "budget_tokens": self.budget,
                 "max_iterations": self.config.max_iterations,
+                "iteration_limit": self.iteration_limit,
+                "iteration_limit_source": (
+                    "time_budget" if self.time_budget_seconds else "max_iterations"
+                ),
                 "tokens_per_turn_estimate": MEASURED_TOKENS_PER_TURN,
                 "budget_turns": (
                     self.budget // MEASURED_TOKENS_PER_TURN if self.budget else 0
@@ -1051,7 +1065,8 @@ class ReActCoordinator:
         self._restore_run_state()
         #: WP2: the only hard ceiling of a run (``NEXUS_RUN_BUDGET_TOKENS``) and
         #: the 5-turn grace the board grants once the objective is complete.
-        self.iteration_limit = self.config.max_iterations
+        # ``iteration_limit`` was resolved in ``_initialize`` before the budget:
+        # it already accounts for a work-time ceiling.
         self.grace_turns_remaining: int | None = None
         self.grace_granted = False
         self.soft_limits_reported: set[str] = set()
@@ -1428,9 +1443,9 @@ class ReActCoordinator:
             f"; TODOs abiertos: {', '.join(open_todos[:6])}" if open_todos else ""
         )
         self.final_summary = (
-            f"Cierre por presupuesto de tiempo: {used:.0f}s de "
-            f"{self.time_budget_seconds}s de trabajo; {len(flags)} flag(s) "
-            f"capturada(s){tail}; {self._report_status_line()}"
+            "⚠️ Presupuesto de tiempo agotado. Se guardó el estado para "
+            f"--resume. {used:.0f}s de {self.time_budget_seconds}s de trabajo; "
+            f"{len(flags)} flag(s) capturada(s){tail}; {self._report_status_line()}"
         )
         self.actions.append(
             _action_entry(
@@ -6219,7 +6234,10 @@ class ReActCoordinator:
             # as "nothing was done". The counts are the planner's own snapshot of
             # ``Blackboard.summary`` (verifier-owned facts), never the model's.
             self.final_summary = termination_summary(
-                reason="límite de iteraciones alcanzado; trabajo incompleto",
+                reason=(
+                    "⚠️ Presupuesto de ejecución agotado. Se guardó el estado "
+                    "para --resume. Trabajo incompleto"
+                ),
                 termination_reason=STATUS_MAX_ITERATIONS,
                 max_iterations=self.config.max_iterations,
                 counts=getattr(self.plan, "counts", {}) or {},

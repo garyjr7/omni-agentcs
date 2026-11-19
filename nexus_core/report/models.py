@@ -176,6 +176,34 @@ class TimelineEntry:
 
 
 @dataclass(frozen=True)
+class AttackChainStep:
+    """One node of a proven chain (host, service, credential, privilege…)."""
+
+    fact_type: str
+    key: str
+    label: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable representation of the step."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AttackChain:
+    """Host → service → credential → privilege, read from the asset graph.
+
+    The steps come from verified ``kernel_fact_edges`` rows, so the deliverable
+    can show *how* access was obtained without asking the model to narrate it.
+    """
+
+    steps: tuple[AttackChainStep, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable representation of the chain."""
+        return {"steps": [step.to_dict() for step in self.steps]}
+
+
+@dataclass(frozen=True)
 class EngagementReport:
     """Everything the client deliverable contains, already extracted."""
 
@@ -204,6 +232,8 @@ class EngagementReport:
     references: tuple[ReportItem, ...] = ()
     surfaces: tuple[ReportItem, ...] = ()
     evidences: tuple[ReportItem, ...] = ()
+    #: Proven kill chains from the asset graph (empty when nothing was linked).
+    attack_chain: tuple[AttackChain, ...] = ()
 
     @property
     def findings_by_severity(self) -> dict[str, int]:
@@ -250,6 +280,7 @@ class EngagementReport:
             "references": [item.to_dict() for item in self.references],
             "surfaces": [item.to_dict() for item in self.surfaces],
             "evidences": [item.to_dict() for item in self.evidences],
+            "attack_chain": [item.to_dict() for item in self.attack_chain],
         }
 
 
@@ -283,6 +314,8 @@ def verify_report_digest(report: EngagementReport) -> bool:
 
 __all__ = [
     "SEVERITY_ORDER",
+    "AttackChain",
+    "AttackChainStep",
     "EngagementReport",
     "Evidence",
     "FailedAttempt",

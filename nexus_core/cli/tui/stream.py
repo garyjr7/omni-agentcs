@@ -451,6 +451,111 @@ def _notes(result: dict[str, Any]) -> list[str]:
     return notes
 
 
+def _human_bytes(value: Any) -> str:
+    """``1234`` → ``1.2 KB``; never a bare byte count in the transcript."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if amount < 0:
+        return ""
+    if amount < 1024:
+        return f"{int(amount)} B"
+    for unit in ("KB", "MB", "GB"):
+        amount /= 1024.0
+        if amount < 1024 or unit == "GB":
+            return f"{amount:.1f} {unit}"
+    return f"{amount:.1f} GB"
+
+
+def _friendly_error(message: Any, result: dict[str, Any]) -> str:
+    """One human sentence for the failures operators actually meet.
+
+    The gateway and the transports leak Python exception names (``SSLCertVerificationError``,
+    ``ConnectionResetError``, ``RuntimeError: tool post-condition was not
+    verified``). The transcript must say what happened to the engagement, not
+    which class raised. Unknown failures are returned unchanged: inventing a
+    meaning is worse than naming the raw error.
+    """
+    text = str(message or "")
+    lowered = text.casefold()
+    output = result.get("output") if isinstance(result.get("output"), dict) else {}
+    tool_id = str(result.get("tool_id") or "")
+    url = ""
+    for candidate in (output.get("url") if isinstance(output, dict) else "", text):
+        match = re.search(r"https?://[^\s'\"<>)\]}]+", str(candidate or ""))
+        if match:
+            url = match.group(0).rstrip(".,;:")
+            break
+    if (
+        "certificate_verify_failed" in lowered
+        or "certificate verify failed" in lowered
+        or "ssl: certificate" in lowered
+        or "certificateverificationerror" in lowered
+    ):
+        where = f" en {url}" if url else ""
+        return f"⚠️ Error SSL: certificado no verificable (posible autofirmado){where}"
+    if (
+        "connectionreseterror" in lowered
+        or "connection reset by peer" in lowered
+        or "errno 104" in lowered
+    ):
+        # FTP is the measured case (Wreath): the control channel is dropped
+        # after login, not a certificate or a timeout.
+        protocol = "FTP " if ("ftp" in tool_id or "ftp" in lowered) else ""
+        return f"⚠️ Conexión {protocol}reiniciada por el objetivo."
+    if "post-condition was not verified" in lowered:
+        method = re.search(r"method=([A-Za-z0-9_.-]+)", text)
+        tool = str(result.get("tool_id") or "El tool")
+        detail = f" ({method.group(1)})" if method else ""
+        return (
+            f"⚠️ {tool} finalizó, pero el parser no pudo verificar el "
+            f"resultado{detail} (¿host filtrado?)."
+        )
+    match = re.search(r"unknown skill ['\"]([^'\"]+)['\"]", text, re.I)
+    if match:
+        return (
+            f"⚠️ Skill '{match.group(1)}' no encontrado. "
+            "Usa /skills para ver disponibles."
+        )
+    return text
+
+
+def _specific_success(result: dict[str, Any]) -> str:
+    """Conversational line for tools whose payload is bookkeeping, not data.
+
+    A card that says ``resultado estructurado · 5 campo(s)`` hides the only
+    thing the operator asked: how many tools were revealed, whether subfinder
+    found anything, which fact was recorded, or what a web request answered.
+    """
+    tool_id = str(result.get("tool_id") or "")
+    output = result.get("output") if isinstance(result.get("output"), dict) else {}
+    evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+    if tool_id == "nexus.system.discover_tools":
+        tools = output.get("tools")
+        count = len(tools) if isinstance(tools, (list, tuple)) else evidence.get("tools_total")
+        if output.get("summary") and not tools:
+            return str(output["summary"])
+        return f"{int(count or 0)} herramientas descubiertas"
+    if tool_id == "nexus.recon.subfinder":
+        count = output.get("count", evidence.get("count", 0))
+        return f"{int(count or 0)} subdominios encontrados"
+    if tool_id == "nexus.knowledge.record_fact":
+        recorded = output.get("recorded") if isinstance(output.get("recorded"), dict) else {}
+        fact_type = str(recorded.get("fact_type") or evidence.get("fact_type") or "").strip()
+        key = str(recorded.get("key") or evidence.get("key") or "").strip()
+        if fact_type or key:
+            return f"Hecho registrado: {fact_type or '?'} - {key or '?'}"
+    if tool_id == "nexus.web.request":
+        status = output.get("status")
+        if status:
+            reason = str(output.get("reason") or "").strip()
+            size = _human_bytes(output.get("body_bytes"))
+            detail = " ".join(part for part in (str(status), reason) if part)
+            return f"{detail} ({size})" if size else detail
+    return ""
+
+
 def summarize_tool_result(result: dict[str, Any]) -> str:
     from .strings import FAILED, NOISE
 
@@ -459,12 +564,15 @@ def summarize_tool_result(result: dict[str, Any]) -> str:
     evidence = evidence if isinstance(evidence, dict) else {}
     if not result.get("success"):
         error = result.get("error") or (output.get("error") if isinstance(output, dict) else None) or FAILED
-        parts = [_line(str(error))]
+        parts = [_line(_friendly_error(error, result))]
         parts.extend(note for note in _notes(result) if note not in parts)
         method = result.get("verification_method")
-        if method:
+        if method and method not in {"http_request_failed", "http_timeout"}:
             parts.append(f"verification_method={method}")
         return _line(" · ".join(parts))
+    specific = _specific_success(result)
+    if specific:
+        return _line(specific)
     parts = []
     for field, label in (("ports_open_total", "puertos abiertos"), ("hosts_up", "hosts up"),
                          ("subdomain_count", "subdominios"), ("findings_count", "hallazgos")):

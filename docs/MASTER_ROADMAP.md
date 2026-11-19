@@ -1,14 +1,24 @@
 # MASTER ROADMAP — OMNI / OmniAgentCS
 
-> **Documento único de verdad.** Consolida las auditorías, planes y promesas ya
-> emitidas, las cruza con el código de `430dcfb` y define el orden de ejecución.
-> No sustituye a los documentos de origen: los indexa, los clasifica y evita que
-> dos fases futuras implementen lo mismo de forma incompatible.
+> **Mapa histórico + estado vigente.** El cuerpo de este documento es la
+> auditoría de `430dcfb` (2026-10-21) y conserva las fases y matrices de esa
+> fecha. El estado real del producto se lee en la cabecera siguiente, en
+> `CHANGELOG.md` y en `RC-CHECKLIST.md`; lo que aquí siga marcado como
+> pendiente debe contrastarse con el código antes de planificarlo.
+>
+> **Estado 2026-11-19 · `v3.1.1`.** Time Budget con precedencia de tiempo,
+> Durable State y Asset Graph están implementados; la suite de `v3.1.0` cerró
+> en 4.971 passed / 53 skipped y el catálogo tiene 88 tools durables. La deuda
+> abierta ya no es el núcleo de autonomía, sino la cadena kill-chain
+> multi-vector (V0-12), los parsers de loot y el aislamiento de lectura
+> (SEC-02). `oci_network` y JSON Schema completo **ya no** son deuda.
 
 | Dato | Valor |
 |---|---|
-| Fecha | 2026-10-21 |
-| Commit de código auditado | `430dcfb` — *Caja Negra por defecto, sin esperas pasivas y NFS sin root* |
+| Fecha de esta cabecera | 2026-11-19 |
+| Versión vigente | `3.1.1` |
+| Commit histórico auditado (cuerpo del documento) | `430dcfb` — *Caja Negra por defecto, sin esperas pasivas y NFS sin root* |
+| Catálogo actual | **88 tools durables** |
 | Roadmap base | `1a96924` — MASTER_ROADMAP + INDEX |
 | Ejecución W1.2 + PTY P0 | `49691be` |
 | Ejecución P1 (`session_ref`) | `07e3cdc` |
@@ -26,7 +36,7 @@
 | Entrega de lanzamiento (SEC-03/06/09, V0-5, docs, CI) | §5.22 — auditoría 2026-10-23 (2026-10-26) |
 | Suite tras la entrega de lanzamiento | **4 211 passed / 53 skipped** |
 | Auditoría de origen | `9a61785` — auditoría MCP/PTY |
-| Rama | `feat/orchestration-phase-2-close` |
+| Rama vigente | `main` (el cuerpo histórico se escribió en `feat/orchestration-phase-2-close`) |
 | Regla de esta entrega | **V11**: el PoC tiene que llegar al objetivo (form_params reales, next_steps y subida de temas) sin tocar `ToolGateway` |
 | Suite de referencia (`430dcfb`) | **3 735 passed / 53 skipped** |
 | Suite tras W1.2 + PTY P0 | **3 753 passed / 53 skipped** |
@@ -34,7 +44,7 @@
 | Suite tras P1.5 | **3 776 passed / 53 skipped** |
 | Suite tras V10 | **3 801 passed / 53 skipped** |
 | Suite tras V11 | **3 814 passed / 53 skipped** |
-| Catálogo | **83 tools durables**, **22 parsers** nativos |
+| Catálogo en la auditoría histórica | **83 tools durables**, **22 parsers** nativos |
 
 ---
 

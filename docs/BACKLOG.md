@@ -1,17 +1,21 @@
-# Deuda explícita después de Fase 0
+# Deuda explícita — estado tras v3.1.1
 
-La implementación de Fase 0 se limita a las cinco grietas P0. El backlog
-histórico se conserva en [docs/missions/BACKLOG.md](missions/BACKLOG.md).
-Estas P1 no se presentan como garantías disponibles:
+Este ledger se revisó el 2026-11-19 contra el código de `v3.1.1`. P1-C
+(JSON Schema completo) ya está implementado y P1-B (`oci_network`) ya existe con
+fail-closed; lo que queda de ellas es validación, no implementación. El backlog
+histórico se conserva en [docs/missions/BACKLOG.md](missions/BACKLOG.md):
 
 | Prioridad / ID de auditoría | Trabajo pendiente | Impacto actual | Criterio de cierre |
 | --- | --- | --- | --- |
-| P1-A · A-01 | Completar journal durable por paso/intento y reconciliación tras crash | Fase 2 parcial ya registra prepared/running/succeeded/unknown y bloquea unknown no idempotente; identidad por hash no distingue toda intención, resume CLI y fencing de lease pendientes. **No** exactly-once. | Estado reservado/ejecutando/observado/reconciliado y pruebas de caída en cada frontera; ningún replay automático de efectos desconocidos. |
-| P1-B · P2-3 | `oci_network` con egress validado por scope | El modo sigue indisponible y falla explícitamente. `oci` no tiene red; local no aísla egress. | Pruebas reales de rutas permitidas/denegadas, DNS/rebinding, IPv4/IPv6, cierre y cleanup sin degradación a local. |
-| P1-C · A-05 | Sustituir el validador subset del gateway por JSON Schema completo | `minimum`, `maximum`, `pattern` y otras restricciones siguen sin validarse universalmente en entradas de herramientas. Los checks específicos de handlers siguen vigentes. | Suite por dialecto y constraints, errores compatibles, tratamiento explícito de `$ref`; no añadir dependencias sin autorización. MCP ya trae `jsonschema` transitivamente, utilizado para validar su outputSchema. |
+| P1-A · A-01 | Exactly-once y reconciliación total tras crash | La Fase 2 ya cierra identidad de paso (`step_key`), fencing por `lease_id` y los estados prepared/running/succeeded/unknown; un efecto desconocido no se reproduce sin política. Queda el paraguas exactly-once (reconciliación de cada frontera y reanudación sin ambigüedad) como trabajo de diseño, no como deuda de implementación inmediata. | Estado reservado/ejecutando/observado/reconciliado y pruebas de caída en cada frontera; ningún replay automático de efectos desconocidos. |
+| P1-B · P2-3 | `oci_network`: validar el egress real por scope | Implementado en `kernel/sandbox.py` (`OCINetworkSandbox`: red `--internal` + proxy SOCKS5 del scope) y falla cerrado sin proxy. Falta la suite de rutas permitidas/denegadas, DNS/rebinding, IPv4/IPv6, cierre y cleanup sin degradación a local. | Pruebas reales de esas rutas y del fail-closed; sin ellas no se declara el aislamiento como garantía operativa. |
 
-Estimación orientativa: P1-A 3–5 días; P1-B 5–8 días; P1-C 1–2 días más
-regresiones. Son trabajos separados, en ese orden, no parte del cierre P0.
+P1-C/A-05 **cerrado**: `schema_validation.py` valida con `jsonschema` Draft
+2020-12 y tiene suite por dialecto/constraints. No se reabre como "deuda" sin
+una regresión concreta.
+
+Estimación orientativa: P1-A 3–5 días; P1-B 3–5 días (validación, no diseño).
+Son trabajos separados, en ese orden, no parte del cierre P0.
 
 ## Límites explícitos del verificador
 
@@ -37,8 +41,8 @@ seguridad del sistema operativo para un servidor stdio malicioso en modo local.
 | Calidad · Tipado TUI | Mypy incremental sobre ocho módulos UX conserva 23 errores preexistentes en `session.py` (atributos del layout dinámico, opcionalidad y anotaciones). El check no pasa; no se añadieron supresiones. | Contrato tipado de construcción del layout y sesión, cero hallazgos en esos módulos y pruebas de interfaz completas sin debilitar controles. Evidencia: `docs/missions/evidence/phase1/typecheck.txt`. |
 | U-03 · Telemetría | Ventana depende de configuración/metadato conocido; el conteo previo al response es estimado. El aviso al 80% no cambia los umbrales existentes de compactación; tasa oculta sin dato. | Descubrimiento confiable por despliegue, tokenizer/usage consistente y telemetría de límites del proveedor. Cambiar la política de compactación requiere otra misión del orquestador. |
 
-P1-A/A-01, P1-B/P2-3 (`oci_network`) y P1-C/A-05 permanecen con los criterios
-anteriores. No se amplió esta fase para declararlas resueltas.
+P1-A/A-01 y P1-B/P2-3 (`oci_network`) permanecen con los criterios anteriores;
+P1-C/A-05 ya está resuelto.
 
 ## Fase 2 · Cierre
 
