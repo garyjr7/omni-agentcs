@@ -72,8 +72,11 @@ def test_a_sandbox_timeout_is_not_a_denied_login() -> None:
 
     payload = json.loads(sandbox.calls[0][0][-1])
     assert payload["command_timeout"] < 30
-    assert "timeout -k 5" in payload["command"]
-    assert "/bin/sh -c" in payload["command"]
+    # The handler sends the model's command unchanged; the guard lives in the
+    # SSH client so its contract (and its redaction) does not change (V0-28).
+    assert payload["command"] == "cat /var/log/syslog"
+    assert "def timeout_wrap" in ssh_module.SSH_CLIENT_SCRIPT
+    assert "timeout -k" in ssh_module.SSH_CLIENT_SCRIPT
 
 
 def test_a_remote_command_timeout_is_reported_as_timeout() -> None:

@@ -332,6 +332,23 @@ def test_the_client_reports_a_nonzero_exit_as_a_command_failure(tmp_path) -> Non
     assert payload["stderr"] == "sudo: a password is required\n"
 
 
+def test_the_client_wraps_the_remote_command_in_the_timeout_guard(tmp_path) -> None:
+    """V0-28: the transport closes, but the target's process group is stopped."""
+    _run_client(
+        tmp_path,
+        exit_code=0,
+        body=(
+            "open('executed.txt', 'w').write(command); "
+            "return _Stream(), _Stream(), _Stream(b'')"
+        ),
+        payload={"command": "sudo -n -l", "command_timeout": 10},
+    )
+
+    executed = (tmp_path / "executed.txt").read_text(encoding="utf-8")
+    assert executed.startswith("if command -v timeout")
+    assert "timeout -k 5 10 /bin/sh -c 'sudo -n -l'" in executed
+
+
 # ------------------------------------------------------------ the ReAct fallback
 def _ssh_call(command: str = "sudo -n -l") -> str:
     return json.dumps(

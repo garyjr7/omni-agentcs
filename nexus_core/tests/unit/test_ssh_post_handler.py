@@ -126,8 +126,7 @@ def test_ssh_exec_feeds_sudo_password_on_stdin():
             },
         )
     remote = json.loads(sandbox.calls[0][0][-1])
-    assert "sudo -S " in remote["command"]
-    assert remote["command"].startswith("if command -v timeout")
+    assert remote["command"].startswith("sudo -S ")
     assert remote["stdin"] == "secret\n"
     assert result.evidence["sudo_stdin"] is True
 

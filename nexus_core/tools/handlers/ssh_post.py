@@ -157,10 +157,24 @@ _SHELL_SEPARATOR_RE = re.compile(r"[;&|\n]")
 
 #: Client script. argv layout after ``-c``: mode host port user password payload.
 SSH_CLIENT_SCRIPT = r"""
-import hashlib, json, posixpath, sys
+import hashlib, json, posixpath, shlex, sys
 
 def emit(payload):
     print(json.dumps(payload))
+
+
+def timeout_wrap(command, seconds):
+    # V0-28: the local sandbox already kills the client's process group, but
+    # closing the transport leaves the remote shell alive. GNU/BusyBox timeout
+    # starts the command in its own process group and signals the whole tree;
+    # the shell fallback keeps hosts without timeout working.
+    seconds = max(1, int(seconds or 60))
+    quoted = shlex.quote(str(command))
+    guarded = "timeout -k %s %s /bin/sh -c %s" % (5, seconds, quoted)
+    return (
+        "if command -v timeout >/dev/null 2>&1; then "
+        + guarded + "; else /bin/sh -c " + quoted + "; fi"
+    )
 
 
 def load_private_key(key_text, passphrase):
@@ -278,13 +292,14 @@ def main():
                 sftp.close()
         elif mode == "exec":
             command = payload.get("command", "")
+            executed = timeout_wrap(command, payload.get("command_timeout", 60))
             stdin_data = payload.get("stdin")
             # Never allocate a pty when a secret travels on stdin: a pty echoes
             # what is written to it, and ``sudo -S`` reads the password from the
             # pipe perfectly well. V1-46 (rerun 13): the pty echoed the vault
             # password of a ``sudo -n`` command straight into the observation.
             stdin, stdout, stderr = client.exec_command(
-                command, timeout=payload.get("command_timeout", 60), get_pty=False
+                executed, timeout=payload.get("command_timeout", 60), get_pty=False
             )
             if stdin_data:
                 stdin.write(stdin_data)
@@ -1195,8 +1210,13 @@ async def _run_sshpass_fallback(
     remote_stdin = password + "\n"
     if stdin_data:
         remote_stdin += stdin_data
+    # The native client is a command channel too: its remote side must stop
+    # with the same process-group guard, not only when the local shell dies.
+    guarded = _remote_timeout_command(
+        command, max(5, min(300, timeout_seconds - 2))
+    )
     invocation = shlex.join(
-        _sshpass_argv(host=host, port=port, username=username, command=command)
+        _sshpass_argv(host=host, port=port, username=username, command=guarded)
     )
     result = await shell_exec_handler(
         {
@@ -1405,7 +1425,6 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
     # the local kill wins and the target never learns that its process group
     # must stop.
     command_timeout = max(5, min(60, timeout_seconds - 2))
-    guarded_command = _remote_timeout_command(remote_command, command_timeout)
 
     try:
         result = await _run_ssh_client(
@@ -1415,7 +1434,7 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
             username=username,
             password=password,
             payload={
-                "command": guarded_command,
+                "command": remote_command,
                 "command_timeout": command_timeout,
                 "stdin": stdin_data,
                 "private_key": auth["private_key"],

@@ -205,9 +205,7 @@ def test_ssh_exec_lets_sudo_through_to_the_approval_gate(context):
     assert result.outcome == ""
     # ``sudo -S`` with the credential on stdin: the model did not have to spell
     # the escalation around the tool.
-    remote_command = json.loads(argv[-1])["command"]
-    assert remote_command.startswith("if command -v timeout")
-    assert "sudo -S " in remote_command
+    assert json.loads(argv[-1])["command"].startswith("sudo -S ")
 
 
 def test_ssh_exec_refuses_a_self_destructive_command_with_the_shared_list(context):
