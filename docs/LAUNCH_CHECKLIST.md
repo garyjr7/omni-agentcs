@@ -1,11 +1,11 @@
 # Checklist de lanzamiento público — OMNI / OmniAgentCS
 
-Estado: **saneamiento de árbol e historial completado**, 2026-11-17, sobre
-`v3.0.0-rc4`. Este documento resume la auditoría y enumera lo que debe
-completarse antes de cambiar la visibilidad del repositorio. La reescritura de
-`rc4` añadió la purga de `docs/missions/`, fixtures DPAPI, `hijack_v3.ndjson`
-antiguo y credenciales/flags de laboratorio; los tags remotos antiguos deben
-forzarse o borrarse antes de anunciar.
+Estado: **saneamiento de árbol e historial completado**, 2026-11-20, sobre
+`v3.2.0`. Este documento resume la auditoría y enumera lo que debe completarse
+antes de cambiar la visibilidad del repositorio. La reescritura de `rc4` añadió
+la purga de `docs/missions/`, fixtures DPAPI, `hijack_v3.ndjson` antiguo y
+credenciales/flags de laboratorio; los tags remotos antiguos deben forzarse o
+borrarse antes de anunciar.
 
 ## 0. Bloqueadores del historial (resueltos)
 
@@ -73,7 +73,8 @@ La pasada combinada aplicó:
 - [x] Verificar el correo: `git log --format='%ae' | sort -u`.
 - [x] Verificar que no quedan mensajes con la atribución:
       `git log --grep='Codebuff' --oneline`.
-- [ ] Re-ejecutar CI sobre el SHA nuevo.
+- [x] Re-ejecutar CI sobre el SHA nuevo (`dd917f5`; jobs `cli`, `coverage`,
+      `postgres` y `secrets` verdes).
 - [ ] Avisar a cualquier colaborador con clones existentes: deben re-clonar, no
       hacer `pull`.
 
@@ -178,8 +179,8 @@ git grep -n -E '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' || true
 - [ ] Confirmar `LICENSE` (Apache-2.0), `NOTICE` y `DISCLAIMER.md`.
 - [ ] Confirmar que `pyproject.toml` declara `license = "Apache-2.0"` y
       `license-files = ["LICENSE", "NOTICE"]`.
-- [ ] Firmar el tag final: `git tag -s v3.0.0 -m "OMNI v3.0.0"`; verificar con
-      `git verify-tag v3.0.0`.
+- [ ] Firmar el tag final: `git tag -s v3.2.0 -m "OMNI v3.2.0"`; verificar con
+      `git verify-tag v3.2.0`.
 - [ ] Publicar checksums de los artefactos.
 - [ ] Revisar que las release notes no incluyan rutas internas, correos ni
       nombres de clientes.
@@ -193,7 +194,7 @@ trufflehog git file://. --only-verified   # si está instalado
 make syntax lint typecheck-strict audit test
 git status --short
 git describe --tags
-git ls-remote --tags origin 'refs/tags/v3.0.0-rc3*'
+git ls-remote --tags origin 'refs/tags/v3.2.0*'
 ```
 
 - [ ] `make audit` sin vulnerabilidades no ignoradas.

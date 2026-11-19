@@ -1,46 +1,47 @@
-# Checklist de release — `v3.1.1`
+# Checklist de release — `v3.2.0`
 
-Estado medido a **2026-11-19** sobre `main`, tras la prueba en la sala Wreath.
-Versión en código: `3.1.1` (`pyproject.toml`, `nexus_core/cli/main.py`).
+Estado medido a **2026-11-20** sobre `main` (`dd917f5`), tras el cierre de
+V0-12, V0-33 y SEC-07.
 
-Esta entrega corrige la precedencia del Time Budget, sanea la TUI y cierra la
-deuda del Asset Graph (vigencia, escala, normalización y cadena de ataque en el
-informe). **No** cambia el modelo de permisos ni el gateway.
+Versión en código: `3.2.0` (`pyproject.toml`, `nexus_core/cli/main.py`).
+
+Esta entrega convierte el cierre de un engagement en una decisión multi-vector,
+deduplica los hechos del blackboard y exige rol de aprobador en las decisiones.
+No cambia el modelo de sandbox ni el gateway.
 
 ## Gates ejecutados
 
 | Gate | Comando | Resultado |
 | --- | --- | --- |
-| Versión en código | `omni.py --version` | `omni 3.1.1` |
+| Versión en código | `omni.py --version` | `omni 3.2.0` |
 | Sintaxis y lint | `make lint` | **All checks passed** (`F,E9`) |
-| Tipos estrictos | `make typecheck-strict` | **0 errores en 181 ficheros** |
-| Suite completa | `CI=true .venv/bin/python -m pytest nexus_core/tests -q` | **4.988 passed, 55 skipped** (428 s) |
-| Tests de las áreas tocadas | `test_time_budget`, `test_asset_graph`, `test_tui_tool_messages`, `test_report_attack_chain` | **30 passed** (18 de ellos nuevos) |
-| CI remoto | GitHub Actions | **Pendiente**: revisar los jobs `cli`, `coverage`, `postgres` y `secrets` sobre el SHA de este commit |
-| Tag | anotado `v3.1.1` | **No creado**: el operador lo crea después de revisar el CI |
+| Tipos incrementales | `make typecheck TYPECHECK_BASE=HEAD` | **0 errores en 15 ficheros** |
+| Tipos estrictos | `make typecheck-strict` | **0 errores en 182 ficheros** |
+| Suite completa | `CI=true .venv/bin/python -m pytest nexus_core/tests -q` | **4.997 passed, 55 skipped** (337 s) |
+| Tests de las áreas tocadas | `test_v320_vectors_and_supersede.py` | **9 passed** |
+| Secretos | `gitleaks` sobre `0454435..dd917f5` | **0 hallazgos** |
+| CI remoto | GitHub Actions sobre `dd917f5` | **Verde** (`cli`, `coverage`, `postgres`, `secrets`) |
+| Tag | anotado `v3.2.0` | **Creado y publicado** (`1eaa4d7`, apunta a `dd917f5`) |
 
-Nota de estabilidad: una pasada completa falló en
-`test_shell_exec_local::test_an_sshpass_run_feeds_the_board_and_closes_the_objective`
-con `session engagement is not valid`; el mismo test pasa aislado y la pasada
-completa siguiente terminó en verde. Se registra como flake ambiental de la
-suite, no como regresión de este cambio.
+## Qué entra en `v3.2.0`
 
-## Qué entra en `v3.1.1`
-
-- **Time Budget primario.** Con `--time-budget`/`--time-budget-hours`,
-  `iteration_limit` se deriva del reloj de trabajo (`max_iterations` como
-  mínimo/techo secundario) y el presupuesto de tokens se deriva de ese límite.
-  Un run de 4 h ya no se detiene a las 12 minutos en la iteración 20.
-- **TUI.** Mensajes conversacionales para `discover_tools`, `subfinder`,
-  `record_fact` y `web.request`; errores SSL/FTP/post-condition/skill sin
-  traceback; cierre por presupuesto con «Se guardó el estado para --resume».
-- **Asset Graph.** Aristas por `dst_uri` de los hechos del snapshot (sin el tope
-  global de 2.000); reemplazo de aristas al re-grabar un hecho; normalización
-  hostname↔IP en httpx/gobuster contra los hosts probados.
-- **Informe.** `## Cadena de ataque` en Markdown y `attack_chain` en el JSON,
-  construida desde las aristas verificadas.
-- **Documentación.** `INDEX`, `RC-CHECKLIST`, `BACKLOG` y `MASTER_ROADMAP`
-  actualizados; P1-C cerrado y P1-B reducido a validación de egress.
+- **V0-12 · Planificador multi-vector.** Estado durable por servicio en
+  `kernel_run_state` (`attack_vectors`): `discovered → tested → exploited` o
+  `discarded`, con cola de prioridad. `task_complete` se rechaza mientras quede
+  un vector abierto. Las credenciales verificadas se reutilizan en los demás
+  servicios del host sin volver a exponer el secreto en el prompt. Prueba
+  sintética de tres rutas (SSH, web y API oculta).
+- **V0-33 · Supersede y deduplicación.** Clave canónica por hecho; al re-grabar
+  se marca la versión anterior con `superseded_by` en la misma escritura.
+  `list_facts`, el informe y el inventario devuelven una sola versión vigente.
+  Un hecho verificado nunca es sombreado por una hipótesis del agente (V1-33).
+- **SEC-07 · Rol del aprobador.** `ApprovalService.decide()` exige `approver` o
+  `admin`, explícito o resuelto desde `kernel_users`/`kernel_service_accounts`
+  del tenant. Un `viewer` recibe `PermissionError`. La CLI y el resume declaran
+  su rol de forma explícita.
+- **Documentación y versión.** `CHANGELOG`, `BACKLOG`, `INDEX` y
+  `MASTER_ROADMAP` actualizados; `pyproject.toml` y `PROGRAM_VERSION` en
+  `3.2.0`.
 
 ## Seguridad: estado honesto
 
@@ -52,17 +53,24 @@ suite, no como regresión de este cambio.
 - **SEC-03 — Cerrado.** `oci_network` implementado con red `--internal` y proxy
   SOCKS5 del scope; sin proxy falla cerrado (ADR-004). La validación de rutas
   reales sigue en P1-B.
-- **SEC-07 — Abierto.** `ApprovalService.decide()` no comprueba rol/tenant del
-  aprobador; solo relevante con varios analistas.
+- **SEC-07 — Cerrado.** El rol se comprueba antes de decidir; los actores
+  enrolados sin rol de aprobador quedan denegados. El camino local del operador
+  sigue pasando su rol explícito.
 
 ## Checklist de publicación
 
-- [x] Versión `3.1.1` en `pyproject.toml` y `PROGRAM_VERSION`.
-- [x] `CHANGELOG.md` con la entrada `v3.1.1`.
-- [x] `make lint` y `make typecheck-strict`.
+- [x] Versión `3.2.0` en `pyproject.toml` y `PROGRAM_VERSION`.
+- [x] `CHANGELOG.md` con la entrada `v3.2.0`.
+- [x] `make lint`, typecheck incremental y typecheck estricto.
 - [x] Suite completa en verde.
 - [x] Sin atribución de IA en el commit.
-- [ ] CI remoto verde sobre el SHA publicado.
-- [ ] Revisión del operador de los cambios de TUI/informe.
-- [ ] Tag anotado `v3.1.1` y push del tag (después del CI).
+- [x] CI remoto verde sobre `dd917f5`.
+- [x] Tag anotado `v3.2.0` y push del tag.
 - [ ] GitHub Release con las notas de `CHANGELOG.md`.
+
+## Próximo ciclo
+
+La deuda funcional que queda para `v3.3.0` está en `BACKLOG.md`: V0-28
+(timeout/cancelación de `ssh_exec`), V0-24/V0-27/V0-30 (extractor de loot),
+V0-13 (loot de Windows), V0-32 (tamaño del informe) y las mejoras de sesión y
+plataforma posteriores.
