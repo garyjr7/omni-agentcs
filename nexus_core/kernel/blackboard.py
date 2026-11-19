@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 from typing import Any, Literal, TypedDict
+from uuid import uuid4
 
+from .fact_keys import canonical_fact_identity, canonical_fact_key
 from .knowledge import KnowledgeStore
 from .serialization import sanitized_object
 from .redaction import sanitize_text
@@ -86,7 +88,7 @@ def fact_uri(engagement_id: str, fact_type: str, key: str) -> str:
     return _source_uri(engagement_id, fact_type, key)
 
 
-class Fact(TypedDict):
+class Fact(TypedDict, total=False):
     fact_type: str
     key: str
     value: dict[str, Any]
@@ -94,6 +96,11 @@ class Fact(TypedDict):
     verified: bool
     verification_method: str
     invocation_id: str
+    #: Stable id of this version (V0-33). ``superseded_by`` names the version
+    #: that replaced it; a superseded row is never returned by ``list_facts``.
+    fact_id: str
+    canonical_key: str
+    superseded_by: str
 
 
 def is_verified_fact(fact):
@@ -147,6 +154,34 @@ class Blackboard:
             raise ValueError("invalid fact provenance")
         if verified and (asserted_by != "verifier" or not verification_method or not invocation_id):
             raise ValueError("verified facts require verifier, method and invocation_id")
+        fact_id = f"fact_{uuid4().hex}"
+        canonical_key = canonical_fact_key(fact_type, key, value or {})
+        # V0-33: a fact recorded under another spelling of the same canonical
+        # identity is not a second fact. Mark the previous versions superseded in
+        # the same write, except when the new record is an agent hypothesis over
+        # a fact the verifier already proved: then the hypothesis is the one that
+        # is superseded, and the verified value keeps winning (V1-33).
+        superseded_by = ""
+        supersede_uris: list[str] = []
+        try:
+            previous = self.list_facts(
+                tenant_id,
+                engagement_id,
+                fact_type=fact_type,
+                limit=FACT_KEYS_CEILING,
+            )
+        except Exception:  # noqa: BLE001 - a supersede check never blocks a write
+            previous = []
+        for old in previous:
+            if canonical_fact_identity(old) != (fact_type, canonical_key):
+                continue
+            old_uri = _source_uri(
+                engagement_id, fact_type, str(old.get("key") or "")
+            )
+            if not verified and is_verified_fact(old):
+                superseded_by = str(old.get("fact_id") or old_uri)
+                continue
+            supersede_uris.append(old_uri)
         record = {
             "engagement_id": engagement_id,
             "fact_type": fact_type,
@@ -158,7 +193,11 @@ class Blackboard:
             "verification_method": verification_method,
             "invocation_id": invocation_id,
             "recorded_at": utc_now(),
+            "fact_id": fact_id,
+            "canonical_key": canonical_key,
         }
+        if superseded_by:
+            record["superseded_by"] = superseded_by
         edges: list[tuple[str, str]] = []
         for anchor in anchors or ():
             if isinstance(anchor, (tuple, list)) and len(anchor) == 2:
@@ -182,6 +221,8 @@ class Blackboard:
             },
             engagement_id=engagement_id,
             edges=edges,
+            supersede=supersede_uris,
+            superseded_by=fact_id,
         )
         return record
 
@@ -327,12 +368,43 @@ class Blackboard:
                     fact = sanitized_object(json.loads(content))
                 except (TypeError, ValueError, RecursionError):
                     continue
+                if fact.get("superseded_by"):
+                    continue
                 latest.setdefault(key, fact)
                 if is_verified_fact(fact):
                     verified[key] = fact
                     break
         merged = {**latest, **verified}
-        return [merged[key] for key in keys if key in merged]
+        return self._canonical_versions(merged, keys)
+
+    @staticmethod
+    def _canonical_versions(
+        merged: dict[str, dict[str, Any]], keys: list[str]
+    ) -> list[dict[str, Any]]:
+        """One current fact per canonical identity (V0-33).
+
+        Two spellings of the same credential can still coexist in an old
+        database, or arrive between the supersede scan and the write. Keeping
+        the verified version, and the newest one between equals, makes the report
+        and the planner see one fact without depending on the write path.
+        """
+        chosen: dict[tuple[str, str], dict[str, Any]] = {}
+        order: list[tuple[str, str]] = []
+        ranks: dict[tuple[str, str], tuple[int, str]] = {}
+        for key in keys:
+            fact = merged.get(key)
+            if fact is None:
+                continue
+            identity = canonical_fact_identity(fact)
+            rank = (1 if is_verified_fact(fact) else 0, str(fact.get("recorded_at") or ""))
+            if identity not in chosen:
+                order.append(identity)
+                chosen[identity] = fact
+                ranks[identity] = rank
+            elif rank > ranks[identity]:
+                chosen[identity] = fact
+                ranks[identity] = rank
+        return [chosen[identity] for identity in order]
 
     def _fact_keys(
         self, conn, tenant_id: str, prefix: str, wanted: int

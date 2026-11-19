@@ -8,6 +8,7 @@ import re
 from typing import Any, Iterable, Mapping
 
 from nexus_core.kernel.blackboard import is_verified_fact
+from nexus_core.kernel.fact_keys import canonical_fact_identity
 
 from .models import (
     Evidence,
@@ -232,6 +233,35 @@ def _loot_sha256(value: dict[str, Any]) -> str | None:
     return digest or None
 
 
+def _current_fact_versions(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One current fact per canonical identity (V0-33).
+
+    ``Blackboard.list_facts`` already filters ``superseded_by`` and merges
+    spellings. This second, pure pass keeps a report generated from an older
+    database (or from facts imported by a caller) honest: a verified duplicate
+    wins over a hypothesis and the newest version wins between equals.
+    """
+    chosen: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    ranks: dict[tuple[str, str], tuple[int, str]] = {}
+    for fact in records:
+        if fact.get("superseded_by"):
+            continue
+        identity = canonical_fact_identity(fact)
+        rank = (
+            1 if is_verified_fact(fact) else 0,
+            str(fact.get("recorded_at") or ""),
+        )
+        if identity not in chosen:
+            order.append(identity)
+            chosen[identity] = fact
+            ranks[identity] = rank
+        elif rank > ranks[identity]:
+            chosen[identity] = fact
+            ranks[identity] = rank
+    return [chosen[identity] for identity in order]
+
+
 def _fact_findings(
     facts: Iterable[dict[str, Any]], *, scope: Any = None
 ) -> list[Finding]:
@@ -240,7 +270,7 @@ def _fact_findings(
     ``scope`` (optional) is the signed engagement scope: when given, a fact that
     names targets entirely outside it is not reported as impact.
     """
-    records = [fact for fact in facts if isinstance(fact, dict)]
+    records = _current_fact_versions([fact for fact in facts if isinstance(fact, dict)])
     invocation_targets = _invocation_targets(records)
     results: list[Finding] = []
     for fact in records:
@@ -311,7 +341,7 @@ def _fact_findings(
 
 def _fact_inventory(facts: Iterable[dict[str, Any]]) -> list[ReportItem]:
     """One inventory item summarising every fact of the engagement (H3)."""
-    facts = [fact for fact in facts if isinstance(fact, dict)]
+    facts = _current_fact_versions([fact for fact in facts if isinstance(fact, dict)])
     if not facts:
         return []
     counts: dict[str, int] = {}

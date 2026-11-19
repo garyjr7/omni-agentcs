@@ -213,6 +213,7 @@ from .planner import (
     webshell_stall_hint,
 )
 from .subagents import SubAgentDefinition
+from .vector_plan import VectorPlan
 from .project_context import ProjectInstruction
 from .skills import Skill
 from typing import TYPE_CHECKING
@@ -1104,6 +1105,9 @@ class ReActCoordinator:
         self.enumeration_escalated = False
         self.session_handed_over = False
         self.credential_handed_over = False
+        #: Durable queue of attack vectors (V0-12): restored from
+        #: ``kernel_run_state`` and refreshed from the coverage ledger every turn.
+        self.vector_plan = VectorPlan()
         self.endpoint_ceiling_applied = False
         self.budget_hint = ""
         self.budget_hint_emitted = False
@@ -1257,6 +1261,9 @@ class ReActCoordinator:
                     self.phase_turns[str(phase)] = max(0, int(count))
                 except (TypeError, ValueError):
                     continue
+        attack_vectors = state.get("attack_vectors")
+        if isinstance(attack_vectors, (list, tuple)):
+            self.vector_plan = VectorPlan.from_state(attack_vectors)
         vectors = state.get("vectors")
         for entry in vectors if isinstance(vectors, list) else ():
             if not isinstance(entry, dict):
@@ -1299,6 +1306,9 @@ class ReActCoordinator:
             }
             for key in sorted(keys)
         ]
+        coverage = getattr(getattr(self, "snapshot", None), "coverage", None)
+        self.vector_plan = VectorPlan.merge(self.vector_plan, coverage)
+        following = self.vector_plan.next_vector
         try:
             self.store.save_run_state(
                 self.tenant_id,
@@ -1310,6 +1320,12 @@ class ReActCoordinator:
                     "resurrected_tools": sorted(self.resurrected_tools),
                     "phase_turns": dict(self.phase_turns),
                     "vectors": vectors,
+                    # V0-12: the queue survives ``--resume``. It is a snapshot,
+                    # not a second source of truth: the board still decides
+                    # every verdict and the next turn merges it back.
+                    "attack_vectors": self.vector_plan.to_state(),
+                    "vector_queue": list(self.vector_plan.refs(open_only=True)),
+                    "vector_next": following.ref if following is not None else "",
                 },
             )
         except Exception:  # noqa: BLE001 - durability must never break a turn

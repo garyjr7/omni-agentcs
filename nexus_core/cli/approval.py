@@ -166,6 +166,10 @@ def _register_approval(
             session.operator_id,
             True,
             f"approved from omni CLI by {session.operator_id}",
+            # The human at the keyboard is the local approver. An enrolled
+            # viewer never reaches this path: the tenant lookup in decide()
+            # would refuse it, and the CLI keeps that decision out of the model.
+            actor_roles=("approver",),
         )
     except Exception as exc:  # noqa: BLE001 - never authorize on a failed row
         render.render_error(

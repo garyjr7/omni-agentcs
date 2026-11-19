@@ -75,7 +75,9 @@ def run_resume_command(argv: list[str], store, tenant: str, *, reader=None) -> i
 
         approvals = ApprovalService(store)
         approval = approvals.request(context, f"retry:invocation:{target}")
-        approvals.decide(approval["id"], tenant, args.operator, True)
+        approvals.decide(
+            approval["id"], tenant, args.operator, True, actor_roles=("approver",)
+        )
         render.render_status(
             f"retry aprobado para {target} (approval {approval['id']}). "
             "Reanuda el run y el gateway consumirá esta aprobación."

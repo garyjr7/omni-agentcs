@@ -14,7 +14,7 @@ from . import errors, render
 from .session import DEFAULT_TENANT, OmniSession, build_llm_client
 
 PROGRAM = "omni"
-PROGRAM_VERSION = "3.1.1"
+PROGRAM_VERSION = "3.2.0"
 
 #: Run statuses that do not mean "the agent broke".
 ACCEPTABLE_ONESHOT_STATUSES = frozenset(

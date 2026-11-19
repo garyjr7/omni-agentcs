@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import json
+from typing import Any, Dict, Iterable
 from uuid import uuid4
 
 from .control_store import ControlStore
 from .models import RunContext, utc_now
+
+#: Roles allowed to decide a pending approval (SEC-07). ``operator`` is the
+#: agent's tool-execution role, not an approval role: approving is a human
+#: separation-of-duties decision.
+APPROVER_ROLES = frozenset({"approver", "admin"})
 
 
 class ApprovalService:
@@ -45,6 +51,65 @@ class ApprovalService:
             raise KeyError("approval not found")
         return dict(row)
 
+    def _tenant_roles(self, tenant_id: str, actor_id: str) -> tuple[str, ...]:
+        """Roles of an enrolled principal in this tenant (``()`` when unknown).
+
+        ``kernel_users`` stores one role, ``kernel_service_accounts`` a JSON
+        list. The lookup accepts the user id or email, so a CLI operator can name
+        either. An unenrolled local operator keeps the historical contract and is
+        checked by its explicit ``actor_roles`` at the call site.
+        """
+        actor = str(actor_id or "").strip()
+        if not actor:
+            return ()
+        with self.store.connect() as conn:
+            user = conn.execute(
+                """SELECT role FROM kernel_users
+                WHERE tenant_id=? AND active=1 AND (id=? OR email=? OR name=?)
+                LIMIT 1""",
+                (tenant_id, actor, actor, actor),
+            ).fetchone()
+            if user is not None:
+                role = str(user["role"] or "").strip().lower()
+                return (role,) if role else ()
+            account = conn.execute(
+                """SELECT roles FROM kernel_service_accounts
+                WHERE tenant_id=? AND id=? LIMIT 1""",
+                (tenant_id, actor),
+            ).fetchone()
+        if account is None:
+            return ()
+        try:
+            roles = json.loads(str(account["roles"] or "[]"))
+        except (TypeError, ValueError):
+            return ()
+        if not isinstance(roles, list):
+            return ()
+        return tuple(str(role).strip().lower() for role in roles if str(role).strip())
+
+    @staticmethod
+    def _authorize_approver(
+        tenant_id: str,
+        actor_id: str,
+        actor_roles: Iterable[str] | None,
+        resolved_roles: tuple[str, ...],
+    ) -> None:
+        """Refuse a principal that does not carry ``approver`` or ``admin``.
+
+        Explicit roles are authoritative (the CLI passes the human's role). When
+        they are absent, the tenant directory is consulted; an actor absent from
+        the directory keeps the legacy local-operator path instead of breaking
+        every existing approval row. An enrolled ``viewer`` is always refused.
+        """
+        if actor_roles is not None:
+            roles = {str(role).strip().lower() for role in actor_roles if str(role).strip()}
+        else:
+            roles = set(resolved_roles)
+        if roles and not roles & APPROVER_ROLES:
+            raise PermissionError(
+                f"actor {actor_id!r} lacks approver/admin role in tenant {tenant_id!r}"
+            )
+
     def decide(
         self,
         approval_id: str,
@@ -52,12 +117,16 @@ class ApprovalService:
         actor_id: str,
         approved: bool,
         reason: str = "",
+        *,
+        actor_roles: Iterable[str] | None = None,
     ) -> Dict[str, Any]:
         approval = self.get(approval_id, tenant_id)
         if approval["status"] != "pending":
             raise ValueError("approval is already decided")
         if approval["requested_by"] == actor_id:
             raise PermissionError("requester cannot approve their own action")
+        resolved = () if actor_roles is not None else self._tenant_roles(tenant_id, actor_id)
+        self._authorize_approver(tenant_id, actor_id, actor_roles, resolved)
         status = "approved" if approved else "denied"
         with self.store.connect() as conn:
             conn.execute(

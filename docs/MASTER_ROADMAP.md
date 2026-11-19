@@ -6,17 +6,16 @@
 > `CHANGELOG.md` y en `RC-CHECKLIST.md`; lo que aquí siga marcado como
 > pendiente debe contrastarse con el código antes de planificarlo.
 >
-> **Estado 2026-11-19 · `v3.1.1`.** Time Budget con precedencia de tiempo,
-> Durable State y Asset Graph están implementados; la suite de `v3.1.0` cerró
-> en 4.971 passed / 53 skipped y el catálogo tiene 88 tools durables. La deuda
-> abierta ya no es el núcleo de autonomía, sino la cadena kill-chain
-> multi-vector (V0-12), los parsers de loot y el aislamiento de lectura
-> (SEC-02). `oci_network` y JSON Schema completo **ya no** son deuda.
+> **Estado 2026-11-20 · `v3.2.0`.** Time Budget con precedencia de tiempo,
+> Durable State, Asset Graph y el planificador multi-vector están
+> implementados; el catálogo tiene 88 tools durables. La deuda abierta ya no es
+> el núcleo de autonomía, sino los parsers de loot y el aislamiento de lectura
+> (SEC-02). `oci_network`, JSON Schema completo y V0-12 **ya no** son deuda.
 
 | Dato | Valor |
 |---|---|
-| Fecha de esta cabecera | 2026-11-19 |
-| Versión vigente | `3.1.1` |
+| Fecha de esta cabecera | 2026-11-20 |
+| Versión vigente | `3.2.0` |
 | Commit histórico auditado (cuerpo del documento) | `430dcfb` — *Caja Negra por defecto, sin esperas pasivas y NFS sin root* |
 | Catálogo actual | **88 tools durables** |
 | Roadmap base | `1a96924` — MASTER_ROADMAP + INDEX |
@@ -184,10 +183,10 @@ Puntos exactos: `kernel/tool_gateway.py:245` (invoke), `:268` (modo), `:270`
   comportamiento antiguo).
 - `agent/supervisor.py`: auto-spawn opt-in por cambio de familia de fase, con
   raíz durable y ledger de reservas (`FASE2 P2-C`).
-- **Selección multi-vector parcial**: el ledger ya da veredicto por *camino*
-  (B2, §5.19) y el pivote ordena el siguiente cuando el actual está cerrado, pero
-  el plan sigue eligiendo **una fase** y no compara vectores con coste/beneficio
-  ni mantiene ramas en paralelo (V0-12 sigue abierta).
+- **Selección multi-vector (v3.2.0)**: el ledger da veredicto por *camino*, el
+  estado por vector (`discovered → tested → exploited/discarded`) vive en
+  `kernel_run_state`, la cola prioriza ramas sin probar y `task_complete` se
+  rechaza mientras quede un vector abierto (V0-12 cerrada).
 - **No hay bus tipado ni workers dinámicos**: los subagentes son un árbol
   supervisor, no un bus de eventos (WP5).
 
@@ -297,7 +296,7 @@ encendarlas sin abrir una puerta lateral al gateway.
 | Webshell y escalada gobernados | `V0-3` | **[PENDIENTE]** | `web.upload` y `wp_exec` existen; la escalada sigue siendo payload del operador y no hay cadena acreditada de webshell→sesión→privesc. |
 | C2 autónomo acreditado | `V1-5` | **[PENDIENTE]** | Sliver está entregado (generate/deploy/loot), pero no hay cadena autónoma medida en un lab multi-host. |
 | Blackboard sin duplicados ni capturas sin acreditar | `V0-2` | **[HECHO]** | §5.21: la ventana se aplica a **claves**, no a filas (una clave reescrita ya no desaloja a sus vecinos); `limit` cuenta claves, y una clave con más de 20 versiones se relee entera para que el «verified wins» de V1-33 siga valiendo. `summary`, `verified_fact` y `_blackboard_facts` piden el techo en vez del page de 100. La acreditación de capturas Windows es V0-13 y sigue parcial en `RUN_sala09`. |
-| Planificador con selección multi-vector | `V0-12` | **[PENDIENTE]** | El planner elige una fase; no compara vectores alternativos con coste/beneficio ni mantiene ramas paralelas. |
+| Planificador con selección multi-vector | `V0-12` | **[HECHO]** | Estado durable por vector en `kernel_run_state`, cola que no cierra al primer éxito, reutilización de credenciales y veto de `task_complete` con vectores abiertos (v3.2.0). |
 
 ### 3.2 P1 — deuda de producto
 

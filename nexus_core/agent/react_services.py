@@ -538,6 +538,20 @@ class CompletionVerifier:
             if engagement_id
             else []
         )
+        if engagement_id and not micro_task:
+            # V0-12: a successful first route does not finish an engagement that
+            # still has discovered services without a verdict. The objection is
+            # computed from the same deterministic ledger the prompt reads, so a
+            # run cannot close on one flag while SSH/the hidden API wait.
+            from .coverage import load_coverage
+            from .vector_plan import VectorPlan, open_vector_objection
+
+            vector_plan = VectorPlan.from_coverage(
+                load_coverage(store, tenant_id, engagement_id)
+            )
+            vector_objection = open_vector_objection(vector_plan)
+            if vector_objection:
+                objections.append(vector_objection)
         objections.extend(
             await hooks.verify_stop(
                 findings=annotated, facts_verified=facts, phase=plan.current, objective=objective

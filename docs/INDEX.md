@@ -1,6 +1,6 @@
 # ÍNDICE DOCUMENTAL — OmniAgentCS
 
-> Última revisión: 2026-11-19 · `v3.1.1` · documentación pública saneada.
+> Última revisión: 2026-11-20 · `v3.2.0` · documentación pública saneada.
 >
 > Los informes de misión, evidencias de laboratorio, bases KeePass y material
 > DPAPI **no forman parte de este repositorio público**. Se retiraron del árbol y
@@ -40,6 +40,6 @@
 - Los fixtures de test son sintéticos y se generan sin datos de engagements.
 - El catálogo de tools se escribe con `scripts/omni_catalog.py` en
   `docs/audit/catalog.json`; el test de consistencia compara ese archivo con el
-  runtime (88 tools durables en `v3.1.1`).
+  runtime (88 tools durables en `v3.2.0`).
 - Cualquier nueva evidencia de engagement debe quedarse fuera del índice y el
   guard `test_repo_hygiene.py` debe seguir en verde.

@@ -20,7 +20,9 @@ class KnowledgeStore:
                created_by: str, classification: str = "internal",
                metadata: dict[str, Any] | None = None,
                engagement_id: str = "",
-               edges: list[tuple[str, str]] | None = None) -> dict:
+               edges: list[tuple[str, str]] | None = None,
+               supersede: list[str] | tuple[str, ...] | None = None,
+               superseded_by: str = "") -> dict:
         """Store one document and, in the same transaction, its fact edges.
 
         ``edges`` is ``(src_uri, relation)``; the destination is this document's
@@ -67,7 +69,61 @@ class KnowledgeStore:
                 edges=edges or (),
                 created_at=str(document["created_at"]),
             )
+            if supersede and superseded_by:
+                self._mark_superseded(
+                    conn,
+                    tenant_id=tenant_id,
+                    source_uris=supersede,
+                    superseded_by=superseded_by,
+                    current_document_id=str(value.get("id") or ""),
+                )
         return value
+
+    @staticmethod
+    def _mark_superseded(
+        conn: Any,
+        *,
+        tenant_id: str,
+        source_uris: Any,
+        superseded_by: str,
+        current_document_id: str,
+    ) -> None:
+        """Mark every older version of the superseded facts (V0-33).
+
+        A fact document is the durable state, not an immutable artifact: the
+        marker has to be visible to ``Blackboard.list_facts`` even for an old
+        version whose verified flag would otherwise win the merge. Both the
+        content and its digest are rewritten together so a citation never points
+        at bytes the row no longer has. The document just written is the only
+        row skipped, so a same-key re-record also marks its previous versions.
+        """
+        for uri in sorted({str(item or "").strip() for item in source_uris or ()}):
+            if not uri:
+                continue
+            rows = conn.execute(
+                """SELECT id,content FROM kernel_knowledge_documents
+                WHERE tenant_id=? AND source_uri=?""",
+                (tenant_id, uri),
+            ).fetchall()
+            for row in rows:
+                if current_document_id and str(row["id"]) == current_document_id:
+                    continue
+                try:
+                    record = json.loads(str(row["content"]))
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                if str(record.get("superseded_by") or "") == superseded_by:
+                    continue
+                record["superseded_by"] = superseded_by
+                content = json.dumps(record, sort_keys=True)
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                conn.execute(
+                    """UPDATE kernel_knowledge_documents
+                    SET content=?, sha256=? WHERE id=? AND tenant_id=?""",
+                    (content, digest, str(row["id"]), tenant_id),
+                )
 
     @staticmethod
     def _record_edges(

@@ -302,6 +302,9 @@ class ToolGateway:
                 self.approvals.decide(
                     approval["id"], context.tenant_id, operator, True,
                     f"resume policy approve for {tool_id}",
+                    # An explicit --resume-policy approve is a system policy
+                    # decision, not a human approval from a viewer account.
+                    actor_roles=("admin",),
                 )
             except Exception as exc:  # noqa: BLE001 - fail closed, but say why
                 self.audit.append(

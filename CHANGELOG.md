@@ -1,5 +1,29 @@
 # OmniAgentCS — Changelog
 
+## v3.2.0 — 2026-11-20
+
+Cierre de los tres huecos con más impacto en la tasa de éxito y el entregable:
+
+- **Planificador multi-vector (V0-12).** Cada servicio descubierto tiene un
+  estado durable en `kernel_run_state` (`discovered → tested → exploited` o
+  `discarded`), con una cola que prioriza ramas sin probar. `task_complete` se
+  rechaza mientras queden vectores abiertos, y un éxito no cierra el engagement.
+  Las credenciales verificadas de un vector se ofrecen para reutilizarlas en los
+  demás servicios abiertos del mismo host (el motor las resuelve desde el
+  blackboard; nunca se escribe el secreto en el prompt).
+- **Supersede y deduplicación del Blackboard (V0-33).** Los hechos tienen clave
+  canónica (`cred:ssh:user@host`, `host:port/protocol`): una nueva versión marca
+  la anterior como `superseded_by` y `list_facts` solo devuelve la vigente. Un
+  hecho verificado sigue ganando a una hipótesis del agente. El informe y el
+  inventario deduplican también los datos históricos sin marcador.
+- **Rol del aprobador (SEC-07).** `ApprovalService.decide()` exige rol
+  `approver` o `admin` en el tenant, sea explícito o leído de
+  `kernel_users`/`kernel_service_accounts`; un `viewer` recibe `PermissionError`.
+  La CLI local y `--resume-policy approve` declaran su rol de forma explícita.
+- **Pruebas.** Máquina sintética de tres rutas (web, SSH y API oculta), cierre
+  rechazado con vectores abiertos, persistencia de la cola, credencial duplicada
+  con un solo hallazgo y aprobador `viewer` rechazado.
+
 ## v3.1.1 — 2026-11-19
 
 Correcciones de la prueba en la sala Wreath y deuda del Asset Graph:

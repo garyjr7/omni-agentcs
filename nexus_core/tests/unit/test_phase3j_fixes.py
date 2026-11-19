@@ -337,7 +337,14 @@ def test_report_findings_count_matches_verified_loot_count(tmp_path):
     findings, failed = findings_from_collection(_collection(scope), facts)
 
     loot = [finding for finding in findings if finding.kind == "fact_loot"]
-    assert len(loot) == 3
+    # V0-33: the first two facts use the *same* loot key, so they are one
+    # canonical fact, not two findings. ``dump`` is the second distinct one;
+    # the unverified lead and the out-of-scope target stay out of the count.
+    assert len(loot) == 2
+    assert {finding.title for finding in loot} == {
+        f"Loot capturado: {FLAG}",
+        "Loot capturado: dump",
+    }
     assert all(finding.verification_status == "confirmed_finding" for finding in loot)
     assert failed == []
 

@@ -369,6 +369,10 @@ class Coverage:
     entries: tuple[SurfaceEntry, ...] = ()
     #: ``{status: count}`` for telemetry and events.
     counts: Mapping[str, int] = field(default_factory=dict)
+    #: Verified credentials whose host still has an open vector (V0-12). The
+    #: prompt tells the model to reuse them before starting a new sweep; only the
+    #: fact keys travel, never a plaintext secret.
+    credential_reuse: tuple[str, ...] = ()
 
     @property
     def pending(self) -> tuple[SurfaceEntry, ...]:
@@ -481,6 +485,7 @@ class Coverage:
         return {
             "counts": dict(self.counts),
             "entries": [item.to_dict() for item in self.entries],
+            "credential_reuse": list(self.credential_reuse),
             "families": {
                 f"{host}:{family}": [item.ref for item in members]
                 for (host, family), members in self.families.items()
@@ -973,7 +978,61 @@ def build_coverage(
     counts: dict[str, int] = {}
     for item in resolved:
         counts[item.status] = counts.get(item.status, 0) + 1
-    return Coverage(entries=tuple(resolved), counts=counts)
+    return Coverage(
+        entries=tuple(resolved),
+        counts=counts,
+        credential_reuse=_credential_reuse(records, resolved),
+    )
+
+
+def _credential_host(fact: Mapping[str, Any]) -> str:
+    """Host a credential fact can be replayed against (``""`` when unknown)."""
+    key = str(fact.get("key") or "")
+    candidate = key.rsplit("@", 1)[-1] if "@" in key else ""
+    raw_value = fact.get("value")
+    value: Mapping[str, Any] = raw_value if isinstance(raw_value, Mapping) else {}
+    for name in ("host", "hostname", "target", "ip"):
+        text = str(value.get(name) or "").strip()
+        if text:
+            candidate = text
+            break
+    candidate = candidate.strip().strip("[]")
+    if candidate.count(":") == 1 and candidate.rsplit(":", 1)[1].isdigit():
+        candidate = candidate.rsplit(":", 1)[0]
+    return candidate.casefold() if candidate else ""
+
+
+def _credential_reuse(
+    facts: Iterable[Mapping[str, Any]], entries: Iterable[SurfaceEntry]
+) -> tuple[str, ...]:
+    """Verified credentials worth retrying on another open vector of their host.
+
+    The reused value is the fact *key* (``cred:ssh:lin@10.0.0.5``), never a
+    secret: the engine resolves the handle when a handler asks for it. A host
+    with no open vector contributes nothing, which keeps the prompt line from
+    becoming a generic credential dump.
+    """
+    open_hosts = {
+        str(entry.host).strip().casefold()
+        for entry in entries
+        if entry.status in (STATUS_PENDING, STATUS_PROBED)
+    }
+    if not open_hosts:
+        return ()
+    labels: list[str] = []
+    for fact in facts:
+        if str(fact.get("fact_type") or "") not in ("credential", "access"):
+            continue
+        if fact.get("verified") is not True:
+            continue
+        key = str(fact.get("key") or "").strip()
+        host = _credential_host(fact)
+        if not key or host not in open_hosts or key in labels:
+            continue
+        labels.append(key)
+        if len(labels) >= 5:
+            break
+    return tuple(labels)
 
 
 def load_coverage(store: Any, tenant_id: str, engagement_id: str | None) -> Coverage:
@@ -1249,6 +1308,14 @@ def render_coverage(
     else:
         lines.append(
             f"FRONTERA: 0/{total} servicios sin veredicto (superficie cerrada)."
+        )
+    if coverage.credential_reuse:
+        lines.append(
+            "REUTILIZACIÓN DE CREDENCIALES: "
+            + ", ".join(coverage.credential_reuse)
+            + ". Antes de un nuevo barrido, prueba estas credenciales verificadas "
+            "en los vectores abiertos del mismo host (ssh/netexec/ftp/web): el "
+            "motor las resuelve desde el blackboard, no las reescribas."
         )
     if bounds is not None:
         lines.append(
