@@ -48,6 +48,7 @@ import shutil
 import threading
 import time
 from dataclasses import dataclass, field, replace
+from uuid import uuid4
 from functools import wraps
 from typing import Any
 
@@ -76,6 +77,11 @@ ENUM_DEFAULT_TIMEOUT_SECONDS = 300
 UPLOAD_DEFAULT_TIMEOUT_SECONDS = 180
 SSH_MAX_TIMEOUT_SECONDS = 600
 SSH_ENUM_MARKER = "__SUDO__"
+#: GNU/BusyBox ``timeout`` returns 124 when it expires and 137 when the
+#: kill-after grace also ran out. Both mean the command was stopped, not that
+#: the credential was refused.
+SSH_REMOTE_TIMEOUT_EXIT_CODES = (124, 137)
+SSH_REMOTE_KILL_AFTER_SECONDS = 5
 
 #: Quiet period between the end of one SSH session and the next connection to
 #: the same target. The previous one-second window still produced
@@ -291,7 +297,17 @@ def main():
             err = stderr.read().decode("utf-8", "replace")
             code = stdout.channel.recv_exit_status()
             result.update({"ok": True, "command": command, "stdout": out, "stderr": err, "exit_status": code})
-            if code != 0:
+            if code in (124, 137):
+                # The command was wrapped in ``timeout`` by the handler. A 124
+                # (TERM) or 137 (KILL after the grace) is the remote guard
+                # stopping the process group, never a refused credential.
+                result.update({
+                    "ok": False,
+                    "outcome": "timeout",
+                    "timed_out": True,
+                    "error": "CommandTimeout: the remote command exceeded its time budget",
+                })
+            elif code != 0:
                 # The login worked; the command is what failed. Saying so here is
                 # what stops the caller from blaming the credential.
                 result.update({"ok": False, "outcome": "command_failed"})
@@ -1248,6 +1264,34 @@ async def _run_sshpass_fallback(
     )
 
 
+def _remote_timeout_command(command: str, timeout_seconds: int) -> str:
+    """Wrap a remote command in ``timeout`` so its process group dies too.
+
+    The local sandbox already kills the SSH client's process group on expiry,
+    but that only closes the transport: the remote shell can keep running (the
+    measured ``python /tmp/ask_v7*.py`` processes). GNU/BusyBox ``timeout``
+    starts the command in its own process group and signals the whole group, so
+    a command that forks background work is stopped at the target as well. The
+    shell fallback keeps hosts without ``timeout`` working; they retain the
+    local kill and the explicit timeout result.
+
+    The command is quoted as one argument to ``/bin/sh -c``: it may contain
+    pipes, redirections and ``sudo -S``, all of which must keep their original
+    shell semantics. The timeout is a little below the sandbox budget so the
+    remote guard wins the race and reports a real timeout instead of the local
+    process being killed mid-flight.
+    """
+    seconds = max(1, int(timeout_seconds))
+    quoted = shlex.quote(command)
+    guarded = (
+        f"timeout -k {SSH_REMOTE_KILL_AFTER_SECONDS} {seconds} /bin/sh -c {quoted}"
+    )
+    return (
+        "if command -v timeout >/dev/null 2>&1; then "
+        f"{guarded}; else /bin/sh -c {quoted}; fi"
+    )
+
+
 def _parse_client_json(stdout: str) -> dict[str, Any]:
     for line in reversed((stdout or "").splitlines()):
         line = line.strip()
@@ -1357,6 +1401,11 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         SSH_MAX_TIMEOUT_SECONDS,
         max(10, int(requested_timeout) if requested_timeout else SSH_DEFAULT_TIMEOUT_SECONDS),
     )
+    # The remote guard expires two seconds before the local sandbox: otherwise
+    # the local kill wins and the target never learns that its process group
+    # must stop.
+    command_timeout = max(5, min(60, timeout_seconds - 2))
+    guarded_command = _remote_timeout_command(remote_command, command_timeout)
 
     try:
         result = await _run_ssh_client(
@@ -1366,8 +1415,8 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
             username=username,
             password=password,
             payload={
-                "command": remote_command,
-                "command_timeout": min(60, timeout_seconds),
+                "command": guarded_command,
+                "command_timeout": command_timeout,
                 "stdin": stdin_data,
                 "private_key": auth["private_key"],
                 "passphrase": auth["passphrase"],
@@ -1397,6 +1446,8 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         "port": port,
         "username": username,
         "auth": "private_key" if auth["private_key"] else "password",
+        "remote_command_timeout_seconds": command_timeout,
+        "remote_timeout_guard": "timeout_process_group",
     }
     if sudo_stdin_skipped:
         # Audited rather than silent: the operator can see that this call did not
@@ -1404,11 +1455,18 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         evidence["sudo_stdin_skipped"] = sudo_stdin_skipped
     if result.timed_out:
         # 3b: the budget that expired travels with the answer, so "timed out" is
-        # never a generic label the model cannot act on.
+        # never a generic label the model cannot act on. The cancel id is the
+        # stable handle for this stop; the local sandbox already signalled the
+        # client's process group and reports any survivor in ``orphans_detected``.
         timeout_tail = _ssh_stderr_tail(context, result.stderr, arguments)
+        cancel_id = f"ssh_cancel_{uuid4().hex}"
+        reason = f"ssh command exceeded its {timeout_seconds}s budget"
         timeout_output = {
             "error": "ssh command timed out",
-            "reason": "ssh command timed out",
+            "reason": reason,
+            "cancel_id": cancel_id,
+            "timeout_stage": "sandbox",
+            "orphans_detected": result.orphans_detected,
             "target": target,
             "command": command,
             "timeout_seconds": timeout_seconds,
@@ -1421,7 +1479,11 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
             verification_method="ssh_exec_timeout",
             evidence={
                 **evidence,
+                "cancel_id": cancel_id,
+                "reason": reason,
+                "timeout_stage": "sandbox",
                 "timeout_seconds": timeout_seconds,
+                "orphans_detected": result.orphans_detected,
                 **({"stderr_tail": timeout_tail} if timeout_tail else {}),
             },
             exit_code=result.exit_code,
@@ -1477,9 +1539,20 @@ async def ssh_exec_handler(arguments: dict, context: RunContext) -> ToolResult:
         # determinate ``timeout`` keeps the journal honest (the effect is *not*
         # confirmed) and stops the gateway from turning it into a bare
         # ``RuntimeError`` that leaves the next retry blocked on an approval.
+        cancel_id = f"ssh_cancel_{uuid4().hex}"
+        timeout_stage = "remote_command" if connected else "connect"
+        reason = detail or f"ssh command exceeded its {timeout_seconds}s budget"
+        output["error"] = reason
+        output["reason"] = reason
+        output["cancel_id"] = cancel_id
+        output["timeout_stage"] = timeout_stage
+        output["orphans_detected"] = result.orphans_detected
+        evidence["cancel_id"] = cancel_id
+        evidence["reason"] = reason
+        evidence["timeout_stage"] = timeout_stage
+        evidence["orphans_detected"] = result.orphans_detected
         if detail:
             evidence["error_detail"] = detail
-        output["error"] = detail or "ssh command timed out"
         return ToolResult(
             output=output,
             verified=False,
