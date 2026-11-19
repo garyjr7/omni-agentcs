@@ -21,12 +21,13 @@ from typing import Any, NamedTuple
 from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlsplit
 
 from .blackboard import Blackboard, is_verified_fact
+from .loot_extractor import (
+    FLAG_RE,
+    LootCandidate,
+    extract_file_loot,
+    extract_http_loot,
+)
 from .route_facts import route_key
-
-#: Flag-shaped tokens (``flag{fake_flag}``, ``flag{fake_flag}``, ``flag{fake_flag}``) found in the
-#: output of a verified command execution. Keeping the prefixes explicit avoids
-#: turning any brace-wrapped text into "loot".
-FLAG_RE = re.compile(r"(?:THM|HTB|FLAG|flag|CTF|ctf)\{[^}\s\x00]{4,200}\}")
 
 #: A read of **one** file that ends the command (``cat``/``type``, optionally
 #: behind ``sudo``, or the PowerShell ``Get-Content``/``gc``). The read may follow
@@ -1030,6 +1031,48 @@ def derive_assertions(tool_id, arguments, result, context):
                          anchors=[[str(item[0]), str(item[1])]
                                   for item in (anchors or ()) if item]))
 
+    #: One shared loot path for every channel. A candidate is emitted once per
+    #: invocation even when a page/file is parsed twice, and a credential always
+    #: reaches the fact as a vault handle, never as plaintext (V1-29).
+    emitted_loot: set[tuple[str, str]] = set()
+    tenant_id = str(getattr(context, 'tenant_id', 'system'))
+
+    def add_loot_candidates(target, candidates, *, service, method=None,
+                            anchors=None, key_prefix=''):
+        for candidate in candidates or ():
+            if not isinstance(candidate, LootCandidate):
+                continue
+            if candidate.kind == 'credential':
+                if not candidate.username or not candidate.password:
+                    continue
+                key = f'cred:{service}:{candidate.username}@{target}'
+                if ('credential', key) in emitted_loot:
+                    continue
+                emitted_loot.add(('credential', key))
+                handle = _credential_handle(
+                    {'password': candidate.password}, kind=service, tenant_id=tenant_id
+                )
+                add('credential', target,
+                    {'username': candidate.username, 'secret_ref': handle or None,
+                     'service': service, 'source': candidate.source},
+                    key, method=method, anchors=anchors)
+                continue
+            key = candidate.path or candidate.value
+            if key_prefix:
+                key = f'{key_prefix}:{key}'
+            if ('loot', key) in emitted_loot:
+                continue
+            emitted_loot.add(('loot', key))
+            value = {'flag': candidate.value, 'service': service,
+                     'source': candidate.source}
+            if candidate.path:
+                value['path'] = candidate.path
+            if candidate.sha256:
+                value['sha256'] = candidate.sha256
+            if candidate.content:
+                value['content'] = candidate.content
+            add('loot', target, value, key, method=method, anchors=anchors)
+
     if tool_id == 'nexus.recon.nmap' and result.verification_method == 'nmap_xml_parsed':
         for host in output.get('scan', {}).get('hosts', []):
             if host.get('state') != 'up':
@@ -1289,6 +1332,20 @@ def derive_assertions(tool_id, arguments, result, context):
                 body=body,
                 method=WEB_SHELL_METHOD,
             )
+        elif host:
+            # V0-24: a plain HTTP response can carry the capture in its body or
+            # in a response header. The webshell path above already attributes
+            # a command's output; this is the page/endpoint path and must not
+            # duplicate it.
+            response_headers = dict(output.get('headers') or {})
+            cookies = output.get('set_cookie') or ()
+            if cookies:
+                response_headers['set-cookie'] = '; '.join(str(item) for item in cookies)
+            add_loot_candidates(
+                host,
+                extract_http_loot(body, response_headers, source='http'),
+                service='http', method='http_loot_extracted',
+            )
         # An error-based injection is an observation the model cannot invent: the
         # *database* answered the payload. Without this branch the verifier was
         # blind to it and the board learned nothing while a joomla run extracted
@@ -1311,6 +1368,56 @@ def derive_assertions(tool_id, arguments, result, context):
                  'method': str((arguments or {}).get('method') or 'GET')},
                 f"sqli:{parts.path or '/'}:{parameter}",
                 method=SQLI_ERROR_METHOD)
+    elif tool_id == 'nexus.recon.smb' and result.verification_method == 'smb_download_verified':
+        # V0-30: a downloaded file is not loot until its bytes are parsed. The
+        # remote path is the key and the sha256 travels with the fact so the
+        # same artifact downloaded twice is still one fact (V0-33).
+        target = output.get('target') or (arguments or {}).get('target')
+        remote = str((arguments or {}).get('remote_path') or output.get('file') or '')
+        preview = str(output.get('preview') or '')
+        candidates = extract_file_loot(
+            preview, path=remote, sha256=output.get('sha256'), source='smb',
+            truncated=bool(output.get('size') and int(output['size']) > len(preview)),
+        )
+        add_loot_candidates(
+            target, candidates, service='smb',
+            key_prefix=f'smb:{target or ""}',
+        )
+    elif (tool_id == 'nexus.recon.ftp'
+          and result.verification_method in {'ftp_download_verified', 'ftp_listing_parsed'}):
+        # Wreath's flags arrived through FTP. The handler records the files as
+        # unverified leads; the verifier now promotes the actual bytes with the
+        # remote path as key and the sha256 in the value.
+        target = output.get('target')
+        port = output.get('port')
+        for item in output.get('files') or ():
+            if not isinstance(item, dict):
+                continue
+            remote = str(item.get('remote') or item.get('name') or item.get('path') or '')
+            content = str(item.get('preview') or item.get('decoded') or '')
+            candidates = extract_file_loot(
+                content, path=remote, sha256=item.get('sha256'), source='ftp',
+                truncated=bool(item.get('preview_truncated')),
+            )
+            add_loot_candidates(
+                target, candidates, service='ftp',
+                key_prefix=f'ftp:{target or ""}:{port or ""}',
+            )
+    elif (tool_id == 'nexus.workspace.read'
+          and result.verification_method in {'workspace_read_sha256', 'workspace_read_artifact'}):
+        # V0-30: reading a downloaded artifact is the last mile. Only the
+        # parser's short-file rule can attribute a non-flag-shaped content to a
+        # conventional flag name; a long or truncated file still contributes a
+        # flag-shaped token, never its first line.
+        path = str(output.get('path') or '')
+        candidates = extract_file_loot(
+            output.get('content') or '', path=path, sha256=output.get('sha256'),
+            source='workspace', truncated=bool(output.get('truncated')),
+        )
+        add_loot_candidates(
+            path or 'workspace', candidates, service='workspace',
+            key_prefix='workspace',
+        )
     elif tool_id == 'nexus.pwn.ret2libc' and result.verification_method == 'ret2libc_root_command':
         target = output.get('target')
         add('privilege', target, {'uid': 0, 'user': 'root'})
@@ -1571,11 +1678,13 @@ def derive_assertions(tool_id, arguments, result, context):
         command = str((arguments or {}).get('command') or '')
         read = _WIN_READ_RE.match(command)
         path = read.group('path').strip('"\'') if read else ''
-        for flag in FLAG_RE.findall(text):
-            add('loot', target,
-                {'flag': flag, 'command': command, 'path': path or None,
-                 'service': 'smb-exec', 'via': 'psexec'},
-                path or flag)
+        # V0-13: reuse the one loot parser, so ``user.txt``/``root.txt`` keep
+        # their conventional-file rule on every Windows channel.
+        add_loot_candidates(
+            target,
+            extract_file_loot(text, path=path, source='psexec'),
+            service='smb-exec',
+        )
     elif tool_id == 'nexus.win.winrm_exec' and result.verification_method == 'winrm_command_executed':
         # The channel itself is proven: the harness only reports
         # ``winrm_command_executed`` after NetExec authenticated *and* printed its
@@ -1611,19 +1720,13 @@ def derive_assertions(tool_id, arguments, result, context):
         read = _WIN_READ_RE.match(command)
         if read:
             path = read.group('path').strip('"\'')
-            for flag in FLAG_RE.findall(stdout):
-                add('loot', target, {'flag': flag, 'path': path, 'command': command,
-                                     'service': 'winrm'}, path)
-            # The file name is the proof, not the format: ``Get-Content
-            # user.txt``/``type user.txt`` printing one short line of any text is
-            # the capture (Vulnversity's ``user.txt`` is an MD5). The channel is
-            # already proven above, and ``flag_file_text`` refuses a multi-line
-            # answer, so a wrapped/loud read promotes nothing.
-            content = flag_file_text(command, stdout)
-            if content and not any(row['value'].get('flag') == content for row in rows):
-                add('loot', target,
-                    {'content': content, 'flag': content, 'path': path,
-                     'command': command, 'service': 'winrm'}, path)
+            # V0-13: same parser as HTTP/SMB/FTP/workspace. The file name is the
+            # proof, not the format, and a multi-line answer promotes nothing.
+            add_loot_candidates(
+                target,
+                extract_file_loot(stdout, path=path, source='winrm'),
+                service='winrm',
+            )
     elif tool_id == 'nexus.post.dpapi' and result.verification_method == 'dpapi_unwrapped':
         # The blob's own signature was verified before the material was released, so
         # the recovered key material is a proven fact (never the AP itself: only its
