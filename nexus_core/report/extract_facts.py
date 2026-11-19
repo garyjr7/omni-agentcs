@@ -42,6 +42,12 @@ _LOOT_SECRET_FIELDS: tuple[str, ...] = (
 )
 
 
+def _fact_run_ids(fact: dict[str, Any]) -> tuple[str, ...]:
+    """Run ids recorded on a fact, if any (V0-32)."""
+    run_id = str(fact.get("run_id") or "").strip()
+    return (run_id,) if run_id else ()
+
+
 def _fact_finding_id(fact_type: str, key: str) -> str:
     import hashlib
 
@@ -224,6 +230,7 @@ def _loot_finding(
         ),
         kind="fact_loot",
         verification_status="confirmed_finding",
+        run_ids=_fact_run_ids(fact),
     )
 
 
@@ -334,6 +341,7 @@ def _fact_findings(
                 ),
                 kind=kind,
                 verification_status="confirmed_finding" if is_verified_fact(fact) else "hypothesis",
+                run_ids=_fact_run_ids(fact),
             )
         )
     return results

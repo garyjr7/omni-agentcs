@@ -16,6 +16,7 @@ _TIMELINE_ACTIONS = frozenset(
 _TIMELINE_OPENERS = frozenset({"tool.invoke", "react.step", "session.command"})
 
 
+from dataclasses import replace
 from typing import Any, Iterable
 
 from nexus_core.kernel.audit import AuditWriter
@@ -156,7 +157,12 @@ def findings_from_collection(
             )
             continue
         extracted = registry.extract(observation, context, kind="findings")
-        findings.extend(extracted.findings)
+        # V0-32: keep the run that contributed to each finding. The renderer
+        # shows a bounded list per finding instead of every id of the engagement.
+        findings.extend(
+            replace(finding, run_ids=(observation.run_id,))
+            for finding in extracted.findings
+        )
         failed.extend(extracted.failed)
 
     # Denied/aborted work is context, never a finding.

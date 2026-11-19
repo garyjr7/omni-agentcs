@@ -611,6 +611,7 @@ def _deduplicate(findings: list[Finding]) -> list[Finding]:
                 previous,
                 reproductions=previous.reproductions + 1,
                 evidence=previous.evidence + finding.evidence,
+                run_ids=tuple(dict.fromkeys((*previous.run_ids, *finding.run_ids))),
             )
             index[key] = updated
             merged[merged.index(previous)] = updated

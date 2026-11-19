@@ -27,6 +27,10 @@ SEVERITY_LABEL = {
     "info": "INFO",
 }
 
+#: V0-32: the deliverable prints a bounded sample of run ids. The JSON keeps
+#: every id for traceability; a Markdown line with 133 ids is noise, not evidence.
+MAX_REPORT_RUN_IDS = 12
+
 
 def _value(value: Any, default: str = "n/d") -> str:
     text = str(value or "").strip()
@@ -36,6 +40,18 @@ def _value(value: Any, default: str = "n/d") -> str:
 def _escape_cell(value: Any) -> str:
     """Escape a value so it cannot break a Markdown table row."""
     return _value(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _run_ids(value: Any, *, limit: int = MAX_REPORT_RUN_IDS) -> str:
+    """A bounded, readable summary of run ids (V0-32)."""
+    ids = [str(item) for item in (value or ()) if str(item or "").strip()]
+    if not ids:
+        return ""
+    shown = ids[:limit]
+    rendered = ", ".join(f"`{item}`" for item in shown)
+    if len(ids) > limit:
+        rendered += f" … y {len(ids) - limit} más (ver JSON)"
+    return rendered
 
 
 def _fence(text: str, language: str = "") -> list[str]:
@@ -147,7 +163,7 @@ def render_markdown(report: EngagementReport) -> str:
     if report.scope_signature and not scope.get("signature"):
         lines.append(f"- Firma: `{report.scope_signature}`")
     if report.run_ids:
-        lines.append(f"- Runs: {', '.join(f'`{item}`' for item in report.run_ids)}")
+        lines.append(f"- Runs: {_run_ids(report.run_ids)}")
     lines.append("")
 
     lines += ["## Metodología", ""]
@@ -357,6 +373,8 @@ def _render_finding(finding: Finding) -> list[str]:
         lines.append("**CISA KEV:** ✓ explotado en el wild (catálogo CISA)")
     if finding.owasp_category:
         lines.append(f"**OWASP Top 10:** {finding.owasp_category}")
+    if finding.run_ids:
+        lines.append(f"**Runs:** {_run_ids(finding.run_ids, limit=6)}")
     lines.append(f"**Afectados:** {_join(finding.affected_targets)}")
     if finding.frameworks:
         lines.append("")

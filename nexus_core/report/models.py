@@ -91,6 +91,10 @@ class Finding:
     cvss4_source: str = "none"
     #: EPSS exploit-probability (0.0-1.0) when the CVE cache knows it.
     epss_score: float | None = None
+    #: Run ids that contributed to this finding (V0-32). Kept on the finding so
+    #: the Markdown deliverable does not have to print every id of the whole
+    #: engagement in one line.
+    run_ids: tuple[str, ...] = ()
     #: Whether the CVE is in the CISA Known Exploited Vulnerabilities catalog.
     kev: bool = False
     #: Short CVE description, filled only from a cached authoritative source.
@@ -105,6 +109,7 @@ class Finding:
         value["affected_targets"] = list(self.affected_targets)
         value["reproduction_steps"] = list(self.reproduction_steps)
         value["frameworks"] = [item.to_dict() for item in self.frameworks]
+        value["run_ids"] = list(self.run_ids)
         return value
 
 
