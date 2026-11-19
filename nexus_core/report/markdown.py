@@ -401,9 +401,9 @@ def _render_finding(finding: Finding) -> list[str]:
 
 def _cvss_text(finding: Finding) -> str:
     if finding.cvss_vector is None:
-        score = finding.cvss_score if finding.cvss_score is not None else 0.0
-        return f"{score} (informativo, sin vector)"
-    score = finding.cvss_score if finding.cvss_score is not None else "n/d"
+        informative = finding.cvss_score if finding.cvss_score is not None else 0.0
+        return f"{informative} (informativo, sin vector)"
+    score: float | str = finding.cvss_score if finding.cvss_score is not None else "n/d"
     return f"{score} (`{finding.cvss_vector}`, origen: {finding.cvss_source})"
 
 

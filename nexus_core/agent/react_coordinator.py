@@ -940,7 +940,9 @@ class ReActCoordinator:
         # turns with a fixed 250k dies at ~21 of them (HackPark V12); the
         # operator's ``--max-iterations`` is a promise the budget has to keep.
         self.budget = _budget_tokens(
-            self.payload, self.budget_tokens, max_iterations=self.iteration_limit
+            self.payload,
+            self.budget_tokens,
+            max_iterations=self.iteration_limit,
         )
         self.wrap_up_seconds = wrap_up_window(
             self.time_budget_seconds,

@@ -25,6 +25,11 @@ def tool_prefix(tool_id: str) -> str:
     return f"[{PREFIXES.get(str(tool_id or '').lower(), 'Tool')}]"
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    """A mapping from an untyped payload, never ``None``."""
+    return value if isinstance(value, dict) else {}
+
+
 def _line(text: Any, width: int | None = None) -> str:
     value = " ".join(clean_text(str(text)).splitlines())
     if width is None or len(value) <= width:
@@ -245,7 +250,7 @@ def plan_card_body(tool_id: str, arguments: Any, result: dict[str, Any] | None) 
         head += f"  (timeout: {timeout}s)"
     if result is None:
         return f"{head}\n\n  · en ejecución…"
-    output = result.get("output") if isinstance(result.get("output"), dict) else {}
+    output = _as_dict(result.get("output"))
     if is_guardrail(result) or not result.get("success"):
         detail = str(
             result.get("guidance")
@@ -255,8 +260,9 @@ def plan_card_body(tool_id: str, arguments: Any, result: dict[str, Any] | None) 
             or "el plan no se actualizó"
         )
         return f"{head}\n\n  ⚠ {detail}"
-    counts = output.get("counts") if isinstance(output.get("counts"), dict) else {}
-    todos = output.get("todos") if isinstance(output.get("todos"), list) else []
+    counts = _as_dict(output.get("counts"))
+    raw_todos = output.get("todos")
+    todos = raw_todos if isinstance(raw_todos, list) else []
     verb = "Plan creado" if tool_id.endswith("create_plan") else "Plan actualizado"
     done = int(counts.get("done") or 0)
     pending = int(counts.get("pending") or 0)
@@ -529,8 +535,8 @@ def _specific_success(result: dict[str, Any]) -> str:
     found anything, which fact was recorded, or what a web request answered.
     """
     tool_id = str(result.get("tool_id") or "")
-    output = result.get("output") if isinstance(result.get("output"), dict) else {}
-    evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+    output = _as_dict(result.get("output"))
+    evidence = _as_dict(result.get("evidence"))
     if tool_id == "nexus.system.discover_tools":
         tools = output.get("tools")
         count = len(tools) if isinstance(tools, (list, tuple)) else evidence.get("tools_total")
@@ -541,7 +547,7 @@ def _specific_success(result: dict[str, Any]) -> str:
         count = output.get("count", evidence.get("count", 0))
         return f"{int(count or 0)} subdominios encontrados"
     if tool_id == "nexus.knowledge.record_fact":
-        recorded = output.get("recorded") if isinstance(output.get("recorded"), dict) else {}
+        recorded = _as_dict(output.get("recorded"))
         fact_type = str(recorded.get("fact_type") or evidence.get("fact_type") or "").strip()
         key = str(recorded.get("key") or evidence.get("key") or "").strip()
         if fact_type or key:

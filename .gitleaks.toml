@@ -1,0 +1,11 @@
+[extend]
+useDefault = true
+
+# The generic-api-key rule reads `self.budget_tokens, max_iterations=...` as a
+# token assignment. It is a function argument, not a credential, and the call
+# is now split across lines so new commits do not match. This allowlist keeps
+# the already-published commit from failing full-history scans.
+[[allowlists]]
+description = "False positive: _budget_tokens(max_iterations=...) argument in 42cad50"
+commits = ["42cad50a7ffdbe2fce5f6198ed301348f6f0c846"]
+paths = ['''nexus_core/agent/react_coordinator\.py''']
